@@ -607,7 +607,7 @@ def validar_consistencia_municipal(candidato, mun_inf):
     return False
 
 def obter_coordenada_centroide_supremo(mun_nome, uf_nome):
-    url_arc = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?City={requests.utils.quote(mun_nome)}&Region={requests.utils.quote(uf_nome)}&CountryCode=BRA&f=json&maxLocations=1"
+    url_arc = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?City={urllib.parse.quote(mun_nome)}&Region={urllib.parse.quote(uf_nome)}&CountryCode=BRA&f=json&maxLocations=1"
     try:
         r = async_http_get_json(url_arc, timeout=5)
         if r.get('candidates'):
@@ -616,7 +616,7 @@ def obter_coordenada_centroide_supremo(mun_nome, uf_nome):
             if validar_coordenada_brasil(lat_c, lon_c)[0]: return lat_c, lon_c, "ARCGIS_CENTROIDE_SUPREMO"
     except: pass
     
-    url_nom = f"https://nominatim.openstreetmap.org/search?city={requests.utils.quote(mun_nome)}&state={requests.utils.quote(uf_nome)}&country=Brazil&format=json&limit=1"
+    url_nom = f"https://nominatim.openstreetmap.org/search?city={urllib.parse.quote(mun_nome)}&state={urllib.parse.quote(uf_nome)}&country=Brazil&format=json&limit=1"
     try:
         r = async_http_get_json(url_nom, headers={"User-Agent": "RotasCorp/11.0"}, timeout=5)
         if r:
@@ -640,7 +640,7 @@ def API_TomTom(query):
     if not TOMTOM_API_KEY: return None
     start_t = time.time()
     try:
-        url = f"https://api.tomtom.com/search/2/geocode/{requests.utils.quote(query)}.json?key={TOMTOM_API_KEY}&countrySet=BR&limit=5"
+        url = f"https://api.tomtom.com/search/2/geocode/{urllib.parse.quote(query)}.json?key={TOMTOM_API_KEY}&countrySet=BR&limit=5"
         r = async_http_get_json(url, timeout=4)
         resultados = []
         if r.get("results"):
@@ -688,14 +688,14 @@ def API_ArcGIS(query, ctx=None):
     start_t = time.time()
     try:
         if ctx and (ctx.get("logradouro") or ctx.get("municipio")):
-            end = requests.utils.quote(ctx.get("logradouro", ""))
-            cid = requests.utils.quote(ctx.get("municipio", ""))
-            uf = requests.utils.quote(ctx.get("uf", ""))
-            bair = requests.utils.quote(ctx.get("bairro", ""))
-            cep = requests.utils.quote(ctx.get("cep", ""))
+            end = urllib.parse.quote(ctx.get("logradouro", ""))
+            cid = urllib.parse.quote(ctx.get("municipio", ""))
+            uf = urllib.parse.quote(ctx.get("uf", ""))
+            bair = urllib.parse.quote(ctx.get("bairro", ""))
+            cep = urllib.parse.quote(ctx.get("cep", ""))
             url = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&Address={end}&Neighborhood={bair}&City={cid}&Region={uf}&Postal={cep}&maxLocations=5&sourceCountry=BRA&outFields=*"
         else:
-            url = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={requests.utils.quote(query)}&maxLocations=5&sourceCountry=BRA&outFields=*"
+            url = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={urllib.parse.quote(query)}&maxLocations=5&sourceCountry=BRA&outFields=*"
             
         r = async_http_get_json(url, timeout=4)
         resultados = []
@@ -715,12 +715,12 @@ def API_Nominatim(query, ctx=None):
         def _call_nom():
             time.sleep(1.1)
             if ctx and ctx.get("logradouro") and ctx.get("municipio"):
-                rua = requests.utils.quote(ctx["logradouro"])
-                cid = requests.utils.quote(ctx["municipio"])
-                est = requests.utils.quote(ctx.get("uf", ""))
+                rua = urllib.parse.quote(ctx["logradouro"])
+                cid = urllib.parse.quote(ctx["municipio"])
+                est = urllib.parse.quote(ctx.get("uf", ""))
                 url = f"https://nominatim.openstreetmap.org/search?format=json&street={rua}&city={cid}&state={est}&limit=5&addressdetails=1&countrycodes=br"
             else:
-                url = f"https://nominatim.openstreetmap.org/search?format=json&q={requests.utils.quote(query)}&limit=5&addressdetails=1&countrycodes=br"
+                url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(query)}&limit=5&addressdetails=1&countrycodes=br"
             return async_http_get_json(url, headers={"User-Agent": "RotasEnterprise/8.0"}, timeout=4)
             
         r = FILA_NOMINATIM.submit(_call_nom).result()
@@ -738,7 +738,7 @@ def API_Nominatim(query, ctx=None):
 def API_Photon(query):
     start_t = time.time()
     try:
-        url = f"https://photon.komoot.io/api/?q={requests.utils.quote(query)}&limit=5&filter=countrycode:br"
+        url = f"https://photon.komoot.io/api/?q={urllib.parse.quote(query)}&limit=5&filter=countrycode:br"
         r = async_http_get_json(url, timeout=4)
         resultados = []
         if r.get("features"):
@@ -1219,8 +1219,8 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
     cache_key = f"GOOG_V59_{origem_texto}|{destino_texto}|{usar_coordenadas}"
     if cache_key in cache_google: return cache_google[cache_key]
 
-    orig_link_txt = requests.utils.quote(origem_texto)
-    dest_link_txt = requests.utils.quote(destino_texto)
+    orig_link_txt = urllib.parse.quote(origem_texto)
+    dest_link_txt = urllib.parse.quote(destino_texto)
 
     origem_param_scraper = f"{lat_o},{lon_o}" if usar_coordenadas else orig_link_txt
     destino_param_scraper = f"{lat_d},{lon_d}" if usar_coordenadas else dest_link_txt
@@ -1337,8 +1337,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         dist_linha_reta = 0.0
         status_linha_reta = "Falha de Geocodificação (Coordenadas Nulas)"
 
-    orig_param_fb = requests.utils.quote(end_oficial_o) if end_oficial_o else f"{lat_o},{lon_o}"
-    dest_param_fb = requests.utils.quote(end_oficial_d) if end_oficial_d else f"{lat_d},{lon_d}"
+    orig_param_fb = urllib.parse.quote(end_oficial_o) if end_oficial_o else f"{lat_o},{lon_o}"
+    dest_param_fb = urllib.parse.quote(end_oficial_d) if end_oficial_d else f"{lat_d},{lon_d}"
     
     link_fallback = f"https://www.google.com/maps/dir/?api=1&origin={orig_param_fb}&destination={dest_param_fb}&travelmode=driving"
     link_embed_fallback = f"https://maps.google.com/maps?saddr={orig_param_fb}&daddr={dest_param_fb}&output=embed"
@@ -1431,8 +1431,8 @@ def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None):
                 link_conc = res_g_runner[2]
             else:
                 dist_conc = round(dist_v_real * obter_fator_desvio_rodoviario(dist_v_real), 2)
-                o_param = requests.utils.quote(origem_cru)
-                d_param = requests.utils.quote(r_nome)
+                o_param = urllib.parse.quote(origem_cru)
+                d_param = urllib.parse.quote(r_nome)
                 link_conc = f"https://www.google.com/maps/dir/?api=1&origin={o_param}&destination={d_param}&travelmode=driving"
         
         concorrente = r_nome
@@ -2688,7 +2688,7 @@ with tab_manual:
 
     with st.expander("2. Processamento de Rota Individual (Testes Rápidos)"):
         st.markdown("""
-        **Quando usar?** Você quer saber a distância de um galpão específico até um cliente sem subir planilhas.
+        **Quando usar?** Você quer saber a distância de um galpão específico até cliente sem subir planilhas.
         **Passo a passo:**
         1. Clique na aba **📍 Geocodificação**.
         2. No campo **Origem**, digite o endereço completo ou coordenada (Ex: *Rua Teste, 100, São Paulo, SP*).
@@ -2818,3 +2818,23 @@ with tab_motores:
                 tooltip=['Fonte Geocoding Origem', 'count()']
             ).properties(height=350)
             st.altair_chart(grafico_apis, use_container_width=True)
+
+with tab_auditoria:
+    st.info("💡 **Objetivo desta aba:** Transparência Total. Consulte os logs detalhados (XAI) do último Lote de Roteamento ou Alocação de Hubs para entender os critérios geográficos, pesos matemáticos e fontes usadas para aprovar cada coordenada e por que ele escolheu descartar outras opções em caso de empate de proximidade.")
+    st.markdown("### 🕵️ Dossiê Investigativo de Auditoria Viária e Espacial")
+    
+    tab_aud_lote, tab_aud_hub = st.tabs(["⚙️ Logs do Lote de Roteamento Padrão", "📦 Logs do Motor de Alocação (Hubs Competitive)"])
+    
+    with tab_aud_lote:
+        if 'logs_auditoria' in st.session_state and st.session_state['logs_auditoria']:
+            st.write("Abaixo consta a árvore de decisões algorítmicas explicáveis tomada pelo motor durante o cálculo do Lote:")
+            st.dataframe(pd.DataFrame(st.session_state['logs_auditoria']), use_container_width=True)
+        else:
+            st.info("Nenhum registro de auditoria em memória cache. Processe uma nova planilha corporativa na aba de Processamento em Lote (⚙️) para gerar o relatório XAI.")
+            
+    with tab_aud_hub:
+        if 'logs_auditoria_alocacao' in st.session_state and st.session_state['logs_auditoria_alocacao']:
+            st.write("Abaixo constam as inferências espaciais estritas feitas individualmente para cada Base (Destino) e Endereço (Origem) na leitura e mapeamento da Matriz Geográfica:")
+            st.dataframe(pd.DataFrame(st.session_state['logs_auditoria_alocacao']), use_container_width=True)
+        else:
+            st.info("Nenhum registro de alocação no cache. Processe o pipeline na aba de Alocação de Hubs (📦) para visualizar as inferências.")
