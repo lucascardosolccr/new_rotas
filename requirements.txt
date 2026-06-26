@@ -4,6 +4,7 @@
 streamlit>=1.46.0
 requests_cache
 httpx[http2]
+python-calamine
 # ==========================================================
 # DATAFRAME E PLANILHAS
 # ==========================================================
