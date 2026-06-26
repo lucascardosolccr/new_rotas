@@ -116,7 +116,7 @@ cache_api_health = Cache("./cache_api_health")
 cache_historico_lotes = Cache("./cache_historico_lotes")
 cache_distancias = Cache("./cache_distancias")
 
-CACHE_VERSION = "v61"
+CACHE_VERSION = "v62"
 if st.session_state.get("APP_CACHE_VERSION") != CACHE_VERSION:
     st.session_state["APP_CACHE_VERSION"] = CACHE_VERSION
 
@@ -502,12 +502,12 @@ def parse_tempo_minutos(t_str):
 
 def validar_coordenada_brasil(lat, lon):
     try:
-        lat_f, float(lat), float(lon)
-        if (-35.0 <= lat_f <= 6.0) and (-75.0 <= float(lon) <= -28.0):
-            return True, lat_f, float(lon)
-        if (-35.0 <= float(lon) <= 6.0) and (-75.0 <= lat_f <= -28.0):
-            return True, float(lon), lat_f 
-        return False, lat_f, float(lon)
+        lat_f, lon_f = float(lat), float(lon)
+        if (-35.0 <= lat_f <= 6.0) and (-75.0 <= lon_f <= -28.0):
+            return True, lat_f, lon_f
+        if (-35.0 <= lon_f <= 6.0) and (-75.0 <= lat_f <= -28.0):
+            return True, lon_f, lat_f 
+        return False, lat_f, lon_f
     except (ValueError, TypeError):
         return False, 0.0, 0.0
 
@@ -1861,17 +1861,24 @@ with tab_processamento:
                 
                 df_final = rodar_pipeline_lote(df, list(pares_unicos), tarefas_priorizadas, nome_operador, barra_progresso, container_status)
                 
-                def recalculate_haversine_lote(row):
-                    lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
-                    lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
-                    if lat_o_f != 0.0 and lat_d_f != 0.0:
-                        nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Lote Post-Sweep: {str(row.get('Origem',''))[:15]} a {str(row.get('Destino',''))[:15]}")
-                        if nova_dist > 0: 
-                            return pd.Series([nova_dist, novo_status], index=['Linha Reta', 'Status Linha Reta'])
-                    return pd.Series([row['Linha Reta'], row['Status Linha Reta']], index=['Linha Reta', 'Status Linha Reta'])
-                
+                # REPARO CRÍTICO (Versão 1.4) - Post-Sweep Geodésico usando arrays puras em vez de Pandas .apply()
                 if not df_final.empty:
-                    df_final[['Linha Reta', 'Status Linha Reta']] = df_final.apply(recalculate_haversine_lote, axis=1)
+                    dists_lr, status_lr = [], []
+                    for _, row in df_final.iterrows():
+                        lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
+                        lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
+                        dist_val, stat_val = float(row.get('Linha Reta', 0.0)), str(row.get('Status Linha Reta', ''))
+                        
+                        if lat_o_f != 0.0 and lat_d_f != 0.0:
+                            nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Lote Post-Sweep: {str(row.get('Origem',''))[:15]} a {str(row.get('Destino',''))[:15]}")
+                            if nova_dist > 0:
+                                dist_val, stat_val = nova_dist, novo_status
+                                
+                        dists_lr.append(dist_val)
+                        status_lr.append(stat_val)
+                        
+                    df_final['Linha Reta'] = dists_lr
+                    df_final['Status Linha Reta'] = status_lr
 
                 tempo_lote_segundos = round(time.time() - start_lote_clock, 2)
                 cache_historico_lotes.set(f"lote_{start_lote_clock}", {
@@ -2017,17 +2024,24 @@ with tab_alocacao:
                     df_final_alo['Linha Reta'] = df_final_alo['Origem'].astype(str).str.strip().map(dest_to_linha_reta).fillna(df_final_alo['Linha Reta'])
                     df_final_alo['Status Linha Reta'] = df_final_alo['Origem'].astype(str).str.strip().map(dest_to_status_lr).fillna(df_final_alo['Status Linha Reta'])
                     
-                    def recalculate_haversine_alo(row):
-                        lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
-                        lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
-                        if lat_o_f != 0.0 and lat_d_f != 0.0:
-                            nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Alo Post-Sweep: {str(row.get('Origem',''))[:15]} a {str(row.get('Destino',''))[:15]}")
-                            if nova_dist > 0: 
-                                return pd.Series([nova_dist, novo_status], index=['Linha Reta', 'Status Linha Reta'])
-                        return pd.Series([row['Linha Reta'], row['Status Linha Reta']], index=['Linha Reta', 'Status Linha Reta'])
-                    
+                    # REPARO CRÍTICO (Versão 1.4) - Post-Sweep Alocação usando arrays puras
                     if not df_final_alo.empty:
-                        df_final_alo[['Linha Reta', 'Status Linha Reta']] = df_final_alo.apply(recalculate_haversine_alo, axis=1)
+                        dists_lr_alo, status_lr_alo = [], []
+                        for _, row in df_final_alo.iterrows():
+                            lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
+                            lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
+                            dist_val, stat_val = float(row.get('Linha Reta', 0.0)), str(row.get('Status Linha Reta', ''))
+                            
+                            if lat_o_f != 0.0 and lat_d_f != 0.0:
+                                nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Alo Post-Sweep: {str(row.get('Origem',''))[:15]} a {str(row.get('Destino',''))[:15]}")
+                                if nova_dist > 0:
+                                    dist_val, stat_val = nova_dist, novo_status
+                                    
+                            dists_lr_alo.append(dist_val)
+                            status_lr_alo.append(stat_val)
+                            
+                        df_final_alo['Linha Reta'] = dists_lr_alo
+                        df_final_alo['Status Linha Reta'] = status_lr_alo
 
                     tempo_alo_segundos = round(time.time() - start_alo_clock, 2)
                     cache_historico_lotes.set(f"alocacao_{start_alo_clock}", {
@@ -2847,43 +2861,3 @@ with tab_motores:
             grafico_status = alt.Chart(df_kpi).mark_bar().encode(
                 x=alt.X('Status da Rota:N', title='Classificação de Confiança e Exatidão'),
                 y=alt.Y('count():Q', title='Volume de Requisições'),
-                color=alt.Color('Status da Rota:N', scale=status_palette_bar, legend=None),
-                tooltip=['Status da Rota', 'count()']
-            ).properties(height=350)
-            st.altair_chart(grafico_status, use_container_width=True)
-            
-    st.markdown("---")
-    st.markdown("#### 📡 Tabela Mestre de SLA e Latência em Tempo Real")
-    health_data = []
-    for api in ["GOOGLE_MAPS", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM"]:
-        dados = cache_api_health.get(api, {"hits": 0, "calls": 0, "falhas": 0, "tempo_total": 0.0})
-        t_med = f"{round((dados['tempo_total'] / max(1, dados['calls'])) * 1000)} ms" if dados['calls'] > 0 else "N/A"
-        tx_err = f"{round((dados['falhas'] / max(1, dados['calls'] + dados['falhas'])) * 100, 1)}%" if dados['calls'] > 0 else "0.0%"
-        health_data.append({"Provedor/Cloud Oficial": api, "Status da Conexão": "🟢 Estável/Online" if dados["falhas"] == 0 else "🔴 Instável/Erros Detectados", "Latência Média Observada": t_med, "Taxa de Falha Sistêmica": tx_err, "Total de Pings Realizados": dados["calls"]})
-    
-    st.dataframe(pd.DataFrame(health_data), use_container_width=True)
-
-    st.markdown("#### 🌐 Auditoria do Motor Geodésico Contínuo (Métricas de Integridade Matemática)")
-    df_metricas_lr = pd.DataFrame([METRICAS_DISTANCIA])
-    df_metricas_lr.columns = ["Total de Cálculos de Linha Reta", "Sucesso: GeographicLib (WGS84)", "Sucesso: Geopy", "Fallback: Haversine", "Correções Automáticas (Anti-Zero)", "Falhas Críticas", "Rotas Unpoisoned (Cache Reparado)", "Barreiras Territoriais (Bounding Box)", "Desambiguações Topológicas (Anti-Colisão)"]
-    st.dataframe(df_metricas_lr, use_container_width=True)
-
-with tab_auditoria:
-    st.info("💡 **Objetivo desta aba:** Transparência Total e Explicabilidade (XAI). Funciona como uma 'Caixa Preta' aberta do sistema. Verifique em detalhes qual algoritmo tomou a decisão para cada coordenada e por que ele escolheu descartar outras opções em caso de empate de proximidade.")
-    st.markdown("### 🕵️ Dossiê Investigativo de Auditoria Viária e Espacial")
-    
-    tab_aud_lote, tab_aud_hub = st.tabs(["⚙️ Logs do Lote de Roteamento Padrão", "📦 Logs do Motor de Alocação (Hubs Competitive)"])
-    
-    with tab_aud_lote:
-        if 'logs_auditoria' in st.session_state and st.session_state['logs_auditoria']:
-            st.write("Abaixo consta a árvore de decisões algorítmicas explicáveis tomada pelo motor durante o cálculo do Lote:")
-            st.dataframe(pd.DataFrame(st.session_state['logs_auditoria']), use_container_width=True)
-        else:
-            st.info("Nenhum registro de auditoria em memória cache. Processe uma nova planilha corporativa na aba de Processamento em Lote (⚙️) para gerar o relatório XAI.")
-            
-    with tab_aud_hub:
-        if 'logs_auditoria_alocacao' in st.session_state and st.session_state['logs_auditoria_alocacao']:
-            st.write("Abaixo constam as inferências espaciais estritas feitas individualmente para cada Base (Destino) e Endereço (Origem) na leitura e mapeamento da Matriz Geográfica:")
-            st.dataframe(pd.DataFrame(st.session_state['logs_auditoria_alocacao']), use_container_width=True)
-        else:
-            st.info("Nenhuma árvore de decisão persistida. Processe o cálculo de matrizes matemáticas na aba de Alocação de Hubs (📦) para carregar as justificativas competitivas.")
