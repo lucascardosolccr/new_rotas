@@ -239,7 +239,6 @@ realizar_manutencao_logs_google()
 
 session = requests.Session()
 retry_strategy = Retry(total=5, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
-# Ampliação do pool de conexões de rede para suportar concorrência pesada
 adapter = HTTPAdapter(
     max_retries=retry_strategy, 
     pool_connections=24, 
@@ -261,6 +260,15 @@ WORKERS_DISPONIVEIS = 8
 EXECUTOR_GLOBAL = ThreadPoolExecutor(max_workers=WORKERS_DISPONIVEIS)
 FILA_NOMINATIM = ThreadPoolExecutor(max_workers=1)
 EXECUTOR_APIS = ThreadPoolExecutor(max_workers=16)
+
+# Padrões Regex Globais de Otimização Scraper Google
+_RE_DIST_G1 = re.compile(r'\"([\d\.,]+)\s*km\"')
+_RE_DIST_G2 = re.compile(r'([\d\.,]+)\s*km')
+_RE_DIST_G3 = re.compile(r'\\x22([\d\.,]+)\s*km\\x22')
+_RE_DIST_G4 = re.compile(r'(\d+)\s*km')
+_RE_TIME_G1 = re.compile(r'\"(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\"')
+_RE_TIME_G2 = re.compile(r'(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)')
+_RE_TIME_G3 = re.compile(r'\\x22(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\\x22')
 
 # ==============================================================================
 # 🎛️ DADOS GLOBAIS THREAD-SAFE E EXPANSÃO SEMÂNTICA
@@ -339,6 +347,17 @@ def carregar_dados_ibge():
     return base_mun, base_est, base_dist, lista_completa
 
 IBGE_MUNICIPIOS, IBGE_ESTADOS, IBGE_DISTRITOS, LISTA_TOPONIMOS = carregar_dados_ibge()
+
+# Construção ultra veloz O(1) de Dicionário por UF
+IBGE_MUNICIPIOS_POR_UF = {}
+for mun, lista_itens in IBGE_MUNICIPIOS.items():
+    for item in lista_itens:
+        uf = item["uf"]
+        if uf not in IBGE_MUNICIPIOS_POR_UF:
+            IBGE_MUNICIPIOS_POR_UF[uf] = {}
+        if mun not in IBGE_MUNICIPIOS_POR_UF[uf]:
+            IBGE_MUNICIPIOS_POR_UF[uf][mun] = []
+        IBGE_MUNICIPIOS_POR_UF[uf][mun].append(item)
 
 @st.cache_data
 def inicializar_listas_fuzzy(ibge_mun, ibge_dist):
@@ -474,10 +493,10 @@ class MotorEnderecoCanônico:
         tokens = texto_norm.split()
         for token in tokens:
             if len(token) >= 5 and token not in IBGE_MUNICIPIOS and token not in IBGE_DISTRITOS:
-                top_matches = process.extract(token, LISTA_CONTEXTO_FUZZY, scorer=fuzz.WRatio, limit=5)
+                top_matches = process.extract(token, LISTA_CONTEXTO_FUZZY, scorer=fuzz.WRatio, limit=5, processor=None)
                 if top_matches and top_matches[0][1] >= 85:
-                    melhor_match = max(top_matches, key=lambda m: fuzz.token_set_ratio(texto_norm, m[0]))
-                    if melhor_match[1] >= 85 and fuzz.token_set_ratio(texto_norm, melhor_match[0]) >= 90:
+                    melhor_match = max(top_matches, key=lambda m: fuzz.token_set_ratio(texto_norm, m[0], processor=None))
+                    if melhor_match[1] >= 85 and fuzz.token_set_ratio(texto_norm, melhor_match[0], processor=None) >= 90:
                         cidade_corrigida = melhor_match[0].rsplit(' ', 1)[0]
                         texto_norm = texto_norm.replace(token, cidade_corrigida)
                         break
@@ -502,12 +521,10 @@ class MotorEnderecoCanônico:
 
         cidades_para_busca = IBGE_MUNICIPIOS
         if uf_explicita:
-            cidades_filtradas = {}
-            for mun, lista_itens in IBGE_MUNICIPIOS.items():
-                itens_uf = [i for i in lista_itens if i["uf"] == uf_explicita]
-                if itens_uf:
-                    cidades_filtradas[mun] = itens_uf
-            cidades_para_busca = cidades_filtradas
+            if uf_explicita in IBGE_MUNICIPIOS_POR_UF:
+                cidades_para_busca = IBGE_MUNICIPIOS_POR_UF[uf_explicita]
+            else:
+                cidades_para_busca = {}
 
         tokens = texto_norm.split()
         for i in range(len(tokens)):
@@ -520,13 +537,13 @@ class MotorEnderecoCanônico:
         if uf_explicita and not resultado["municipio"]:
             chaves = list(cidades_para_busca.keys())
             if chaves:
-                melhor_match = process.extractOne(texto_norm, chaves, scorer=fuzz.token_set_ratio)
+                melhor_match = process.extractOne(texto_norm, chaves, scorer=fuzz.token_set_ratio, processor=None)
                 if melhor_match and melhor_match[1] >= 65:
                     resultado.update({"municipio": melhor_match[0]})
                     return resultado
         
         if not resultado["municipio"] and not uf_explicita and len(texto_norm) > 4:
-            melhor_match_global = process.extractOne(texto_norm, LISTA_CONTEXTO_FUZZY, scorer=fuzz.WRatio)
+            melhor_match_global = process.extractOne(texto_norm, LISTA_CONTEXTO_FUZZY, scorer=fuzz.WRatio, processor=None)
             if melhor_match_global and melhor_match_global[1] >= 85:
                 cidade_uf = melhor_match_global[0]
                 resultado.update({"uf": cidade_uf.rsplit(' ', 1)[1], "municipio": cidade_uf.rsplit(' ', 1)[0]})
@@ -707,7 +724,7 @@ def validar_consistencia_municipal(candidato, mun_inf):
     cid_api = unidecode(candidato.get('cidade', '')).upper().strip()
     if not cid_api: return True
     if mun_inf == cid_api or mun_inf in cid_api or cid_api in mun_inf: return True
-    if fuzz.token_set_ratio(mun_inf, cid_api) >= 95: return True
+    if fuzz.token_set_ratio(mun_inf, cid_api, processor=None) >= 95: return True
     return False
 
 def obter_coordenada_centroide_supremo(mun_nome, uf_nome):
@@ -993,12 +1010,12 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
     for c1 in candidatos_validos:
         p_prior = min(c1["score_base"] / 100.0, 0.50)
         
-        feat_mun = mun_inf and c1.get("cidade") and (mun_inf in c1["cidade"] or fuzz.token_set_ratio(mun_inf, c1["cidade"]) >= 95)
+        feat_mun = mun_inf and c1.get("cidade") and (mun_inf in c1["cidade"] or fuzz.token_set_ratio(mun_inf, c1["cidade"], processor=None) >= 95)
         feat_uf = uf_inf and c1.get("estado") and uf_inf in c1["estado"]
         feat_cep = input_usuario.get("cep") and c1.get("cep") and input_usuario["cep"] in c1["cep"].replace("-", "")
         feat_bairro = dist_inf and c1.get("bairro") and dist_inf in c1["bairro"]
         feat_numero = input_usuario.get("numero") and c1.get("numero") and input_usuario["numero"] in c1["numero"]
-        fuzz_rua = fuzz.token_set_ratio(texto_norm, c1.get("logradouro", "")) / 100.0 if c1.get("logradouro") else 0.1
+        fuzz_rua = fuzz.token_set_ratio(texto_norm, c1.get("logradouro", ""), processor=None) / 100.0 if c1.get("logradouro") else 0.1
          
         PADROES_RODOVIA = [r'\bBR[- ]?\d+\b', r'\bSP[- ]?\d+\b', r'\bMG[- ]?\d+\b', r'\bGO[- ]?\d+\b', r'\bDF[- ]?\d+\b', r'\bRJ[- ]?\d+\b', r'\bPR[- ]?\d+\b', r'\bSC[- ]?\d+\b', r'\bRS[- ]?\d+\b']
         input_tem_rodovia = any(re.search(p, texto_norm) for p in PADROES_RODOVIA)
@@ -1051,14 +1068,14 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
             if uf_inf not in estado_comp and nome_estado_inf not in estado_comp: continue 
             
         if mun_inf and cidade_comp:
-            match_cid = (mun_inf in cidade_comp) or (cidade_comp in mun_inf) or (fuzz.token_set_ratio(mun_inf, cidade_comp) >= 85)
+            match_cid = (mun_inf in cidade_comp) or (cidade_comp in mun_inf) or (fuzz.token_set_ratio(mun_inf, cidade_comp, processor=None) >= 85)
             if not match_cid: continue
         
         bairro_comp = m.get("bairro", cand.get("bairro", "")).upper().strip()
         logr_comp = m.get("logradouro", cand.get("logradouro", "")).upper().strip()
         
         end_reverse = ", ".join([c for c in [logr_comp, bairro_comp, cidade_comp, estado_comp] if c.strip()])
-        similaridade = fuzz.token_set_ratio(texto_norm, end_reverse.upper())
+        similaridade = fuzz.token_set_ratio(texto_norm, end_reverse.upper(), processor=None)
         
         if similaridade >= 30 or tipo_entrada in ["BAIRRO", "MUNICIPIO", "RURAL"] or len(texto_norm.split()) <= 4:
             vencedor = cand
@@ -1117,8 +1134,8 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
     if xd["num"]: explicacoes_humanas.append("Assinatura de número predial reconhecida na porta do cliente.")
     if xd["fuzz"] >= 80.0: explicacoes_humanas.append(f"Similaridade léxica de logradouro em {xd['fuzz']}% de aprovação.")
 
-    match_logr = fuzz.token_set_ratio(texto_norm, m.get("logradouro", "").upper())
-    match_bairro = fuzz.token_set_ratio(dist_inf, m.get("bairro", "").upper()) if dist_inf else 100
+    match_logr = fuzz.token_set_ratio(texto_norm, m.get("logradouro", "").upper(), processor=None)
+    match_bairro = fuzz.token_set_ratio(dist_inf, m.get("bairro", "").upper(), processor=None) if dist_inf else 100
     match_cep = 100 if input_usuario.get("cep") and m.get("cep") and input_usuario["cep"] in m.get("cep", "").replace("-", "") else 0 if input_usuario.get("cep") else 100
     
     if tipo_entrada in ["MUNICIPIO", "BAIRRO", "RURAL"]:
@@ -1335,17 +1352,19 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
         texto_resposta = resposta.text.replace('\u202f', ' ').replace('\u200b', '')
         if len(texto_resposta) < 500: return None
         
-        dist_matches = re.findall(r'\"([\d\.,]+)\s*km\"', texto_resposta)
-        if not dist_matches: dist_matches = re.findall(r'([\d\.,]+)\s*km', texto_resposta)
-        if not dist_matches: dist_matches = re.findall(r'\\x22([\d\.,]+)\s*km\\x22', texto_resposta)
-        if not dist_matches: dist_matches = re.findall(r'(\d+)\s*km', texto_resposta)
+        dist_match = _RE_DIST_G1.search(texto_resposta)
+        if not dist_match: dist_match = _RE_DIST_G2.search(texto_resposta)
+        if not dist_match: dist_match = _RE_DIST_G3.search(texto_resposta)
+        if not dist_match: dist_match = _RE_DIST_G4.search(texto_resposta)
+
+        time_match = _RE_TIME_G1.search(texto_resposta)
+        if not time_match: time_match = _RE_TIME_G2.search(texto_resposta)
+        if not time_match: time_match = _RE_TIME_G3.search(texto_resposta)
         
-        time_matches = re.findall(r'\"(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\"', texto_resposta)
-        if not time_matches: time_matches = re.findall(r'(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)', texto_resposta)
-        if not time_matches: time_matches = re.findall(r'\\x22(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\\x22', texto_resposta)
-        
-        if dist_matches and time_matches:
-            km_str = dist_matches[0]
+        if dist_match and time_match:
+            km_str = dist_match.group(1)
+            tempo_str = time_match.group(1)
+            
             if km_str.count('.') == 1 and ',' not in km_str:
                 if len(km_str.split('.')[1]) == 3: km_str = km_str.replace('.', '')
                 else: km_str = km_str.replace('.', '.')
@@ -1367,9 +1386,9 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
             if dist_linha_reta > 0 and km_puro > (dist_linha_reta * 2.5):
                 envolve_balsa = "Não"
 
-            score_google = 80 + (10 if km_puro > 0 else 0) + (10 if time_matches[0] else 0)
+            score_google = 80 + (10 if km_puro > 0 else 0) + (10 if tempo_str else 0)
             score_google = min(score_google, 100)
-            res = (km_puro, time_matches[0], link_maps, envolve_balsa, score_google, link_embed)
+            res = (km_puro, tempo_str, link_maps, envolve_balsa, score_google, link_embed)
             cache_google.set(cache_key, res, expire=2592000); return res
     except Exception: pass
     return None
@@ -1708,13 +1727,6 @@ def aplicar_filtro_global(df_base, sel):
     if st.session_state.widget_mun != "Todos": df_cf = df_cf[df_cf['Municipio Origem'] == st.session_state.widget_mun]
     if st.session_state.widget_status != "Todos": df_cf = df_cf[df_cf['Status da Rota'] == st.session_state.widget_status]
     if st.session_state.widget_fonte != "Todas": df_cf = df_cf[df_cf['Fonte Geocoding Origem'] == st.session_state.widget_fonte]
-    
-    if sel['brush']:
-        b = sel['brush']
-        if 'Distancia' in b:
-            df_cf = df_cf[(df_cf['Distancia'] >= b['Distancia'][0]) & (df_cf['Distancia'] <= b['Distancia'][1])]
-        if 'Tempo_Horas' in b:
-            df_cf = df_cf[(df_cf['Tempo_Horas'] >= b['Tempo_Horas'][0]) & (df_cf['Tempo_Horas'] <= b['Tempo_Horas'][1])]
             
     return df_cf
 
@@ -2218,10 +2230,14 @@ with tab_analytics:
             score_range = col_f7.slider("Score de Integridade Geodésica", min_value=0.0, max_value=100.0, value=(min_score_val, 100.0))
 
         df_cf = aplicar_filtro_global(df_kpi, extrair_selecoes_altair())
-        df_cf = df_cf[(df_cf['Distancia'] >= dist_range[0]) & (df_cf['Distancia'] <= dist_range[1])]
-        df_cf = df_cf[(df_cf['Tempo_Horas'] >= time_range[0]) & (df_cf['Tempo_Horas'] <= time_range[1])]
-        df_cf = df_cf[(df_cf['Score Final Global'] >= score_range[0]) & (df_cf['Score Final Global'] <= score_range[1])]
         
+        # Otimização: Máscara Booleana Unificada para eficiência em memória O(1)
+        mask = (
+            (df_cf['Distancia'] >= dist_range[0]) & (df_cf['Distancia'] <= dist_range[1]) &
+            (df_cf['Tempo_Horas'] >= time_range[0]) & (df_cf['Tempo_Horas'] <= time_range[1]) &
+            (df_cf['Score Final Global'] >= score_range[0]) & (df_cf['Score Final Global'] <= score_range[1])
+        )
+        df_cf = df_cf[mask]
         df_cf['_is_selected'] = 1
         st.session_state['df_cf_master'] = df_cf
 
