@@ -116,7 +116,7 @@ cache_api_health = Cache("./cache_api_health")
 cache_historico_lotes = Cache("./cache_historico_lotes")
 cache_distancias = Cache("./cache_distancias")
 
-CACHE_VERSION = "v60"
+CACHE_VERSION = "v61"
 if st.session_state.get("APP_CACHE_VERSION") != CACHE_VERSION:
     st.session_state["APP_CACHE_VERSION"] = CACHE_VERSION
 
@@ -133,7 +133,7 @@ def realizar_manutencao_logs_google():
 
 realizar_manutencao_logs_google()
 
-# Pools de Conexões de Alta Performance Separados por API (HTTP/2 Desativado para compatibilidade)
+# Pools de Conexões de Alta Performance Separados por API
 limites_http = httpx.Limits(max_keepalive_connections=50, max_connections=100)
 timeout_padrao = httpx.Timeout(10.0)
 
@@ -502,12 +502,12 @@ def parse_tempo_minutos(t_str):
 
 def validar_coordenada_brasil(lat, lon):
     try:
-        lat_f, lon_f = float(lat), float(lon)
-        if (-35.0 <= lat_f <= 6.0) and (-75.0 <= lon_f <= -28.0):
-            return True, lat_f, lon_f
-        if (-35.0 <= lon_f <= 6.0) and (-75.0 <= lat_f <= -28.0):
-            return True, lon_f, lat_f 
-        return False, lat_f, lon_f
+        lat_f, float(lat), float(lon)
+        if (-35.0 <= lat_f <= 6.0) and (-75.0 <= float(lon) <= -28.0):
+            return True, lat_f, float(lon)
+        if (-35.0 <= float(lon) <= 6.0) and (-75.0 <= lat_f <= -28.0):
+            return True, float(lon), lat_f 
+        return False, lat_f, float(lon)
     except (ValueError, TypeError):
         return False, 0.0, 0.0
 
@@ -1865,12 +1865,13 @@ with tab_processamento:
                     lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
                     lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
                     if lat_o_f != 0.0 and lat_d_f != 0.0:
-                        nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"DF Lote Post-Sweep: {row.get('Origem','')[:15]} a {row.get('Destino','')[:15]}")
+                        nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Lote Post-Sweep: {str(row.get('Origem',''))[:15]} a {str(row.get('Destino',''))[:15]}")
                         if nova_dist > 0: 
-                            return nova_dist, novo_status
-                    return row['Linha Reta'], row['Status Linha Reta']
+                            return pd.Series([nova_dist, novo_status], index=['Linha Reta', 'Status Linha Reta'])
+                    return pd.Series([row['Linha Reta'], row['Status Linha Reta']], index=['Linha Reta', 'Status Linha Reta'])
                 
-                df_final[['Linha Reta', 'Status Linha Reta']] = df_final.apply(recalculate_haversine_lote, axis=1, result_type='expand')
+                if not df_final.empty:
+                    df_final[['Linha Reta', 'Status Linha Reta']] = df_final.apply(recalculate_haversine_lote, axis=1)
 
                 tempo_lote_segundos = round(time.time() - start_lote_clock, 2)
                 cache_historico_lotes.set(f"lote_{start_lote_clock}", {
@@ -2020,12 +2021,13 @@ with tab_alocacao:
                         lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
                         lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
                         if lat_o_f != 0.0 and lat_d_f != 0.0:
-                            nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Alo DF Revalidação: {row.get('Origem','')[:15]} a {row.get('Destino','')[:15]}")
+                            nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Alo Post-Sweep: {str(row.get('Origem',''))[:15]} a {str(row.get('Destino',''))[:15]}")
                             if nova_dist > 0: 
-                                return nova_dist, novo_status
-                        return row['Linha Reta'], row['Status Linha Reta']
+                                return pd.Series([nova_dist, novo_status], index=['Linha Reta', 'Status Linha Reta'])
+                        return pd.Series([row['Linha Reta'], row['Status Linha Reta']], index=['Linha Reta', 'Status Linha Reta'])
                     
-                    df_final_alo[['Linha Reta', 'Status Linha Reta']] = df_final_alo.apply(recalculate_haversine_alo, axis=1, result_type='expand')
+                    if not df_final_alo.empty:
+                        df_final_alo[['Linha Reta', 'Status Linha Reta']] = df_final_alo.apply(recalculate_haversine_alo, axis=1)
 
                     tempo_alo_segundos = round(time.time() - start_alo_clock, 2)
                     cache_historico_lotes.set(f"alocacao_{start_alo_clock}", {
@@ -2816,7 +2818,7 @@ with tab_manual:
         """)
 
 with tab_motores:
-    st.info("💡 **Objetivo desta aba:** Monitorar a saúde técnica do ececosistema e o Uptime (SLA) de cada parceiro. Visualize quais APIs em nuvem responderam melhor, identifique instabilidades (timeouts), observe os tempos médios de resposta e verifique a integridade algorítmica do último lote.")
+    st.info("💡 **Objetivo desta aba:** Monitorar a saúde técnica do ecossistema e o Uptime (SLA) de cada parceiro. Visualize quais APIs em nuvem responderam melhor, identifique instabilidades (timeouts), observe os tempos médios de resposta e verifique a integridade algorítmica do último lote.")
     st.markdown("### 🔌 Painel de Monitoramento de Infraestrutura (APIs Health Check)")
     
     if 'df_processado' in st.session_state:
