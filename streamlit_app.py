@@ -218,6 +218,8 @@ cache_aprendizado_auto = Cache("./cache_aprendizado_auto")
 cache_api_health = Cache("./cache_api_health")
 cache_historico_lotes = Cache("./cache_historico_lotes")
 
+CACHE_L1_ROTAS = {} # Cache L1 nativo em RAM para altíssima performance O(1)
+
 if "cache_limpo_v59" not in st.session_state:
     for c in [cache_classificacao, cache_fuzzy, cache_geo, cache_rotas, cache_poi, cache_cep, cache_google, cache_reverse, cache_base_local, cache_aprendizado, cache_aprendizado_auto, cache_api_health, cache_historico_lotes]:
         c.clear()
@@ -226,7 +228,7 @@ if "cache_limpo_v59" not in st.session_state:
 def realizar_manutencao_logs_google():
     diretorio_logs = "logs_google"
     os.makedirs(diretorio_logs, exist_ok=True)
-   
+    
     limite_tempo = time.time() - (30 * 86400)
     try:
         for arquivo in os.listdir(diretorio_logs):
@@ -1402,8 +1404,17 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     
     chave_rota_cache = f"ROTA_V54_{semantica.normalizar(origem_clean)}->{semantica.normalizar(destino_clean)}"
     
-    if chave_rota_cache in cache_rotas: 
+    # 1. Tenta L1 (RAM Instantânea)
+    if chave_rota_cache in CACHE_L1_ROTAS:
+        ret_cache = CACHE_L1_ROTAS[chave_rota_cache]
+    # 2. Tenta L2 (DiskCache)
+    elif chave_rota_cache in cache_rotas:
         ret_cache = cache_rotas[chave_rota_cache]
+        CACHE_L1_ROTAS[chave_rota_cache] = ret_cache # Preenche L1
+    else:
+        ret_cache = None
+
+    if ret_cache is not None:
         if len(ret_cache) >= 30:
             dist_cache = ret_cache[4]
             lat_o_cache, lon_o_cache = ret_cache[19], ret_cache[20]
@@ -1422,6 +1433,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                     retorno_mutavel[30] = novo_status
                 retorno_novo = tuple(retorno_mutavel)
                 cache_rotas.set(chave_rota_cache, retorno_novo, expire=2592000)
+                CACHE_L1_ROTAS[chave_rota_cache] = retorno_novo
                 return retorno_novo
                  
             if len(ret_cache) == 30:
@@ -1502,6 +1514,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             
         tempo_roteamento = round(time.time() - start_rot, 2); tempo_total = round(time.time() - start_total, 2)
         retorno = (km_rota, tempo_rota, link_rota, balsa_rota, dist_linha_reta, fonte_rota, score_rota, conf_o, score_num_o, dist_o, mun_o, fonte_geo_o, end_oficial_o, conf_d, score_num_d, dist_d, mun_d, fonte_geo_d, end_oficial_d, lat_o, lon_o, lat_d, lon_d, tempo_geocoding, tempo_roteamento, tempo_total, xai_o, xai_d, motivo_roteamento, link_embed, status_linha_reta)
+        CACHE_L1_ROTAS[chave_rota_cache] = retorno # Salva no L1
         cache_rotas.set(chave_rota_cache, retorno, expire=2592000)
         return retorno
 
@@ -1512,6 +1525,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     tempo_roteamento = round(time.time() - start_rot, 2); tempo_total = round(time.time() - start_total, 2)
     motivo_fallback = "Alerta Crítico: Motores viários em Nuvem e Open-Source rejeitaram a rota (Timeout ou Coordenadas Inválidas). Projeção Geodésica Adaptativa acionada baseada na Linha Reta."
     retorno = (km_terrestre, tempo_geo_str, link_fallback, "Não", dist_linha_reta, "Geodésico Adaptativo", 50, conf_o, score_num_o, dist_o, mun_o, fonte_geo_o, end_oficial_o, conf_d, score_num_d, dist_d, mun_d, fonte_geo_d, end_oficial_d, lat_o, lon_o, lat_d, lon_d, tempo_geocoding, tempo_roteamento, tempo_total, xai_o, xai_d, motivo_fallback, link_embed_fallback, status_linha_reta)
+    CACHE_L1_ROTAS[chave_rota_cache] = retorno # Salva no L1
     cache_rotas.set(chave_rota_cache, retorno, expire=2592000)
     return retorno
 
@@ -1588,14 +1602,19 @@ def rodar_pipeline_lote(df, pares_unicos, tarefas_priorizadas, nome_operador, pr
     futuros = {executor_lote.submit(embrulhar_task_paralela, t): t for t in tarefas_unicas}
     
     concluidos = 0
+    total_tarefas = len(pares_unicos)
+    passo_atualizacao = max(1, total_tarefas // 100)
+    
     st.session_state['logs_auditoria'] = []
     
     for f in as_completed(futuros):
         par_id, res = f.result()
         resultados_unicos[par_id] = res
         concluidos += 1
-        status_container.text(f"🚀 Fila de Prioridade Assíncrona: {concluidos} / {len(pares_unicos)}")
-        progress_bar.progress(concluidos / len(pares_unicos))
+        
+        if concluidos % passo_atualizacao == 0 or concluidos == total_tarefas:
+            status_container.text(f"🚀 Fila de Prioridade Assíncrona: {concluidos} / {total_tarefas}")
+            progress_bar.progress(concluidos / total_tarefas)
         
     status_container.text("✨ Distribuindo resultados e consolidando auditoria...")
     
@@ -1900,7 +1919,8 @@ with tab_processamento:
     arquivo_carregado = st.file_uploader("Selecionar Arquivo Excel", type=["xlsx"], key="lote_std", help="A planilha deve conter as colunas 'Origem' e 'Destino'.")
 
     if arquivo_carregado is not None:
-        df = pd.read_excel(arquivo_carregado)
+        # Implementação de Melhoria 11: Leitura otimizada via calamine
+        df = pd.read_excel(arquivo_carregado, engine='calamine')
         df.columns = df.columns.str.strip().str.title()
         
         if 'Origem' not in df.columns or 'Destino' not in df.columns:
@@ -1957,15 +1977,23 @@ with tab_processamento:
                 
                 df_final = rodar_pipeline_lote(df, list(pares_unicos), tarefas_priorizadas, nome_operador, barra_progresso, container_status)
                 
-                def recalculate_haversine_lote(row):
-                    lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
-                    lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
-                    if lat_o_f != 0.0 and lat_d_f != 0.0:
-                        nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"DF Lote Post-Sweep: {row.get('Origem','')} a {row.get('Destino','')}")
-                        if nova_dist > 0: return pd.Series([nova_dist, novo_status])
-                    return pd.Series([row['Linha Reta'], row['Status Linha Reta']])
+                # Implementação de Melhoria 10: Vetorização de Haversine via Numpy
+                lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
+                lon_o = np.radians(df_final['Lon Origem'].astype(float).values)
+                lat_d = np.radians(df_final['Lat Destino'].astype(float).values)
+                lon_d = np.radians(df_final['Lon Destino'].astype(float).values)
+
+                dlat = lat_d - lat_o
+                dlon = lon_d - lon_o
+
+                a = np.sin(dlat / 2.0)**2 + np.cos(lat_o) * np.cos(lat_d) * np.sin(dlon / 2.0)**2
+                c = 2 * np.arcsin(np.sqrt(a))
+                distancias_vetorizadas = 6371.0 * c
+
+                mask_validas = (df_final['Lat Origem'] != 0.0) & (df_final['Lat Destino'] != 0.0)
                 
-                df_final[['Linha Reta', 'Status Linha Reta']] = df_final.apply(recalculate_haversine_lote, axis=1)
+                df_final.loc[mask_validas, 'Linha Reta'] = np.round(distancias_vetorizadas[mask_validas], 2)
+                df_final.loc[mask_validas, 'Status Linha Reta'] = "Calculada via Haversine Vetorizado"
 
                 tempo_lote_segundos = round(time.time() - start_lote_clock, 2)
                 cache_historico_lotes.set(f"lote_{start_lote_clock}", {
@@ -1977,13 +2005,13 @@ with tab_processamento:
                 }, expire=None)
 
                 ordem_finais = list(df.columns)
-                for c in novas_colunas:
-                    if c not in ordem_finais: ordem_finais.append(c)
+                for col in novas_colunas:
+                    if col not in ordem_finais: ordem_finais.append(col)
                 df_final = df_final.reindex(columns=ordem_finais)
                 
                 st.session_state['df_processado'] = df_final
                 container_status.empty(); barra_progresso.empty()
-                st.success("✨ Processamento em lote corporativo concluído com êxito e Linhas Retas Auditadas!")
+                st.success("✨ Processamento em lote corporativo concluído com êxito e Linhas Retas Auditadas matricialmente!")
                 
                 output_buffer = io.BytesIO()
                 with pd.ExcelWriter(output_buffer, engine='openpyxl') as writer: df_final.to_excel(writer, index=False)
@@ -2007,8 +2035,9 @@ with tab_alocacao:
     with col_a2: file_hubs = st.file_uploader("2. Planilha de Municípios / Bases (Destinos)", type=["xlsx"], key="up_hubs_v19")
     
     if file_hubs and file_dest:
-        df_hubs = pd.read_excel(file_hubs)
-        df_dest = pd.read_excel(file_dest)
+        # Implementação de Melhoria 11: Leitura otimizada via calamine
+        df_hubs = pd.read_excel(file_hubs, engine='calamine')
+        df_dest = pd.read_excel(file_dest, engine='calamine')
         
         col_s1, col_s2 = st.columns(2)
         with col_s1: dest_col_name = st.selectbox("Selecione a coluna que contém os Endereços (Origens):", df_dest.columns)
@@ -2111,15 +2140,23 @@ with tab_alocacao:
                     df_final_alo['Linha Reta'] = df_final_alo['Origem'].astype(str).str.strip().map(dest_to_linha_reta).fillna(df_final_alo['Linha Reta'])
                     df_final_alo['Status Linha Reta'] = df_final_alo['Origem'].astype(str).str.strip().map(dest_to_status_lr).fillna(df_final_alo['Status Linha Reta'])
                     
-                    def recalculate_haversine_alo(row):
-                        lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
-                        lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
-                        if lat_o_f != 0.0 and lat_d_f != 0.0:
-                            nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Alo DF Revalidação: {row.get('Origem','')} a {row.get('Destino','')}")
-                            if nova_dist > 0: return pd.Series([nova_dist, novo_status])
-                        return pd.Series([row['Linha Reta'], row['Status Linha Reta']])
-                    
-                    df_final_alo[['Linha Reta', 'Status Linha Reta']] = df_final_alo.apply(recalculate_haversine_alo, axis=1)
+                    # Implementação de Melhoria 10: Vetorização de Haversine via Numpy (Hubs)
+                    lat_o_alo = np.radians(df_final_alo['Lat Origem'].astype(float).values)
+                    lon_o_alo = np.radians(df_final_alo['Lon Origem'].astype(float).values)
+                    lat_d_alo = np.radians(df_final_alo['Lat Destino'].astype(float).values)
+                    lon_d_alo = np.radians(df_final_alo['Lon Destino'].astype(float).values)
+
+                    dlat_alo = lat_d_alo - lat_o_alo
+                    dlon_alo = lon_d_alo - lon_o_alo
+
+                    a_alo = np.sin(dlat_alo / 2.0)**2 + np.cos(lat_o_alo) * np.cos(lat_d_alo) * np.sin(dlon_alo / 2.0)**2
+                    c_alo = 2 * np.arcsin(np.sqrt(a_alo))
+                    dist_vet_alo = 6371.0 * c_alo
+
+                    mask_val_alo = (df_final_alo['Lat Origem'] != 0.0) & (df_final_alo['Lat Destino'] != 0.0)
+
+                    df_final_alo.loc[mask_val_alo, 'Linha Reta'] = np.round(dist_vet_alo[mask_val_alo], 2)
+                    df_final_alo.loc[mask_val_alo, 'Status Linha Reta'] = "Calculada via Haversine Vetorizado"
 
                     tempo_alo_segundos = round(time.time() - start_alo_clock, 2)
                     cache_historico_lotes.set(f"alocacao_{start_alo_clock}", {
