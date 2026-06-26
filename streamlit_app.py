@@ -133,15 +133,15 @@ def realizar_manutencao_logs_google():
 
 realizar_manutencao_logs_google()
 
-# Pools de Conexões de Alta Performance Separados por API (Migrado para HTTPX)
+# Pools de Conexões de Alta Performance Separados por API (HTTP/2 Desativado para compatibilidade)
 limites_http = httpx.Limits(max_keepalive_connections=50, max_connections=100)
 timeout_padrao = httpx.Timeout(10.0)
 
-client_arcgis = httpx.Client(http2=True, limits=limites_http, timeout=timeout_padrao)
-client_nominatim = httpx.Client(http2=True, limits=limites_http, timeout=timeout_padrao)
-client_photon = httpx.Client(http2=True, limits=limites_http, timeout=timeout_padrao)
-client_osrm = httpx.Client(http2=True, limits=limites_http, timeout=timeout_padrao)
-client_geral = httpx.Client(http2=True, limits=limites_http, timeout=timeout_padrao)
+client_arcgis = httpx.Client(limits=limites_http, timeout=timeout_padrao)
+client_nominatim = httpx.Client(limits=limites_http, timeout=timeout_padrao)
+client_photon = httpx.Client(limits=limites_http, timeout=timeout_padrao)
+client_osrm = httpx.Client(limits=limites_http, timeout=timeout_padrao)
+client_geral = httpx.Client(limits=limites_http, timeout=timeout_padrao)
 
 # ==============================================================================
 # 🎛️ INFRAESTRUTURA DE CONCORRÊNCIA E FILAS
@@ -425,7 +425,6 @@ class MotorEnderecoCanônico:
             for j in range(i + 1, len(tokens) + 1):
                 chunk = " ".join(tokens[i:j])
                 if chunk in IBGE_MUNICIPIOS:
-                    # Verifica UF e município via SQLite wrapper
                     c_itens = IBGE_MUNICIPIOS[chunk]
                     if uf_explicita:
                         for item in c_itens:
@@ -968,7 +967,6 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
     vencedor = None
     top3_candidatos = candidatos_validos[:3]
     for cand in top3_candidatos:
-        # Prevenção de Reverse Geocoding Desnecessário
         if cand["score_final"] > 95:
             vencedor = cand
             break
@@ -1077,7 +1075,6 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
     texto_cru = str(localidade).strip()
     if not texto_cru or texto_cru.lower() == 'nan': return 0.0, 0.0, "", "BAIXA", 0, "", "", "N/A", ["String Vazia"]
     
-    # 1. Normalização L1
     texto_norm = semantica.normalizar(texto_cru)
     
     if match_coords := re.match(r'^\s*(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*$', texto_cru):
@@ -1091,14 +1088,12 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
     endereco_canonico, tipo_entrada, _, _, _ = semantica.construir_endereco_canonico(texto_norm)
     parsed_comp = ParserGeograficoBR.extrair_componentes(texto_norm)
     
-    # 2. Cache Disco (L2) Rápido (Sem MD5, Hash Nativo)
     cache_key = f"GEO_V54_{tipo_entrada}_{endereco_canonico}"
     if cache_key in cache_geo:
         c = cache_geo[cache_key]
         if c.get("lat", 0.0) != 0.0 and c.get("lon", 0.0) != 0.0:
             return c["lat"], c["lon"], c["endereco"], c["confianca"], c["score_num"], c["distrito"], c["municipio"], c["fonte"], ["Cache L2 Hit."]
 
-    # 3. Base Local de Obediência
     ctx = semantica.resolver_contexto_administrativo(texto_norm)
     rua_suja = parsed_comp["resto"]
     for loc in [ctx.get("municipio", ""), ctx.get("distrito", ""), ctx.get("uf", ""), "BRASIL", "DF"]:
@@ -1117,7 +1112,6 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
     if match_offline := obedience_base_local(contexto_estruturado):
         return match_offline["lat"], match_offline["lon"], match_offline["endereco"], "ALTISSIMA", 100, match_offline.get("distrito", ""), match_offline.get("municipio", ""), "BASE_NACIONAL_OFFLINE", ["Ponto resolvido via CNEFE/Bases Locais Estáticas."]
 
-    # 4. IBGE Offline Strict Check
     if ctx.get("municipio") and ctx.get("uf"):
         mun_nome = ctx["municipio"]
         uf_nome = ctx["uf"]
@@ -1131,7 +1125,6 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
                         cache_geo.set(cache_key, {"lat": res_final[0], "lon": res_final[1], "endereco": res_final[2], "confianca": res_final[3], "score_num": res_final[4], "distrito": res_final[5], "municipio": res_final[6], "fonte": res_final[7]}, expire=2592000)
                         return res_final
 
-    # 5. APIs Geocodificação em Nuvem (HTTPX)
     candidatos_validos = []
 
     if tipo_entrada == "CEP":
@@ -1183,7 +1176,6 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
             candidatos_validos.extend(res_nom)
             res_final = processar_consenso_dinamico(candidatos_validos, tipo_entrada, texto_cru)
 
-    # 6. Fallback Extremo IBGE
     if not res_final and ctx.get("municipio") and ctx.get("uf"):
         mun_nome = ctx["municipio"]
         uf_nome = ctx["uf"]
@@ -1341,7 +1333,6 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     lat_o, lon_o, end_oficial_o, conf_o, score_num_o, dist_o, mun_o, fonte_geo_o, xai_o = obter_coordenadas_e_endereco_oficial(origem_clean)
     lat_d, lon_d, end_oficial_d, conf_d, score_num_d, dist_d, mun_d, fonte_geo_d, xai_d = obter_coordenadas_e_endereco_oficial(destino_clean)
    
-    # BARREIRA TOPOLÓGICA DE COLISÃO E DESAMBIGUAÇÃO ESTRITA
     if lat_o == lat_d and lon_o == lon_d and lat_o != 0.0:
         if semantica.normalizar(origem_clean) != semantica.normalizar(destino_clean):
             METRICAS_DISTANCIA["desambiguacoes_estritas"] += 1
@@ -1874,11 +1865,12 @@ with tab_processamento:
                     lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
                     lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
                     if lat_o_f != 0.0 and lat_d_f != 0.0:
-                        nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"DF Lote Post-Sweep: {row.get('Origem','')} a {row.get('Destino','')}")
-                        if nova_dist > 0: return pd.Series([nova_dist, novo_status])
-                    return pd.Series([row['Linha Reta'], row['Status Linha Reta']])
+                        nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"DF Lote Post-Sweep: {row.get('Origem','')[:15]} a {row.get('Destino','')[:15]}")
+                        if nova_dist > 0: 
+                            return nova_dist, novo_status
+                    return row['Linha Reta'], row['Status Linha Reta']
                 
-                df_final[['Linha Reta', 'Status Linha Reta']] = df_final.apply(recalculate_haversine_lote, axis=1)
+                df_final[['Linha Reta', 'Status Linha Reta']] = df_final.apply(recalculate_haversine_lote, axis=1, result_type='expand')
 
                 tempo_lote_segundos = round(time.time() - start_lote_clock, 2)
                 cache_historico_lotes.set(f"lote_{start_lote_clock}", {
@@ -2028,11 +2020,12 @@ with tab_alocacao:
                         lat_o_f, lon_o_f = float(row.get('Lat Origem', 0.0)), float(row.get('Lon Origem', 0.0))
                         lat_d_f, lon_d_f = float(row.get('Lat Destino', 0.0)), float(row.get('Lon Destino', 0.0))
                         if lat_o_f != 0.0 and lat_d_f != 0.0:
-                            nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Alo DF Revalidação: {row.get('Origem','')} a {row.get('Destino','')}")
-                            if nova_dist > 0: return pd.Series([nova_dist, novo_status])
-                        return pd.Series([row['Linha Reta'], row['Status Linha Reta']])
+                            nova_dist, novo_status = calcular_distancia_linha_reta(lat_o_f, lon_o_f, lat_d_f, lon_d_f, contexto=f"Alo DF Revalidação: {row.get('Origem','')[:15]} a {row.get('Destino','')[:15]}")
+                            if nova_dist > 0: 
+                                return nova_dist, novo_status
+                        return row['Linha Reta'], row['Status Linha Reta']
                     
-                    df_final_alo[['Linha Reta', 'Status Linha Reta']] = df_final_alo.apply(recalculate_haversine_alo, axis=1)
+                    df_final_alo[['Linha Reta', 'Status Linha Reta']] = df_final_alo.apply(recalculate_haversine_alo, axis=1, result_type='expand')
 
                     tempo_alo_segundos = round(time.time() - start_alo_clock, 2)
                     cache_historico_lotes.set(f"alocacao_{start_alo_clock}", {
@@ -2823,7 +2816,7 @@ with tab_manual:
         """)
 
 with tab_motores:
-    st.info("💡 **Objetivo desta aba:** Monitorar a saúde técnica do ecossistema e o Uptime (SLA) de cada parceiro. Visualize quais APIs em nuvem responderam melhor, identifique instabilidades (timeouts), observe os tempos médios de resposta e verifique a integridade algorítmica do último lote.")
+    st.info("💡 **Objetivo desta aba:** Monitorar a saúde técnica do ececosistema e o Uptime (SLA) de cada parceiro. Visualize quais APIs em nuvem responderam melhor, identifique instabilidades (timeouts), observe os tempos médios de resposta e verifique a integridade algorítmica do último lote.")
     st.markdown("### 🔌 Painel de Monitoramento de Infraestrutura (APIs Health Check)")
     
     if 'df_processado' in st.session_state:
