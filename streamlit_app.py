@@ -27,7 +27,6 @@ from sklearn.cluster import DBSCAN
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from functools import lru_cache
 
 # Motores Geodésicos Estratificados
 try:
@@ -491,7 +490,6 @@ class MotorEnderecoCanônico:
         cache_classificacao.set(texto_norm, tipo, expire=2592000)
         return tipo
 
-    @lru_cache(maxsize=10000)
     def aplicar_fuzzy_multidimensional(self, texto_norm):
         if texto_norm in cache_fuzzy: return cache_fuzzy[texto_norm]
         tokens = texto_norm.split()
@@ -1618,65 +1616,81 @@ def rodar_pipeline_lote(df, pares_unicos, tarefas_priorizadas, nome_operador, pr
             status_container.text(f"🚀 Fila de Prioridade Assíncrona: {concluidos} / {total_tarefas}")
             progress_bar.progress(concluidos / total_tarefas)
         
-    status_container.text("✨ Distribuindo resultados e consolidando auditoria em massa (Otimizado O(1))...")
+    status_container.text("✨ Distribuindo resultados e consolidando auditoria...")
     
-    colunas_resultado = [
-        'Distancia', 'Tempo', 'Link da Rota', 'Balsas', 'Linha Reta', 'Fonte da Rota', 'Score da Rota', 
-        'Confianca Origem', 'Score Num Origem', 'Distrito Origem', 'Municipio Origem', 'Fonte Geocoding Origem', 'Endereco Oficial Origem',
-        'Confianca Destino', 'Score Num Destino', 'Distrito Destino', 'Municipio Destino', 'Fonte Geocoding Destino', 'Endereco Oficial Destino',
-        'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 
-        'XAI Origem', 'XAI Destino', 'Motivo Roteamento', 'Link Embed', 'Status Linha Reta',
-        'Concorrente Analisado', 'Distancia Concorrente', 'Link Rota Concorrente', 'Justificativa de Alocacao'
-    ]
-
-    resultados_em_massa = []
-    for origem, destino in zip(df['Origem'], df['Destino']):
-        o_str = str(origem).strip() if pd.notna(origem) else ""
-        d_str = str(destino).strip() if pd.notna(destino) else ""
+    novos_dados = []
+    
+    for idx, linha in df.iterrows():
+        origem = str(linha.get('Origem', '')).strip() if pd.notna(linha.get('Origem', '')) else ""
+        destino = str(linha.get('Destino', '')).strip() if pd.notna(linha.get('Destino', '')) else ""
         
-        if o_str and d_str and o_str.lower() != 'nan' and d_str.lower() != 'nan':
-            res = resultados_unicos.get((o_str, d_str))
+        linha_dict = linha.to_dict()
+        
+        if origem and destino and origem.lower() != 'nan' and destino.lower() != 'nan':
+            res = resultados_unicos.get((origem, destino))
             if res:
-                resultados_em_massa.append(res)
+                linha_dict.update({
+                    'Distancia': float(res[0]) if res[0] is not None else 0.0,
+                    'Linha Reta': float(res[4]) if res[4] is not None else 0.0,
+                    'Score da Rota': float(res[6]) if res[6] is not None else 0.0,
+                    'Score Num Origem': float(res[8]) if res[8] is not None else 0.0,
+                    'Score Num Destino': float(res[14]) if res[14] is not None else 0.0,
+                    'Lat Origem': float(res[19]) if res[19] is not None else 0.0,
+                    'Lon Origem': float(res[20]) if res[20] is not None else 0.0,
+                    'Lat Destino': float(res[21]) if res[21] is not None else 0.0,
+                    'Lon Destino': float(res[22]) if res[22] is not None else 0.0,
+                    'Tempo Geocoding (s)': float(res[23]) if res[23] is not None else 0.0,
+                    'Tempo Roteamento (s)': float(res[24]) if res[24] is not None else 0.0,
+                    'Tempo Total (s)': float(res[25]) if res[25] is not None else 0.0,
+                    'Tempo': res[1] if res[1] is not None else "0 min",
+                    'Link da Rota': res[2] if res[2] is not None else "Link Indisponível",
+                    'Balsas': res[3] if res[3] is not None else "Não Informado",
+                    'Fonte da Rota': res[5] if res[5] is not None else "Desconhecida",
+                    'Confianca Origem': res[7] if res[7] is not None else "BAIXA",
+                    'Distrito Origem': res[9] if res[9] is not None else "Não Identificado",
+                    'Municipio Origem': res[10] if res[10] is not None else "Não Identificado",
+                    'Fonte Geocoding Origem': res[11] if res[11] is not None else "Desconhecida",
+                    'Endereco Oficial Origem': res[12] if res[12] is not None else "Endereço Não Identificado",
+                    'Confianca Destino': res[13] if res[13] is not None else "BAIXA",
+                    'Distrito Destino': res[15] if res[15] is not None else "Não Identificado",
+                    'Municipio Destino': res[16] if res[16] is not None else "Não Identificado",
+                    'Fonte Geocoding Destino': res[17] if res[17] is not None else "Desconhecida",
+                    'Endereco Oficial Destino': res[18] if res[18] is not None else "Endereço Não Identificado",
+                    'Motivo Roteamento': res[28] if len(res) > 28 and res[28] is not None else "Sem Justificativa",
+                    'Status Linha Reta': res[30] if len(res) > 30 and res[30] is not None else "Não Mapeado"
+                })
+                
+                if runner_up_map:
+                    linha_dict.update({
+                        'Distancia Concorrente': float(res[32]) if res[32] != "N/A" else 0.0,
+                        'Concorrente Analisado': res[31] if len(res) > 31 and res[31] is not None else "N/A",
+                        'Link Rota Concorrente': res[33] if len(res) > 33 and res[33] is not None else "N/A",
+                        'Justificativa de Alocacao': res[34] if len(res) > 34 and res[34] is not None else "N/A"
+                    })
+
+                if linha_dict.get('Lat Origem', 0.0) == 0.0 and linha_dict.get('Lat Destino', 0.0) == 0.0:
+                    linha_dict['Score Final Global'] = 0.0
+                    linha_dict['Status da Rota'] = "Erro"
+                else:
+                    score_global = round((0.35 * linha_dict.get('Score Num Origem', 0.0)) + (0.35 * linha_dict.get('Score Num Destino', 0.0)) + (0.30 * linha_dict.get('Score da Rota', 0.0)), 2)
+                    linha_dict['Score Final Global'] = score_global
+                    linha_dict['Status da Rota'] = "Excelente" if score_global >= 90 else "Boa" if score_global >= 80 else "Aceitável" if score_global >= 70 else "Revisar"
+                
                 st.session_state['logs_auditoria'].append({
-                    "Endereco Informado": o_str, "Endereco Canonico": res[12] if len(res) > 12 else 'N/A',
-                    "Vencedor": res[11] if len(res) > 11 else 'N/A', "Score": res[8] if len(res) > 8 else 0.0, 
+                    "Endereco Informado": origem, "Endereco Canonico": linha_dict.get('Endereco Oficial Origem', 'N/A'),
+                    "Vencedor": linha_dict.get('Fonte Geocoding Origem', 'N/A'), "Score": linha_dict.get('Score Num Origem', 0.0), 
                     "XAI Explicabilidade": " | ".join(res[26]) if len(res) > 26 and isinstance(res[26], list) else "N/A"
                 })
             else:
-                resultados_em_massa.append(tuple([0.0 if col in ['Distancia', 'Linha Reta', 'Score da Rota', 'Score Num Origem', 'Score Num Destino', 'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 'Score Final Global', 'Distancia Concorrente'] else "Erro Crítico de Processamento" for col in colunas_resultado]))
+                linha_dict['Status da Rota'] = "Erro Crítico de Processamento"
+                linha_dict['Status Linha Reta'] = "Omitida por Erro Estrutural"
         else:
-            resultados_em_massa.append(tuple([0.0 if col in ['Distancia', 'Linha Reta', 'Score da Rota', 'Score Num Origem', 'Score Num Destino', 'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 'Score Final Global', 'Distancia Concorrente'] else "Input Inválido" for col in colunas_resultado]))
+            linha_dict['Status da Rota'] = "Erro Crítico de Processamento"
+            linha_dict['Status Linha Reta'] = "Omitida por Erro Estrutural"
+            
+        novos_dados.append(linha_dict)
 
-    df_resultados = pd.DataFrame(resultados_em_massa, columns=colunas_resultado)
-    
-    df_resultados['Distancia'] = pd.to_numeric(df_resultados['Distancia'], errors='coerce').fillna(0.0)
-    df_resultados['Linha Reta'] = pd.to_numeric(df_resultados['Linha Reta'], errors='coerce').fillna(0.0)
-    df_resultados['Score Num Origem'] = pd.to_numeric(df_resultados['Score Num Origem'], errors='coerce').fillna(0.0)
-    df_resultados['Score Num Destino'] = pd.to_numeric(df_resultados['Score Num Destino'], errors='coerce').fillna(0.0)
-    df_resultados['Score da Rota'] = pd.to_numeric(df_resultados['Score da Rota'], errors='coerce').fillna(0.0)
-    df_resultados['Lat Origem'] = pd.to_numeric(df_resultados['Lat Origem'], errors='coerce').fillna(0.0)
-    df_resultados['Lat Destino'] = pd.to_numeric(df_resultados['Lat Destino'], errors='coerce').fillna(0.0)
-    
-    mask_valid = (df_resultados['Lat Origem'] != 0.0) | (df_resultados['Lat Destino'] != 0.0)
-    
-    df_resultados['Score Final Global'] = np.where(
-        mask_valid,
-        np.round((0.35 * df_resultados['Score Num Origem']) + (0.35 * df_resultados['Score Num Destino']) + (0.30 * df_resultados['Score da Rota']), 2),
-        0.0
-    )
-    
-    conditions = [
-        df_resultados['Score Final Global'] >= 90,
-        df_resultados['Score Final Global'] >= 80,
-        df_resultados['Score Final Global'] >= 70,
-        mask_valid
-    ]
-    choices = ["Excelente", "Boa", "Aceitável", "Revisar"]
-    df_resultados['Status da Rota'] = np.select(conditions, choices, default="Erro Crítico de Processamento")
-
-    df_final = pd.concat([df.reset_index(drop=True), df_resultados], axis=1)
-    
+    df_final = pd.DataFrame(novos_dados)
     return df_final
 
 # ==============================================================================
@@ -1922,13 +1936,28 @@ with tab_processamento:
             
             if st.button("Iniciar Processamento em Lote", type="primary"):
                 start_lote_clock = time.time()
+                novas_colunas = [
+                    'Distancia', 'Tempo', 'Link da Rota', 'Balsas', 'Motivo Roteamento', 'Status Linha Reta', 'Linha Reta', 'Fonte da Rota', 'Score da Rota', 
+                    'Confianca Origem', 'Score Num Origem', 'Distrito Origem', 'Municipio Origem', 'Fonte Geocoding Origem', 'Endereco Oficial Origem',
+                    'Confianca Destino', 'Score Num Destino', 'Distrito Destino', 'Municipio Destino', 'Fonte Geocoding Destino', 'Endereco Oficial Destino',
+                    'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 'Score Final Global', 'Status da Rota'
+                ]
+                colunas_numericas = ['Distancia', 'Linha Reta', 'Score da Rota', 'Score Num Origem', 'Score Num Destino', 'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 'Score Final Global']
                 
+                for col in novas_colunas:
+                    if col in colunas_numericas:
+                        if col not in df.columns: df[col] = 0.0
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype(float)
+                    else:
+                        if col not in df.columns: df[col] = "Não Informado"
+                        df[col] = df[col].astype(object)
+                    
                 pares_unicos = set()
-                for origem, destino in zip(df['Origem'], df['Destino']):
-                    o_str = str(origem).strip() if pd.notna(origem) else ""
-                    d_str = str(destino).strip() if pd.notna(destino) else ""
-                    if o_str and d_str and o_str.lower() != 'nan' and d_str.lower() != 'nan':
-                        pares_unicos.add((o_str, d_str))
+                for index, linha in df.iterrows():
+                    origem = str(linha.get('Origem', '')).strip() if pd.notna(linha.get('Origem', '')) else ""
+                    destino = str(linha.get('Destino', '')).strip() if pd.notna(linha.get('Destino', '')) else ""
+                    if origem and destino and origem.lower() != 'nan' and destino.lower() != 'nan':
+                        pares_unicos.add((origem, destino))
                 
                 if not pares_unicos:
                     st.warning("Nenhuma linha contendo endereços válidos detectada após sanitização.")
@@ -1975,21 +2004,10 @@ with tab_processamento:
                     "Tempo Médio/Rota (s)": round(tempo_lote_segundos / max(1, len(pares_unicos)), 2)
                 }, expire=None)
 
-                # Organiza visualmente o output do Lote
                 ordem_finais = list(df.columns)
-                colunas_resultado = [
-                    'Distancia', 'Tempo', 'Link da Rota', 'Balsas', 'Linha Reta', 'Fonte da Rota', 'Score da Rota', 
-                    'Confianca Origem', 'Score Num Origem', 'Distrito Origem', 'Municipio Origem', 'Fonte Geocoding Origem', 'Endereco Oficial Origem',
-                    'Confianca Destino', 'Score Num Destino', 'Distrito Destino', 'Municipio Destino', 'Fonte Geocoding Destino', 'Endereco Oficial Destino',
-                    'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 
-                    'XAI Origem', 'XAI Destino', 'Motivo Roteamento', 'Link Embed', 'Status Linha Reta',
-                    'Concorrente Analisado', 'Distancia Concorrente', 'Link Rota Concorrente', 'Justificativa de Alocacao', 'Score Final Global', 'Status da Rota'
-                ]
-                for col in colunas_resultado:
+                for col in novas_colunas:
                     if col not in ordem_finais: ordem_finais.append(col)
-                # Mantém apenas o que foi preenchido efetivamente
-                ordem_finais_presentes = [c for c in ordem_finais if c in df_final.columns]
-                df_final = df_final.reindex(columns=ordem_finais_presentes)
+                df_final = df_final.reindex(columns=ordem_finais)
                 
                 st.session_state['df_processado'] = df_final
                 container_status.empty(); barra_progresso.empty()
@@ -2086,13 +2104,30 @@ with tab_alocacao:
                     df_pares['Origem'] = df_pares[dest_col_name].astype(str).str.strip()
                     df_pares['Destino'] = df_pares['Origem'].map(dest_to_hub).fillna("FALHA_GEO_ORIGEM")
                     
+                    novas_colunas = [
+                        'Distancia', 'Tempo', 'Link da Rota', 'Balsas', 'Motivo Roteamento', 'Status Linha Reta', 'Linha Reta', 'Fonte da Rota', 'Score da Rota', 
+                        'Confianca Origem', 'Score Num Origem', 'Distrito Origem', 'Municipio Origem', 'Fonte Geocoding Origem', 'Endereco Oficial Origem',
+                        'Confianca Destino', 'Score Num Destino', 'Distrito Destino', 'Municipio Destino', 'Fonte Geocoding Destino', 'Endereco Oficial Destino',
+                        'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 'Score Final Global', 'Status da Rota',
+                        'Concorrente Analisado', 'Distancia Concorrente', 'Link Rota Concorrente', 'Justificativa de Alocacao'
+                    ]
+                    colunas_numericas = ['Distancia', 'Linha Reta', 'Score da Rota', 'Score Num Origem', 'Score Num Destino', 'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 'Score Final Global', 'Distancia Concorrente']
+                    
+                    for col in novas_colunas:
+                        if col in colunas_numericas:
+                            if col not in df_pares.columns: df_pares[col] = 0.0
+                            df_pares[col] = pd.to_numeric(df_pares[col], errors='coerce').fillna(0.0).astype(float)
+                        else:
+                            if col not in df_pares.columns: df_pares[col] = "Não Informado"
+                            df_pares[col] = df_pares[col].astype(object)
+
                     pares_unicos_alo = set()
                     MAPA_PRIORIDADE = {"CEP": 1, "ENDERECO_COMPLETO": 2, "POI": 3, "CONDOMINIO": 3, "MUNICIPIO": 4, "BAIRRO": 5, "RURAL": 6, "LOGRADOURO": 7}
                     tarefas_priorizadas_alo = []
                     
-                    for o_val, d_val in zip(df_pares['Origem'], df_pares['Destino']):
-                        o, d = str(o_val).strip(), str(d_val).strip()
-                        if o and d and o != "FALHA_GEO_ORIGEM" and d != "NENHUM_HUB_VALIDO" and pd.notna(o_val) and pd.notna(d_val):
+                    for index, linha in df_pares.iterrows():
+                        o, d = str(linha['Origem']).strip(), str(linha['Destino']).strip()
+                        if o and d and o != "FALHA_GEO_ORIGEM" and d != "NENHUM_HUB_VALIDO" and pd.notna(o) and pd.notna(d):
                             if (o, d) not in pares_unicos_alo:
                                 pares_unicos_alo.add((o, d))
                                 tipo_o = semantica.classificar_entrada(semantica.normalizar(o))
@@ -2132,20 +2167,10 @@ with tab_alocacao:
                     st.session_state['df_processado'] = df_final_alo
                     st.success(f"✨ Matriz resolvida e Duelos concluídos! {len(df_final_alo)} linhas originais foram rigorosamente preservadas e preenchidas.")
                     
-                    colunas_resultado = [
-                        'Distancia', 'Tempo', 'Link da Rota', 'Balsas', 'Linha Reta', 'Fonte da Rota', 'Score da Rota', 
-                        'Confianca Origem', 'Score Num Origem', 'Distrito Origem', 'Municipio Origem', 'Fonte Geocoding Origem', 'Endereco Oficial Origem',
-                        'Confianca Destino', 'Score Num Destino', 'Distrito Destino', 'Municipio Destino', 'Fonte Geocoding Destino', 'Endereco Oficial Destino',
-                        'Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino', 'Tempo Geocoding (s)', 'Tempo Roteamento (s)', 'Tempo Total (s)', 
-                        'XAI Origem', 'XAI Destino', 'Motivo Roteamento', 'Link Embed', 'Status Linha Reta',
-                        'Concorrente Analisado', 'Distancia Concorrente', 'Link Rota Concorrente', 'Justificativa de Alocacao', 'Score Final Global', 'Status da Rota'
-                    ]
-
                     ordem_finais_alo = list(df_dest.columns)
-                    for c in ['Origem', 'Destino'] + colunas_resultado:
+                    for c in ['Origem', 'Destino'] + novas_colunas:
                         if c not in ordem_finais_alo: ordem_finais_alo.append(c)
-                    ordem_finais_alo_presentes = [c for c in ordem_finais_alo if c in df_final_alo.columns]
-                    df_final_alo = df_final_alo.reindex(columns=ordem_finais_alo_presentes)
+                    df_final_alo = df_final_alo.reindex(columns=ordem_finais_alo)
 
                     st.dataframe(df_final_alo, use_container_width=True, height=250)
                     output_buffer = io.BytesIO()
@@ -2940,7 +2965,7 @@ with tab_motores:
             
         with col_m2:
             st.caption("**Distribuição Qualitativa: Status Bayesiano Pós-Processamento**")
-            status_palette_bar = alt.Scale(domain=['Excelente', 'Boa', 'Aceitável', 'Revisar', 'Erro Crítico de Processamento'], range=['#2ECC71', '#3498DB', '#F1C40F', '#E67E22', '#E74C3C'])
+            status_palette_bar = alt.Scale(domain=['Excelente', 'Boa', 'Aceitável', 'Revisar', 'Erro'], range=['#2ECC71', '#3498DB', '#F1C40F', '#E67E22', '#E74C3C'])
             grafico_status = alt.Chart(df_kpi).mark_bar().encode(
                 x=alt.X('Status da Rota:N', title='Classificação de Confiança e Exatidão'),
                 y=alt.Y('count():Q', title='Volume de Requisições'),
