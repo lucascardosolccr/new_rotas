@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 1.5
+# VERSÃO: 1.6
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -8,23 +8,23 @@
 #   v1.1 → 9 melhorias de performance (race condition, LRU, vetorização)
 #   v1.2 → 10 melhorias (robustez, manutenibilidade e observabilidade)
 #   v1.3 → 14 melhorias de auditoria profunda (performance, arquitetura, segurança)
-#   v1.4 → auditoria de 2ª geração (precisão geodésica + UX/UI enterprise)
-#   v1.5 → AUDITORIA DE 3ª GERAÇÃO — escalabilidade, capacidade e nova funcionalidade:
+#   v1.4 → 2ª geração (precisão geodésica + UX/UI enterprise)
+#   v1.5 → 3ª geração (escalabilidade, capacidade, scorecard de qualidade)
+#   v1.6 → AUDITORIA DE 4ª GERAÇÃO — analytics, insights e documentação embarcada:
 #
-# MELHORIAS APLICADAS v1.4 → v1.5 (foco: limites de processamento e escala):
-#   [P30] Extração de pares únicos vetorizada (substitui df.iterrows())
-#         — 31x mais rápido: 50k linhas de 1,6s → 52ms; 500k de ~16s → ~0,5s
-#   [P31] Limite de lote expandido 5.000 → 100.000 linhas com avisos graduais
-#         — gargalo real é rede, não CPU/RAM; teto rígido anterior era conservador
-#   [P32] Workers adaptativos ao hardware: min(32, CPUs×4) para carga I/O-bound
-#         — maximiza throughput de rede sem saturar o agendador do SO
-#   [P33] Cache L1 (RAM) ampliado 5.000 → 20.000 entradas (~40MB)
-#         — eleva taxa de cache-hit em lotes B2B (mesmos hubs, muitos clientes)
-#   [P34] Painel de capacidade/infraestrutura no Monitor + correção de f-string bug
-#         — observabilidade de CPUs, workers e limites em tempo real
-#   [F-NEW1] Scorecard de Qualidade dos Dados Geográficos (nova funcionalidade)
-#         — taxa de geocodificação, distribuição de confiança, detecção de anomalias
-#           (desvio >4× linha reta, zeros suspeitos) e alertas acionáveis pós-lote
+# MELHORIAS APLICADAS v1.5 → v1.6 (foco: autoexplicabilidade e visual analytics):
+#   [F-NEW2] Seção padronizada "❓ Como usar esta aba (passo a passo para iniciantes)"
+#         OBRIGATÓRIA em TODAS as 10 abas — helper renderizar_guia_aba() com conteúdo
+#         estruturado (o que faz, quando usar, dados, preenchimento, processamento,
+#         interpretação, exemplos, erros comuns, dicas) em linguagem para leigos
+#   [F-NEW3] Insights Automáticos no dashboard Analytics — descoberta de padrões e
+#         anomalias em linguagem natural (concentração geográfica, outliers de
+#         distância, qualidade dominante, fonte predominante, travessias de balsa)
+#   [F-NEW4] Análise de distribuição estatística: histograma + boxplot de distâncias
+#         com mediana, desvio padrão, mín/máx explicados via tooltips
+#
+# Funcionalidades herdadas: Scorecard de Qualidade (v1.5), Design System com
+# acessibilidade WCAG (v1.4), RotaPipeline NamedTuple (v1.3).
 # ==============================================================================
 
 import streamlit as st
@@ -397,6 +397,164 @@ def ds_barra_confianca(score: float) -> str:
     return (f"<div class='ds-confbar-track'><div class='ds-confbar-fill' "
             f"style='width:{score}%; background:{cor};'></div></div>")
 
+# ==============================================================================
+# GUIA PADRONIZADO "COMO USAR ESTA ABA" — obrigatório em todas as abas [4ª geração]
+# ==============================================================================
+# Conteúdo estruturado por aba. Cada entrada segue o mesmo esqueleto pedagógico:
+# o_que_faz, quando_usar, dados, preenchimento, apos_executar, interpretar,
+# exemplos, erros_comuns, dicas. Linguagem para quem nunca viu geocodificação.
+_GUIA_ABAS = {
+    "geocodificacao": {
+        "o_que_faz": "Descobre **onde fica** um endereço no mapa (latitude/longitude) e calcula a **distância real de carro** entre dois pontos. É o teste rápido de uma única rota.",
+        "quando_usar": "Quando você quer conferir uma rota específica na hora, sem montar planilha. Ideal para validar um endereço suspeito ou tirar uma dúvida pontual.",
+        "dados": "Dois textos: uma **Origem** (de onde sai) e um **Destino** (para onde vai). Cada um pode ser um endereço, o nome de um lugar conhecido (ex: \"Aeroporto de Brasília\") ou coordenadas no formato `-15.79, -47.88`.",
+        "preenchimento": "1. Digite a origem no primeiro campo.\n        2. Digite o destino no segundo.\n        3. **Sempre que puder, inclua a sigla do estado** (ex: `, GO`) — isso evita confusão entre cidades de mesmo nome.\n        4. Clique em **Calcular Rota Individual**.",
+        "apos_executar": "O sistema consulta várias fontes de mapa ao mesmo tempo (ArcGIS, OpenStreetMap, TomTom), cruza as respostas, escolhe a mais confiável e mede a distância real pela estrada e em linha reta.",
+        "interpretar": "**Distância Viária** = km reais por asfalto. **Linha Reta** = voo de pássaro (serve de árbitro contra fretes inflados). **Barra de confiança**: verde = ótima localização; amarela/vermelha = vale revisar o endereço digitado.",
+        "exemplos": "`Ribeirão Cascalheira, MT` → `São Miguel do Araguaia, GO`. Ou coordenadas puras: `-15.79, -47.88` → `-16.68, -49.25`.",
+        "erros_comuns": "Esquecer a sigla do estado (pode achar cidade homônima errada); digitar só o nome de uma rua sem a cidade; deixar um dos campos vazio.",
+        "dicas": "Quanto mais completo o endereço, melhor. Abra a 'Auditoria Detalhada' para ver exatamente quais fontes concordaram e por quê.",
+    },
+    "processamento": {
+        "o_que_faz": "Processa **milhares de rotas de uma vez**. Você envia uma planilha Excel com colunas de Origem e Destino, e ele devolve a mesma planilha preenchida com distâncias, tempos, coordenadas e nível de confiança de cada linha.",
+        "quando_usar": "Quando você tem uma lista grande de rotas (entregas, fretes, visitas) e precisa calcular todas de uma vez, em vez de uma por uma.",
+        "dados": "Um arquivo **.xlsx** contendo obrigatoriamente duas colunas chamadas exatamente **Origem** e **Destino**. Pode ter outras colunas — elas serão preservadas.",
+        "preenchimento": "1. Clique em **Selecionar Arquivo Excel** e escolha sua planilha.\n        2. Confira a mensagem de validação (verde = pronto).\n        3. (Opcional) Informe seu nome/matrícula.\n        4. Clique em **Iniciar Processamento em Lote** e acompanhe a barra de progresso.",
+        "apos_executar": "O sistema extrai apenas as rotas **únicas** (evita recalcular repetidas), processa várias em paralelo, reaproveita o que já calculou antes (cache) e monta a planilha final. Ao terminar, mostra um Scorecard de Qualidade.",
+        "interpretar": "O **Scorecard** no topo resume a saúde do lote: taxa de sucesso, quantas rotas são confiáveis e quantas têm anomalias. A tabela abaixo traz cada linha detalhada. Baixe o Excel pronto no botão azul.",
+        "exemplos": "Uma planilha com 2.000 linhas de entregas: coluna Origem = endereço do depósito, coluna Destino = endereço do cliente.",
+        "erros_comuns": "Colunas com nome errado (tem que ser 'Origem' e 'Destino'); arquivo em formato antigo (.xls em vez de .xlsx); células vazias no meio da planilha (são ignoradas e marcadas como erro).",
+        "dicas": "Rotas repetidas entre lotes são reaproveitadas automaticamente — reprocessar um arquivo parecido é muito mais rápido na segunda vez. Limite atual: 100.000 linhas por arquivo.",
+    },
+    "alocacao": {
+        "o_que_faz": "Descobre **qual base/depósito é o mais próximo** de cada cliente. Você dá uma lista de clientes e uma lista de bases, e o sistema calcula automaticamente o melhor par para cada cliente.",
+        "quando_usar": "Quando você tem vários centros de distribuição e precisa decidir qual atende cada cliente com o menor trajeto — clássico problema de logística de hubs.",
+        "dados": "**Duas planilhas .xlsx**: uma com os endereços dos clientes (Origens) e outra com os municípios/bases (Destinos). Você escolhe qual coluna usar em cada arquivo.",
+        "preenchimento": "1. Envie a planilha de **clientes** no primeiro campo.\n        2. Envie a planilha de **bases** no segundo.\n        3. Selecione a coluna correta de cada arquivo nos menus.\n        4. Clique em **Processar Cruzamento Espacial**.",
+        "apos_executar": "Para cada cliente, o sistema mede a distância até todas as bases, escolhe a mais próxima (vizinho mais próximo geográfico) e ainda mostra qual seria a segunda opção, com a justificativa da escolha.",
+        "interpretar": "A coluna **Concorrente Analisado** mostra a 2ª base mais próxima; a **Justificativa** explica por que a base vencedora foi escolhida. Quanto menor a distância, melhor a alocação.",
+        "exemplos": "10 centros de distribuição × 500 clientes → o sistema descobre o CD ideal para cada um dos 500.",
+        "erros_comuns": "Escolher a coluna errada nos menus; misturar clientes e bases nos arquivos trocados; bases sem endereço resolvível.",
+        "dicas": "Use nomes de cidade com a sigla do estado nas bases para máxima precisão. O número de combinações cresce rápido (clientes × bases) — comece com listas menores para testar.",
+    },
+    "analytics": {
+        "o_que_faz": "Um **painel interativo estilo Power BI** que transforma o resultado do seu lote em gráficos, mapas e indicadores. Clicar em um gráfico filtra todos os outros ao mesmo tempo.",
+        "quando_usar": "Depois de processar um lote, quando você quer **explorar visualmente** os dados, apresentar resultados em reunião ou descobrir padrões por região/estado.",
+        "dados": "Nenhum upload aqui — usa automaticamente o último lote processado na aba **Processamento Lote**.",
+        "preenchimento": "1. Processe um lote primeiro.\n        2. Venha para esta aba.\n        3. Clique nas fatias, barras ou arraste o mouse nos gráficos para filtrar.\n        4. Use os filtros avançados nas caixas expansíveis para recortes específicos.",
+        "apos_executar": "Os gráficos e o mapa se atualizam instantaneamente conforme você clica. Os filtros são **bidirecionais**: selecionar um estado no mapa filtra os gráficos, e vice-versa.",
+        "interpretar": "Cada gráfico responde a uma pergunta: distribuição por região, status de qualidade, dispersão distância×tempo, etc. Os **Insights Automáticos** no topo destacam o que mais chama atenção nos dados.",
+        "exemplos": "Clicar na fatia 'SP' no gráfico de pizza → todos os indicadores passam a mostrar apenas rotas de São Paulo.",
+        "erros_comuns": "Entrar aqui sem ter processado um lote (não há dados); aplicar filtros que esvaziam a base (ex: Nordeste + SP) e estranhar gráficos vazios.",
+        "dicas": "Use o botão **Limpar Todos os Filtros** no topo quando os gráficos sumirem. Combine filtros de região + faixa de distância para análises ricas.",
+    },
+    "calculadora": {
+        "o_que_faz": "Uma **calculadora analítica de autoatendimento** (self-service BI). Permite somar, contar e cruzar os dados do lote do jeito que você quiser, criando tabelas dinâmicas sob medida.",
+        "quando_usar": "Quando os gráficos prontos não bastam e você precisa de um número específico — ex: 'qual a distância média por estado?' ou 'quantas rotas de revisão por região?'.",
+        "dados": "Usa o último lote processado. Você escolhe o que agrupar e qual operação aplicar.",
+        "preenchimento": "1. Escolha a coluna para **Agrupar por** (ex: Região).\n        2. Escolha a coluna do **Valor** (ex: Distância).\n        3. Escolha a **Operação** (Soma, Média, Contagem...).\n        4. O resultado aparece na hora, com gráfico e tabela para download.",
+        "apos_executar": "O sistema agrupa os dados e aplica a operação estatística escolhida, montando uma tabela dinâmica e um gráfico correspondente.",
+        "interpretar": "A tabela mostra o resultado por grupo; o gráfico ilustra visualmente. Você pode baixar tudo em Excel (inclusive com o gráfico embutido).",
+        "exemplos": "Agrupar por 'Regiao_Sintetica_Origem' + Média de 'Distancia' = distância média de cada região.",
+        "erros_comuns": "Aplicar operações numéricas (Soma/Média) em colunas de texto; esquecer de processar um lote antes.",
+        "dicas": "Use 'Contagem Distinta' para descobrir quantos municípios/clientes únicos existem em cada grupo. Exporte a 'Multi-Abas' para entregar à chefia.",
+    },
+    "classificacao": {
+        "o_que_faz": "Agrupa municípios em **faixas personalizadas** (ex: 'Cidades Críticas', 'Cidades Normais') com base em distância ou volume de rotas, gerando uma tabela mestre de segmentação para tabelas de frete.",
+        "quando_usar": "Quando você precisa criar regras de negócio por faixa — por exemplo, definir preços de frete diferentes por distância, ou priorizar cidades por volume.",
+        "dados": "Usa o último lote processado. Você define as faixas (limites e rótulos) num editor visual.",
+        "preenchimento": "1. Escolha a base da classificação (Distância ou Volume de Rotas).\n        2. Edite a tabela de faixas: adicione/remova linhas, defina limites e cores.\n        3. O mapa de calor e a tabela mestre se atualizam automaticamente.",
+        "apos_executar": "O sistema enquadra cada município na faixa correspondente e gera um mapa temático colorido + uma tabela de segmentação pronta para download.",
+        "interpretar": "Cada cor representa uma faixa. A tabela mestre lista cada município com sua faixa e rótulo — use-a como base para regras de frete.",
+        "exemplos": "Faixa 1 a 500 km = Verde (Normal); 501 km+ = Vermelho (Crítico/Frete majorado).",
+        "erros_comuns": "Deixar faixas sobrepostas ou com lacunas; não processar um lote antes; limites em ordem ilógica.",
+        "dicas": "Comece com poucas faixas e refine. Use rótulos claros que seu time de operações entenda direto.",
+    },
+    "enciclopedia": {
+        "o_que_faz": "É o **repositório mestre de conhecimento** da plataforma. Explica, do zero e sem pressa, toda a jornada técnica de um dado dentro do sistema — da limpeza do texto à validação geométrica anti-colisão.",
+        "quando_usar": "Quando você quer **entender como o sistema funciona por dentro**, aprender os conceitos de geocodificação ou tirar dúvidas técnicas profundas.",
+        "dados": "Nenhum dado de entrada — é conteúdo de leitura, organizado em seções expansíveis.",
+        "preenchimento": "Não há campos. Basta abrir as seções (expanders) que interessam e ler no seu ritmo.",
+        "apos_executar": "Não há processamento — é documentação pura, sempre disponível.",
+        "interpretar": "Cada seção cobre um estágio do pipeline. Leia na ordem para uma visão completa, ou pule direto para o tópico que precisa.",
+        "exemplos": "Quer saber o que é 'consenso Bayesiano' ou 'linha reta geodésica'? Estão explicados aqui em linguagem acessível.",
+        "erros_comuns": "Nenhum — é apenas leitura. Se um termo parecer difícil, há sempre uma analogia do cotidiano.",
+        "dicas": "Comece pela 'Visão Geral' se for novo. Use esta aba como referência sempre que encontrar um termo técnico nas outras telas.",
+    },
+    "manual": {
+        "o_que_faz": "É o **manual operacional prático** — o passo a passo do dia a dia de cada funcionalidade, voltado a todos os usuários, do iniciante ao avançado.",
+        "quando_usar": "Quando você quer um guia rápido de 'como faço tal coisa' sem precisar entender a teoria por trás.",
+        "dados": "Nenhum — é conteúdo de leitura organizado por tarefa.",
+        "preenchimento": "Não há campos. Abra a seção da tarefa que você quer executar e siga os passos.",
+        "apos_executar": "Não há processamento — é guia de referência sempre disponível.",
+        "interpretar": "Cada seção é um 'como fazer' independente. Leia a que corresponde à sua necessidade imediata.",
+        "exemplos": "'Como processar uma planilha em lote?' → a seção correspondente traz o passo a passo completo.",
+        "erros_comuns": "Nenhum — é leitura. O FAQ ao final responde as dúvidas mais frequentes.",
+        "dicas": "Combine com a Enciclopédia: o Manual diz **como fazer**, a Enciclopédia explica **por que funciona**.",
+    },
+    "motores": {
+        "o_que_faz": "Mostra a **saúde técnica** do sistema: quais APIs de mapa estão respondendo bem, tempos de resposta, taxa de falhas e a integridade matemática do motor geodésico.",
+        "quando_usar": "Quando o sistema está lento ou um resultado parece estranho, e você quer verificar se algum provedor de mapas caiu ou está instável.",
+        "dados": "Usa as estatísticas acumuladas das chamadas de API e o último lote processado.",
+        "preenchimento": "Não há campos a preencher — apenas leitura dos painéis. Abra 'Capacidade do Servidor' para ver os recursos disponíveis.",
+        "apos_executar": "Não há processamento — os painéis refletem o estado atual em tempo real conforme você usa o sistema.",
+        "interpretar": "**Verde/Estável** = provedor saudável. **Instável/Erros** = aquele provedor falhou e o sistema usou fallbacks automáticos. Latência alta = rede lenta naquele parceiro.",
+        "exemplos": "Se o Google Maps aparece 'Instável', o sistema automaticamente usou o OSRM (open-source) como reserva.",
+        "erros_comuns": "Estranhar 'N/A' antes de processar qualquer rota (ainda não há estatística); confundir lentidão de rede com erro do sistema.",
+        "dicas": "Tempos médios altos não significam erro — significam que as APIs externas estão lentas. O sistema sempre tem motores de reserva.",
+    },
+    "auditoria": {
+        "o_que_faz": "É a **caixa-preta aberta** do sistema (XAI - Inteligência Artificial Explicável). Mostra, para cada coordenada, exatamente qual algoritmo decidiu, quais fontes concordaram e por que outras opções foram descartadas.",
+        "quando_usar": "Quando você desconfia que o sistema colocou um endereço na cidade errada e quer ver o **raciocínio completo** por trás daquela decisão.",
+        "dados": "Usa os logs de decisão do último lote e da última alocação processados.",
+        "preenchimento": "Não há campos — apenas consulte as tabelas de decisão. Use a busca do navegador (Ctrl+F) para achar um endereço específico.",
+        "apos_executar": "Não há processamento — exibe o histórico de decisões já tomadas, com total rastreabilidade.",
+        "interpretar": "A coluna **XAI Explicabilidade** narra a dedução lógica: quais APIs foram consultadas, qual venceu, e o cruzamento que levou à coordenada final.",
+        "exemplos": "Pesquise pela rua suspeita na tabela → veja que '3 de 4 fontes concordaram no ponto X, a 4ª foi descartada por estar fora do estado'.",
+        "erros_comuns": "Entrar aqui sem ter processado nada (tabelas vazias); esperar dados de rotas individuais (a auditoria cobre lotes).",
+        "dicas": "Esta é a aba da transparência total: nenhum resultado é caixa-preta. Use-a para justificar decisões a clientes ou auditores.",
+    },
+}
+
+def renderizar_guia_aba(chave_aba: str):
+    """[F-NEW2 - 4ª geração] Renderiza a seção padronizada e obrigatória
+    '❓ Como usar esta aba (passo a passo para iniciantes)' de forma consistente
+    em todas as 10 abas. Conteúdo escrito para quem nunca viu geocodificação.
+    """
+    import streamlit as _st
+    g = _GUIA_ABAS.get(chave_aba)
+    if not g:
+        return
+    with _st.expander("❓ Como usar esta aba (passo a passo para iniciantes)", expanded=False):
+        _st.markdown(f"""
+        **📌 O que esta aba faz**
+        {g['o_que_faz']}
+
+        **🕐 Quando utilizar**
+        {g['quando_usar']}
+
+        **📥 Quais dados inserir**
+        {g['dados']}
+
+        **✍️ Como preencher corretamente**
+        {g['preenchimento']}
+
+        **⚙️ O que acontece após executar**
+        {g['apos_executar']}
+
+        **📊 Como interpretar os resultados**
+        {g['interpretar']}
+
+        **💡 Exemplos práticos**
+        {g['exemplos']}
+
+        **⚠️ Erros mais comuns**
+        {g['erros_comuns']}
+
+        **✅ Dicas e boas práticas**
+        {g['dicas']}
+        """)
+
 def renderizar_scorecard_qualidade(df_resultado):
     """[F-NEW1 - 3ª geração] Painel de Qualidade dos Dados Geográficos.
     
@@ -474,6 +632,76 @@ def renderizar_scorecard_qualidade(df_resultado):
                     f"Pode indicar travessia de balsa, barreira geográfica real, ou erro de roteamento. Verifique os links.")
     if taxa_sucesso == 100.0 and anomalias_ratio == 0 and zeros_suspeitos == 0:
         _st.success("✅ Lote íntegro: 100% geocodificado, sem anomalias geográficas detectadas.")
+
+def gerar_insights_automaticos(df_kpi):
+    """[F-NEW3 - 4ª geração] Descoberta automática de padrões e anomalias.
+    
+    Varre o DataFrame filtrado e gera frases de insight em linguagem natural,
+    destacando o que mais chama atenção: concentração geográfica, outliers de
+    distância, faixas de qualidade dominantes e fontes de geocodificação.
+    Tudo via agregações pandas vetorizadas — custo trivial, zero chamadas externas.
+    Retorna lista de tuplas (tipo, texto) onde tipo ∈ {info, sucesso, alerta}.
+    """
+    insights = []
+    total = len(df_kpi)
+    if total == 0:
+        return insights
+    try:
+        # 1. Concentração geográfica (regra de Pareto)
+        if 'UF_Sintetica_Origem' in df_kpi.columns:
+            top_uf = df_kpi['UF_Sintetica_Origem'].value_counts()
+            if len(top_uf) > 0:
+                uf_lider = top_uf.index[0]
+                pct = round(100 * top_uf.iloc[0] / total, 1)
+                if pct >= 40:
+                    insights.append(("info", f"📍 **Concentração geográfica:** {pct}% das rotas partem de **{uf_lider}**. "
+                                             f"Uma única UF domina a operação — considere otimizar logística regional."))
+
+        # 2. Distância: outliers e média
+        if 'Distancia' in df_kpi.columns:
+            dist = pd.to_numeric(df_kpi['Distancia'], errors='coerce').fillna(0)
+            dist_validas = dist[dist > 0]
+            if len(dist_validas) > 0:
+                media = dist_validas.mean()
+                p95 = dist_validas.quantile(0.95)
+                maxd = dist_validas.max()
+                if maxd > media * 3 and len(dist_validas) >= 5:
+                    insights.append(("alerta", f"📏 **Outlier de distância:** a rota mais longa ({maxd:.0f} km) é "
+                                               f"{round(maxd/media,1)}× a média ({media:.0f} km). Vale conferir se não há erro de endereço."))
+                insights.append(("info", f"📊 **Perfil de distância:** média de {media:.0f} km; "
+                                         f"95% das rotas têm até {p95:.0f} km."))
+
+        # 3. Qualidade dominante
+        if 'Status da Rota' in df_kpi.columns:
+            status = df_kpi['Status da Rota'].value_counts()
+            if len(status) > 0:
+                revisar = int(df_kpi['Status da Rota'].isin(['Revisar', 'Erro', 'Erro Crítico de Processamento']).sum())
+                pct_revisar = round(100 * revisar / total, 1)
+                if pct_revisar >= 20:
+                    insights.append(("alerta", f"⚠️ **Atenção à qualidade:** {pct_revisar}% das rotas ({revisar}) precisam de revisão. "
+                                               f"Endereços incompletos podem ser a causa — adicione cidade e UF."))
+                elif pct_revisar <= 5:
+                    insights.append(("sucesso", f"✅ **Alta qualidade:** apenas {pct_revisar}% das rotas requerem revisão. "
+                                                f"Excelente padronização dos endereços de entrada."))
+
+        # 4. Fonte de geocodificação predominante
+        if 'Fonte Geocoding Origem' in df_kpi.columns:
+            fontes = df_kpi['Fonte Geocoding Origem'].value_counts()
+            if len(fontes) > 0:
+                fonte_lider = fontes.index[0]
+                pct_f = round(100 * fontes.iloc[0] / total, 1)
+                insights.append(("info", f"🛰️ **Fonte dominante:** {pct_f}% das geocodificações vieram de **{fonte_lider}**. "
+                                         f"Diversidade de fontes aumenta a robustez do consenso."))
+
+        # 5. Uso de balsas (insight logístico específico)
+        if 'Balsas' in df_kpi.columns:
+            balsas = int((df_kpi['Balsas'] == 'Sim').sum())
+            if balsas > 0:
+                insights.append(("alerta", f"⛴️ **Travessias de balsa:** {balsas} rota(s) exigem balsa. "
+                                           f"Isso impacta prazo e custo — sinalize no planejamento."))
+    except Exception:
+        pass
+    return insights
 
 TOMTOM_API_KEY = "" # Insira sua credencial TomTom Logistics aqui
 
@@ -2532,14 +2760,7 @@ tab_individual, tab_processamento, tab_alocacao, tab_analytics, tab_calculadora,
 
 with tab_individual:
     st.info("🎯 **Objetivo desta aba:** Validar rapidamente uma única rota. Digite a Origem e o Destino para obter a distância viária oficial do Google Maps, o desvio geodésico rigoroso e a explicabilidade do motor de geocodificação.")
-    with st.expander("❓ Como usar esta aba (passo a passo para iniciantes)", expanded=False):
-        st.markdown("""
-        1. **Digite a origem** no primeiro campo. Pode ser um endereço completo, o nome de um lugar (ex: "Aeroporto de Brasília") ou coordenadas (ex: `-15.79, -47.88`).
-        2. **Digite o destino** no segundo campo, do mesmo jeito.
-        3. **Dica de precisão:** sempre que possível, inclua a sigla do estado (ex: `, GO`). Isso evita confusão entre cidades de mesmo nome em estados diferentes.
-        4. **Clique em Calcular.** Em poucos segundos aparecem a distância real por estrada, a distância em linha reta e o nível de confiança.
-        5. **Confira a barra de confiança:** verde = ótima localização; amarela/vermelha = vale revisar o endereço digitado.
-        """)
+    renderizar_guia_aba("geocodificacao")
     st.markdown("### 📍 Validador Rápido de Rota (Single-Shot)")
     col_ind1, col_ind2 = st.columns(2)
     with col_ind1: 
@@ -2607,6 +2828,7 @@ with tab_individual:
 
 with tab_processamento:
     st.info("⚙️ **Objetivo desta aba:** Processamento em massa O(U). Envie uma planilha Excel com milhares de origens e destinos. O sistema extrairá rotas únicas, calculará os desvios de todas simultaneamente e devolverá a planilha rigorosamente preenchida.")
+    renderizar_guia_aba("processamento")
     arquivo_carregado = st.file_uploader("Selecionar Arquivo Excel", type=["xlsx"], key="lote_std", help="A planilha deve conter as colunas 'Origem' e 'Destino'.")
     if arquivo_carregado is not None:
         df = pd.read_excel(arquivo_carregado, engine='calamine')
@@ -2736,6 +2958,7 @@ with tab_processamento:
 
 with tab_alocacao:
     st.info("🎯 **Objetivo desta aba:** Inteligência Logística de Hubs. Envie uma lista de clientes (Origens) e uma lista de Centros de Distribuição/Bases (Destinos). O sistema calculará todas as combinações espaciais e descobrirá automaticamente qual é a Base Logística mais próxima de cada cliente individualmente.")
+    renderizar_guia_aba("alocacao")
     col_a1, col_a2 = st.columns(2)
     with col_a1: 
         file_dest = st.file_uploader("1. Planilha de Endereços / Entregas (Origens)", type=["xlsx"], key="up_dests_v19")
@@ -2881,6 +3104,7 @@ with tab_alocacao:
 
 with tab_analytics:
     st.info("📊 **Objetivo desta aba:** Sistema Analítico Global estilo Power BI. Clique nas fatias, barras ou arraste o mouse no Scatter Plot para filtrar dinamicamente TODOS os indicadores, mapas e tabelas abaixo.")
+    renderizar_guia_aba("analytics")
     col_d_title, col_d_btn = st.columns([80, 20])
     with col_d_title: 
         st.markdown("### 📊 Enterprise Analytics Dashboard")
@@ -2992,6 +3216,20 @@ with tab_analytics:
         df_cf['_is_selected'] = 1
         st.session_state['df_cf_master'] = df_cf
         renderizar_indicador_filtros(extrair_selecoes_altair()['brush'])
+        
+        # [F-NEW3 - 4ª geração] Insights Automáticos — destaque do que mais importa
+        if not df_cf.empty:
+            _insights = gerar_insights_automaticos(df_cf)
+            if _insights:
+                with st.expander("🤖 Insights Automáticos (descoberta de padrões e anomalias)", expanded=True):
+                    st.caption("O sistema analisou os dados filtrados e destacou automaticamente os pontos mais relevantes:")
+                    for tipo, texto in _insights:
+                        if tipo == "sucesso":
+                            st.success(texto)
+                        elif tipo == "alerta":
+                            st.warning(texto)
+                        else:
+                            st.info(texto)
         
         if df_cf.empty:
             st.warning("A combinação de filtros cruzados selecionada não retornou nenhum registro neste lote. Limpe os filtros.")
@@ -3141,6 +3379,36 @@ with tab_analytics:
                 col_p4.altair_chart(chart_lr_mun, use_container_width=True, on_select="rerun", key="dash_lr")
                 col_p5.altair_chart(chart_muns, use_container_width=True, on_select="rerun", key="dash_mun")
                 st.altair_chart(chart_scatter, use_container_width=True, on_select="rerun", key="dash_scatter")
+            
+            # [F-NEW4 - 4ª geração] Análise de distribuição estatística (histograma + boxplot)
+            st.markdown("#### 📊 Distribuição Estatística de Distâncias")
+            st.caption("Histograma mostra a frequência de cada faixa de distância; o boxplot revela mediana, quartis e outliers. "
+                       "Útil para entender o perfil logístico: rotas curtas (urbanas) vs longas (interestaduais).")
+            df_dist_validas = df_cf[df_cf['Distancia'] > 0].copy()
+            if not df_dist_validas.empty and len(df_dist_validas) >= 3:
+                col_hist, col_box = st.columns([65, 35])
+                with col_hist:
+                    hist_chart = alt.Chart(df_dist_validas).mark_bar(color='#3B82F6', cornerRadiusEnd=3).encode(
+                        x=alt.X('Distancia:Q', bin=alt.Bin(maxbins=30), title='Distância (km)'),
+                        y=alt.Y('count():Q', title='Quantidade de Rotas'),
+                        tooltip=[alt.Tooltip('count():Q', title='Rotas'), alt.Tooltip('Distancia:Q', bin=True, title='Faixa (km)')]
+                    ).properties(height=300, title='Histograma de Distâncias')
+                    st.altair_chart(hist_chart, use_container_width=True)
+                with col_box:
+                    box_chart = alt.Chart(df_dist_validas).mark_boxplot(extent='min-max', color='#10B981').encode(
+                        y=alt.Y('Distancia:Q', title='Distância (km)'),
+                        tooltip=[alt.Tooltip('Distancia:Q', title='km')]
+                    ).properties(height=300, title='Boxplot (Quartis)')
+                    st.altair_chart(box_chart, use_container_width=True)
+                # Estatísticas descritivas explicadas
+                d = df_dist_validas['Distancia']
+                cme1, cme2, cme3, cme4 = st.columns(4)
+                cme1.metric("Mediana", f"{d.median():.0f} km", help="Metade das rotas está abaixo deste valor. Menos sensível a outliers que a média.")
+                cme2.metric("Desvio Padrão", f"{d.std():.0f} km", help="Quanto as distâncias variam em torno da média. Alto = rotas muito heterogêneas.")
+                cme3.metric("Mínima", f"{d.min():.0f} km", help="A rota mais curta do recorte atual.")
+                cme4.metric("Máxima", f"{d.max():.0f} km", help="A rota mais longa do recorte atual.")
+            else:
+                st.info("Distribuição estatística requer ao menos 3 rotas com distância válida no recorte atual.")
                 
             st.markdown("#### 🗺️ Torre de Controle Espacial (Heatmap Dinâmico)")
             with st.container(border=True):
@@ -3206,6 +3474,7 @@ with tab_analytics:
 
 with tab_calculadora:
     st.info("🧮 **Objetivo desta aba:** Uma ferramenta de autoatendimento Analítico (Self-Service BI). Realize extrações, crie tabelas dinâmicas e pivote informações de forma flexível utilizando a base que já passou pela blindagem e filtros globais.")
+    renderizar_guia_aba("calculadora")
     col_c_title, col_c_btn = st.columns([80, 20])
     with col_c_title: 
         st.markdown("### 🧮 Calculadora Analítica Corporativa")
@@ -3319,6 +3588,7 @@ with tab_calculadora:
 
 with tab_classificacao:
     st.info("🗂️ **Objetivo desta aba:** Segmentar a volumetria logística por município, criar faixas personalizadas e rotular os polos de distribuição. Utilize o Editor de Faixas abaixo para configurar os limites, divisores operacionais e níveis críticos.")
+    renderizar_guia_aba("classificacao")
     st.markdown("### 🗂️ Classificação Territorial de Ocorrências Municipais")
     
     if 'df_cf_master' in st.session_state and not st.session_state['df_cf_master'].empty:
@@ -3459,6 +3729,7 @@ with tab_classificacao:
 
 with tab_enciclopedia:
     st.info("📚 **Objetivo desta aba:** Servir como o repositório mestre de conhecimento. Esta enciclopédia detalha toda a jornada técnica de um dado dentro do aplicativo, abordando 100% das funcionalidades corporativas, desde a limpeza gramatical até a validação geométrica extrema anti-colisão.")
+    renderizar_guia_aba("enciclopedia")
     st.markdown("# 📚 Enciclopédia Operacional e Base de Conhecimento Core")
     
     with st.expander("1. Visão Geral do Sistema", expanded=True):
@@ -3583,6 +3854,7 @@ with tab_enciclopedia:
 
 with tab_manual:
     st.info("📖 **Bem-vindo ao Manual Operacional!** Este espaço é destinado a todos os usuários da plataforma, ensinando de forma prática o 'passo a passo' para executar as operações do dia a dia.")
+    renderizar_guia_aba("manual")
     st.markdown("### 📖 Manual do Usuário e Treinamento")
     
     with st.expander("1. Primeiro Acesso e Navegação", expanded=True):
@@ -3703,6 +3975,7 @@ with tab_manual:
 
 with tab_motores:
     st.info("🩺 **Objetivo desta aba:** Monitorar a saúde técnica do ecossistema e o Uptime (SLA) de cada parceiro. Visualize quais APIs em nuvem responderam melhor, identifique instabilidades (timeouts), observe os tempos médios de resposta e verifique a integridade algorítmica do último lote.")
+    renderizar_guia_aba("motores")
     st.markdown("### 🩺 Painel de Monitoramento de Infraestrutura (APIs Health Check)")
     
     # [P34 - 3ª geração] Painel de capacidade/infraestrutura — observabilidade de recursos
@@ -3789,6 +4062,7 @@ with tab_motores:
 
 with tab_auditoria:
     st.info("🔍 **Objetivo desta aba:** Transparência Total e Explicabilidade (XAI). Funciona como uma 'Caixa Preta' aberta do sistema. Verifique em detalhes qual algoritmo tomou a decisão para cada coordenada e por que ele escolheu descartar outras opções em caso de empate de proximidade.")
+    renderizar_guia_aba("auditoria")
     st.markdown("### 🔍 Dossiê Investigativo de Auditoria Viária e Espacial")
     
     tab_aud_lote, tab_aud_hub = st.tabs(["⚙️ Logs do Lote de Roteamento Padrão", " Logs do Motor de Alocação (Hubs Competitive)"])
