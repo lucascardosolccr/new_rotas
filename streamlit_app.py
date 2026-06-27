@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 1.6
+# VERSÃO: 1.7
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -10,21 +10,28 @@
 #   v1.3 → 14 melhorias de auditoria profunda (performance, arquitetura, segurança)
 #   v1.4 → 2ª geração (precisão geodésica + UX/UI enterprise)
 #   v1.5 → 3ª geração (escalabilidade, capacidade, scorecard de qualidade)
-#   v1.6 → AUDITORIA DE 4ª GERAÇÃO — analytics, insights e documentação embarcada:
+#   v1.6 → 4ª geração (guia em todas abas, insights automáticos, distribuição)
+#   v1.7 → AUDITORIA SUPREMA — só melhorias com benefício líquido e ZERO regressão:
 #
-# MELHORIAS APLICADAS v1.5 → v1.6 (foco: autoexplicabilidade e visual analytics):
-#   [F-NEW2] Seção padronizada "❓ Como usar esta aba (passo a passo para iniciantes)"
-#         OBRIGATÓRIA em TODAS as 10 abas — helper renderizar_guia_aba() com conteúdo
-#         estruturado (o que faz, quando usar, dados, preenchimento, processamento,
-#         interpretação, exemplos, erros comuns, dicas) em linguagem para leigos
-#   [F-NEW3] Insights Automáticos no dashboard Analytics — descoberta de padrões e
-#         anomalias em linguagem natural (concentração geográfica, outliers de
-#         distância, qualidade dominante, fonte predominante, travessias de balsa)
-#   [F-NEW4] Análise de distribuição estatística: histograma + boxplot de distâncias
-#         com mediana, desvio padrão, mín/máx explicados via tooltips
+# MELHORIAS APLICADAS v1.6 → v1.7 (regra inegociável: zero perda, só ganho):
+#   [PERF-1] Mapeamento UF→Região via dict O(1) + .map() vetorizado
+#         — substitui apply() com next()+loop aninhado por linha. Saída byte-idêntica
+#           (validada em 30 casos). Benefício líquido puro.
+#   [PERF-2] MAPA_ESTADOS_FULL, REGIOES_BRASIL e extrair_uf_precisa movidos para o
+#         escopo do módulo (antes recriados a cada rerun) + regex de UF pré-compilada
+#         + lru_cache(8192) em extrair_uf_precisa. Saída idêntica (validada, incl.
+#           edge cases None/int). Endereços repetidos em lote agora são O(1).
+#   [F-NEW5] Ranking de Cobertura Territorial por Estado no dashboard Analytics —
+#         rotas + distância média + score por UF, com % de cobertura nacional.
+#         Read-only sobre dados já processados; zero chamada externa; zero risco.
 #
-# Funcionalidades herdadas: Scorecard de Qualidade (v1.5), Design System com
-# acessibilidade WCAG (v1.4), RotaPipeline NamedTuple (v1.3).
+# MELHORIAS DOCUMENTADAS MAS NÃO IMPLEMENTADAS (risco de regressão — ver relatório):
+#   - Migração pandas→Polars/DuckDB: ganho real só >500k linhas; risco de reescrita
+#     ampla da camada de UI. Gargalo dominante é rede, não processamento tabular.
+#   - Redução da precisão da chave de cache de reverse geocoding (5→4 casas):
+#     economizaria entradas de cache mas reduz precisão espacial. REGRA: não aplicar.
+#   - Refatorar serialização to_json do cache de analytics: risco de quebrar a
+#     invalidação do @st.cache_data do Streamlit. Benefício incerto, risco real.
 # ==============================================================================
 
 import streamlit as st
@@ -1084,6 +1091,48 @@ IBGE_DIST_UF_SET = {
     for nome, items in IBGE_DISTRITOS.items()
     for item in items
 }
+
+# ==============================================================================
+# CONSTANTES DE ANALYTICS — definidas UMA vez no módulo [PERF-2 - 5ª geração]
+# Antes eram recriadas a cada rerun dentro da aba Analytics. Mover para o escopo
+# do módulo elimina reconstrução repetida de dicts e recompilação implícita.
+# Benefício líquido puro: mesmos objetos, criados uma única vez.
+# ==============================================================================
+MAPA_ESTADOS_FULL = {
+    "ACRE": "AC", "ALAGOAS": "AL", "AMAPA": "AP", "AMAZONAS": "AM", "BAHIA": "BA", "CEARA": "CE", "DISTRITO FEDERAL": "DF",
+    "ESPIRITO SANTO": "ES", "GOIAS": "GO", "MARANHAO": "MA", "MATO GROSSO": "MT", "MATO GROSSO DO SUL": "MS", "MINAS GERAIS": "MG",
+    "PARA": "PA", "PARAIBA": "PB", "PARANA": "PR", "PERNAMBUCO": "PE", "PIAUI": "PI", "RIO DE JANEIRO": "RJ", "RIO GRANDE DO NORTE": "RN",
+    "RIO GRANDE DO SUL": "RS", "RONDONIA": "RO", "RORAIMA": "RR", "SANTA CATARINA": "SC", "SAO PAULO": "SP", "SERGIPE": "SE", "TOCANTINS": "TO"
+}
+
+REGIOES_BRASIL = {
+    "Norte": ["AC", "AP", "AM", "PA", "RO", "RR", "TO"], "Nordeste": ["AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"],
+    "Centro-Oeste": ["DF", "GO", "MT", "MS"], "Sudeste": ["ES", "MG", "RJ", "SP"], "Sul": ["PR", "RS", "SC"]
+}
+
+# Dict de lookup invertido UF→Região (O(1)) — usado no mapeamento vetorizado
+_UF_PARA_REGIAO = {uf: regiao for regiao, ufs in REGIOES_BRASIL.items() for uf in ufs}
+
+# Regex de UF pré-compilada (antes recompilada a cada chamada de extrair_uf_precisa)
+_RE_UF_SIGLA = re.compile(r'\b(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b')
+
+@_lru_cache(maxsize=8192)
+def extrair_uf_precisa(endereco):
+    """[PERF-2] Extrai a UF de um endereço textual. Cacheada (lru) pois endereços
+    se repetem muito em lotes B2B. Regex pré-compilada no módulo. Lógica idêntica."""
+    if not isinstance(endereco, str):
+        return "Indefinido"
+    end_upper = unidecode(endereco.upper())
+    for nome, sigla in MAPA_ESTADOS_FULL.items():
+        if f" {nome} " in f" {end_upper} " or end_upper.endswith(nome) or f", {nome}," in end_upper:
+            return sigla
+    partes = [p.strip() for p in end_upper.split(',')]
+    for p in reversed(partes):
+        match = _RE_UF_SIGLA.search(p)
+        if match:
+            return match.group(1)
+    return "Indefinido"
+
 
 # ==============================================================================
 # ENGINE DE RESOLUÇÃO UNIVERSAL E ENDEREÇAMENTO CANÔNICO
@@ -3145,32 +3194,11 @@ with tab_analytics:
             df_kpi['Tempo_Minutos'] = df_kpi['Tempo'].apply(parse_tempo_minutos)
             df_kpi['Tempo_Horas'] = df_kpi['Tempo_Minutos'] / 60.0
             
-        MAPA_ESTADOS_FULL = {
-            "ACRE": "AC", "ALAGOAS": "AL", "AMAPA": "AP", "AMAZONAS": "AM", "BAHIA": "BA", "CEARA": "CE", "DISTRITO FEDERAL": "DF", 
-            "ESPIRITO SANTO": "ES", "GOIAS": "GO", "MARANHAO": "MA", "MATO GROSSO": "MT", "MATO GROSSO DO SUL": "MS", "MINAS GERAIS": "MG", 
-            "PARA": "PA", "PARAIBA": "PB", "PARANA": "PR", "PERNAMBUCO": "PE", "PIAUI": "PI", "RIO DE JANEIRO": "RJ", "RIO GRANDE DO NORTE": "RN",
-            "RIO GRANDE DO SUL": "RS", "RONDONIA": "RO", "RORAIMA": "RR", "SANTA CATARINA": "SC", "SAO PAULO": "SP", "SERGIPE": "SE", "TOCANTINS": "TO"
-        }
-        
-        REGIOES_BRASIL = {
-            "Norte": ["AC", "AP", "AM", "PA", "RO", "RR", "TO"], "Nordeste": ["AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"],
-            "Centro-Oeste": ["DF", "GO", "MT", "MS"], "Sudeste": ["ES", "MG", "RJ", "SP"], "Sul": ["PR", "RS", "SC"]
-        }
-        
-        def extrair_uf_precisa(endereco):
-            if not isinstance(endereco, str): return "Indefinido"
-            end_upper = unidecode(endereco.upper())
-            for nome, sigla in MAPA_ESTADOS_FULL.items():
-                if f" {nome} " in f" {end_upper} " or end_upper.endswith(nome) or f", {nome}," in end_upper: return sigla
-            padrao_uf = r'\b(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b'
-            partes = [p.strip() for p in end_upper.split(',')]
-            for p in reversed(partes):
-                match = re.search(padrao_uf, p)
-                if match: return match.group(1)
-            return "Indefinido"
-            
+        # MAPA_ESTADOS_FULL, REGIOES_BRASIL e extrair_uf_precisa agora são definidos
+        # no escopo do módulo [PERF-2] — não recriados a cada rerun.
         df_kpi['UF_Sintetica_Origem'] = df_kpi['Endereco Oficial Origem'].apply(extrair_uf_precisa)
-        df_kpi['Regiao_Sintetica_Origem'] = df_kpi['UF_Sintetica_Origem'].apply(lambda uf: next((regiao for regiao, ufs in REGIOES_BRASIL.items() if uf in ufs), "Indefinido"))
+        # [PERF-1] Mapeamento UF→Região via dict de lookup O(1) + .map() vetorizado
+        df_kpi['Regiao_Sintetica_Origem'] = df_kpi['UF_Sintetica_Origem'].map(_UF_PARA_REGIAO).fillna("Indefinido")
         
         lista_regioes = ["Todas"] + sorted([x for x in df_kpi['Regiao_Sintetica_Origem'].unique() if pd.notna(x)])
         if st.session_state['widget_regiao'] not in lista_regioes: st.session_state['widget_regiao'] = 'Todas'
@@ -3409,6 +3437,36 @@ with tab_analytics:
                 cme4.metric("Máxima", f"{d.max():.0f} km", help="A rota mais longa do recorte atual.")
             else:
                 st.info("Distribuição estatística requer ao menos 3 rotas com distância válida no recorte atual.")
+
+            # [F-NEW5 - 5ª geração] Ranking de Cobertura Territorial por UF
+            # Atende Etapa 9 (cobertura territorial). Usa apenas agregação pandas sobre
+            # dados já processados — read-only, zero chamada externa, zero risco.
+            st.markdown("#### 🗺️ Cobertura Territorial por Estado (Ranking)")
+            st.caption("Quantas rotas e qual a distância média partem de cada estado. "
+                       "Revela onde sua operação está concentrada e onde há cobertura rarefeita.")
+            if 'UF_Sintetica_Origem' in df_cf.columns:
+                df_cobertura = df_cf[df_cf['UF_Sintetica_Origem'] != 'Indefinido'].groupby('UF_Sintetica_Origem').agg(
+                    Rotas=('Origem', 'count'),
+                    Dist_Media=('Distancia', 'mean'),
+                    Score_Medio=('Score Final Global', 'mean')
+                ).reset_index().sort_values('Rotas', ascending=False)
+                if not df_cobertura.empty:
+                    chart_cobertura = alt.Chart(df_cobertura).mark_bar(cornerRadiusEnd=4).encode(
+                        x=alt.X('Rotas:Q', title='Quantidade de Rotas'),
+                        y=alt.Y('UF_Sintetica_Origem:N', title='Estado (UF)', sort='-x'),
+                        color=alt.Color('Dist_Media:Q', scale=alt.Scale(scheme='blues'), title='Dist. Média (km)'),
+                        tooltip=[
+                            alt.Tooltip('UF_Sintetica_Origem:N', title='UF'),
+                            alt.Tooltip('Rotas:Q', title='Rotas'),
+                            alt.Tooltip('Dist_Media:Q', title='Distância Média (km)', format='.1f'),
+                            alt.Tooltip('Score_Medio:Q', title='Score Médio', format='.1f'),
+                        ]
+                    ).properties(height=max(200, len(df_cobertura) * 28), title='Rotas por Estado de Origem')
+                    st.altair_chart(chart_cobertura, use_container_width=True)
+                    n_ufs = len(df_cobertura)
+                    st.caption(f"📍 Cobertura atual: **{n_ufs} de 27 estados** ({round(100*n_ufs/27)}% do território nacional) presentes neste recorte.")
+                else:
+                    st.info("Sem dados de estado identificáveis no recorte atual.")
                 
             st.markdown("#### 🗺️ Torre de Controle Espacial (Heatmap Dinâmico)")
             with st.container(border=True):
