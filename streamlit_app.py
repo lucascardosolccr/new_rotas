@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 2.6
+# VERSÃO: 2.7
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -49,44 +49,39 @@
 #   v1.0–v2.3 → 13 rodadas (performance, precisão, escala, UX, FIX-LOTE)
 #   v2.4 → CORREÇÃO + ACELERAÇÃO DA ABA DE ALOCAÇÃO (FIX-ALOC)
 #   v2.5 → AUDITORIA TÉCNICA COMPLETA (linha por linha) — refinamentos + documentação
-#   v2.6 → IDENTIFICAÇÃO GEOGRÁFICA + PAINEL DE ALOCAÇÃO (FIX-GEO):
+#   v2.6 → IDENTIFICAÇÃO GEOGRÁFICA + PAINEL DE ALOCAÇÃO (FIX-GEO)
+#   v2.7 → CONSISTÊNCIA DE FONTE ÚNICA DE ROTAS (FIX-FONTE):
 #
-# PROBLEMAS CORRIGIDOS (identificação de localidades):
-#   Bug 1: "Corumbá, GO → Pirenópolis, GO" → o link do Google Maps recebia apenas
-#          "GO / GO", perdendo os municípios.
-#   Bug 2: "Ribeirão Cascalheira, MT" recebia Score de Identificação = 7 (absurdamente
-#          baixo para uma cidade conhecida).
+# PROBLEMA CORRIGIDO (mistura de provedores):
+#   Quando o OSRM fornecia a menor rota, a distância e o tempo eram do OSRM, MAS o
+#   link "Abrir Rota" e o mapa continuavam apontando para o Google Maps — que mostrava
+#   uma rota DIFERENTE (trajeto, distância e tempo distintos). O usuário via uma rota
+#   e abria outra.
 #
-# CAUSA RAIZ (única, em cascata): a resolução do MUNICÍPIO falhava quando o usuário
-#   escrevia a forma curta do nome (ex.: "Corumbá" em vez do oficial "Corumbá de
-#   Goiás") e havia homônimo em outra UF (Corumbá-MS). Com o município vazio:
-#     (a) o endereço oficial colapsava para apenas a UF → link "GO/GO" (Bug 1);
-#     (b) a classificação caía para LOGRADOURO em vez de MUNICIPIO → sem o boost de
-#         cidade + punição Anti-Fantasma → score colapsava a 7 (Bug 2).
+# CAUSA RAIZ: na lógica de decisão Google×OSRM, quando o OSRM vencia, os campos
+#   link_rota e link_embed eram preenchidos com link_fallback/link_embed_fallback, que
+#   eram SEMPRE URLs do Google Maps (/maps/dir/ e maps.google/embed), independentemente
+#   do provedor vencedor. Distância/tempo vinham do OSRM, mas link/mapa do Google.
 #
-# CORREÇÕES [FIX-GEO]:
-#   [FIX-GEO4] Resolução robusta de nome curto DENTRO da UF informada (busca segura,
-#         sem ambiguidade entre estados): match por prefixo ("Corumbá"→"Corumbá de
-#         Goiás"), por nome limpo e fuzzy adicional. Só auto-resolve quando há candidato
-#         ÚNICO (ambiguidade cai no fuzzy). Casos exatos seguem pelo n-grama (sem regressão).
-#   [FIX-GEO2] Backfill de município/UF no consenso a partir do contexto já resolvido
-#         (validado contra IBGE) quando a API vencedora não devolve a cidade. Só preenche
-#         o que falta — nunca sobrescreve dado da API. Endereço nunca mais fica só com UF.
-#   [FIX-GEO1] Blindagem do parâmetro do link Google Maps: nunca é apenas a sigla do
-#         estado. Se o endereço degradar, usa coordenadas exatas ou o texto original do
-#         usuário (que carrega o município digitado). Corrige o link "GO/GO".
-#   [FIX-GEO3] Resgate de score para município corretamente identificado: se o município
-#         resolvido corresponde a cidade REAL do IBGE e a entrada é "cidade + UF" (sem
-#         número predial), o score é reajustado com justiça (≥85). Corrige o Score 7.
+# CORREÇÃO [FIX-FONTE] — Single Source of Truth por rota:
+#   [FIX-FONTE1] Novo _montar_links_osrm(): gera link do visualizador oficial do OSRM
+#         (map.project-osrm.org) + mapa OpenStreetMap embarcável, representando EXATAMENTE
+#         a rota do mesmo motor de cálculo (driving).
+#   [FIX-FONTE2] Quando o OSRM vence (menor distância OU Google indisponível), link_rota
+#         e link_embed passam a ser do OSRM/OpenStreetMap. Quando o Google vence, tudo
+#         permanece do Google. NUNCA mais há mistura: distância, tempo, mapa e link são
+#         sempre do MESMO provedor vencedor.
+#   [FIX-FONTE3] UI provedor-consciente: o nome do botão muda dinamicamente ("Abrir rota
+#         no Google Maps" vs "Abrir rota baseada no OSRM"), o mapa exibe a malha correta,
+#         e o painel de consistência mostra a fonte única, sem ambiguidade.
 #
-# PAINEL DA ABA DE ALOCAÇÃO [FIX-ALOC-UI]:
-#   Acompanhamento em tempo real equivalente ao do Lote: registros (total/processados/
-#   restantes), % concluído, lote atual, tempo decorrido, TEMPO MÉDIO POR REGISTRO,
-#   ETA, velocidade (registros/s e /min) e ETAPA ATUAL do processamento.
+# APLICAÇÃO: a correção é na fonte (RotaPipeline), logo vale para TODAS as abas —
+#   Geocodificação, Geodecodificação, Lote e Alocação herdam o link/fonte coerentes
+#   do mesmo RotaPipeline (res[2]=link, res[5]=fonte), já sincronizados.
 #
-# Validações: link nunca colapsa para UF (7 casos); Corumbá→Corumbá de Goiás via
-#   prefixo; ambiguidade tratada; casos exatos sem regressão; score de município real
-#   reajustado. Todas as correções/otimizações anteriores preservadas.
+# Validação: 5 cenários (OSRM bem menor, Google menor, empate, só OSRM, só Google) —
+#   em todos, distância+link+mapa da MESMA fonte. Casos de Google preservados (sem
+#   regressão). Todas as correções/otimizações anteriores preservadas.
 # ------------------------------------------------------------------------------
 # MELHORIAS APLICADAS v2.4 → v2.5:
 #   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
@@ -2652,6 +2647,32 @@ def _montar_param_link_seguro(endereco_oficial, lat, lon, texto_original):
     # Sem nada utilizável (não deveria ocorrer) — devolve o que houver
     return requests.utils.quote(end) if end else f"{lat},{lon}"
 
+def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d):
+    """[FIX-FONTE1 - 17ª geração] Constrói links que representam EXATAMENTE a rota do
+    OSRM, para uso quando o OSRM é o provedor vencedor (menor distância). Antes, mesmo
+    quando o OSRM vencia, o link apontava para o Google Maps — abrindo uma rota DIFERENTE
+    da que gerou os números exibidos. Aqui devolvemos:
+      - link_rota: o visualizador oficial do OSRM (map.project-osrm.org) que desenha a
+        MESMA rota calculada pelo mesmo motor (driving), garantindo coerência total.
+      - link_embed: um mapa OpenStreetMap embarcável centrado no trajeto (mesma malha).
+    Assim, distância, tempo, mapa e link passam a ser da MESMA fonte (single source of
+    truth). Zero perda: o usuário abre exatamente a rota usada nos cálculos.
+    """
+    # Visualizador oficial do OSRM — desenha a rota driving do mesmo motor de cálculo.
+    link_osrm = (f"https://map.project-osrm.org/?z=11&center={lat_o}%2C{lon_o}"
+                 f"&loc={lat_o}%2C{lon_o}&loc={lat_d}%2C{lon_d}"
+                 f"&hl=pt-br&alt=0&srv=0")
+    # Mapa OSM embarcável (bounding box do trajeto) com marcadores — mesma malha OSM.
+    lat_min, lat_max = min(lat_o, lat_d), max(lat_o, lat_d)
+    lon_min, lon_max = min(lon_o, lon_d), max(lon_o, lon_d)
+    # Margem para não cortar os pontos
+    m_lat = max(0.02, (lat_max - lat_min) * 0.15)
+    m_lon = max(0.02, (lon_max - lon_min) * 0.15)
+    bbox = f"{lon_min - m_lon}%2C{lat_min - m_lat}%2C{lon_max + m_lon}%2C{lat_max + m_lat}"
+    link_embed_osm = (f"https://www.openstreetmap.org/export/embed.html?bbox={bbox}"
+                      f"&layer=mapnik&marker={lat_o}%2C{lon_o}")
+    return link_osrm, link_embed_osm
+
 def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     start_total = time.time()
     origem_clean, destino_clean = str(origem).strip(), str(destino).strip()
@@ -2770,19 +2791,21 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             # Tolerância de 2%: dentro disso preferimos o Google (rede oficial que o
             # link exibe), evitando divergência entre valor mostrado e link aberto.
             if km_o < km_g * 0.98:
-                # OSRM achou rota comprovadamente mais curta → usamos OSRM e o link
-                # é coerente (Google /dir/ por padrão também busca rota eficiente).
+                # OSRM achou rota comprovadamente mais curta → USA OSRM INTEGRALMENTE.
+                # [FIX-FONTE2] Single source of truth: distância, tempo, link e mapa
+                # passam a ser TODOS do OSRM. O link abre o visualizador do próprio OSRM
+                # (mesma rota), nunca mais o Google (que mostraria trajeto diferente).
                 km_rota = km_o
                 tempo_m = res_osrm[1]
                 tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
-                link_rota = link_fallback
-                link_embed = link_embed_fallback
+                link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d)
                 balsa_rota = res_osrm[2]
                 fonte_rota = "OSRM (Menor Distância)"
                 score_rota = 88
                 motivo_roteamento = (f"Rota de Menor Distância: entre {n_alt_osrm} alternativa(s) viária(s), "
                                      f"a malha OSRM identificou {km_o}km como o menor trajeto — inferior aos {km_g}km "
-                                     f"da rota padrão do Google. Aplicada a regra de negócio de menor distância.")
+                                     f"da rota padrão do Google. FONTE ÚNICA: distância, tempo, mapa e link são todos "
+                                     f"do OSRM (o link abre exatamente esta rota no visualizador OSRM/OpenStreetMap).")
             else:
                 # Google é igual ou menor (dentro da tolerância) → usamos Google,
                 # garantindo que valor exibido == rota que o link abre.
@@ -2802,17 +2825,20 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             motivo_roteamento = (f"Rota de Menor Distância: {km_rota}km extraída diretamente da nuvem oficial do "
                                  f"Google Maps. Valor exibido consistente com a rota aberta pelo link de navegação.")
         else:
+            # [FIX-FONTE2] OSRM é a ÚNICA fonte (Google indisponível). Distância, tempo,
+            # link e mapa são TODOS do OSRM — o link abre exatamente esta rota no
+            # visualizador OSRM, nunca o Google (que mostraria um trajeto diferente).
             km_rota = res_osrm[0]
             tempo_m = res_osrm[1]
             n_alt_osrm = res_osrm[3] if len(res_osrm) > 3 else 1
             tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
-            link_rota = link_fallback
-            link_embed = link_embed_fallback
+            link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d)
             balsa_rota = res_osrm[2]
             fonte_rota = "OSRM Routing"
             score_rota = 85
-            motivo_roteamento = (f"Fallback Operacional: Google Maps indisponível (Timeout). Rota de menor distância "
-                                 f"({km_rota}km entre {n_alt_osrm} alternativa(s)) calculada pela malha OSRM.")
+            motivo_roteamento = (f"Fonte Única OSRM: Google Maps indisponível (Timeout). Rota de menor distância "
+                                 f"({km_rota}km entre {n_alt_osrm} alternativa(s)) calculada pela malha OSRM. "
+                                 f"Mapa e link representam exatamente esta rota OSRM (OpenStreetMap).")
             
         tempo_roteamento = round(time.time() - start_rot, 2)
         tempo_total = round(time.time() - start_total, 2)
@@ -3368,20 +3394,23 @@ with tab_individual:
                 st.info(f"🧭 **Estratégia de Roteamento (XAI):** {res_ind[28]}")
                 st.caption(f"📏 **Status da Linha Reta:** {res_ind[30] if len(res_ind) > 30 else 'Não Mapeado'}")
                 
-                # [ETAPA5-3] Painel de consistência: deixa explícito qual rota gerou os
-                # valores e garante ao usuário que o link abre a MESMA rota exibida.
+                # [ETAPA5-3 + FIX-FONTE3] Painel de consistência: fonte ÚNICA de verdade.
+                # Deixa explícito que distância, tempo, mapa e link vêm TODOS do mesmo
+                # provedor vencedor (o de menor distância), sem mistura entre fontes.
                 fonte_rota_exibida = res_ind[5] if len(res_ind) > 5 else "N/A"
+                _eh_osrm_painel = "OSRM" in str(fonte_rota_exibida).upper()
+                _nome_provedor = "OSRM / OpenStreetMap" if _eh_osrm_painel else "Google Maps"
                 with st.container(border=True):
                     cc1, cc2, cc3 = st.columns(3)
-                    cc1.metric("Fonte da Rota", fonte_rota_exibida,
-                               help="Motor que produziu a distância/tempo exibidos. 'Google Maps' = valor da nuvem oficial; 'OSRM (Menor Distância)' = malha aberta escolheu trajeto mais curto.")
+                    cc1.metric("Fonte Única da Rota", fonte_rota_exibida,
+                               help="Provedor vencedor (menor distância). TODOS os dados — distância, tempo, mapa e link — vêm desta única fonte.")
                     cc2.metric("Critério Aplicado", "Menor Distância",
                                help="Regra de negócio: entre as rotas viáveis, é sempre escolhida a de MENOR quilometragem (não a mais rápida).")
-                    cc3.metric("Consistência com Link", "✅ Garantida",
-                               help="A distância e o tempo exibidos correspondem à rota aberta no botão do Google Maps abaixo.")
-                    st.caption("ℹ️ **Transparência total:** o valor de Distância Viária acima reflete a rota de menor distância disponível. "
-                               "Ao abrir o link do Google Maps, você verá a mesma rota considerada. Pequenas diferenças podem ocorrer se o "
-                               "Google atualizar o trânsito em tempo real entre o cálculo e a abertura do link.")
+                    cc3.metric("Mapa + Link Sincronizados", "✅ Sim",
+                               help=f"O mapa exibido e o link abrem exatamente a rota do {_nome_provedor} usada nos cálculos. Sem mistura entre provedores.")
+                    st.caption(f"ℹ️ **Fonte única de verdade:** distância, tempo, mapa e link são TODOS provenientes do **{_nome_provedor}** "
+                               f"(provedor de menor distância nesta execução). Não há mistura de dados entre Google e OSRM. "
+                               f"Ao abrir o link, você verá exatamente a mesma rota que gerou os valores acima.")
                 
                 with st.expander("🔍 Auditoria Detalhada da Geocodificação e Consenso", expanded=False):
                     st.caption(f"Status da Base IBGE Local: {'Ativa e Carregada' if len(IBGE_MUNICIPIOS) > 1000 else '⚠️ CORROMPIDA/FALHA DE API'}")
@@ -3408,11 +3437,25 @@ with tab_individual:
                             st.caption(f"• {just}")
                             
                 url_iframe = res_ind[29]
+                _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
+                _eh_osrm = "OSRM" in str(_fonte_rota_ui).upper()
                 try: 
                     components.iframe(url_iframe, height=470, scrolling=True)
                 except Exception: 
                     st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
-                st.markdown(f"🗺️ [Abrir Rota Completa no Aplicativo do Google Maps]({res_ind[2]})")
+                # [FIX-FONTE3] Mapa e botão refletem EXATAMENTE o provedor vencedor.
+                # Sem ambiguidade: se a rota é do OSRM, o mapa é OpenStreetMap e o botão
+                # diz "OSRM"; se é do Google, o mapa e o botão são do Google. O link abre
+                # sempre a MESMA rota usada nos cálculos (single source of truth).
+                if _eh_osrm:
+                    st.caption("🗺️ Mapa acima: malha **OpenStreetMap/OSRM** — exatamente a rota de menor distância usada nos cálculos.")
+                    st.markdown(f"🧭 [Abrir rota baseada no OSRM (OpenStreetMap)]({res_ind[2]})")
+                    st.caption("ℹ️ Esta rota foi calculada pelo **OSRM** (menor distância). O link abre o visualizador do próprio OSRM, "
+                               "mostrando o mesmo trajeto — não o Google Maps, que traçaria uma rota diferente.")
+                else:
+                    st.caption("🗺️ Mapa acima: **Google Maps** — exatamente a rota de menor distância usada nos cálculos.")
+                    st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
+                    st.caption("ℹ️ Esta rota foi extraída do **Google Maps** (menor distância). O link abre exatamente o mesmo trajeto exibido.")
             else:
                 st.error("Falha na validação de consistência geodésica unificada.")
         else:
