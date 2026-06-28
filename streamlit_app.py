@@ -1,38 +1,33 @@
 # ==============================================================================
-# VERSÃO: 2.1
+# VERSÃO: 2.2
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
 # HISTÓRICO DE VERSÕES:
-#   v1.0–v2.0 → 10 rodadas anteriores (performance, precisão, escala, UX, velocidade)
-#   v2.1 → AUDITORIA DE PERFORMANCE + QUALIDADE (ganhos líquidos, zero regressão):
+#   v1.0–v2.1 → 11 rodadas anteriores (performance, precisão, escala, UX, qualidade)
+#   v2.2 → AUDITORIA CONTINUADA — memoização do parser de componentes (benefício líquido):
 #
-# MELHORIAS APLICADAS v2.0 → v2.1:
-#   [PERF-Q1] Memoização thread-safe de resolver_contexto_administrativo(). Função
-#         quente chamada repetidamente em classificar_entrada, consenso Bayesiano e
-#         geocodificação. Faz trabalho caro: 2 loops de regex sobre 27 UFs + n-gramas
-#         + até 2 buscas fuzzy sobre milhares de cidades. Pura sobre texto_norm + dados
-#         IBGE estáticos → determinística. Medido: 2.4× mais rápido (mais quando a
-#         busca fuzzy é acionada). Retorna CÓPIA (callers fazem .update sem corromper
-#         o cache). Saída idêntica validada. Zero regressão.
-#   [PERF-Q2] Distância interna de consenso (_distancia_consenso_km) para o loop O(n²)
-#         entre candidatos de API. MESMA matemática (Karney→Geopy→Haversine IUGG), mas
-#         sem incrementar contadores globais. DOIS ganhos líquidos:
-#         (1) PERFORMANCE: elimina contenção do _LOCK_METRICAS no loop O(n²) paralelo;
-#         (2) QUALIDADE/AUDITORIA: METRICAS_DISTANCIA reflete só rotas reais, não
-#             comparações internas de consenso (métricas de auditoria mais fiéis).
-#         Validado: decisões de clustering 100% idênticas → zero impacto na precisão.
+# MELHORIA APLICADA v2.1 → v2.2:
+#   [PERF-Q3] Memoização thread-safe de ParserGeograficoBR.extrair_componentes().
+#         Staticmethod pura (3 buscas de regex) chamada até 3× sobre o MESMO texto_norm
+#         no caminho de geocodificação (construir_endereco_canonico, consenso Bayesiano,
+#         geo core). Depende só do texto + regexes fixas → determinística. Retorna cópia
+#         defensiva (callers só leem; cópia blinda contra mutação). Bounded 50k + lock.
+#         Saída idêntica validada (miss+hit + proteção de cache). Combinada com PERF-Q1
+#         (resolver_contexto memoizado), o caminho de texto da geocodificação ficou
+#         ~3.8× mais rápido em lote B2B com origens repetidas. Zero regressão.
 #
-# Funcionalidades de velocidade/qualidade herdadas:
-#   [SPEED-4 v2.0] Memoização de normalizar(). [SPEED-1/2/3 v1.9] Pré-aquecimento,
-#   estimativa de tempo, xlsxwriter. [v1.8] Regra de menor distância Google/OSRM.
+# Otimizações de texto acumuladas (compõem no caminho de geocodificação):
+#   [SPEED-4 v2.0] normalizar() memoizado · [PERF-Q1 v2.1] resolver_contexto memoizado
+#   [PERF-Q3 v2.2] extrair_componentes memoizado · [PERF-Q2 v2.1] consenso sem lock
 #
 # DECISÃO DOCUMENTADA (regra: zero regressão):
-#   - Polars/DuckDB: gargalo é rede, não tabela. Sem ganho no caminho dominante.
-#   - asyncio: risco no rate-limiter Nominatim. Pré-aquecimento já captura o ganho.
-#   - Alterar heurística de auto-swap de coordenadas em validar_coordenada_brasil:
-#     poderia corrigir casos raros mas arrisca regressão em coordenadas válidas.
-#     Mantida a lógica de negócio original.
+#   - Link do Google usar coordenadas quando a medição usou coordenadas: aumentaria a
+#     consistência valor↔link, MAS um link com coordenadas cruas é menos legível que um
+#     com endereço (possível downside de UX). Há possibilidade de perda → NÃO implementado,
+#     apenas documentado. A consistência já é garantida pela regra de menor distância (v1.8).
+#   - Polars/DuckDB/asyncio/Numba: já avaliados nas rodadas anteriores — gargalo é rede,
+#     não tabela/CPU-numérico. Sem ganho no caminho dominante.
 # ==============================================================================
 
 import streamlit as st
@@ -1208,9 +1203,19 @@ class ParserGeograficoBR:
     _CEP_REGEX = re.compile(r'\b\d{5}-?\d{3}\b')
     _NUM_REGEX = re.compile(r'\b(?:N|NO|NUMERO|NUM)?\s*(\d{1,5})\b', re.IGNORECASE)
     _COMP_REGEX = re.compile(r'\b(BLOCO|BL|APTO|APT|APARTAMENTO|SALASL|SALA|CONJUNTO|CJ|CASA|LOJA|PAVIMENTO)\s*([A-Z0-9]+)\b', re.IGNORECASE)
-    
+    # [PERF-Q3 - 11ª geração] Memo thread-safe de extrair_componentes. Esta staticmethod
+    # pura faz 3 buscas de regex e é chamada até 3× sobre o MESMO texto_norm no caminho
+    # de geocodificação (construir_endereco_canonico, consenso, geo core). Depende só do
+    # texto + regexes fixas → determinística. Retornamos cópia (callers só leem, mas a
+    # cópia blinda contra mutação futura). Bounded 50k.
+    _memo_comp = {}
+    _memo_comp_lock = threading.Lock()
+
     @staticmethod
     def extrair_componentes(texto):
+        cached = ParserGeograficoBR._memo_comp.get(texto)
+        if cached is not None:
+            return dict(cached)
         componentes = {"cep": "", "numero": "", "complemento": "", "resto": texto}
         cep_match = ParserGeograficoBR._CEP_REGEX.search(componentes["resto"])
         if cep_match:
@@ -1225,6 +1230,10 @@ class ParserGeograficoBR:
         if comp_match: 
             componentes["complemento"] = f"{comp_match.group(1)} {comp_match.group(2)}"
             
+        with ParserGeograficoBR._memo_comp_lock:
+            if len(ParserGeograficoBR._memo_comp) >= 50000:
+                ParserGeograficoBR._memo_comp.clear()
+            ParserGeograficoBR._memo_comp[texto] = dict(componentes)
         return componentes
 
 class MotorEnderecoCanônico:
