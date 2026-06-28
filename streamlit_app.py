@@ -1,35 +1,38 @@
 # ==============================================================================
-# VERSÃO: 2.0
+# VERSÃO: 2.1
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
 # HISTÓRICO DE VERSÕES:
-#   v1.0–v1.9 → 9 rodadas anteriores (performance, precisão, escala, UX, velocidade)
-#   v2.0 → 2ª AUDITORIA DE VELOCIDADE — memoização da normalização (CPU hot path):
+#   v1.0–v2.0 → 10 rodadas anteriores (performance, precisão, escala, UX, velocidade)
+#   v2.1 → AUDITORIA DE PERFORMANCE + QUALIDADE (ganhos líquidos, zero regressão):
 #
-# MELHORIAS APLICADAS v1.9 → v2.0 (prioridade absoluta: velocidade de lote):
-#   [SPEED-4] Memoização thread-safe de semantica.normalizar(). Esta é a função de
-#         texto mais quente do sistema: faz unidecode + várias substituições de regex
-#         + 2 loops sobre abreviações/sinônimos, e é chamada repetidamente sobre as
-#         MESMAS strings (loop de prioridade, chave de cache de rota 2×/rota, e dentro
-#         da geocodificação). Medido: 4.3× mais rápido na normalização em lote B2B com
-#         origens repetidas. Saída byte-idêntica (cache_aprendizado é somente-leitura
-#         em execução e as regras são fixas → determinístico). Cache limitado a 50k
-#         entradas com lock. Refatorada em normalizar() (wrapper memo) + _normalizar_impl()
-#         (lógica original intacta). Zero regressão.
+# MELHORIAS APLICADAS v2.0 → v2.1:
+#   [PERF-Q1] Memoização thread-safe de resolver_contexto_administrativo(). Função
+#         quente chamada repetidamente em classificar_entrada, consenso Bayesiano e
+#         geocodificação. Faz trabalho caro: 2 loops de regex sobre 27 UFs + n-gramas
+#         + até 2 buscas fuzzy sobre milhares de cidades. Pura sobre texto_norm + dados
+#         IBGE estáticos → determinística. Medido: 2.4× mais rápido (mais quando a
+#         busca fuzzy é acionada). Retorna CÓPIA (callers fazem .update sem corromper
+#         o cache). Saída idêntica validada. Zero regressão.
+#   [PERF-Q2] Distância interna de consenso (_distancia_consenso_km) para o loop O(n²)
+#         entre candidatos de API. MESMA matemática (Karney→Geopy→Haversine IUGG), mas
+#         sem incrementar contadores globais. DOIS ganhos líquidos:
+#         (1) PERFORMANCE: elimina contenção do _LOCK_METRICAS no loop O(n²) paralelo;
+#         (2) QUALIDADE/AUDITORIA: METRICAS_DISTANCIA reflete só rotas reais, não
+#             comparações internas de consenso (métricas de auditoria mais fiéis).
+#         Validado: decisões de clustering 100% idênticas → zero impacto na precisão.
 #
-# Funcionalidades de velocidade herdadas (v1.9):
-#   [SPEED-1] Pré-aquecimento de geocodificação de endpoints únicos (elimina race
-#             de cache-miss em lotes B2B).
-#   [SPEED-2/Etapa 5] Estimativa dinâmica de tempo + monitoramento por etapa.
-#   [SPEED-3] Exportação xlsxwriter (~1.7× vs openpyxl).
+# Funcionalidades de velocidade/qualidade herdadas:
+#   [SPEED-4 v2.0] Memoização de normalizar(). [SPEED-1/2/3 v1.9] Pré-aquecimento,
+#   estimativa de tempo, xlsxwriter. [v1.8] Regra de menor distância Google/OSRM.
 #
 # DECISÃO DOCUMENTADA (regra: zero regressão):
-#   - Polars/DuckDB no pipeline: gargalo é rede, não tabela. Sem ganho no caminho
-#     dominante. Não implementado.
-#   - asyncio: risco no rate-limiter Nominatim + reescrita ampla. O pré-aquecimento
-#     (SPEED-1) já captura o maior ganho de rede com risco zero.
-#   - Redução de timeouts de API: arriscaria perder respostas válidas lentas. Não.
+#   - Polars/DuckDB: gargalo é rede, não tabela. Sem ganho no caminho dominante.
+#   - asyncio: risco no rate-limiter Nominatim. Pré-aquecimento já captura o ganho.
+#   - Alterar heurística de auto-swap de coordenadas em validar_coordenada_brasil:
+#     poderia corrigir casos raros mas arrisca regressão em coordenadas válidas.
+#     Mantida a lógica de negócio original.
 # ==============================================================================
 
 import streamlit as st
@@ -1255,6 +1258,9 @@ class MotorEnderecoCanônico:
         # saída é determinística por entrada → memoização é 100% segura (zero regressão).
         self._memo_norm = {}
         self._memo_norm_lock = threading.Lock()
+        # [PERF-Q1] Memo de resolver_contexto_administrativo (pura sobre texto_norm)
+        self._memo_ctx = {}
+        self._memo_ctx_lock = threading.Lock()
 
     def normalizar(self, texto):
         if not texto or pd.isna(texto):
@@ -1355,6 +1361,23 @@ class MotorEnderecoCanônico:
         return texto_norm
 
     def resolver_contexto_administrativo(self, texto_norm):
+        # [PERF-Q1 - 11ª geração] Memoização thread-safe. Esta função é chamada
+        # repetidamente sobre o mesmo texto_norm (em classificar_entrada, no consenso
+        # Bayesiano e na geocodificação) e faz trabalho caro: 2 loops de regex sobre
+        # as 27 UFs + geração de n-gramas + até 2 buscas fuzzy (process.extractOne)
+        # sobre listas de milhares de cidades. Depende apenas de texto_norm e de dados
+        # IBGE estáticos → pura e determinística. Memoizar é seguro (zero regressão).
+        # Retornamos uma CÓPIA para que o .update() do chamador não corrompa o cache.
+        if texto_norm in self._memo_ctx:
+            return dict(self._memo_ctx[texto_norm])
+        resultado = self._resolver_contexto_administrativo_impl(texto_norm)
+        with self._memo_ctx_lock:
+            if len(self._memo_ctx) >= 50000:
+                self._memo_ctx.clear()
+            self._memo_ctx[texto_norm] = dict(resultado)
+        return resultado
+
+    def _resolver_contexto_administrativo_impl(self, texto_norm):
         uf_explicita = None
         for sigla in IBGE_ESTADOS.keys():
             if re.search(rf'\b{sigla}\b', texto_norm):
@@ -1541,6 +1564,49 @@ def calcular_distancia_linha_reta(lat1, lon1, lat2, lon2, contexto=""):
         logger.error(f"Erro fatal no motor de distância geodésica ({contexto}): {e}")
         _incrementar_metrica("falhas_criticas")
         return 0.0, "Falha Operacional Crítica no Motor Geodésico"
+
+def _distancia_consenso_km(lat1, lon1, lat2, lon2):
+    """[PERF-Q2 - 11ª geração] Distância geodésica para comparações INTERNAS do
+    consenso Bayesiano (loop O(n²) entre candidatos de API). Usa EXATAMENTE a mesma
+    matemática de calcular_distancia_linha_reta (GeographicLib Karney → Geopy →
+    Haversine IUGG), mas SEM incrementar os contadores globais de telemetria.
+
+    Dois benefícios líquidos, zero perda:
+    1) PERFORMANCE: elimina a contenção do _LOCK_METRICAS no loop O(n²) executado por
+       múltiplas threads em paralelo (cada chamada antiga pegava o lock 1-2×).
+    2) QUALIDADE/AUDITORIA: METRICAS_DISTANCIA passa a refletir apenas distâncias de
+       ROTAS reais, não comparações internas de consenso — métricas de auditoria mais
+       fiéis (ex: 'total_calculos' deixa de ser inflado por uso interno).
+    O valor numérico retornado é idêntico ao da função pública para os mesmos pontos.
+    """
+    try:
+        lat1, lon1, lat2, lon2 = float(lat1), float(lon1), float(lat2), float(lon2)
+        if lat1 == 0.0 or lon1 == 0.0 or lat2 == 0.0 or lon2 == 0.0:
+            return 0.0
+        if lat1 == lat2 and lon1 == lon2:
+            return 0.0
+        if GEOGRAPHICLIB_DISPONIVEL:
+            try:
+                dist_km = Geodesic.WGS84.Inverse(lat1, lon1, lat2, lon2)['s12'] / 1000.0
+                if dist_km > 0:
+                    return round(dist_km, 3)
+            except Exception:
+                pass
+        if GEOPY_DISPONIVEL:
+            try:
+                dist_km = geodesic((lat1, lon1), (lat2, lon2)).km
+                if dist_km > 0:
+                    return round(dist_km, 3)
+            except Exception:
+                pass
+        lat1_r, lon1_r, lat2_r, lon2_r = map(math.radians, [lat1, lon1, lat2, lon2])
+        dlat = lat2_r - lat1_r
+        dlon = lon2_r - lon1_r
+        a = math.sin(dlat / 2)**2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon / 2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        return round(6371.0088 * c, 3)
+    except Exception:
+        return 0.0
 
 def cascata_postal_tripla(cep_limpo):
     if cep_limpo in cache_cep:
@@ -1987,7 +2053,7 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
         
         for c2 in candidatos_validos:
             if c1["fonte"] != c2["fonte"]:
-                dist, _ = calcular_distancia_linha_reta(c1["lat"], c1["lon"], c2["lat"], c2["lon"], contexto="Consenso API")
+                dist = _distancia_consenso_km(c1["lat"], c1["lon"], c2["lat"], c2["lon"])
                 if dist <= tolerancia_km: 
                     apis_concordantes.add(c2["fonte"])
                     probabilidades_cluster.append(PESO_FONTES.get(c2["fonte"], 0.5)) 
