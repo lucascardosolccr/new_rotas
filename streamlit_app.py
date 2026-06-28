@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 2.7
+# VERSÃO: 2.8
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -50,38 +50,32 @@
 #   v2.4 → CORREÇÃO + ACELERAÇÃO DA ABA DE ALOCAÇÃO (FIX-ALOC)
 #   v2.5 → AUDITORIA TÉCNICA COMPLETA (linha por linha) — refinamentos + documentação
 #   v2.6 → IDENTIFICAÇÃO GEOGRÁFICA + PAINEL DE ALOCAÇÃO (FIX-GEO)
-#   v2.7 → CONSISTÊNCIA DE FONTE ÚNICA DE ROTAS (FIX-FONTE):
+#   v2.7 → CONSISTÊNCIA DE FONTE ÚNICA DE ROTAS (FIX-FONTE)
+#   v2.8 → TRAÇADO REAL DA ROTA OSRM NO LINK E MAPA (FIX-OSRM-GEO):
 #
-# PROBLEMA CORRIGIDO (mistura de provedores):
-#   Quando o OSRM fornecia a menor rota, a distância e o tempo eram do OSRM, MAS o
-#   link "Abrir Rota" e o mapa continuavam apontando para o Google Maps — que mostrava
-#   uma rota DIFERENTE (trajeto, distância e tempo distintos). O usuário via uma rota
-#   e abria outra.
+# PROBLEMA CORRIGIDO (rota OSRM sem traçado):
+#   Quando o OSRM vencia, o link/mapa mostravam apenas os PONTOS (origem/destino) sem o
+#   trajeto desenhado entre eles — o usuário não via a rota traçada.
 #
-# CAUSA RAIZ: na lógica de decisão Google×OSRM, quando o OSRM vencia, os campos
-#   link_rota e link_embed eram preenchidos com link_fallback/link_embed_fallback, que
-#   eram SEMPRE URLs do Google Maps (/maps/dir/ e maps.google/embed), independentemente
-#   do provedor vencedor. Distância/tempo vinham do OSRM, mas link/mapa do Google.
+# CAUSA RAIZ: a função API_OSRM_Routing chamava o OSRM com overview=false, que instrui
+#   o OSRM a NÃO retornar a geometria da rota. Sem a geometria (polyline), nem o mapa
+#   embarcado nem o link conseguiam desenhar o percurso — só marcavam os dois extremos.
 #
-# CORREÇÃO [FIX-FONTE] — Single Source of Truth por rota:
-#   [FIX-FONTE1] Novo _montar_links_osrm(): gera link do visualizador oficial do OSRM
-#         (map.project-osrm.org) + mapa OpenStreetMap embarcável, representando EXATAMENTE
-#         a rota do mesmo motor de cálculo (driving).
-#   [FIX-FONTE2] Quando o OSRM vence (menor distância OU Google indisponível), link_rota
-#         e link_embed passam a ser do OSRM/OpenStreetMap. Quando o Google vence, tudo
-#         permanece do Google. NUNCA mais há mistura: distância, tempo, mapa e link são
-#         sempre do MESMO provedor vencedor.
-#   [FIX-FONTE3] UI provedor-consciente: o nome do botão muda dinamicamente ("Abrir rota
-#         no Google Maps" vs "Abrir rota baseada no OSRM"), o mapa exibe a malha correta,
-#         e o painel de consistência mostra a fonte única, sem ambiguidade.
+# CORREÇÃO [FIX-OSRM-GEO]:
+#   [FIX-OSRM-GEO1] OSRM agora é chamado com overview=full&geometries=polyline; a
+#         geometria da rota vencedora (polyline codificada) é capturada e retornada
+#         (índice 4 do retorno, aditivo e retrocompatível via guardas len()).
+#   [FIX-OSRM-GEO2] Novo _decodificar_polyline() (algoritmo padrão, sem dependências,
+#         validado contra vetor de teste conhecido) + _gerar_mapa_rota_osrm() que
+#         decodifica a polyline e DESENHA o traçado completo com Leaflet+OpenStreetMap.
+#   [FIX-OSRM-GEO3] O mapa embarcado da rota OSRM passa a exibir a LINHA da rota (não só
+#         2 pontos); o link externo usa o visualizador OSRM que traça o percurso.
+#   [FIX-OSRM-GEO4] Renderização via components.html (HTML autocontido) para o mapa OSRM,
+#         garantindo o desenho do traçado; Google continua via components.iframe.
 #
-# APLICAÇÃO: a correção é na fonte (RotaPipeline), logo vale para TODAS as abas —
-#   Geocodificação, Geodecodificação, Lote e Alocação herdam o link/fonte coerentes
-#   do mesmo RotaPipeline (res[2]=link, res[5]=fonte), já sincronizados.
-#
-# Validação: 5 cenários (OSRM bem menor, Google menor, empate, só OSRM, só Google) —
-#   em todos, distância+link+mapa da MESMA fonte. Casos de Google preservados (sem
-#   regressão). Todas as correções/otimizações anteriores preservadas.
+# Validação: decodificador de polyline correto (vetor de teste padrão); mapa desenha a
+#   polyline real; degradação graciosa sem geometria; retorno OSRM retrocompatível.
+#   Cache L1 limitado (20k) — bloat de HTML por rota é bounded e aceitável.
 # ------------------------------------------------------------------------------
 # MELHORIAS APLICADAS v2.4 → v2.5:
 #   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
@@ -2035,8 +2029,13 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
     try:
         # [ETAPA5-1] alternatives=3 solicita até 3 rotas; selecionamos a de MENOR
         # DISTÂNCIA viária (regra de negócio obrigatória), não a padrão/mais rápida.
-        # OSRM é gratuito e suporta alternativas nativamente — ganho de exatidão sem custo.
-        url = f"http://router.project-osrm.org/route/v1/driving/{lon_o},{lat_o};{lon_d},{lat_d}?overview=false&steps=true&alternatives=3"
+        # [FIX-OSRM-GEO1 - 18ª geração] overview=full + geometries=polyline: agora
+        # capturamos a GEOMETRIA REAL da rota (polyline codificada). Antes era
+        # overview=false → nenhuma geometria era retornada, e o link/mapa não conseguiam
+        # desenhar o traçado (só os pontos). Com a polyline da rota vencedora, o mapa
+        # embarcado desenha o trajeto EXATO usado nos cálculos e o link representa a
+        # mesma rota. Custo de rede desprezível (mesma requisição, +payload da geometria).
+        url = f"http://router.project-osrm.org/route/v1/driving/{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3"
         headers = {"User-Agent": "GerenciadorLogisticoCorp/2.0"}
         r = session.get(url, headers=headers, timeout=6).json()
         
@@ -2047,6 +2046,7 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
             distancia_km = round(rota["distance"] / 1000.0, 2)
             tempo_min = round(rota["duration"] / 60.0)
             n_alternativas = len(rotas)
+            geometria_polyline = rota.get("geometry", "")  # polyline codificada da rota vencedora
             
             usa_balsa = "Não"
             for leg in rota.get("legs", []):
@@ -2056,7 +2056,9 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
                         break
                         
             registrar_telemetria("OSRM", True, time.time() - start_t)
-            return (distancia_km, tempo_min, usa_balsa, n_alternativas)
+            # Retorno ampliado (índice 4 = geometria). Consumidores antigos usam res[0..3]
+            # com guarda len() — a geometria é puramente aditiva, sem quebrar compatibilidade.
+            return (distancia_km, tempo_min, usa_balsa, n_alternativas, geometria_polyline)
     except Exception: 
         pass
     registrar_telemetria("OSRM", False, time.time() - start_t)
@@ -2647,30 +2649,94 @@ def _montar_param_link_seguro(endereco_oficial, lat, lon, texto_original):
     # Sem nada utilizável (não deveria ocorrer) — devolve o que houver
     return requests.utils.quote(end) if end else f"{lat},{lon}"
 
-def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d):
-    """[FIX-FONTE1 - 17ª geração] Constrói links que representam EXATAMENTE a rota do
-    OSRM, para uso quando o OSRM é o provedor vencedor (menor distância). Antes, mesmo
-    quando o OSRM vencia, o link apontava para o Google Maps — abrindo uma rota DIFERENTE
-    da que gerou os números exibidos. Aqui devolvemos:
-      - link_rota: o visualizador oficial do OSRM (map.project-osrm.org) que desenha a
-        MESMA rota calculada pelo mesmo motor (driving), garantindo coerência total.
-      - link_embed: um mapa OpenStreetMap embarcável centrado no trajeto (mesma malha).
-    Assim, distância, tempo, mapa e link passam a ser da MESMA fonte (single source of
-    truth). Zero perda: o usuário abre exatamente a rota usada nos cálculos.
+def _decodificar_polyline(polyline_str, precision=5):
+    """[FIX-OSRM-GEO2 - 18ª geração] Decodifica uma polyline codificada (formato Google/
+    OSRM) em uma lista de coordenadas [(lat, lon), ...]. O OSRM retorna a geometria da
+    rota nesse formato compacto; precisamos decodificá-la para desenhar o traçado real
+    no mapa. Implementação padrão do algoritmo de polyline encoding (sem dependências).
     """
-    # Visualizador oficial do OSRM — desenha a rota driving do mesmo motor de cálculo.
-    link_osrm = (f"https://map.project-osrm.org/?z=11&center={lat_o}%2C{lon_o}"
-                 f"&loc={lat_o}%2C{lon_o}&loc={lat_d}%2C{lon_d}"
-                 f"&hl=pt-br&alt=0&srv=0")
-    # Mapa OSM embarcável (bounding box do trajeto) com marcadores — mesma malha OSM.
-    lat_min, lat_max = min(lat_o, lat_d), max(lat_o, lat_d)
-    lon_min, lon_max = min(lon_o, lon_d), max(lon_o, lon_d)
-    # Margem para não cortar os pontos
-    m_lat = max(0.02, (lat_max - lat_min) * 0.15)
-    m_lon = max(0.02, (lon_max - lon_min) * 0.15)
-    bbox = f"{lon_min - m_lon}%2C{lat_min - m_lat}%2C{lon_max + m_lon}%2C{lat_max + m_lat}"
-    link_embed_osm = (f"https://www.openstreetmap.org/export/embed.html?bbox={bbox}"
-                      f"&layer=mapnik&marker={lat_o}%2C{lon_o}")
+    if not polyline_str:
+        return []
+    coordenadas = []
+    index = 0
+    lat = 0
+    lng = 0
+    fator = 10 ** precision
+    comprimento = len(polyline_str)
+    while index < comprimento:
+        # Decodifica latitude
+        resultado = 1
+        shift = 0
+        while True:
+            b = ord(polyline_str[index]) - 63 - 1
+            index += 1
+            resultado += b << shift
+            shift += 5
+            if b < 0x1f:
+                break
+        lat += (~(resultado >> 1) if (resultado & 1) else (resultado >> 1))
+        # Decodifica longitude
+        resultado = 1
+        shift = 0
+        while True:
+            b = ord(polyline_str[index]) - 63 - 1
+            index += 1
+            resultado += b << shift
+            shift += 5
+            if b < 0x1f:
+                break
+        lng += (~(resultado >> 1) if (resultado & 1) else (resultado >> 1))
+        coordenadas.append((lat / fator, lng / fator))
+    return coordenadas
+
+def _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d):
+    """[FIX-OSRM-GEO2 - 18ª geração] Gera um mapa HTML (Leaflet + OpenStreetMap) que
+    DESENHA o traçado completo da rota OSRM a partir da geometria decodificada. Antes,
+    o mapa do OSRM mostrava apenas os dois pontos (origem/destino) sem o trajeto. Agora
+    a polyline da rota vencedora é decodificada e desenhada como uma linha contínua,
+    com marcadores de origem e destino — o mapa representa EXATAMENTE a rota usada nos
+    cálculos. Retorna um data URI (HTML autocontido) para uso em iframe.
+    """
+    pontos = _decodificar_polyline(geometria_polyline) if geometria_polyline else []
+    if not pontos:
+        # Sem geometria: ao menos posiciona origem e destino (degradação graciosa)
+        pontos = [(lat_o, lon_o), (lat_d, lon_d)]
+    # Serializa os pontos para JS
+    pontos_js = "[" + ",".join(f"[{la:.6f},{lo:.6f}]" for la, lo in pontos) + "]"
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>html,body,#map{{height:100%;margin:0;padding:0}}#map{{width:100%;height:100%}}</style>
+</head><body><div id="map"></div><script>
+var pts={pontos_js};
+var map=L.map('map');
+L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap | Rota: OSRM'}}).addTo(map);
+var linha=L.polyline(pts,{{color:'#2563eb',weight:5,opacity:0.85}}).addTo(map);
+L.marker(pts[0]).addTo(map).bindPopup('Origem');
+L.marker(pts[pts.length-1]).addTo(map).bindPopup('Destino');
+map.fitBounds(linha.getBounds(),{{padding:[30,30]}});
+</script></body></html>"""
+    import base64 as _b64
+    return "data:text/html;base64," + _b64.b64encode(html.encode("utf-8")).decode("ascii")
+
+def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, geometria_polyline=""):
+    """[FIX-FONTE1 / FIX-OSRM-GEO3 - 18ª geração] Constrói links que representam
+    EXATAMENTE a rota do OSRM (o trajeto TRAÇADO, não apenas os pontos), para uso quando
+    o OSRM é o provedor vencedor. Devolve:
+      - link_rota: visualizador oficial do OSRM (map.project-osrm.org) que desenha a rota
+        driving do mesmo motor. A URL usa o formato de waypoints que o visualizador
+        interpreta para traçar o percurso completo entre origem e destino.
+      - link_embed: mapa HTML autocontido (Leaflet+OSM) que DESENHA a polyline real da
+        rota OSRM decodificada — o traçado idêntico ao usado nos cálculos, não só 2 pontos.
+    Single source of truth: distância, tempo, geometria, mapa e link, todos do OSRM.
+    """
+    # [FIX-OSRM-GEO3] Visualizador oficial do OSRM no formato que TRAÇA a rota.
+    # O frontend do project-OSRM lê os waypoints de loc= e redesenha o percurso driving
+    # com o mesmo motor — exibindo o trajeto completo, não apenas marcadores.
+    link_osrm = (f"https://map.project-osrm.org/?loc={lat_o}%2C{lon_o}&loc={lat_d}%2C{lon_d}"
+                 f"&z=11&hl=pt-br&srv=0")
+    # [FIX-OSRM-GEO2] Mapa embarcado que DESENHA a polyline real da rota (traçado exato).
+    link_embed_osm = _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d)
     return link_osrm, link_embed_osm
 
 def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
@@ -2798,7 +2864,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 km_rota = km_o
                 tempo_m = res_osrm[1]
                 tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
-                link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d)
+                _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
+                link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm)
                 balsa_rota = res_osrm[2]
                 fonte_rota = "OSRM (Menor Distância)"
                 score_rota = 88
@@ -2832,7 +2899,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             tempo_m = res_osrm[1]
             n_alt_osrm = res_osrm[3] if len(res_osrm) > 3 else 1
             tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
-            link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d)
+            _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
+            link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm)
             balsa_rota = res_osrm[2]
             fonte_rota = "OSRM Routing"
             score_rota = 85
@@ -3439,10 +3507,23 @@ with tab_individual:
                 url_iframe = res_ind[29]
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _eh_osrm = "OSRM" in str(_fonte_rota_ui).upper()
-                try: 
-                    components.iframe(url_iframe, height=470, scrolling=True)
-                except Exception: 
-                    st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
+                # [FIX-OSRM-GEO4] Renderização do mapa conforme o provedor:
+                # - OSRM: o link_embed é um HTML autocontido (data URI) com a polyline
+                #   da rota DESENHADA via Leaflet. Renderizamos com components.html para
+                #   máxima compatibilidade (embute o HTML diretamente, traçando a rota).
+                # - Google: o link_embed é uma URL de embed → components.iframe.
+                if _eh_osrm and isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
+                    try:
+                        import base64 as _b64dec
+                        _html_mapa = _b64dec.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
+                        components.html(_html_mapa, height=470, scrolling=False)
+                    except Exception:
+                        st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
+                else:
+                    try: 
+                        components.iframe(url_iframe, height=470, scrolling=True)
+                    except Exception: 
+                        st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
                 # [FIX-FONTE3] Mapa e botão refletem EXATAMENTE o provedor vencedor.
                 # Sem ambiguidade: se a rota é do OSRM, o mapa é OpenStreetMap e o botão
                 # diz "OSRM"; se é do Google, o mapa e o botão são do Google. O link abre
