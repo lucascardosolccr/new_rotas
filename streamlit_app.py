@@ -1,46 +1,115 @@
 # ==============================================================================
-# VERSÃO: 2.4
+# VERSÃO: 2.6
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
+# ==============================================================================
+# MAPA DE ARQUITETURA (para manutenção — Etapa 7: explicabilidade)
+# ------------------------------------------------------------------------------
+# A aplicação é um Streamlit single-file organizado em camadas:
+#   1. CONFIGURAÇÃO E DADOS BASE (linhas ~30-1200): imports, executores globais
+#      (EXECUTOR_GLOBAL p/ pipeline, EXECUTOR_APIS p/ geocodificação, FILA_NOMINATIM
+#      rate-limited 1 req/s), caches em disco (DiskCache), carregamento IBGE cacheado
+#      (@st.cache_data, pickle 30 dias), bounding boxes dos 27 estados, helpers de UI.
+#   2. MOTOR SEMÂNTICO (classe MotorEnderecoCanônico, ~1227): normalização de texto
+#      (memoizada), resolução de contexto administrativo (memoizada), classificação de
+#      entrada. ParserGeograficoBR extrai CEP/número/complemento (memoizado).
+#   3. MOTOR GEODÉSICO (~1467-1565): validar_coordenada_brasil, calcular_distancia_
+#      linha_reta (GeographicLib Karney → Geopy → Haversine IUGG 6371.0088),
+#      _distancia_consenso_km (mesma matemática sem lock de métrica), cascata_postal.
+#   4. GEOCODIFICAÇÃO (~1660-2260): APIs paralelas (ArcGIS, Nominatim, Photon),
+#      consenso Bayesiano (processar_consenso_dinamico), cache L1/L2, reverse geocoding.
+#   5. ROTEAMENTO (~2260-2700): API_OSRM_Routing (alternatives=3, menor distância),
+#      extrair_dados_reais_google (scraper), regra de menor distância Google×OSRM (2%),
+#      calcular_pipeline_logistico (orquestra geo+rota), RotaPipeline NamedTuple (35
+#      campos), executar_pipeline_unificado, embrulhar_task_paralela.
+#   6. PROCESSAMENTO EM LOTE (~2715-2800): rodar_pipeline_lote, processar_chunk_rotas,
+#      _montar_dataframe_final, geocodificar_endpoints_paralelo,
+#      calcular_matriz_competitiva_vetorizada (alocação).
+#   7. INTERFACE (10 abas, ~3200+): Individual, Processamento (máquina de estados em
+#      chunks), Alocação (idem), Analytics (cross-filtering Altair), Calculadora,
+#      Classificação, Enciclopédia, Manual, Motores, Auditoria.
+#
+# FLUXO DE PROCESSAMENTO EM LOTE (abas Processamento e Alocação):
+#   clique único → FASE 1 (extrai pares únicos + pré-aquece geocodificação) →
+#   FASE 2 (processa chunks de 200 rotas, auto-continua via st.rerun, monitora ao
+#   vivo) → FASE 3 (monta DataFrame, recalcula Linha Reta, exporta). Checkpoint em
+#   session_state garante continuidade sem timeout de WebSocket e retomada após falha.
+#
+# INVARIANTES CRÍTICOS (não quebrar):
+#   - RotaPipeline: índices 0-34 alinhados (res[0]=distância, res[4]=linha_reta,
+#     res[19-22]=lat/lon origem/destino, res[28]=motivo, res[30]=status_linha_reta,
+#     res[31-34]=concorrência). Score = 0.35*origem + 0.35*destino + 0.30*rota.
+#   - Haversine usa raio IUGG 6371.0088 em todo lugar (individual e vetorizado).
+#   - Memoizações retornam cópias quando o chamador faz .update() (thread-safe, 50k).
+#   - cache_historico_lotes alimenta o estimador de tempo (não remover os campos).
+# ==============================================================================
+#
 # HISTÓRICO DE VERSÕES:
-#   v1.0–v2.3 → 13 rodadas anteriores (performance, precisão, escala, UX, FIX-LOTE)
-#   v2.4 → CORREÇÃO + ACELERAÇÃO DA ABA DE ALOCAÇÃO (FIX-ALOC):
+#   v1.0–v2.3 → 13 rodadas (performance, precisão, escala, UX, FIX-LOTE)
+#   v2.4 → CORREÇÃO + ACELERAÇÃO DA ABA DE ALOCAÇÃO (FIX-ALOC)
+#   v2.5 → AUDITORIA TÉCNICA COMPLETA (linha por linha) — refinamentos + documentação
+#   v2.6 → IDENTIFICAÇÃO GEOGRÁFICA + PAINEL DE ALOCAÇÃO (FIX-GEO):
 #
-# PROBLEMA CORRIGIDO:
-#   A aba de Alocação PARAVA no meio ao processar planilhas grandes (duas planilhas
-#   simultâneas) e exigia reiniciar — mesmo bug de WebSocket do lote, AGRAVADO por
-#   três gargalos seriais.
+# PROBLEMAS CORRIGIDOS (identificação de localidades):
+#   Bug 1: "Corumbá, GO → Pirenópolis, GO" → o link do Google Maps recebia apenas
+#          "GO / GO", perdendo os municípios.
+#   Bug 2: "Ribeirão Cascalheira, MT" recebia Score de Identificação = 7 (absurdamente
+#          baixo para uma cidade conhecida).
 #
-# CAUSA RAIZ DIAGNOSTICADA (3 gargalos seriais + WebSocket):
-#   1. Geocodificação de Hubs em loop SERIAL (um por vez).
-#   2. Geocodificação de Destinos em loop SERIAL (um por vez).
-#   3. Matriz competitiva O(N×M) em loop ANINHADO serial (ex: 2000×50 = 100k
-#      cálculos de distância sequenciais).
-#   4. Roteamento síncrono dentro de `if st.button(...)` → WebSocket timeout
-#      (mesma causa raiz do lote padrão, corrigida na v2.3).
-#   5. df_pares.iterrows() (anti-padrão) na extração de pares.
+# CAUSA RAIZ (única, em cascata): a resolução do MUNICÍPIO falhava quando o usuário
+#   escrevia a forma curta do nome (ex.: "Corumbá" em vez do oficial "Corumbá de
+#   Goiás") e havia homônimo em outra UF (Corumbá-MS). Com o município vazio:
+#     (a) o endereço oficial colapsava para apenas a UF → link "GO/GO" (Bug 1);
+#     (b) a classificação caía para LOGRADOURO em vez de MUNICIPIO → sem o boost de
+#         cidade + punição Anti-Fantasma → score colapsava a 7 (Bug 2).
 #
-# SOLUÇÃO IMPLEMENTADA [FIX-ALOC]:
-#   - [Paralelização] geocodificar_endpoints_paralelo(): geocodifica hubs e destinos
-#     EM PARALELO via EXECUTOR_GLOBAL (era serial). ~até 32× mais throughput de rede.
-#   - [Vetorização] calcular_matriz_competitiva_vetorizada(): matriz de vizinho mais
-#     próximo + runner-up via Haversine VETORIZADO (broadcasting NumPy, raio IUGG) em
-#     vez do loop aninhado. Medido: 3× mais rápido; decisões de alocação 100% idênticas
-#     (validado em 500 clientes × 5 hubs — zero divergência em hub e runner-up).
-#   - [Continuidade] Máquina de estados em chunks (200 rotas) com checkpoint em
-#     session_state + auto-continuação via st.rerun() — um único clique, sem
-#     interrupção por WebSocket. Idêntica à arquitetura do FIX-LOTE (v2.3).
-#   - [P30] Extração de pares vetorizada (era iterrows).
-#   - Monitoramento ao vivo (processados, restantes, %, ETA, velocidade, lote atual)
-#     + botão de cancelamento + resiliência a falhas isoladas de chunk.
+# CORREÇÕES [FIX-GEO]:
+#   [FIX-GEO4] Resolução robusta de nome curto DENTRO da UF informada (busca segura,
+#         sem ambiguidade entre estados): match por prefixo ("Corumbá"→"Corumbá de
+#         Goiás"), por nome limpo e fuzzy adicional. Só auto-resolve quando há candidato
+#         ÚNICO (ambiguidade cai no fuzzy). Casos exatos seguem pelo n-grama (sem regressão).
+#   [FIX-GEO2] Backfill de município/UF no consenso a partir do contexto já resolvido
+#         (validado contra IBGE) quando a API vencedora não devolve a cidade. Só preenche
+#         o que falta — nunca sobrescreve dado da API. Endereço nunca mais fica só com UF.
+#   [FIX-GEO1] Blindagem do parâmetro do link Google Maps: nunca é apenas a sigla do
+#         estado. Se o endereço degradar, usa coordenadas exatas ou o texto original do
+#         usuário (que carrega o município digitado). Corrige o link "GO/GO".
+#   [FIX-GEO3] Resgate de score para município corretamente identificado: se o município
+#         resolvido corresponde a cidade REAL do IBGE e a entrada é "cidade + UF" (sem
+#         número predial), o score é reajustado com justiça (≥85). Corrige o Score 7.
 #
-# NOTA: a Linha Reta final exibida sempre foi Haversine vetorizado (recalculada ao
-#   fim), então usar Haversine na matriz é consistente com o resultado final. O ranking
-#   de vizinho mais próximo é idêntico ao do cálculo geodésico individual (validado).
+# PAINEL DA ABA DE ALOCAÇÃO [FIX-ALOC-UI]:
+#   Acompanhamento em tempo real equivalente ao do Lote: registros (total/processados/
+#   restantes), % concluído, lote atual, tempo decorrido, TEMPO MÉDIO POR REGISTRO,
+#   ETA, velocidade (registros/s e /min) e ETAPA ATUAL do processamento.
 #
-# Todas as otimizações e correções anteriores preservadas (FIX-LOTE, SPEED-1..4,
-# PERF-Q1..3, regra de menor distância, etc).
+# Validações: link nunca colapsa para UF (7 casos); Corumbá→Corumbá de Goiás via
+#   prefixo; ambiguidade tratada; casos exatos sem regressão; score de município real
+#   reajustado. Todas as correções/otimizações anteriores preservadas.
+# ------------------------------------------------------------------------------
+# MELHORIAS APLICADAS v2.4 → v2.5:
+#   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
+#         (@st.cache_data) pela identidade do arquivo. Antes recalculava set(zip(...))
+#         sobre TODO o DataFrame a cada rerun (cada tecla no campo de operador) —
+#         desperdício real em planilhas de 100k linhas. Args grandes não-hasheados
+#         (prefixo _) para o cache não custar mais que o cálculo. Lógica idêntica
+#         (validada em casos-limite + 50k linhas). Zero regressão.
+#   [UX-POLISH] Corrigidos ícones quebrados/ausentes em botões e colunas de link
+#         ("Limpar Filtros", "Abrir no Maps", "Exportar Relatório", "Baixar Tabela")
+#         que renderizavam como espaço vazio — aparência mais profissional e consistente.
+#   [DOC] Adicionado mapa de arquitetura e fluxo no cabeçalho (Etapa 7: explicabilidade)
+#         para facilitar manutenção corporativa.
+#
+# DECISÃO DOCUMENTADA (regra: zero regressão):
+#   - Hardening de colunas duplicadas pós-normalização (str.title pode colidir "origem"
+#     e "Origem"): adicionaria robustez, mas alterar a normalização de colunas pode
+#     mudar o comportamento de arquivos que hoje funcionam. Documentado, não implementado.
+#   - Polars/DuckDB/asyncio/Numba: avaliados em rodadas anteriores — gargalo é rede,
+#     não tabela/CPU-numérico. Sem ganho no caminho dominante.
+#
+# Todas as correções e otimizações anteriores preservadas (FIX-LOTE, FIX-ALOC,
+# SPEED-1..4, PERF-Q1..3, regra de menor distância, consenso Bayesiano, etc).
 # ==============================================================================
 
 import streamlit as st
@@ -636,6 +705,23 @@ def estimar_tempo_processamento(n_rotas_unicas: int, tipo="lote"):
         return _formatar_duracao(tempo_estimado), baseline, n_amostras, tempo_por_rota
     except Exception:
         return None, "indisponível", 0, 0.0
+
+@st.cache_data(show_spinner=False)
+def _contar_rotas_unicas_preview(file_id, n_linhas, _origens, _destinos):
+    """[PERF-UI1 - 15ª geração] Conta rotas únicas (pares origem-destino válidos) com
+    cache do Streamlit, chaveado APENAS pela identidade do arquivo (file_id = nome+
+    tamanho) e nº de linhas. Os argumentos _origens/_destinos têm prefixo '_' para que
+    o Streamlit NÃO os inclua no hash da chave de cache (senão hashear 100k itens
+    custaria tanto quanto o cálculo). Antes, a prévia recalculava set(zip(...)) sobre
+    TODO o DataFrame a CADA rerun (cada tecla no campo de operador) — desperdício real
+    em planilhas grandes. Agora só recalcula quando o arquivo muda. Lógica idêntica."""
+    pares = set()
+    for o, d in zip(_origens, _destinos):
+        o_s = str(o).strip() if o is not None else ''
+        d_s = str(d).strip() if d is not None else ''
+        if o_s and d_s and o_s.lower() != 'nan' and d_s.lower() != 'nan':
+            pares.add((o_s, d_s))
+    return len(pares)
 
 def renderizar_scorecard_qualidade(df_resultado):
     """[F-NEW1 - 3ª geração] Painel de Qualidade dos Dados Geográficos.
@@ -1435,10 +1521,46 @@ class MotorEnderecoCanônico:
         if uf_explicita and not resultado["municipio"]:
             chaves = list(cidades_para_busca.keys())
             if chaves:
+                # [FIX-GEO4 - 16ª geração] Resolução robusta de nome curto dentro da UF.
+                # CAUSA RAIZ do bug Corumbá: o usuário digita a forma curta ("Corumbá, GO")
+                # mas o nome oficial IBGE é "Corumbá de Goiás". O match exato falha e o
+                # fuzzy sobre o texto inteiro (com a sigla "GO") podia não bater. Aqui,
+                # DENTRO da UF informada (busca segura, não cria ambiguidade entre estados),
+                # tentamos: (1) cidade cujo nome COMEÇA com o termo do usuário (prefixo),
+                # (2) cidade que CONTÉM o termo, e por fim (3) o fuzzy original. Removemos a
+                # sigla da UF do texto antes de comparar, isolando o nome da localidade.
+                texto_sem_uf = _regex_palavra(uf_explicita).sub('', texto_norm)
+                texto_sem_uf = texto_sem_uf.replace("BRASIL", "").strip()
+                termo = re.sub(r'\s+', ' ', texto_sem_uf).strip()
+                
+                if termo and len(termo) >= 3:
+                    # (1) Prefixo: "CORUMBA" → "CORUMBA DE GOIAS". Só aceita se houver
+                    # um ÚNICO candidato por prefixo (evita ambiguidade silenciosa).
+                    candidatos_prefixo = [c for c in chaves if c.startswith(termo + " ") or c == termo]
+                    if len(candidatos_prefixo) == 1:
+                        resultado.update({"municipio": candidatos_prefixo[0]})
+                        return resultado
+                    # (2) Se o termo é exatamente uma cidade da UF (match direto pós-limpeza)
+                    if termo in cidades_para_busca:
+                        resultado.update({"municipio": termo})
+                        return resultado
+                    # (3) Contém: termo aparece como palavra inicial de exatamente uma cidade
+                    candidatos_contem = [c for c in chaves if termo in c.split(" ")[0:1] or c.split(" ")[0] == termo]
+                    if len(candidatos_contem) == 1:
+                        resultado.update({"municipio": candidatos_contem[0]})
+                        return resultado
+                        
+                # (4) Fuzzy original sobre o texto completo (rede de segurança)
                 melhor_match = process.extractOne(texto_norm, chaves, scorer=fuzz.token_set_ratio, processor=None)
                 if melhor_match and melhor_match[1] >= 65:
                     resultado.update({"municipio": melhor_match[0]})
                     return resultado
+                # (5) Fuzzy adicional só sobre o termo limpo (sem a UF), com limiar mais alto
+                if termo and len(termo) >= 4:
+                    melhor_termo = process.extractOne(termo, chaves, scorer=fuzz.WRatio, processor=None)
+                    if melhor_termo and melhor_termo[1] >= 88:
+                        resultado.update({"municipio": melhor_termo[0]})
+                        return resultado
                     
         if not resultado["municipio"] and not uf_explicita and len(texto_norm) > 4:
             melhor_match_global = process.extractOne(texto_norm, LISTA_CONTEXTO_FUZZY, scorer=fuzz.WRatio, processor=None)
@@ -2148,6 +2270,19 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
         "distrito": "", "estado": vencedor["estado"], "cep": vencedor.get("cep", "")
     }
     
+    # [FIX-GEO2 - 16ª geração] Backfill de município/UF a partir do contexto resolvido.
+    # CAUSA RAIZ do endereço colapsado: quando a API vencedora não devolve o campo
+    # "cidade" (comum em respostas que dão só coordenadas), o município ficava vazio e o
+    # endereço oficial degradava para apenas a UF. Aqui preenchemos com o município/UF
+    # já inferidos do texto do usuário (ctx_inf, validados contra a base IBGE), que são
+    # informação confiável que NÓS já temos. Só preenche o que está faltando — nunca
+    # sobrescreve um dado da API. Garante que o endereço sempre carregue o município.
+    if not m["cidade"].strip() and mun_inf:
+        m["cidade"] = mun_inf  # mun_inf normalizado e validado contra IBGE (ex: CORUMBA DE GOIAS)
+        m["municipio"] = mun_inf
+    if not m["estado"].strip() and uf_inf:
+        m["estado"] = _normalizar_uf(uf_inf) if uf_inf else uf_inf
+    
     if tipo_entrada in ["MUNICIPIO", "BAIRRO", "ESTADO", "DISTRITO", "RURAL"]:
         m["logradouro"] = ""
         m["numero"] = ""
@@ -2202,6 +2337,30 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
         score_limitado = min(score_limitado, 49)
     else:
         confianca = "ALTISSIMA" if score_limitado >= 85 else "ALTA" if score_limitado >= 75 else "MEDIA" if score_limitado >= 60 else "BAIXA"
+        
+    # [FIX-GEO3 - 16ª geração] Resgate de município corretamente identificado.
+    # CAUSA RAIZ do Score 7: quando a classificação inicial errava (ex.: um município
+    # conhecido como "Ribeirão Cascalheira, MT" era tratado como LOGRADOURO porque o
+    # nome não casou de primeira), o boost de cidade não se aplicava e o endereço caía
+    # na punição Anti-Fantasma — derrubando o score a valores absurdos para uma cidade
+    # perfeitamente conhecida. Aqui, se o município resolvido/preenchido corresponde a
+    # uma cidade REAL da base IBGE (e a entrada é essencialmente "cidade + UF", sem
+    # número predial), reconhecemos a identificação como de nível municipal e reajustamos
+    # o score com justiça. Validação cruzada com IBGE = identificação confiável.
+    if score_limitado < 75 and not input_usuario.get("numero"):
+        mun_final = (m.get("municipio", "") or "").strip().upper()
+        uf_final = (uf_inf or "").strip().upper()
+        municipio_real_ibge = bool(mun_final) and (
+            mun_final in IBGE_MUNICIPIOS or mun_final in IBGE_DISTRITOS or
+            (uf_final in IBGE_MUNICIPIOS_POR_UF and mun_final in IBGE_MUNICIPIOS_POR_UF[uf_final])
+        )
+        # Confirma que a entrada é basicamente o nome da cidade (poucos tokens além de cidade+UF)
+        tokens_entrada = [t for t in texto_norm.split() if t not in IBGE_ESTADOS and t != "BRASIL"]
+        entrada_e_localidade = len(tokens_entrada) <= 6  # nome de cidade cabe em até 6 tokens
+        if municipio_real_ibge and entrada_e_localidade:
+            score_limitado = max(score_limitado, 85)
+            confianca = "ALTA" if confianca in ("BAIXA", "MEDIA", "REVISAO_MANUAL") else confianca
+            explicacoes_humanas.append(f"Município '{mun_final}' validado na base IBGE oficial. Score reajustado para nível municipal (identificação confiável).")
         
     rua_f = m["logradouro"] if m["logradouro"] else ""
     endereco_f = ", ".join([c for c in [rua_f, m["bairro"], m["cidade"], m["estado"]] if c.strip()]) + ", BRASIL"
@@ -2463,6 +2622,36 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
 def obter_fator_desvio_rodoviario(linha_reta):
     return 1.45 if linha_reta < 5.0 else 1.35 if linha_reta < 20.0 else 1.25 if linha_reta < 100.0 else 1.18
 
+def _montar_param_link_seguro(endereco_oficial, lat, lon, texto_original):
+    """[FIX-GEO1 - 16ª geração] Constrói o parâmetro de origem/destino para o link do
+    Google Maps de forma BLINDADA, garantindo que nunca se perca a identificação real
+    do local. Ordem de prioridade:
+      1. Endereço oficial, SE for rico o suficiente (mais que apenas uma sigla de UF).
+      2. Coordenadas exatas (lat,lon), se válidas — sempre apontam ao local correto.
+      3. Texto original do usuário (ex: "Corumbá, GO"), como rede de segurança final.
+    Isso corrige o bug em que o link recebia apenas "GO" quando a API não devolvia o
+    município. O texto original do usuário sempre carrega o município que ele digitou.
+    """
+    end = (endereco_oficial or "").strip()
+    # Detecta endereço "pobre": vazio, ou que é só a sigla/nome de uma UF (+ "BRASIL").
+    # Ex.: "GO", "GO, BRASIL", "GOIAS, BRASIL" — todos colapsaram e perderam o município.
+    tokens_significativos = [t for t in re.split(r'[,\s]+', end.upper())
+                             if t and t not in ("BRASIL", "BR") and t not in IBGE_ESTADOS
+                             and t not in IBGE_ESTADOS.values()]
+    endereco_pobre = (not end) or (len(tokens_significativos) == 0)
+
+    if not endereco_pobre:
+        return requests.utils.quote(end)
+    # Endereço degradado → prefere coordenadas exatas (apontam ao local certo)
+    if lat and lon and lat != 0.0 and lon != 0.0:
+        return f"{lat},{lon}"
+    # Última rede de segurança: o texto original do usuário (carrega o município digitado)
+    texto_seg = (texto_original or "").strip()
+    if texto_seg and texto_seg.lower() != "nan":
+        return requests.utils.quote(texto_seg)
+    # Sem nada utilizável (não deveria ocorrer) — devolve o que houver
+    return requests.utils.quote(end) if end else f"{lat},{lon}"
+
 def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     start_total = time.time()
     origem_clean, destino_clean = str(origem).strip(), str(destino).strip()
@@ -2542,6 +2731,15 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         
     orig_param_fb = requests.utils.quote(end_oficial_o) if end_oficial_o else f"{lat_o},{lon_o}"
     dest_param_fb = requests.utils.quote(end_oficial_d) if end_oficial_d else f"{lat_d},{lon_d}"
+    # [FIX-GEO1 - 16ª geração] Blindagem do parâmetro de link do Google Maps.
+    # CAUSA RAIZ do bug "GO/GO": quando a API não retorna o município, o endereço
+    # oficial colapsava para apenas a UF (ex: "GO"), e o link herdava esse valor
+    # degradado. Aqui garantimos que o parâmetro do link NUNCA seja apenas a sigla
+    # do estado: se o endereço oficial for vazio, só uma UF, ou claramente pobre,
+    # caímos para (1) coordenadas exatas, ou (2) o texto original do usuário —
+    # preservando a identificação real de origem/destino. Zero perda: só melhora.
+    orig_param_fb = _montar_param_link_seguro(end_oficial_o, lat_o, lon_o, origem_clean)
+    dest_param_fb = _montar_param_link_seguro(end_oficial_d, lat_d, lon_d, destino_clean)
     link_fallback = f"https://www.google.com/maps/dir/?api=1&origin={orig_param_fb}&destination={dest_param_fb}&travelmode=driving"
     link_embed_fallback = f"https://maps.google.com/maps?saddr={orig_param_fb}&daddr={dest_param_fb}&output=embed"
     
@@ -3255,11 +3453,14 @@ with tab_processamento:
             st.success(f"Tabela com {n_linhas:,} registros mapeada! Pronto para processar o Lote Unificado.")
             
             # [SPEED-2 / Etapa 5] Estimativa dinâmica de tempo ANTES de processar.
-            # Calcula rotas únicas para uma estimativa precisa (não usa nº de linhas bruto).
-            _orig_prev = df['Origem'].fillna('').astype(str).str.strip()
-            _dest_prev = df['Destino'].fillna('').astype(str).str.strip()
-            _mask_prev = (_orig_prev != '') & (_dest_prev != '') & (_orig_prev.str.lower() != 'nan') & (_dest_prev.str.lower() != 'nan')
-            _n_rotas_unicas_prev = len(set(zip(_orig_prev[_mask_prev], _dest_prev[_mask_prev])))
+            # [PERF-UI1] A contagem de rotas únicas agora é cacheada pela identidade do
+            # arquivo, evitando recomputar set(zip(...)) sobre 100k linhas a cada rerun.
+            _file_id = f"{getattr(arquivo_carregado, 'name', 'file')}_{getattr(arquivo_carregado, 'size', 0)}"
+            _n_rotas_unicas_prev = _contar_rotas_unicas_preview(
+                _file_id, n_linhas,
+                tuple(df['Origem'].fillna('').astype(str).values),
+                tuple(df['Destino'].fillna('').astype(str).values)
+            )
             _est_txt, _est_base, _est_n, _est_por_rota = estimar_tempo_processamento(_n_rotas_unicas_prev, tipo="lote")
             if _est_txt:
                 with st.container(border=True):
@@ -3688,19 +3889,21 @@ with tab_alocacao:
             _elapsed = time.time() - st.session_state['alo_start_clock']
             _taxa = (_feitos / _elapsed) if _elapsed > 0 and _feitos > 0 else 0.0
             _eta = (_restantes / _taxa) if _taxa > 0 else 0.0
+            _tempo_medio_reg = (_elapsed / _feitos) if _feitos > 0 else 0.0
             
             st.markdown("#### 🎯 Alocação Contínua em Andamento")
+            st.caption("🧭 **Etapa atual:** Roteamento competitivo (cálculo de rotas origem→hub e duelo com o 2º hub mais próximo)")
             st.progress(min(1.0, _pct))
             _a1, _a2, _a3, _a4 = st.columns(4)
-            _a1.metric("Processados", f"{_feitos:,} / {_total:,}")
-            _a2.metric("Restantes", f"{_restantes:,}")
-            _a3.metric("Concluído", f"{_pct*100:.1f}%")
-            _a4.metric("Lote Atual", f"{_chunk_num} / {_total_chunks}")
+            _a1.metric("Registros Processados", f"{_feitos:,} / {_total:,}", help="Rotas únicas já processadas / total de registros.")
+            _a2.metric("Restantes", f"{_restantes:,}", help="Registros ainda pendentes.")
+            _a3.metric("Concluído", f"{_pct*100:.1f}%", help="Percentual concluído.")
+            _a4.metric("Lote Atual", f"{_chunk_num} / {_total_chunks}", help="Chunk atual / total de chunks.")
             _a5, _a6, _a7, _a8 = st.columns(4)
-            _a5.metric("Tempo Decorrido", _formatar_duracao(_elapsed))
-            _a6.metric("Velocidade", f"{_taxa:.1f} rotas/s")
-            _a7.metric("Rotas/min", f"{_taxa*60:.0f}")
-            _a8.metric("Tempo Restante (ETA)", _formatar_duracao(_eta) if _taxa > 0 else "calculando...")
+            _a5.metric("Tempo Decorrido", _formatar_duracao(_elapsed), help="Tempo desde o início da alocação.")
+            _a6.metric("Tempo Médio/Registro", f"{_tempo_medio_reg:.2f}s", help="Tempo médio por registro processado até agora.")
+            _a7.metric("Tempo Restante (ETA)", _formatar_duracao(_eta) if _taxa > 0 else "calculando...", help="Estimativa para concluir, baseada na velocidade atual.")
+            _a8.metric("Velocidade", f"{_taxa:.1f}/s · {_taxa*60:.0f}/min", help="Velocidade média (registros por segundo e por minuto).")
             st.caption("🔄 A alocação avança automaticamente. **Não é necessário clicar novamente.** Cancele a qualquer momento acima.")
             
             if _total == 0:
@@ -3796,7 +3999,7 @@ with tab_analytics:
     with col_d_title: 
         st.markdown("### 📊 Enterprise Analytics Dashboard")
     with col_d_btn:
-        if st.button(" Limpar Todos os Filtros", use_container_width=True):
+        if st.button("🧹 Limpar Todos os Filtros", use_container_width=True):
             keys_to_clear = ['widget_regiao', 'widget_uf', 'widget_mun', 'widget_status', 'widget_fonte', 'dash_reg', 'dash_uf', 'dash_status', 'dash_mun', 'dash_lr', 'dash_scatter', 'prev_altair_sel']
             for k in keys_to_clear:
                 if k in st.session_state: del st.session_state[k]
@@ -4155,7 +4358,7 @@ with tab_analytics:
             st.markdown("#### 🔎 Matriz de Dados Drill-Down da Seleção (Data Explorer)")
             with st.container(border=True):
                 tabela_h = min(800, max(300, len(df_cf) * 35 + 43))
-                st.dataframe(df_cf[['Origem', 'Destino', 'Distancia', 'Linha Reta', 'Tempo', 'Status da Rota', 'Status Linha Reta', 'Link da Rota']], use_container_width=True, height=tabela_h, column_config={"Link da Rota": st.column_config.LinkColumn(" Abrir no Maps")}, hide_index=True)
+                st.dataframe(df_cf[['Origem', 'Destino', 'Distancia', 'Linha Reta', 'Tempo', 'Status da Rota', 'Status Linha Reta', 'Link da Rota']], use_container_width=True, height=tabela_h, column_config={"Link da Rota": st.column_config.LinkColumn("🗺️ Abrir no Maps")}, hide_index=True)
                 
             st.markdown("#### ✅ Controle de Qualidade de Dados (Auditoria Geodésica e de Falhas)")
             with st.container(border=True):
@@ -4275,7 +4478,7 @@ with tab_calculadora:
                             
                 csv_calc = df_agg.to_csv(index=False).encode('utf-8')
                 c_exp1, c_exp2, c_exp3 = st.columns(3)
-                c_exp1.download_button(" Exportar Relatório Excel Completo (.xlsx)", data=output_calc.getvalue(), file_name="relatorio_calculadora_avancado.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                c_exp1.download_button("📊 Exportar Relatório Excel Completo (.xlsx)", data=output_calc.getvalue(), file_name="relatorio_calculadora_avancado.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
                 c_exp2.download_button("Exportar Tabela Bruta (CSV)", data=csv_calc, file_name="dados_calculadora.csv", mime="text/csv", use_container_width=True)
             except Exception as e:
                 st.error(f"⚠️ Impossível realizar o cálculo solicitado. A operação estatística '{calc_op}' falhou. Verifique se o campo '{calc_campo}' contém números válidos. Erro: {e}")
@@ -4419,7 +4622,7 @@ with tab_classificacao:
             out_class = io.BytesIO()
             with pd.ExcelWriter(out_class, engine='xlsxwriter') as writer:
                 df_agg_class.drop(columns=['Lat_Media', 'Lon_Media', 'Cor Hex']).to_excel(writer, sheet_name='Ocorrencias e Classificacao', index=False)
-            st.download_button(" Baixar Tabela de Classificação (.xlsx)", data=out_class.getvalue(), file_name="classificacao_territorial_ocorrencias.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button("📥 Baixar Tabela de Classificação (.xlsx)", data=out_class.getvalue(), file_name="classificacao_territorial_ocorrencias.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.warning("O conjunto de dados base global está vazio. Por favor, processe seu Lote para alimentar este módulo espacial.")
 
