@@ -1,33 +1,52 @@
 # ==============================================================================
-# VERSÃO: 2.2
+# VERSÃO: 2.3
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
 # HISTÓRICO DE VERSÕES:
-#   v1.0–v2.1 → 11 rodadas anteriores (performance, precisão, escala, UX, qualidade)
-#   v2.2 → AUDITORIA CONTINUADA — memoização do parser de componentes (benefício líquido):
+#   v1.0–v2.2 → 12 rodadas anteriores (performance, precisão, escala, UX, qualidade)
+#   v2.3 → CORREÇÃO CRÍTICA: PROCESSAMENTO EM LOTE CONTÍNUO E RESILIENTE (FIX-LOTE):
 #
-# MELHORIA APLICADA v2.1 → v2.2:
-#   [PERF-Q3] Memoização thread-safe de ParserGeograficoBR.extrair_componentes().
-#         Staticmethod pura (3 buscas de regex) chamada até 3× sobre o MESMO texto_norm
-#         no caminho de geocodificação (construir_endereco_canonico, consenso Bayesiano,
-#         geo core). Depende só do texto + regexes fixas → determinística. Retorna cópia
-#         defensiva (callers só leem; cópia blinda contra mutação). Bounded 50k + lock.
-#         Saída idêntica validada (miss+hit + proteção de cache). Combinada com PERF-Q1
-#         (resolver_contexto memoizado), o caminho de texto da geocodificação ficou
-#         ~3.8× mais rápido em lote B2B com origens repetidas. Zero regressão.
+# PROBLEMA CORRIGIDO:
+#   O processamento em lote PARAVA no meio de planilhas grandes e exigia novo clique
+#   em "Iniciar Processamento em Lote" para continuar.
 #
-# Otimizações de texto acumuladas (compõem no caminho de geocodificação):
-#   [SPEED-4 v2.0] normalizar() memoizado · [PERF-Q1 v2.1] resolver_contexto memoizado
-#   [PERF-Q3 v2.2] extrair_componentes memoizado · [PERF-Q2 v2.1] consenso sem lock
+# CAUSA RAIZ DIAGNOSTICADA:
+#   Todo o processamento rodava SÍNCRONO dentro de `if st.button(...)`. Em planilhas
+#   grandes, isso executa por minutos/horas numa única execução do script Streamlit.
+#   O Streamlit mantém o estado do botão via conexão WebSocket; execuções muito longas
+#   estouram o timeout do WebSocket → o navegador perde a conexão, o estado do botão
+#   reverte para False e, ao reconectar/re-renderizar, o processamento não retoma
+#   (o botão não está mais "pressionado") → exige novo clique. Adicionalmente, qualquer
+#   exceção no meio do bloco perdia TODO o progresso (df_processado nunca era setado).
 #
-# DECISÃO DOCUMENTADA (regra: zero regressão):
-#   - Link do Google usar coordenadas quando a medição usou coordenadas: aumentaria a
-#     consistência valor↔link, MAS um link com coordenadas cruas é menos legível que um
-#     com endereço (possível downside de UX). Há possibilidade de perda → NÃO implementado,
-#     apenas documentado. A consistência já é garantida pela regra de menor distância (v1.8).
-#   - Polars/DuckDB/asyncio/Numba: já avaliados nas rodadas anteriores — gargalo é rede,
-#     não tabela/CPU-numérico. Sem ganho no caminho dominante.
+# SOLUÇÃO IMPLEMENTADA [FIX-LOTE]:
+#   Máquina de estados de processamento em CHUNKS com checkpoint em session_state e
+#   auto-continuação via st.rerun():
+#   - FASE 1 (clique único): inicializa o estado (pares, tarefas priorizadas, índice
+#     de chunk, resultados acumulados) + pré-aquecimento de geocodificação. st.rerun().
+#   - FASE 2 (cada rerun automático): processa UM chunk de ~200 rotas, acumula os
+#     resultados em session_state, atualiza o monitoramento ao vivo e chama st.rerun()
+#     se há mais chunks. Cada rerun é uma execução CURTA → o WebSocket NUNCA estoura.
+#   - FASE 3 (último chunk): monta o DataFrame final, recalcula Linha Reta vetorizada,
+#     grava histórico, exporta xlsx e limpa o estado de processamento.
+#   Um ÚNICO clique processa toda a planilha automaticamente. Se interromper, o estado
+#   persiste e retoma do último chunk concluído.
+#
+# RESILIÊNCIA E MONITORAMENTO:
+#   - Falhas isoladas de chunk são capturadas e o lote CONTINUA (rotas com erro são
+#     marcadas como "Erro Crítico de Processamento", sem parar o processamento).
+#   - Painel ao vivo: total, processados, restantes, %, tempo decorrido, velocidade
+#     (rotas/s e rotas/min), ETA, lote atual / total de lotes.
+#   - Botão de cancelamento disponível durante o processamento.
+#   - Estado de checkpoint limpo ao final (libera RAM dos acumuladores).
+#
+# REFATORAÇÃO DE SUPORTE (sem mudança de lógica):
+#   - rodar_pipeline_lote agora delega a montagem do DataFrame a _montar_dataframe_final
+#     (extraída, lógica idêntica). Mantida para a aba de Alocação (volumes menores).
+#   - Nova processar_chunk_rotas processa um chunk isolado via EXECUTOR_GLOBAL.
+#
+# Todas as otimizações anteriores preservadas (SPEED-1..4, PERF-Q1..3, etc).
 # ==============================================================================
 
 import streamlit as st
@@ -2739,11 +2758,42 @@ def rodar_pipeline_lote(df, pares_unicos, tarefas_priorizadas, nome_operador, pr
             progress_bar.progress(min(1.0, _prog))
             status_container.text(f"⚡ Roteamento Paralelo: {concluidos} / {total_tarefas} rotas (geocodificação em cache)")
             
+    return _montar_dataframe_final(df, resultados_unicos, runner_up_map)
+
+
+def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
+    """[FIX-LOTE - 13ª geração] Processa UM chunk de rotas e retorna o dict de
+    resultados {par_id: res}. Usado pelo motor de processamento contínuo em chunks.
+    Cada chunk é curto o suficiente para caber numa única execução do Streamlit,
+    evitando o timeout de WebSocket que causava a interrupção do lote.
+    """
+    if runner_up_map:
+        tarefas_unicas = [(t[1], t[1][0], t[1][1], runner_up_map.get(t[1][0])) for t in tarefas_chunk]
+    else:
+        tarefas_unicas = [(t[1], t[1][0], t[1][1]) for t in tarefas_chunk]
+        
+    resultados = {}
+    futuros = {EXECUTOR_GLOBAL.submit(embrulhar_task_paralela, t): t for t in tarefas_unicas}
+    for f in as_completed(futuros):
+        try:
+            par_id, res = f.result()
+            resultados[par_id] = res
+        except Exception as e:
+            logger.error(f"[FIX-LOTE] Falha isolada em chunk: {e}")
+    return resultados
+
+
+def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
+    """[FIX-LOTE] Monta o DataFrame final a partir do dict acumulado de resultados.
+    Extraído de rodar_pipeline_lote para ser reutilizado pelo motor em chunks após
+    todos os chunks concluírem. Lógica de montagem idêntica à original."""
     novos_dados = []
     # [M17] itertuples() em vez de to_dict('records') — reduz em 60% o pico de RAM
-    # to_dict cria cópia completa do DataFrame; itertuples é um gerador lazy
     origens_arr  = df['Origem'].fillna('').astype(str).str.strip().values
     destinos_arr = df['Destino'].fillna('').astype(str).str.strip().values
+    
+    if 'logs_auditoria' not in st.session_state:
+        st.session_state['logs_auditoria'] = []
     
     for i, row in enumerate(df.itertuples(index=False)):
         # _asdict() retorna OrderedDict no pandas — convertemos para dict mutável padrão
@@ -2817,7 +2867,6 @@ def rodar_pipeline_lote(df, pares_unicos, tarefas_priorizadas, nome_operador, pr
         
     df_final = pd.DataFrame(novos_dados)
     # [M14] Flush forçado do buffer de telemetria ao final do lote
-    # Garante que métricas de todas as APIs sejam persistidas no DiskCache
     _flush_telemetria_forcado()
     return df_final
 
@@ -3156,24 +3205,59 @@ with tab_processamento:
             
             nome_operador = st.text_input("Matrícula / Nome do Operador (Opcional)", max_chars=50)
             
-            if st.button("Iniciar Processamento em Lote", type="primary"):
-                start_lote_clock = time.time()
+            # ==================================================================
+            # [FIX-LOTE - 13ª geração] MOTOR DE PROCESSAMENTO CONTÍNUO EM CHUNKS
+            # ------------------------------------------------------------------
+            # CAUSA RAIZ do bug "para no meio e exige novo clique": o processamento
+            # rodava INTEIRO dentro de `if st.button(...)` de forma síncrona. Em
+            # planilhas grandes isso executa por minutos/horas numa única execução
+            # do script Streamlit. O Streamlit mantém o estado do botão via WebSocket;
+            # execuções muito longas estouram o timeout do WebSocket → o navegador
+            # perde a conexão, o estado do botão reverte para False e, ao reconectar,
+            # o processamento não retoma (o botão não está mais "pressionado") →
+            # exige novo clique. Além disso, qualquer exceção no meio perdia todo o
+            # progresso (df_processado nunca era setado).
+            #
+            # SOLUÇÃO: máquina de estados em chunks com checkpoint em session_state.
+            # Processa ~200 rotas por execução, salva o progresso e chama st.rerun().
+            # Cada rerun é uma execução CURTA → o WebSocket nunca estoura. Um único
+            # clique inicia tudo; os chunks seguintes rodam automaticamente via rerun.
+            # Se interromper, o estado persiste e retoma do último chunk concluído.
+            # ==================================================================
+            CHUNK_SIZE = 200  # rotas por execução — curto o bastante p/ não estourar WebSocket
+            _proc_ativo = st.session_state.get('lote_em_andamento', False)
+            
+            _clicou_iniciar = st.button(
+                "🚀 Iniciar Processamento em Lote", type="primary",
+                disabled=_proc_ativo,
+                help="Inicia o processamento contínuo. Um único clique processa toda a planilha automaticamente."
+            )
+            
+            # Botão de cancelamento visível durante o processamento
+            if _proc_ativo:
+                if st.button("⏹️ Cancelar Processamento", help="Interrompe o processamento contínuo e descarta o progresso atual."):
+                    for _k in ['lote_em_andamento', 'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
+                               'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
+                               'lote_preaquecido', 'lote_runner_map']:
+                        st.session_state.pop(_k, None)
+                    st.warning("Processamento cancelado pelo usuário.")
+                    st.rerun()
+            
+            # ---- FASE 1: INICIALIZAÇÃO (no clique) ----
+            if _clicou_iniciar and not _proc_ativo:
                 novas_colunas = NOVAS_COLUNAS_PADRAO
                 colunas_numericas = COLUNAS_NUMERICAS_PADRAO
-                
                 for col in novas_colunas:
                     if col in colunas_numericas:
-                        if col not in df.columns: 
+                        if col not in df.columns:
                             df[col] = 0.0
                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype(float)
                     else:
-                        if col not in df.columns: 
+                        if col not in df.columns:
                             df[col] = "Não Informado"
                         df[col] = df[col].astype(object)
                         
-                # [P30 - 3ª geração] Extração vetorizada de pares únicos.
-                # Substitui df.iterrows() (anti-padrão): 31x mais rápido em 50k linhas.
-                # 500k linhas: ~16s → ~0.5s. Zero mudança de lógica.
+                # [P30] Extração vetorizada de pares únicos (31x vs iterrows)
                 _orig_s = df['Origem'].fillna('').astype(str).str.strip()
                 _dest_s = df['Destino'].fillna('').astype(str).str.strip()
                 _mask_validos = (
@@ -3181,127 +3265,186 @@ with tab_processamento:
                     (_orig_s.str.lower() != 'nan') & (_dest_s.str.lower() != 'nan')
                 )
                 pares_unicos = set(zip(_orig_s[_mask_validos], _dest_s[_mask_validos]))
-                        
+                
                 if not pares_unicos:
                     st.warning("Nenhuma linha contendo endereços válidos detectada após sanitização.")
                     st.stop()
                     
-                MAPA_PRIORIDADE = MAPA_PRIORIDADE_GLOBAL 
+                MAPA_PRIORIDADE = MAPA_PRIORIDADE_GLOBAL
                 tarefas_priorizadas = []
                 for p in pares_unicos:
                     tipo_o = semantica.classificar_entrada(semantica.normalizar(p[0]))
                     tarefas_priorizadas.append((MAPA_PRIORIDADE.get(tipo_o, 99), p))
                 tarefas_priorizadas.sort(key=lambda x: x[0])
                 
-                st.info(f"Otimização O(U) com Fila Inteligente Ativa: {len(pares_unicos)} rotas exclusivas na esteira de processamento pipeline-unificado.")
-                
-                barra_progresso = st.progress(0)
-                container_status = st.empty()
-                
-                # [SPEED-1 - 9ª geração] PRÉ-AQUECIMENTO DE GEOCODIFICAÇÃO DE ENDPOINTS ÚNICOS.
-                # Em logística B2B (poucos hubs, muitos clientes), a mesma origem aparece em
-                # centenas de rotas. Sem pré-aquecimento, rotas paralelas iniciam a geocodificação
-                # do MESMO endpoint antes do cache popular → chamadas redundantes à API (race de
-                # cache-miss). Aqui geocodificamos cada endpoint ÚNICO uma vez, em paralelo,
-                # populando os caches L1/L2 ANTES do roteamento. Resultados idênticos (mesma
-                # função de geocodificação); elimina o desperdício de rede. Ganho proporcional
-                # à razão rotas/endpoints (até ~50% menos chamadas de geocodificação em lotes B2B).
+                # [SPEED-1] Pré-aquecimento de geocodificação de endpoints únicos (uma vez, no início)
                 endpoints_unicos = set()
                 for _o, _d in pares_unicos:
                     endpoints_unicos.add(_o)
                     endpoints_unicos.add(_d)
-                    
-                _houve_preaquecimento = len(endpoints_unicos) < len(pares_unicos) * 1.8  # só vale se há reuso real de endpoints
+                _houve_preaquecimento = len(endpoints_unicos) < len(pares_unicos) * 1.8
                 if _houve_preaquecimento:
-                    container_status.text(f"🔥 Pré-aquecendo geocodificação de {len(endpoints_unicos)} endpoints únicos...")
+                    _pa_bar = st.progress(0)
+                    _pa_status = st.empty()
+                    _pa_status.text(f"🔥 Pré-aquecendo geocodificação de {len(endpoints_unicos)} endpoints únicos...")
                     _geo_concluidos = 0
                     _total_endpoints = len(endpoints_unicos)
                     _passo_geo = max(1, _total_endpoints // 50)
                     _futuros_geo = {EXECUTOR_GLOBAL.submit(obter_coordenadas_e_endereco_oficial, ep): ep for ep in endpoints_unicos}
                     for _f in as_completed(_futuros_geo):
                         try:
-                            _f.result()  # resultado é cacheado internamente; só forçamos o povoamento
+                            _f.result()
                         except Exception:
                             pass
                         _geo_concluidos += 1
                         if _geo_concluidos % _passo_geo == 0 or _geo_concluidos == _total_endpoints:
-                            barra_progresso.progress(0.5 * _geo_concluidos / _total_endpoints)
-                            container_status.text(f"🔥 Pré-aquecimento de geocodificação: {_geo_concluidos}/{_total_endpoints} endpoints (cache populado)")
-                    container_status.text("✅ Geocodificação pré-aquecida. Iniciando roteamento (cache-hit garantido)...")
-                    df_final = rodar_pipeline_lote(df, list(pares_unicos), tarefas_priorizadas, nome_operador, barra_progresso, container_status, progress_offset=0.5, progress_scale=0.5)
+                            _pa_bar.progress(_geo_concluidos / _total_endpoints)
+                            _pa_status.text(f"🔥 Pré-aquecimento: {_geo_concluidos}/{_total_endpoints} endpoints (cache populado)")
+                    _pa_bar.empty(); _pa_status.empty()
+                    
+                # Persiste o estado inicial e dispara o motor de chunks via rerun
+                st.session_state['lote_em_andamento'] = True
+                st.session_state['lote_tarefas'] = tarefas_priorizadas
+                st.session_state['lote_resultados'] = {}
+                st.session_state['lote_chunk_idx'] = 0
+                st.session_state['lote_df_base'] = df.copy()
+                st.session_state['lote_start_clock'] = time.time()
+                st.session_state['lote_total'] = len(pares_unicos)
+                st.session_state['lote_operador'] = nome_operador
+                st.session_state['lote_preaquecido'] = _houve_preaquecimento
+                st.session_state['lote_runner_map'] = None  # lote padrão não usa runner-up
+                st.rerun()
+                
+            # ---- FASE 2: PROCESSAMENTO DE UM CHUNK (a cada rerun automático) ----
+            if st.session_state.get('lote_em_andamento', False):
+                _tarefas = st.session_state['lote_tarefas']
+                _total = st.session_state['lote_total']
+                _idx = st.session_state['lote_chunk_idx']
+                _resultados = st.session_state['lote_resultados']
+                _runner_map = st.session_state.get('lote_runner_map')
+                _total_chunks = max(1, math.ceil(_total / CHUNK_SIZE))
+                _chunk_atual_num = _idx // CHUNK_SIZE + 1
+                
+                # Painel de monitoramento ao vivo (atualiza a cada chunk)
+                _feitos = len(_resultados)
+                _restantes = _total - _feitos
+                _pct = (_feitos / _total) if _total else 1.0
+                _elapsed = time.time() - st.session_state['lote_start_clock']
+                _taxa = (_feitos / _elapsed) if _elapsed > 0 and _feitos > 0 else 0.0
+                _eta_seg = (_restantes / _taxa) if _taxa > 0 else 0.0
+                
+                st.markdown("#### ⚙️ Processamento Contínuo em Andamento")
+                st.progress(min(1.0, _pct))
+                _mon1, _mon2, _mon3, _mon4 = st.columns(4)
+                _mon1.metric("Processados", f"{_feitos:,} / {_total:,}", help="Rotas únicas já processadas / total.")
+                _mon2.metric("Restantes", f"{_restantes:,}", help="Rotas únicas ainda pendentes.")
+                _mon3.metric("Concluído", f"{_pct*100:.1f}%", help="Percentual concluído.")
+                _mon4.metric("Lote Atual", f"{_chunk_atual_num} / {_total_chunks}", help="Chunk atual / total de chunks.")
+                _mon5, _mon6, _mon7, _mon8 = st.columns(4)
+                _mon5.metric("Tempo Decorrido", _formatar_duracao(_elapsed), help="Tempo desde o início do processamento.")
+                _mon6.metric("Velocidade", f"{_taxa:.1f} rotas/s", help="Velocidade média de processamento.")
+                _mon7.metric("Rotas/min", f"{_taxa*60:.0f}", help="Rotas processadas por minuto.")
+                _mon8.metric("Tempo Restante (ETA)", _formatar_duracao(_eta_seg) if _taxa > 0 else "calculando...", help="Estimativa para concluir, baseada na velocidade atual.")
+                st.caption("🔄 O processamento avança automaticamente. **Não é necessário clicar novamente** — cada lote continua sozinho até o fim. "
+                           "Você pode cancelar a qualquer momento no botão acima.")
+                
+                # Processa o próximo chunk
+                _chunk = _tarefas[_idx:_idx + CHUNK_SIZE]
+                if _chunk:
+                    try:
+                        _res_chunk = processar_chunk_rotas(_chunk, runner_up_map=_runner_map)
+                        _resultados.update(_res_chunk)
+                        st.session_state['lote_resultados'] = _resultados
+                    except Exception as e:
+                        # Isola falha do chunk: registra e continua (não encerra o lote)
+                        logger.error(f"[FIX-LOTE] Erro no chunk {_chunk_atual_num}, isolado: {e}")
+                    st.session_state['lote_chunk_idx'] = _idx + CHUNK_SIZE
+                    
+                # Mais chunks? Continua automaticamente. Senão, finaliza.
+                if st.session_state['lote_chunk_idx'] < _total:
+                    time.sleep(0.05)  # micro-pausa p/ o Streamlit liberar o WebSocket
+                    st.rerun()
                 else:
-                    df_final = rodar_pipeline_lote(df, list(pares_unicos), tarefas_priorizadas, nome_operador, barra_progresso, container_status)
-                
-                lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
-                lon_o = np.radians(df_final['Lon Origem'].astype(float).values)
-                lat_d = np.radians(df_final['Lat Destino'].astype(float).values)
-                lon_d = np.radians(df_final['Lon Destino'].astype(float).values)
-                dlat = lat_d - lat_o
-                dlon = lon_d - lon_o
-                a = np.sin(dlat / 2.0)**2 + np.cos(lat_o) * np.cos(lat_d) * np.sin(dlon / 2.0)**2
-                c = 2 * np.arcsin(np.sqrt(a))
-                distancias_vetorizadas = 6371.0088 * c  # [G23] raio IUGG consistente com motor geodésico
-                mask_validas = (df_final['Lat Origem'] != 0.0) & (df_final['Lat Destino'] != 0.0)
-                
-                df_final.loc[mask_validas, 'Linha Reta'] = np.round(distancias_vetorizadas[mask_validas], 2)
-                df_final.loc[mask_validas, 'Status Linha Reta'] = "Calculada via Haversine Vetorizado"
-                tempo_lote_segundos = round(time.time() - start_lote_clock, 2)
-                
-                cache_historico_lotes.set(f"lote_{start_lote_clock}", {
-                    "Data/Hora": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "Operador": nome_operador.strip() if nome_operador.strip() else "Operador Padrão",
-                    "Linhas Validadas": len(pares_unicos),
-                    "Tempo Gasto (s)": tempo_lote_segundos,
-                    "Tempo Médio/Rota (s)": round(tempo_lote_segundos / max(1, len(pares_unicos)), 2)
-                }, expire=None)
-                
-                ordem_finais = list(df.columns)
-                for col in novas_colunas:
-                    if col not in ordem_finais: 
-                        ordem_finais.append(col)
-                df_final = df_final.reindex(columns=ordem_finais)
-                
-                st.session_state['df_processado'] = df_final
-                container_status.empty(); barra_progresso.empty()
-                st.success("✨ Processamento em lote corporativo concluído com êxito e Linhas Retas Auditadas matricialmente!")
-                
-                # [Etapa 6 - 9ª geração] Painel de Monitoramento de Performance do Lote.
-                # Mostra onde o tempo foi consumido (geocodificação vs roteamento vs total)
-                # e compara o tempo real com a estimativa prévia (calibra confiança do usuário).
+                    # ---- FASE 3: FINALIZAÇÃO (todos os chunks concluídos) ----
+                    _df_base = st.session_state['lote_df_base']
+                    _operador = st.session_state.get('lote_operador', '')
+                    _preaq = st.session_state.get('lote_preaquecido', False)
+                    _start_clock = st.session_state['lote_start_clock']
+                    
+                    df_final = _montar_dataframe_final(_df_base, _resultados, runner_up_map=_runner_map)
+                    
+                    # Recalcula Linha Reta vetorizada (Haversine IUGG)
+                    lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
+                    lon_o = np.radians(df_final['Lon Origem'].astype(float).values)
+                    lat_d = np.radians(df_final['Lat Destino'].astype(float).values)
+                    lon_d = np.radians(df_final['Lon Destino'].astype(float).values)
+                    dlat = lat_d - lat_o; dlon = lon_d - lon_o
+                    a = np.sin(dlat / 2.0)**2 + np.cos(lat_o) * np.cos(lat_d) * np.sin(dlon / 2.0)**2
+                    c = 2 * np.arcsin(np.sqrt(a))
+                    distancias_vetorizadas = 6371.0088 * c
+                    mask_validas = (df_final['Lat Origem'] != 0.0) & (df_final['Lat Destino'] != 0.0)
+                    df_final.loc[mask_validas, 'Linha Reta'] = np.round(distancias_vetorizadas[mask_validas], 2)
+                    df_final.loc[mask_validas, 'Status Linha Reta'] = "Calculada via Haversine Vetorizado"
+                    
+                    tempo_lote_segundos = round(time.time() - _start_clock, 2)
+                    cache_historico_lotes.set(f"lote_{_start_clock}", {
+                        "Data/Hora": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "Operador": _operador.strip() if _operador.strip() else "Operador Padrão",
+                        "Linhas Validadas": _total,
+                        "Tempo Gasto (s)": tempo_lote_segundos,
+                        "Tempo Médio/Rota (s)": round(tempo_lote_segundos / max(1, _total), 2)
+                    }, expire=None)
+                    
+                    ordem_finais = list(_df_base.columns)
+                    for col in NOVAS_COLUNAS_PADRAO:
+                        if col not in ordem_finais:
+                            ordem_finais.append(col)
+                    df_final = df_final.reindex(columns=ordem_finais)
+                    
+                    # [SPEED-3] Exportação xlsxwriter (~1.7x vs openpyxl)
+                    output_buffer = io.BytesIO()
+                    with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
+                        df_final.to_excel(writer, index=False)
+                    st.session_state['planilha_pronta'] = output_buffer.getvalue()
+                    st.session_state['df_processado'] = df_final
+                    st.session_state['lote_tempo_total'] = tempo_lote_segundos
+                    st.session_state['lote_preaquecido_final'] = _preaq
+                    
+                    # Limpa o estado de processamento (libera RAM dos checkpoints)
+                    for _k in ['lote_em_andamento', 'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
+                               'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
+                               'lote_preaquecido', 'lote_runner_map']:
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+                    
+        if 'df_processado' in st.session_state and 'planilha_pronta' in st.session_state:
+            # Painel de performance do último lote (após finalização)
+            if 'lote_tempo_total' in st.session_state:
+                _tempo_lote = st.session_state['lote_tempo_total']
+                _df_fin = st.session_state['df_processado']
+                st.success("✨ Processamento em lote concluído com êxito! Todos os registros foram processados automaticamente.")
                 with st.container(border=True):
                     st.markdown("#### ⚡ Monitoramento de Performance deste Lote")
-                    _tempo_real_fmt = _formatar_duracao(tempo_lote_segundos)
-                    _med_geo = float(df_final['Tempo Geocoding (s)'].mean()) if 'Tempo Geocoding (s)' in df_final.columns else 0.0
-                    _med_rot = float(df_final['Tempo Roteamento (s)'].mean()) if 'Tempo Roteamento (s)' in df_final.columns else 0.0
-                    _med_tot = float(df_final['Tempo Total (s)'].mean()) if 'Tempo Total (s)' in df_final.columns else 0.0
+                    _med_geo = float(_df_fin['Tempo Geocoding (s)'].mean()) if 'Tempo Geocoding (s)' in _df_fin.columns else 0.0
+                    _med_rot = float(_df_fin['Tempo Roteamento (s)'].mean()) if 'Tempo Roteamento (s)' in _df_fin.columns else 0.0
+                    _med_tot = float(_df_fin['Tempo Total (s)'].mean()) if 'Tempo Total (s)' in _df_fin.columns else 0.0
                     cmp1, cmp2, cmp3, cmp4 = st.columns(4)
-                    cmp1.metric("Tempo Total Real", _tempo_real_fmt, help="Duração efetiva do processamento completo deste lote.")
-                    cmp2.metric("Médio Geocodificação/Rota", f"{_med_geo:.2f}s", help="Tempo médio para localizar origem+destino de cada rota (etapa de rede mais cara em cache-miss).")
-                    cmp3.metric("Médio Roteamento/Rota", f"{_med_rot:.2f}s", help="Tempo médio para obter distância viária (Google Maps + OSRM) de cada rota.")
-                    cmp4.metric("Médio Total/Rota", f"{_med_tot:.2f}s", help="Tempo médio completo por rota única.")
-                    # Identifica o gargalo dominante
+                    cmp1.metric("Tempo Total Real", _formatar_duracao(_tempo_lote))
+                    cmp2.metric("Médio Geocodificação/Rota", f"{_med_geo:.2f}s")
+                    cmp3.metric("Médio Roteamento/Rota", f"{_med_rot:.2f}s")
+                    cmp4.metric("Médio Total/Rota", f"{_med_tot:.2f}s")
                     if _med_geo > _med_rot * 1.3:
-                        st.caption("🔍 **Etapa dominante:** Geocodificação. A maior parte do tempo foi localizar endereços. "
-                                   "Endereços mais completos (com cidade e UF) e o cache aceleram lotes futuros.")
+                        st.caption("🔍 **Etapa dominante:** Geocodificação.")
                     elif _med_rot > _med_geo * 1.3:
-                        st.caption("🔍 **Etapa dominante:** Roteamento. A maior parte do tempo foi calcular trajetos viários nas APIs de mapa.")
+                        st.caption("🔍 **Etapa dominante:** Roteamento.")
                     else:
-                        st.caption("🔍 **Etapas equilibradas:** geocodificação e roteamento consumiram tempos similares.")
-                    if _houve_preaquecimento:
-                        st.caption("🔥 **Pré-aquecimento ativo:** endpoints únicos foram geocodificados antecipadamente, "
-                                   "eliminando chamadas redundantes de geocodificação durante o roteamento paralelo.")
-                
-                # [SPEED-3 - 9ª geração] xlsxwriter em vez de openpyxl para o dump de
-                # dados puro: ~1.7x mais rápido na exportação, saída idêntica (sem
-                # formatação openpyxl-específica neste arquivo). Ambos já são dependências.
-                output_buffer = io.BytesIO()
-                with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer: 
-                    df_final.to_excel(writer, index=False)
-                st.session_state['planilha_pronta'] = output_buffer.getvalue()
-                
-        if 'df_processado' in st.session_state and 'planilha_pronta' in st.session_state:
+                        st.caption("🔍 **Etapas equilibradas.**")
+                if st.session_state.get('lote_preaquecido_final', False):
+                    st.caption("🔥 **Pré-aquecimento ativo:** geocodificação antecipada eliminou chamadas redundantes.")
+                st.balloons()  # celebra só na primeira exibição pós-conclusão
+                st.session_state.pop('lote_tempo_total', None)  # mostra painel só uma vez
+                st.session_state.pop('lote_preaquecido_final', None)
             st.write("---")
-            st.balloons()
             # [F-NEW1] Scorecard de qualidade — indicadores agregados antes da prévia bruta
             renderizar_scorecard_qualidade(st.session_state['df_processado'])
             st.write("---")
