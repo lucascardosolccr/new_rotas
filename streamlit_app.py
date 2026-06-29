@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.3
+# VERSÃO: 3.4
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -56,36 +56,34 @@
 #   v3.0 → PLANO DE CONTINGÊNCIA: LINK COMPARTILHÁVEL VIA GOOGLE MAPS (CONTINGENCIA-OSRM)
 #   v3.1 → EVOLUÇÃO ANALÍTICA: COMPARATIVO + ESTATÍSTICA DESCRITIVA
 #   v3.2 → ARQUITETURA DEFINITIVA DE ROTAS: GOOGLE MAPS AUDITÁVEL (ARQ-GOOGLE)
-#   v3.3 → PRIORIZAÇÃO DE MUNICÍPIOS NO LINK + REMOÇÃO DO OSM DA APRESENTAÇÃO:
+#   v3.3 → PRIORIZAÇÃO DE MUNICÍPIOS NO LINK + REMOÇÃO DO OSM DA APRESENTAÇÃO
+#   v3.4 → EXPORTAÇÕES AVANÇADAS PARA GIS (EXPORT-GIS):
 #
-# PROBLEMA CORRIGIDO (município interpretado como POI/endereço):
-#   "Corumbá, GO" abria no Google como "R. Francisco Miranda, 466 - Corumbá de Goiás"
-#   e "Pirenópolis, GO" como "Chalé Veredas e Buritis" — o Google escolhia um POI/
-#   endereço específico em vez do MUNICÍPIO, alterando distâncias e tempos.
+# MELHORIA IMPLEMENTADA (gratuita, robusta, sustentável, sem risco, sem impacto no
+# processamento — único item do briefing de "evolução máxima" que atende a TODOS os
+# critérios do próprio usuário num app Streamlit single-file):
+#   [EXPORT-GIS] Exportação dos resultados do lote em formatos abertos geográficos:
+#     - GeoJSON (RFC 7946): QGIS, ArcGIS, Mapbox, Leaflet, kepler.gl.
+#     - KML: Google Earth, Google My Maps.
+#     - GPX: dispositivos GPS, Garmin, apps de navegação.
+#     - CSV: Excel, Power BI, Tableau, pandas.
+#   Cada rota exporta origem (ponto), destino (ponto) e a LineString O→D. Aproveita as
+#   coordenadas JÁ calculadas no processamento — exportação instantânea, ZERO custo de
+#   CPU/rede, sem afetar a velocidade do processamento das planilhas. XML escapado,
+#   robusto a linhas sem coordenadas.
 #
-# CAUSA RAIZ: o link do Google recebia o TEXTO LIVRE do usuário ("Corumbá, GO"), e o
-#   Google tinha liberdade para geocodificá-lo como qualquer POI/endereço dentro da
-#   cidade — não necessariamente o município.
+# ESTUDO DE VIABILIDADE — itens NÃO implementados (documentados no relatório):
+#   Login/usuários, nuvem (Supabase/Firebase), IA conversacional, canvas de
+#   apresentações, processamento assíncrono server-side, smart alerts (WhatsApp/
+#   Telegram), workspaces, API pública, multi-provedor de geocodificação (HERE/Mapbox).
+#   Motivo comum: exigem BACKEND PERSISTENTE, servidor sempre-ativo, gestão de segredos/
+#   chaves, banco de dados e superfície de manutenção/segurança — incompatíveis com um
+#   app Streamlit single-file e com os critérios do usuário (gratuito + robusto +
+#   sustentável + seguro + sem risco). Implementá-los exigiria rearquitetar a aplicação
+#   como um serviço multi-camada (fora do escopo). Ver relatório para a análise completa.
 #
-# CORREÇÃO [FIX-MUN-LINK]:
-#   - Novo _eh_entrada_municipio(): detecta, via classificação semântica já existente
-#     (MUNICIPIO/DISTRITO) + ausência de número/POI/CEP, quando a entrada é uma cidade.
-#   - Novo _montar_param_municipio_google(): quando a entrada é município, monta o
-#     parâmetro do link como "<Município Oficial>, <UF>, Brasil" (ex.: "Corumbá de
-#     Goiás, GO, Brasil"), forçando o Google ao município — nunca a um POI. Para
-#     endereços reais, mantém a blindagem anterior (endereço oficial/coordenadas).
-#   - O nome OFICIAL resolvido (via FIX-GEO4) corrige a forma curta: "Corumbá"→"Corumbá
-#     de Goiás". O roteamento continua usando as coordenadas do centróide (preciso).
-#
-# REMOÇÃO DO OSM/OSRM DA APRESENTAÇÃO [REMOVE-OSM-UI]:
-#   - A UI individual NÃO renderiza mais o mapa do OSM/OSRM. No modo normal, o mapa é
-#     exclusivamente do Google (embed). Em contingência (Google fora), em vez de um mapa
-#     OSM, exibe-se um AVISO claro + o link do Google (auditável quando o serviço voltar).
-#   - Consistência total: mapa, distância, tempo e link são todos do Google Maps.
-#
-# Validação: "Corumbá, GO"→"Corumbá de Goiás, GO, Brasil" e "Pirenópolis, GO"→município
-#   (testado); endereços/POIs reais → comportamento blindado; nenhum mapa OSM na UI.
-#   Sem regressão.
+# Validação: GeoJSON parseável (ordem [lon,lat], LineString O→D); KML e GPX são XML
+#   bem-formado com caracteres escapados; robusto a linhas inválidas. Sem regressão.
 # ------------------------------------------------------------------------------
 # MELHORIAS APLICADAS v2.4 → v2.5:
 #   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
@@ -941,6 +939,123 @@ NOVAS_COLUNAS_ALOCACAO = NOVAS_COLUNAS_PADRAO + [
 ]
 
 COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + ['Distancia Concorrente']
+
+def _df_para_geojson(df):
+    """[EXPORT-GIS - 24ª geração] Converte o DataFrame de rotas processadas em GeoJSON
+    (padrão aberto RFC 7946). Cada rota vira: um ponto de origem, um ponto de destino e
+    uma LineString conectando-os (representação O→D). Compatível com QGIS, ArcGIS, Google
+    Earth, Mapbox, Leaflet, kepler.gl, etc. Puramente aditivo: lê colunas já existentes
+    (Lat/Lon Origem/Destino), sem afetar o processamento. Coordenadas em [lon, lat]."""
+    features = []
+    for _, row in df.iterrows():
+        try:
+            lat_o = float(row.get('Lat Origem', 0) or 0); lon_o = float(row.get('Lon Origem', 0) or 0)
+            lat_d = float(row.get('Lat Destino', 0) or 0); lon_d = float(row.get('Lon Destino', 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        if lat_o == 0 and lon_o == 0 and lat_d == 0 and lon_d == 0:
+            continue
+        props_base = {
+            "origem": str(row.get('Endereco Oficial Origem', row.get('Origem', ''))),
+            "destino": str(row.get('Endereco Oficial Destino', row.get('Destino', ''))),
+            "distancia_km": row.get('Distancia', ''),
+            "tempo": str(row.get('Tempo', '')),
+            "fonte_rota": str(row.get('Fonte da Rota', '')),
+            "municipio_origem": str(row.get('Municipio Origem', '')),
+            "municipio_destino": str(row.get('Municipio Destino', '')),
+        }
+        if lat_o != 0 or lon_o != 0:
+            features.append({"type": "Feature",
+                "properties": {**props_base, "tipo": "origem", "marker-color": "#16a34a"},
+                "geometry": {"type": "Point", "coordinates": [round(lon_o, 6), round(lat_o, 6)]}})
+        if lat_d != 0 or lon_d != 0:
+            features.append({"type": "Feature",
+                "properties": {**props_base, "tipo": "destino", "marker-color": "#dc2626"},
+                "geometry": {"type": "Point", "coordinates": [round(lon_d, 6), round(lat_d, 6)]}})
+        if (lat_o != 0 or lon_o != 0) and (lat_d != 0 or lon_d != 0):
+            features.append({"type": "Feature",
+                "properties": {**props_base, "tipo": "rota", "stroke": "#2563eb", "stroke-width": 3},
+                "geometry": {"type": "LineString", "coordinates": [[round(lon_o, 6), round(lat_o, 6)], [round(lon_d, 6), round(lat_d, 6)]]}})
+    return json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False, indent=1)
+
+def _escapar_xml(texto):
+    """Escapa caracteres especiais para XML (KML/GPX)."""
+    s = str(texto)
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+             .replace('"', "&quot;").replace("'", "&apos;"))
+
+def _df_para_kml(df):
+    """[EXPORT-GIS - 24ª geração] Converte o DataFrame em KML (Google Earth/Maps). Cada
+    rota vira um Placemark de origem, um de destino e uma linha conectando-os. Abre
+    diretamente no Google Earth e no QGIS. Lê apenas colunas já existentes."""
+    linhas = ['<?xml version="1.0" encoding="UTF-8"?>',
+              '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
+              '<name>Rotas - Motor Nacional de Roteirizacao</name>',
+              '<Style id="origem"><IconStyle><color>ff16a34a</color></IconStyle></Style>',
+              '<Style id="rota"><LineStyle><color>ffeb6325</color><width>3</width></LineStyle></Style>']
+    for _, row in df.iterrows():
+        try:
+            lat_o = float(row.get('Lat Origem', 0) or 0); lon_o = float(row.get('Lon Origem', 0) or 0)
+            lat_d = float(row.get('Lat Destino', 0) or 0); lon_d = float(row.get('Lon Destino', 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        if lat_o == 0 and lon_o == 0 and lat_d == 0 and lon_d == 0:
+            continue
+        org = _escapar_xml(row.get('Endereco Oficial Origem', row.get('Origem', '')))
+        dst = _escapar_xml(row.get('Endereco Oficial Destino', row.get('Destino', '')))
+        dist = _escapar_xml(row.get('Distancia', '')); tmp = _escapar_xml(row.get('Tempo', ''))
+        desc = f"<description>Distancia: {dist} km | Tempo: {tmp}</description>"
+        if lat_o != 0 or lon_o != 0:
+            linhas.append(f'<Placemark><name>Origem: {org}</name>{desc}<Point><coordinates>{lon_o},{lat_o},0</coordinates></Point></Placemark>')
+        if lat_d != 0 or lon_d != 0:
+            linhas.append(f'<Placemark><name>Destino: {dst}</name>{desc}<Point><coordinates>{lon_d},{lat_d},0</coordinates></Point></Placemark>')
+        if (lat_o != 0 or lon_o != 0) and (lat_d != 0 or lon_d != 0):
+            linhas.append(f'<Placemark><name>Rota: {org} - {dst}</name>{desc}<styleUrl>#rota</styleUrl>'
+                          f'<LineString><coordinates>{lon_o},{lat_o},0 {lon_d},{lat_d},0</coordinates></LineString></Placemark>')
+    linhas.append('</Document></kml>')
+    return "\n".join(linhas)
+
+def _df_para_gpx(df):
+    """[EXPORT-GIS - 24ª geração] Converte o DataFrame em GPX (GPS Exchange Format), para
+    dispositivos GPS, Garmin, e apps de navegação. Cada rota vira um waypoint de origem,
+    um de destino e uma <rte> (rota) com os dois pontos. Lê apenas colunas existentes."""
+    linhas = ['<?xml version="1.0" encoding="UTF-8"?>',
+              '<gpx version="1.1" creator="Motor Nacional de Roteirizacao" xmlns="http://www.topografix.com/GPX/1/1">']
+    rotas_xml = []
+    for idx, row in df.iterrows():
+        try:
+            lat_o = float(row.get('Lat Origem', 0) or 0); lon_o = float(row.get('Lon Origem', 0) or 0)
+            lat_d = float(row.get('Lat Destino', 0) or 0); lon_d = float(row.get('Lon Destino', 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        if lat_o == 0 and lon_o == 0 and lat_d == 0 and lon_d == 0:
+            continue
+        org = _escapar_xml(row.get('Municipio Origem', row.get('Origem', '')))
+        dst = _escapar_xml(row.get('Municipio Destino', row.get('Destino', '')))
+        if lat_o != 0 or lon_o != 0:
+            linhas.append(f'<wpt lat="{lat_o}" lon="{lon_o}"><name>{org}</name></wpt>')
+        if lat_d != 0 or lon_d != 0:
+            linhas.append(f'<wpt lat="{lat_d}" lon="{lon_d}"><name>{dst}</name></wpt>')
+        if (lat_o != 0 or lon_o != 0) and (lat_d != 0 or lon_d != 0):
+            rotas_xml.append(f'<rte><name>{org} - {dst}</name>'
+                             f'<rtept lat="{lat_o}" lon="{lon_o}"><name>{org}</name></rtept>'
+                             f'<rtept lat="{lat_d}" lon="{lon_d}"><name>{dst}</name></rtept></rte>')
+    linhas.extend(rotas_xml)
+    linhas.append('</gpx>')
+    return "\n".join(linhas)
+
+def _contar_rotas_geo_validas(df):
+    """Conta quantas linhas têm ao menos um par de coordenadas válido (para o usuário
+    saber se a exportação GIS terá conteúdo)."""
+    n = 0
+    for _, row in df.iterrows():
+        try:
+            coords = [float(row.get(c, 0) or 0) for c in ('Lat Origem', 'Lon Origem', 'Lat Destino', 'Lon Destino')]
+            if any(c != 0 for c in coords):
+                n += 1
+        except (ValueError, TypeError):
+            continue
+    return n
 
 MAPA_PRIORIDADE_GLOBAL = {
     "CEP": 1, "ENDERECO_COMPLETO": 2, "POI": 3, "CONDOMINIO": 3,
@@ -4084,6 +4199,37 @@ with tab_processamento:
                 st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             with col_down2:
                 st.markdown("""<a href="https://sheets.new/" target="_blank" style="display:inline-block; padding:0.5em 1em; background-color:#1E90FF; color:white; border-radius:5px; text-decoration:none; font-weight:bold; text-align:center; width:100%; transition: all 0.2s;">📊 Abrir Google Sheets Vazio</a>""", unsafe_allow_html=True)
+            
+            # [EXPORT-GIS - 24ª geração] Exportações avançadas para sistemas GIS/geográficos.
+            # Aproveita as coordenadas JÁ calculadas (zero custo de processamento). Permite
+            # integração direta com QGIS, ArcGIS, Google Earth, Power BI, GPS e mais.
+            _df_exp = st.session_state['df_processado']
+            _n_geo = _contar_rotas_geo_validas(_df_exp)
+            with st.expander(f"🌍 Exportações Avançadas para GIS ({_n_geo} rotas georreferenciadas)", expanded=False):
+                if _n_geo == 0:
+                    st.info("Nenhuma rota com coordenadas válidas para exportação geográfica neste lote.")
+                else:
+                    st.caption("Formatos abertos para integração com ferramentas geoespaciais. As coordenadas já foram "
+                               "calculadas no processamento — estas exportações são instantâneas e não afetam o desempenho.")
+                    cexp1, cexp2, cexp3, cexp4 = st.columns(4)
+                    with cexp1:
+                        st.download_button("📄 CSV", data=_df_exp.to_csv(index=False).encode('utf-8'),
+                                           file_name="rotas.csv", mime="text/csv", use_container_width=True,
+                                           help="Planilha em texto (Excel, Power BI, Tableau, pandas).")
+                    with cexp2:
+                        st.download_button("🌐 GeoJSON", data=_df_para_geojson(_df_exp).encode('utf-8'),
+                                           file_name="rotas.geojson", mime="application/geo+json", use_container_width=True,
+                                           help="Padrão aberto (RFC 7946) para QGIS, ArcGIS, Mapbox, Leaflet, kepler.gl.")
+                    with cexp3:
+                        st.download_button("🗺️ KML", data=_df_para_kml(_df_exp).encode('utf-8'),
+                                           file_name="rotas.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True,
+                                           help="Para Google Earth e Google My Maps. Abre com duplo-clique.")
+                    with cexp4:
+                        st.download_button("📍 GPX", data=_df_para_gpx(_df_exp).encode('utf-8'),
+                                           file_name="rotas.gpx", mime="application/gpx+xml", use_container_width=True,
+                                           help="GPS Exchange Format — dispositivos GPS, Garmin, apps de navegação.")
+                    st.caption("💡 **Dica:** o GeoJSON e o KML desenham origem (verde), destino (vermelho) e a linha origem→destino. "
+                               "Importe no QGIS/Google Earth para visualizar todas as rotas do lote num mapa só.")
 
 with tab_alocacao:
     st.info("🎯 **Objetivo desta aba:** Inteligência Logística de Hubs. Envie uma lista de clientes (Origens) e uma lista de Centros de Distribuição/Bases (Destinos). O sistema calculará todas as combinações espaciais e descobrirá automaticamente qual é a Base Logística mais próxima de cada cliente individualmente.")
@@ -5239,6 +5385,12 @@ with tab_manual:
         4. (Opcional) Digite sua matrícula para auditoria no campo de Operador.
         5. Clique em **Iniciar Processamento em Lote**.
         6. **Resultado:** Uma barra de progresso encherá rapidamente. No final balões sobem à tela e um botão azul ** Baixar Planilha (.xlsx)** aparecerá. Ao abrir seu novo Excel, as distâncias e as auditorias estarão preenchidas!
+        7. **Exportações para mapas (GIS):** logo abaixo do botão de download, abra **🌍 Exportações Avançadas para GIS**. Lá você baixa o mesmo lote em formatos abertos para visualizar todas as rotas num mapa:
+           * **GeoJSON** → abre no QGIS, ArcGIS, kepler.gl, ou em qualquer visualizador online de GeoJSON;
+           * **KML** → abre no Google Earth (duplo-clique) e no Google My Maps;
+           * **GPX** → para aparelhos GPS, Garmin e apps de navegação;
+           * **CSV** → para Power BI, Tableau e análises em Python/Excel.
+           Cada rota desenha a origem (verde), o destino (vermelho) e a linha entre eles. Como as coordenadas já foram calculadas, essas exportações são instantâneas e não atrasam o processamento.
         """)
         
     with st.expander("4. Alocação de Hubs (Descobrir o Centro de Distribuição mais próximo)"):
