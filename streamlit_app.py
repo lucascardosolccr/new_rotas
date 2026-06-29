@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.5
+# VERSÃO: 3.6
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -58,35 +58,35 @@
 #   v3.2 → ARQUITETURA DEFINITIVA DE ROTAS: GOOGLE MAPS AUDITÁVEL (ARQ-GOOGLE)
 #   v3.3 → PRIORIZAÇÃO DE MUNICÍPIOS NO LINK + REMOÇÃO DO OSM DA APRESENTAÇÃO
 #   v3.4 → EXPORTAÇÕES AVANÇADAS PARA GIS (EXPORT-GIS)
-#   v3.5 → MUNICÍPIO POR COORDENADAS + REMOÇÃO TOTAL DO OSRM (FIX-MUN-COORD/ARQ-GOOGLE-ONLY):
+#   v3.5 → MUNICÍPIO POR COORDENADAS + REMOÇÃO TOTAL DO OSRM
+#   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO):
 #
-# PROBLEMA PERSISTENTE CORRIGIDO (município ainda virava POI):
-#   Mesmo após a v3.3 montar o link como "Corumbá de Goiás, GO, Brasil" (texto), o Google
-#   ainda podia, em alguns casos, reinterpretar o TEXTO como um POI/endereço — porque a
-#   geocodificação textual é inerentemente ambígua.
+# MUDANÇA DE DIREÇÃO (decisão do usuário): restaurar o modelo híbrido (Google + OSRM)
+# com seleção automática de MENOR DISTÂNCIA, porém reestruturado e muito superior ao
+# que existia — mais auditável, mais visual, mais robusto.
 #
-# SOLUÇÃO DEFINITIVA [FIX-MUN-COORD]:
-#   Quando a entrada é um município, o parâmetro do link passa a ser as COORDENADAS EXATAS
-#   do centróide (lat,lon), em vez de texto. Uma coordenada aponta para um ponto geográfico
-#   INEQUÍVOCO — o Google NÃO consegue transformá-la num hotel/endereço (ao contrário de um
-#   texto). É a forma mais robusta e auditável: o link abre exatamente o ponto usado nos
-#   cálculos. Sem coordenada válida, recai para "Município, UF, Brasil". Endereços/POIs
-#   reais mantêm o comportamento blindado. Funciona para caixa alta, sem acento, abreviação.
+# NOVA ARQUITETURA [ARQ-HIBRIDO]:
+#   - Os DOIS motores (Google Maps + OSRM) são executados em toda rota.
+#   - A aplicação compara as distâncias e adota a MENOR (tolerância de 2% a favor do
+#     Google, que tem link de navegação 100% auditável — evita alternância sem ganho).
+#   - GOOGLE vence → distância/tempo/mapa/link do Google + OSRM no comparativo.
+#   - OSRM vence → distância/tempo do OSRM + MAPA que desenha a GEOMETRIA EXATA do OSRM
+#     (Leaflet, traçado fiel) + DOWNLOAD do mapa HTML autocontido (rota exata, offline,
+#     auditável) + link de navegação via Google + comparativo obrigatório.
+#   - Comparativo RICO e VISUAL: cards lado a lado, selo do vencedor (🏆), diferença
+#     absoluta/percentual/tempo, leitura automática de convergência/divergência.
 #
-# REMOÇÃO TOTAL DO OSRM [ARQ-GOOGLE-ONLY] (decisão definitiva do usuário):
-#   O OSRM foi COMPLETAMENTE REMOVIDO do cálculo, comparação e apresentação de rotas:
-#     - Eliminada a chamada API_OSRM_Routing() na pipeline.
-#     - Eliminado o comparativo Google × OSRM (painel removido da UI).
-#     - Eliminada a contingência OSRM: se o Google falhar, recai DIRETAMENTE na Projeção
-#       Geodésica Adaptativa (linha reta × fator), determinística e sinalizada.
-#     - Removida toda a lógica de "menor rota entre provedores".
-#     - Painéis, legendas, tooltips e Enciclopédia atualizados: Google é fonte ÚNICA.
-#   Arquitetura simplificada → maior consistência, auditabilidade e manutenibilidade.
-#   (As funções OSRM legadas permanecem no código, mas NÃO são mais chamadas pela rota.)
+# LINK DA ROTA OSRM (investigação completa, conforme prioridade máxima do briefing):
+#   Reconfirmado que NÃO há link COMPARTILHÁVEL público robusto/documentado que abra a
+#   geometria exata do OSRM (geojson.io/map.project-osrm são frágeis; visualizador próprio
+#   exigiria hospedar URL pública — fora do escopo single-file). SOLUÇÃO robusta e
+#   auditável adotada: (1) mapa Leaflet embarcado desenha a geometria EXATA; (2) DOWNLOAD
+#   de HTML autocontido com a rota exata (abre offline em qualquer navegador, sem depender
+#   de serviço externo — robusto e sustentável); (3) link de navegação via Google Maps.
 #
-# Validação: município → coordenadas (testado p/ "Corumbá, GO", "CORUMBA GO", "Corumba GO");
-#   POIs/endereços preservados; pipeline sem res_osrm; Google→Google, sem-Google→geodésico;
-#   RotaPipeline íntegra (índices 0-35). Sem regressão.
+# Validação: 5 cenários testados (OSRM vence; Google vence; empate→Google; só OSRM;
+#   só Google); comparativo correto; mapa OSRM desenha geometria; RotaPipeline íntegra;
+#   priorização de município por coordenadas (FIX-MUN-COORD) preservada. Sem regressão.
 # ------------------------------------------------------------------------------
 # MELHORIAS APLICADAS v2.4 → v2.5:
 #   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
@@ -622,7 +622,7 @@ _GUIA_ABAS = {
         "preenchimento": "Não há campos a preencher — apenas leitura dos painéis. Abra 'Capacidade do Servidor' para ver os recursos disponíveis.",
         "apos_executar": "Não há processamento — os painéis refletem o estado atual em tempo real conforme você usa o sistema.",
         "interpretar": "**Verde/Estável** = provedor saudável. **Instável/Erros** = aquele provedor falhou e o sistema usou fallbacks automáticos. Latência alta = rede lenta naquele parceiro.",
-        "exemplos": "Se o Google Maps aparece 'Instável' para rotas, o sistema aciona a Projeção Geodésica Adaptativa (estimativa por linha reta) até o Google responder novamente.",
+        "exemplos": "Os dois motores de rota (Google + OSRM) rodam sempre; se um falhar, o outro assume. Se ambos falharem, entra a Projeção Geodésica (estimativa por linha reta).",
         "erros_comuns": "Estranhar 'N/A' antes de processar qualquer rota (ainda não há estatística); confundir lentidão de rede com erro do sistema.",
         "dicas": "Tempos médios altos não significam erro — significam que as APIs externas estão lentas. O sistema sempre tem motores de reserva.",
     },
@@ -3114,39 +3114,97 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     link_fallback = f"https://www.google.com/maps/dir/?api=1&origin={orig_param_fb}&destination={dest_param_fb}&travelmode=driving"
     link_embed_fallback = f"https://maps.google.com/maps?saddr={orig_param_fb}&daddr={dest_param_fb}&output=embed"
     
-    # [PERF-3] O scraper do Google é a fonte única de rotas. Os caches L1/L2 mitigam a
-    # latência serial (cache-hit não chama rede).
+    # [PERF-3] Google (scraper) e OSRM rodam em sequência. Os caches L1/L2 mitigam a
+    # latência (cache-hit não chama rede). Mantemos serial para não saturar o pool.
     res_google = None
     res_google = extrair_dados_reais_google(end_oficial_o, end_oficial_d, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
     
     if not res_google:
         res_google = extrair_dados_reais_google(origem_clean, destino_clean, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=False, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
+    
+    # [ARQ-HIBRIDO - 26ª geração] Consulta o OSRM em paralelo conceitual (sequencial real).
+    res_osrm = None
+    if lat_o != 0.0 and lat_d != 0.0:
+        res_osrm = API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d)
         
-    if res_google:
+    if res_google or res_osrm:
         # ======================================================================
-        # [ARQ-GOOGLE-ONLY - 25ª geração] ARQUITETURA DE ROTA: GOOGLE MAPS EXCLUSIVO.
+        # [ARQ-HIBRIDO - 26ª geração] ARQUITETURA HÍBRIDA REESTRUTURADA: GOOGLE + OSRM
+        # COM SELEÇÃO AUTOMÁTICA DE MENOR DISTÂNCIA E AUDITABILIDADE MÁXIMA.
         # ----------------------------------------------------------------------
-        # Decisão definitiva do usuário: o OSRM foi COMPLETAMENTE REMOVIDO do cálculo,
-        # comparação e apresentação de rotas. NÃO há mais consulta ao OSRM, nem busca
-        # automática da menor rota entre provedores. O Google Maps é a fonte ÚNICA:
-        # distância, tempo, mapa e link, todos do Google, 100% auditáveis pelo mesmo
-        # link. Isso simplifica a arquitetura e garante consistência total.
+        # Os DOIS motores são executados sempre que possível. A aplicação compara as
+        # distâncias e seleciona a MENOR como vencedora (regra de negócio do usuário).
         #
-        # Se o Google estiver indisponível, recai-se DIRETAMENTE para a Projeção
-        # Geodésica Adaptativa (linha reta × fator de desvio) — não há mais OSRM como
-        # contingência. A projeção geodésica é determinística e transparente.
+        # Cada cenário entrega o conjunto COMPLETO do vencedor + um comparativo rico:
+        #   - GOOGLE vence  → distância/tempo/mapa/link do Google + OSRM no comparativo.
+        #   - OSRM vence    → distância/tempo do OSRM + MAPA que desenha a geometria EXATA
+        #                     do OSRM (Leaflet, traçado fiel) + link navegável + download
+        #                     do mapa HTML autocontido (rota OSRM exata, offline, auditável)
+        #                     + Google no comparativo (diferença abs/%/tempo, selo, etc.).
+        #
+        # TOLERÂNCIA (2%): quando as distâncias são praticamente iguais, prefere-se o
+        # Google (que tem link de navegação 100% auditável), evitando alternância sem
+        # ganho real. Acima da tolerância, a menor distância vence sempre.
+        #
+        # LINK DA ROTA OSRM (investigação completa — ver _montar_links_osrm): não há forma
+        # robusta/documentada de um link COMPARTILHÁVEL público que abra a geometria exata
+        # do OSRM (geojson.io/map.project-osrm são frágeis). A solução robusta e auditável
+        # adotada: (1) mapa embarcado Leaflet desenha a geometria exata; (2) DOWNLOAD de um
+        # HTML autocontido com a rota OSRM exata (abre offline em qualquer navegador, sem
+        # depender de serviço externo); (3) link de navegação via Google (sempre traça).
         # ======================================================================
-        km_rota = res_google[0]
-        tempo_rota = res_google[1]
-        link_rota = res_google[2]      # /maps/dir/ — abre exatamente esta rota traçada
-        balsa_rota = res_google[3]
-        score_rota = res_google[4]
-        link_embed = res_google[5]     # mapa embarcado do Google (mesma rota)
-        fonte_rota = "Google Maps"
-        motivo_roteamento = (f"Rota oficial do Google Maps: {km_rota}km. Distância, tempo, mapa e link "
-                             f"de navegação são TODOS do Google Maps e podem ser auditados visualmente — "
-                             f"o link abre exatamente esta rota completamente traçada.")
-        comparativo_prov = ""  # OSRM removido — sem comparativo entre provedores
+        comparativo_prov = ""
+        km_g = res_google[0] if res_google else None
+        km_o = res_osrm[0] if res_osrm else None
+        n_alt_osrm = (res_osrm[3] if res_osrm and len(res_osrm) > 3 else 1)
+        
+        # Decide o vencedor pela MENOR distância (com tolerância de 2% a favor do Google).
+        osrm_vence = False
+        if res_google and res_osrm:
+            osrm_vence = km_o < km_g * 0.98
+            _tempo_osrm_str = f"{res_osrm[1]} min" if res_osrm[1] < 60 else f"{res_osrm[1] // 60} h {res_osrm[1] % 60} min"
+            comparativo_prov = _montar_comparativo_provedores(
+                km_g, res_google[1], km_o, _tempo_osrm_str, "OSRM" if osrm_vence else "Google")
+        
+        if res_osrm and (osrm_vence or not res_google):
+            # ---------------- OSRM É O VENCEDOR (ou Google indisponível) ----------------
+            km_rota = km_o
+            tempo_m = res_osrm[1]
+            tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
+            _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
+            balsa_rota = res_osrm[2]
+            score_rota = res_osrm[5] if len(res_osrm) > 5 else 88
+            # Mapa EMBARCADO desenha a geometria EXATA do OSRM (Leaflet+OSM, traçado fiel).
+            _, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm, f"{km_rota} km", tempo_rota)
+            # Link de navegação compartilhável via Google (sempre traça a rota de forma estável).
+            link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
+            fonte_rota = "OSRM (Menor Distância)"
+            if res_google:
+                _delta = km_g - km_o
+                motivo_roteamento = (f"OSRM venceu com a MENOR distância: {km_o}km contra {km_g}km do Google "
+                                     f"(~{_delta:.1f}km a menos, entre {n_alt_osrm} alternativa(s) viária(s) avaliadas). "
+                                     f"O mapa desenha a geometria exata do OSRM; o link de navegação abre a rota no "
+                                     f"Google Maps e há download do mapa HTML com o traçado exato do OSRM. Veja o comparativo.")
+            else:
+                motivo_roteamento = (f"Distância e tempo via malha OSRM ({km_o}km): o Google Maps não respondeu para "
+                                     f"medição. O mapa desenha a geometria exata do OSRM e há download do traçado em HTML.")
+        else:
+            # ---------------- GOOGLE É O VENCEDOR ----------------
+            km_rota = res_google[0]
+            tempo_rota = res_google[1]
+            link_rota = res_google[2]      # /maps/dir/ — abre exatamente esta rota traçada
+            balsa_rota = res_google[3]
+            score_rota = res_google[4]
+            link_embed = res_google[5]     # mapa embarcado do Google (mesma rota)
+            fonte_rota = "Google Maps"
+            if res_osrm:
+                motivo_roteamento = (f"Google Maps venceu com a menor distância (ou empate técnico ≤2%): {km_g}km "
+                                     f"contra {km_o}km do OSRM. Distância, tempo, mapa e link são do Google Maps e "
+                                     f"100% auditáveis pelo link. O OSRM aparece no comparativo para transparência.")
+            else:
+                motivo_roteamento = (f"Rota oficial do Google Maps: {km_rota}km. Distância, tempo, mapa e link são "
+                                     f"todos do Google e auditáveis — o link abre exatamente esta rota traçada. "
+                                     f"(OSRM indisponível para comparação nesta execução.)")
             
         tempo_roteamento = round(time.time() - start_rot, 2)
         tempo_total = round(time.time() - start_total, 2)
@@ -3680,7 +3738,7 @@ with tab_individual:
     with col_ind2: 
         dest_ind = st.text_input("Destino (Endereço, POI ou Coordenadas)", "SAO MIGUEL DO ARAGUAIA , GO, Brasil", help="Insira o destino final. O uso de UF (Ex: GO) assegura máxima precisão contra localidades homônimas em outros estados.")
         
-    if st.button("🚀 Calcular Rota Individual", type="primary", help="Inicia o pipeline Bayesiano para geocodificação e aciona o Google Maps para o trajeto viário."):
+    if st.button("🚀 Calcular Rota Individual", type="primary", help="Inicia o pipeline Bayesiano para geocodificação e aciona os dois motores (Google Maps + OSRM) para selecionar a rota de menor distância."):
         if orig_ind and dest_ind:
             with st.spinner("Acionando motores de geocodificação e consenso unificado..."):
                 res_ind = executar_pipeline_unificado(orig_ind, dest_ind)
@@ -3688,7 +3746,7 @@ with tab_individual:
             if res_ind and res_ind[28] != "Falha na leitura da célula (Campo Vazio)." and "FALHA INTERNA" not in res_ind[28]:
                 st.success("✅ Rota estabelecida com sucesso na malha viária!")
                 m_dist_via, m_dist_reta, m_time, m_balsa, m_score = st.columns(5)
-                m_dist_via.metric("Distância Viária", f"{res_ind[0]} km" if isinstance(res_ind[0], float) else res_ind[0], help="Quilometragem real rodada por asfalto, do Google Maps (auditável pelo link). Se o Google não responder, é estimada por projeção geodésica.")
+                m_dist_via.metric("Distância Viária", f"{res_ind[0]} km" if isinstance(res_ind[0], float) else res_ind[0], help="Quilometragem real rodada por asfalto, do provedor vencedor (Google Maps ou OSRM — menor distância). Se nenhum responder, é estimada por projeção geodésica.")
                 m_dist_reta.metric("Distância Linha Reta", f"{res_ind[4]} km" if isinstance(res_ind[4], float) else res_ind[4], help="Voo de pássaro entre os pontos (geodésica WGS-84). Serve de árbitro contra fretes inflados.")
                 m_time.metric("Tempo Estimado", res_ind[1], help="Duração estimada da viagem de carro.")
                 m_balsa.metric("Uso de Balsas", res_ind[3], help="Indica se a rota obrigatoriamente cruza travessia aquática.")
@@ -3703,33 +3761,96 @@ with tab_individual:
                 st.info(f"🧭 **Estratégia de Roteamento (XAI):** {res_ind[28]}")
                 st.caption(f"📏 **Status da Linha Reta:** {res_ind[30] if len(res_ind) > 30 else 'Não Mapeado'}")
                 
-                # [ARQ-GOOGLE-ONLY] Painel de consistência. Arquitetura Google-exclusiva:
-                # quando a fonte é o Google Maps, tudo (distância, tempo, mapa, link) é do
-                # Google e 100% auditável. Quando o Google falha, usa-se a Projeção Geodésica
-                # (estimativa por linha reta) — claramente sinalizada como não-viária.
+                # [ARQ-HIBRIDO - 26ª geração] Painel de consistência para os 3 cenários:
+                # Google vence (tudo do Google, auditável pelo link), OSRM vence (distância/
+                # tempo/mapa do OSRM com geometria exata + download do traçado), ou Projeção
+                # Geodésica (Google não respondeu — estimativa por linha reta).
                 fonte_rota_exibida = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _eh_geodesico = "GEOD" in str(fonte_rota_exibida).upper()
+                _eh_osrm_vencedor = "OSRM" in str(fonte_rota_exibida).upper()
                 with st.container(border=True):
                     cc1, cc2, cc3 = st.columns(3)
                     cc1.metric("Fonte da Rota", fonte_rota_exibida,
-                               help="Provedor que forneceu distância, tempo, mapa e link.")
-                    if not _eh_geodesico:
+                               help="Provedor vencedor (menor distância) que forneceu distância, tempo e mapa.")
+                    if _eh_geodesico:
+                        cc2.metric("Tipo de Estimativa", "📐 Geodésica",
+                                   help="Nenhum motor viário respondeu. A distância foi estimada pela linha reta × fator de desvio rodoviário.")
+                        cc3.metric("Recomendação", "Reprocessar",
+                                   help="Reprocesse para obter o valor viário oficial quando os motores responderem.")
+                        st.warning("📐 **Projeção Geodésica Adaptativa (motores viários indisponíveis):** a distância foi **estimada** pela linha "
+                                   "reta entre os pontos multiplicada por um fator de desvio rodoviário — **não** é uma rota viária medida. "
+                                   "Recomenda-se **reprocessar** quando os motores responderem, para obter a quilometragem oficial.")
+                    elif _eh_osrm_vencedor:
+                        cc2.metric("Critério", "🏆 Menor Distância",
+                                   help="O OSRM encontrou um trajeto mais curto que o Google (acima da tolerância de 2%).")
+                        cc3.metric("Mapa", "✅ Geometria OSRM",
+                                   help="O mapa desenha a geometria exata da rota OSRM. Há download do traçado em HTML autocontido.")
+                        st.caption("ℹ️ **OSRM venceu (menor distância):** distância, tempo e o **mapa** (que desenha a **geometria exata** da rota) "
+                                   "são do **OSRM**. O **link de navegação** abre a rota no **Google Maps** (forma estável de navegar), e você pode "
+                                   "**baixar o mapa HTML** com o traçado exato do OSRM (abre offline em qualquer navegador). Veja o **comparativo** "
+                                   "abaixo para entender a diferença entre os provedores.")
+                    else:
                         cc2.metric("Auditável pelo Link", "✅ Sim",
                                    help="Distância, tempo, mapa e link são todos do Google Maps. Ao abrir o link, você confere exatamente a mesma rota.")
-                        cc3.metric("Consistência", "✅ Fonte Única",
-                                   help="Todos os dados vêm do Google Maps — sem mistura de provedores.")
-                        st.caption("ℹ️ **Arquitetura auditável (Google Maps):** distância, tempo, mapa e link de navegação são TODOS do "
+                        cc3.metric("Critério", "🏆 Menor Distância",
+                                   help="O Google teve a menor distância (ou empate técnico ≤2%, preferido por ser auditável pelo link).")
+                        st.caption("ℹ️ **Google Maps venceu (menor distância):** distância, tempo, mapa e link de navegação são TODOS do "
                                    "**Google Maps**. Ao clicar em **Abrir rota no Google Maps**, você visualiza exatamente a mesma rota "
-                                   "completamente traçada que gerou os valores acima — origem, destino, trajeto, distância e tempo conferíveis. "
-                                   "Esta é a **fonte única de verdade** da aplicação para rotas.")
-                    else:
-                        cc2.metric("Tipo de Estimativa", "📐 Geodésica",
-                                   help="O Google Maps não respondeu. A distância foi estimada pela linha reta × fator de desvio rodoviário.")
-                        cc3.metric("Recomendação", "Reprocessar",
-                                   help="Reprocesse para obter o valor viário oficial e auditável do Google quando o serviço responder.")
-                        st.warning("📐 **Projeção Geodésica Adaptativa (Google Maps indisponível):** a distância foi **estimada** pela linha "
-                                   "reta entre os pontos multiplicada por um fator de desvio rodoviário — **não** é uma rota viária medida. "
-                                   "Recomenda-se **reprocessar** quando o Google Maps responder, para obter a quilometragem oficial e auditável.")
+                                   "completamente traçada que gerou os valores acima — totalmente auditável. Veja o **comparativo** abaixo.")
+                
+                # [COMP-PROV + ARQ-HIBRIDO] Painel comparativo Google × OSRM (rico e visual).
+                # Apresentado SEMPRE que ambos os motores responderam — obrigatório quando o
+                # OSRM vence, opcional/informativo quando o Google vence. Cards lado a lado,
+                # selo do vencedor, diferenças absolutas/percentuais e leitura automática.
+                _comp_str = res_ind[35] if len(res_ind) > 35 else ""
+                _comp = _parsear_comparativo_provedores(_comp_str)
+                if _comp:
+                    _osrm_venceu_painel = _eh_osrm_vencedor
+                    with st.expander("⚖️ Comparativo entre Provedores (Google Maps × OSRM)", expanded=_osrm_venceu_painel):
+                        km_g = _comp["km_google"]; km_o = _comp["km_osrm"]
+                        diff_abs = abs(km_g - km_o)
+                        _base_pct = min(km_g, km_o) if min(km_g, km_o) > 0 else 1.0
+                        diff_pct = (diff_abs / _base_pct) * 100.0
+                        _vencedor_nome = _comp.get("fonte_vencedora", "Google")
+                        cgA, cgB = st.columns(2)
+                        with cgA:
+                            _selo_g = "🏆 Vencedor" if _vencedor_nome == "Google" else "Referência"
+                            st.markdown(f"#### {'🟢' if _vencedor_nome == 'Google' else '🔵'} Google Maps")
+                            st.metric(f"Distância · {_selo_g}", f"{km_g:.2f} km")
+                            st.metric("Tempo", _comp["tempo_google"] or "—")
+                            if _vencedor_nome == "Google":
+                                st.success("🏆 **Menor distância** — fonte adotada (auditável pelo link).")
+                            else:
+                                st.caption("Referência comparativa.")
+                        with cgB:
+                            _selo_o = "🏆 Vencedor" if _vencedor_nome == "OSRM" else "Referência"
+                            st.markdown(f"#### {'🟢' if _vencedor_nome == 'OSRM' else '🔵'} OSRM")
+                            st.metric(f"Distância · {_selo_o}", f"{km_o:.2f} km")
+                            st.metric("Tempo", _comp["tempo_osrm"] or "—")
+                            if _vencedor_nome == "OSRM":
+                                st.success("🏆 **Menor distância** — fonte adotada (mapa com geometria exata).")
+                            else:
+                                st.caption("Referência comparativa.")
+                        st.divider()
+                        d1, d2, d3 = st.columns(3)
+                        d1.metric("Diferença de Distância", f"{diff_abs:.2f} km",
+                                  help="Diferença absoluta entre as distâncias dos dois provedores.")
+                        d2.metric("Diferença Percentual", f"{diff_pct:.1f}%",
+                                  help="Diferença relativa (sobre a menor das duas distâncias).")
+                        d3.metric("Provedor Vencedor", _vencedor_nome,
+                                  help="Provedor com a menor distância — adotado para os valores principais.")
+                        if diff_pct < 2.0:
+                            st.success(f"✅ **Convergência alta:** os dois motores praticamente concordam "
+                                       f"(diferença de apenas {diff_pct:.1f}%). Resultado muito robusto — adotado o **{_vencedor_nome}**.")
+                        elif diff_pct < 10.0:
+                            st.info(f"ℹ️ **Divergência moderada:** os motores diferem em {diff_pct:.1f}% ({diff_abs:.1f} km), "
+                                    f"o que reflete escolhas diferentes de vias. Adotada a **menor distância** ({_vencedor_nome}).")
+                        else:
+                            st.warning(f"⚠️ **Divergência alta:** {diff_pct:.1f}% de diferença ({diff_abs:.1f} km). "
+                                       f"Pode indicar rota alternativa significativa (balsa, pedágio, via não pavimentada) ou diferença "
+                                       f"de malha entre os motores. Adotada a **menor distância** ({_vencedor_nome}) — vale conferir o trajeto.")
+                        st.caption("📊 A aplicação executa **ambos** os motores e adota sempre a **menor distância**. Este comparativo é a "
+                                   "auditoria da escolha — mostra exatamente por que um provedor foi selecionado em vez do outro.")
                 
                 with st.expander("🔍 Auditoria Detalhada da Geocodificação e Consenso", expanded=False):
                     st.caption(f"Status da Base IBGE Local: {'Ativa e Carregada' if len(IBGE_MUNICIPIOS) > 1000 else '⚠️ CORROMPIDA/FALHA DE API'}")
@@ -3758,25 +3879,54 @@ with tab_individual:
                 url_iframe = res_ind[29]
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _eh_geodesico_ui = "GEOD" in str(_fonte_rota_ui).upper()
-                # [ARQ-GOOGLE-ONLY - 25ª geração] Apresentação 100% Google. Modo normal:
-                # mapa do Google (embed) — a mesma rota auditável pelo link. Quando o Google
-                # não respondeu (projeção geodésica), o embed do Google ainda mostra os dois
-                # pontos; sinalizamos que a distância é uma estimativa por linha reta.
-                try: 
-                    components.iframe(url_iframe, height=470, scrolling=True)
-                except Exception: 
-                    st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
-                if not _eh_geodesico_ui:
-                    st.caption("🗺️ Mapa acima: **Google Maps** — exatamente a rota oficial usada nos cálculos.")
-                    st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
-                    st.caption("ℹ️ **Resultado 100% auditável:** distância, tempo, mapa e link são todos do **Google Maps**. "
-                               "Ao abrir o link, você confere exatamente a mesma rota traçada — origem, destino, trajeto, distância e tempo.")
+                _eh_osrm_ui = "OSRM" in str(_fonte_rota_ui).upper()
+                # [ARQ-HIBRIDO - 26ª geração] Renderização do mapa conforme o vencedor:
+                # - Google vence: embed do Google (iframe) — rota auditável pelo link.
+                # - OSRM vence: HTML autocontido (Leaflet) que DESENHA a geometria exata do
+                #   OSRM (components.html) + botão para BAIXAR o mapa (traçado offline).
+                # - Geodésico: embed do Google com os dois pontos (distância estimada).
+                if _eh_osrm_ui and isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
+                    try:
+                        import base64 as _b64dec
+                        _html_mapa = _b64dec.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
+                        components.html(_html_mapa, height=470, scrolling=False)
+                    except Exception:
+                        st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
+                    st.caption("🗺️ Mapa acima: malha **OpenStreetMap/OSRM** com o **traçado completo desenhado** — exatamente a rota de menor distância usada nos cálculos.")
+                    cbtn1, cbtn2 = st.columns(2)
+                    with cbtn1:
+                        st.markdown(f"🧭 [Abrir navegação no Google Maps]({res_ind[2]})")
+                    with cbtn2:
+                        if isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
+                            try:
+                                import base64 as _b64dl
+                                _html_dl = _b64dl.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
+                                st.download_button("⬇️ Baixar mapa da rota OSRM (HTML)", data=_html_dl,
+                                                   file_name="rota_osrm_tracada.html", mime="text/html",
+                                                   help="Mapa autocontido que desenha o traçado EXATO da rota OSRM. Abre offline em qualquer navegador — robusto e auditável.",
+                                                   use_container_width=True)
+                            except Exception:
+                                pass
+                    st.caption("ℹ️ **OSRM venceu (menor distância).** O **mapa** e o **download HTML** mostram a **geometria exata** do trajeto OSRM "
+                               "(traçado fiel ao cálculo). O **link de navegação** abre a rota no **Google Maps** — forma estável e documentada de "
+                               "navegar. O download é a forma robusta e auditável de guardar/compartilhar o traçado exato do OSRM, sem depender de "
+                               "serviços externos.")
                 else:
-                    st.caption("🗺️ Mapa acima: **Google Maps** (origem e destino). A linha de rota não foi medida — veja o aviso abaixo.")
-                    st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
-                    st.warning("📐 **Distância estimada (Projeção Geodésica):** o Google Maps não retornou a rota viária no momento, então "
-                               "a quilometragem foi **estimada** pela linha reta × fator de desvio rodoviário. Recomenda-se **reprocessar** "
-                               "quando o Google responder, para obter a rota viária oficial e auditável.")
+                    try: 
+                        components.iframe(url_iframe, height=470, scrolling=True)
+                    except Exception: 
+                        st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
+                    if not _eh_geodesico_ui:
+                        st.caption("🗺️ Mapa acima: **Google Maps** — exatamente a rota oficial usada nos cálculos.")
+                        st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
+                        st.caption("ℹ️ **Google Maps venceu (menor distância) — resultado 100% auditável:** distância, tempo, mapa e link são todos "
+                                   "do **Google Maps**. Ao abrir o link, você confere exatamente a mesma rota traçada.")
+                    else:
+                        st.caption("🗺️ Mapa acima: **Google Maps** (origem e destino). A linha de rota não foi medida — veja o aviso abaixo.")
+                        st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
+                        st.warning("📐 **Distância estimada (Projeção Geodésica):** nenhum motor viário retornou a rota no momento, então "
+                                   "a quilometragem foi **estimada** pela linha reta × fator de desvio rodoviário. Recomenda-se **reprocessar** "
+                                   "quando os motores responderem, para obter a rota viária oficial.")
             else:
                 st.error("Falha na validação de consistência geodésica unificada.")
         else:
@@ -5099,7 +5249,7 @@ with tab_enciclopedia:
                  ↓
         [ CÁLCULO DA LINHA RETA ] → (Árbitro Supremo: WGS-84 ou Haversine)
                  ↓
-        [ ROTEIRIZAÇÃO ASFÁLTICA ] → (Google Maps — fonte única; fallback: Projeção Geodésica)
+        [ ROTEIRIZAÇÃO ASFÁLTICA ] → (Híbrido Google Maps + OSRM → menor distância; fallback: Geodésico)
                  ↓
         [ SCORE XAI E AUDITORIA ] → (Cálculo de penalidades e confiança baseada em Bayes)
                  ↓
@@ -5122,9 +5272,11 @@ with tab_enciclopedia:
         * **Photon (Komoot):** Auxiliar de alta velocidade. Atua sob o OSM para fechar o triângulo do Ensemble.
         * **TomTom Logistics:** Foco na malha viária pesada e rotas de caminhões.
         
-        **️ Roteirização (Traçado Viário)**
-        * **Google Directions Engine:** Provedor **único e oficial** de asfalto, tempo e distância. Toda rota apresentada (distância, tempo, mapa e link) vem exclusivamente do Google Maps e é auditável pelo link.
-        * **Projeção Geodésica Adaptativa (fallback):** se o Google Maps não responder (timeout/limite), o sistema estima a distância pela linha reta (WGS-84/Haversine) × fator de desvio rodoviário, de forma determinística e claramente sinalizada — garantindo que a esteira não trave. Não é uma rota viária medida; recomenda-se reprocessar.
+        **️ Roteirização (Traçado Viário) — Modelo Híbrido**
+        * **Google Directions Engine:** um dos dois motores. Fornece asfalto, tempo, distância, mapa e link 100% auditável. Vence quando tem a menor distância (ou empate técnico ≤2%).
+        * **OSRM (Open Source Routing Machine):** o segundo motor, sobre a malha aberta OpenStreetMap, avaliando até 3 alternativas. Vence quando encontra um trajeto mais curto (>2%). Quando vence, o mapa desenha a geometria EXATA da rota e há download do traçado em HTML autocontido.
+        * **Seleção automática:** os dois rodam sempre; a aplicação adota a **menor distância** e exibe um comparativo auditável (diferença abs/%/tempo, selo do vencedor).
+        * **Projeção Geodésica Adaptativa (fallback):** se nenhum motor responder, a distância é estimada pela linha reta (WGS-84/Haversine) × fator de desvio rodoviário, de forma determinística e sinalizada — garantindo que a esteira não trave. Recomenda-se reprocessar.
         
         ** Auditoria e Cascatas**
         * **BrasilAPI, ViaCEP e OpenCEP:** Formam a "Cascata Postal-Tripla" para garantir a quebra estrutural e reversa do CEP da operação, mitigando falhas na rede.
@@ -5155,36 +5307,45 @@ with tab_enciclopedia:
           o sistema respeita essa intenção e não força o município.
         """)
         
-    with st.expander("6. Motor de Roteirização (Arquitetura Auditável — Google Maps)"):
+    with st.expander("6. Motor de Roteirização (Modelo Híbrido Auditável — Google + OSRM)"):
         st.markdown("""
-        O sistema primeiro exige ter a Latitude/Longitude Exata de Origem e Destino. A partir delas, traça a rota viária.
+        O sistema primeiro exige ter a Latitude/Longitude Exata de Origem e Destino. A partir delas, aciona os dois motores de roteamento.
 
-        **🎯 Arquitetura Definitiva: Google Maps como Fonte ÚNICA e EXCLUSIVA**
+        **🎯 Arquitetura Híbrida: Google Maps + OSRM com seleção de menor distância**
 
-        A aplicação utiliza o **Google Maps como fonte única e exclusiva** de rotas. O OSRM foi
-        **completamente removido** do cálculo, comparação e apresentação — não há mais consulta a ele,
-        nem busca automática da menor rota entre provedores. Isso garante **consistência total** e
-        **auditabilidade**: todo valor exibido (distância, tempo, mapa) pode ser conferido pelo link.
-        Quando você clica em **Abrir rota no Google Maps**, vê exatamente a mesma rota traçada que gerou
-        os números — origem, destino, trajeto completo, distância e tempo, tudo conferível.
+        A aplicação executa **dois motores** em toda rota e adota automaticamente a de **MENOR
+        distância**, com auditabilidade total da escolha:
+        * **Google Maps:** rede oficial, em tempo real. Quando vence, fornece distância, tempo, mapa e
+          link 100% auditável (o link abre exatamente a rota traçada).
+        * **OSRM (OpenStreetMap):** malha aberta, avalia até 3 alternativas. Quando vence, fornece a menor
+          distância e o **mapa desenha a geometria EXATA da rota** (traçado fiel via Leaflet).
+        * **Tolerância de 2%:** em empate técnico, prefere-se o Google (link de navegação auditável),
+          evitando alternância sem ganho real. Acima de 2%, a menor distância vence sempre.
 
-        * **Distância e Tempo:** extraídos do Google Maps (rede oficial, em tempo real).
-        * **Mapa exibido:** o mapa do Google da mesma rota.
-        * **Link compartilhável:** Google Maps `/maps/dir/`, que sempre abre a rota completamente traçada.
-        * **Geocodificação para a rota:** quando você informa um município (ex.: "Corumbá, GO"), a aplicação
-          ancora o ponto nas **coordenadas exatas do centróide oficial** do município — assim o Google não
-          pode reinterpretar a entrada como um POI (hotel, chalé, endereço), garantindo a rota correta.
+        **Cenário 1 — Google vence:** distância, tempo, mapa e link são do Google. O OSRM aparece no
+        comparativo (diferença abs/%/tempo) para transparência.
 
-        **Por que o Google é a fonte única?** O princípio da **auditabilidade**: todo resultado deve poder
-        ser conferido visualmente. Não há forma robusta, documentada e sustentável de gerar um link
-        compartilhável que abra exatamente a rota de outro motor (OSRM, GraphHopper, etc.) traçada. Como o
-        critério é **consistência e auditabilidade acima de alguns km a menos que não podem ser conferidos**,
-        o Google Maps é a escolha definitiva e exclusiva.
+        **Cenário 2 — OSRM vence:** distância e tempo são do OSRM; o **mapa desenha a geometria exata** do
+        trajeto OSRM; há **download de um mapa HTML autocontido** com o traçado exato (abre offline em
+        qualquer navegador — robusto e auditável); o **link de navegação** abre a rota no Google Maps
+        (forma estável de navegar). Um **comparativo obrigatório** mostra os valores do Google ao lado,
+        com selo do vencedor e a explicação da diferença.
 
-        **Fallback (Projeção Geodésica Adaptativa):** se o Google Maps não responder (timeout/limite de
-        requisições), a distância é **estimada** pela linha reta (WGS-84/Haversine) × fator de desvio
-        rodoviário — de forma determinística e claramente sinalizada na interface. Não é uma rota viária
-        medida; o sistema recomenda reprocessar quando o Google responder para obter o valor oficial.
+        **🔗 Sobre o link da rota OSRM (investigação técnica):** não existe forma robusta, documentada e
+        sustentável de um link COMPARTILHÁVEL público que abra a geometria exata do OSRM — os visualizadores
+        `map.project-osrm.org` e `geojson.io` são frágeis e não-documentados, e um visualizador próprio
+        exigiria hospedar uma página com URL pública persistente (fora do escopo de um app de arquivo único).
+        A solução robusta e auditável adotada: o **mapa embarcado** desenha a geometria exata, o **download
+        HTML** guarda o traçado exato offline, e a **navegação** usa o Google. Assim o trajeto do OSRM é
+        sempre visualizável e auditável, mesmo sem um link público de terceiros.
+
+        **Geocodificação para a rota:** quando você informa um município (ex.: "Corumbá, GO"), a aplicação
+        ancora o ponto nas **coordenadas exatas do centróide oficial** do município — assim nenhum motor
+        reinterpreta a entrada como um POI (hotel, chalé, endereço), garantindo a rota correta.
+
+        **Fallback (Projeção Geodésica Adaptativa):** se nenhum motor responder, a distância é **estimada**
+        pela linha reta × fator de desvio rodoviário — determinística e claramente sinalizada. Recomenda-se
+        reprocessar para obter o valor viário oficial.
         """)
         
     with st.expander("7. Distância em Linha Reta (A Matemática do Árbitro)"):
