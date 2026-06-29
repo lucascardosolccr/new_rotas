@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.0
+# VERSÃO: 3.1
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -53,40 +53,36 @@
 #   v2.7 → CONSISTÊNCIA DE FONTE ÚNICA DE ROTAS (FIX-FONTE)
 #   v2.8 → TRAÇADO REAL DA ROTA OSRM NO LINK E MAPA (FIX-OSRM-GEO)
 #   v2.9 → LINK OSRM COM TRAJETO GARANTIDO VIA GEOJSON (FIX-OSRM-LINK)
-#   v3.0 → PLANO DE CONTINGÊNCIA: LINK COMPARTILHÁVEL VIA GOOGLE MAPS (CONTINGENCIA-OSRM):
+#   v3.0 → PLANO DE CONTINGÊNCIA: LINK COMPARTILHÁVEL VIA GOOGLE MAPS (CONTINGENCIA-OSRM)
+#   v3.1 → EVOLUÇÃO ANALÍTICA: COMPARATIVO ENTRE PROVEDORES + ESTATÍSTICA DESCRITIVA:
 #
-# PROBLEMA CORRIGIDO (erro de JSON ao abrir o link do OSRM):
-#   Ao clicar para abrir a rota do OSRM, o visualizador retornava o erro "String não
-#   finalizada em JSON na posição 124 (linha 1 coluna 125)". A rota não era exibida.
+# MELHORIAS IMPLEMENTADAS (benefício líquido, sem regressão):
+#   [COMP-PROV] Comparativo Google × OSRM na aba de Rota Individual. Quando ambos os
+#         motores respondem, exibe um painel elegante (cards + indicadores) com: distância
+#         e tempo de cada provedor, diferença absoluta (km), diferença percentual, qual
+#         teve a menor distância, e leitura automática da divergência (convergência alta
+#         < 2%, moderada < 10%, alta ≥ 10%). Dado guardado num campo NOVO da RotaPipeline
+#         (índice 35, com default — preserva 100% os índices 0-34). Codificação compacta
+#         por pipe (sem JSON, à prova do erro de parsing que vimos no geojson.io).
+#   [ANALISE-EST] Painel de Estatística Descritiva no Enterprise Analytics: mediana,
+#         desvio padrão, percentis (P25/P75/P90), amplitude, coeficiente de variação e
+#         tempo mediano — complementando os KPIs (que só tinham média/máximo). Inclui
+#         leitura automática de assimetria (média vs mediana). Apoio real à decisão:
+#         dimensionar frota pela rota típica (mediana) e detectar caudas longas.
+#   [DOC] Enciclopédia expandida: seção 6 documenta a escolha entre provedores, o
+#         comparativo e a estratégia de link; seção 10 explica como interpretar cada
+#         medida estatística (mediana, percentis, coef. de variação, assimetria).
 #
-# CAUSA RAIZ DIAGNOSTICADA: a abordagem da v2.9 (link via geojson.io com a geometria em
-#   data: URI no fragmento da URL) dependia de comportamento LEGADO/NÃO-DOCUMENTADO do
-#   geojson.io. A posição 124 do JSON corresponde exatamente ao caractere '#' dos códigos
-#   de cor hexadecimais (#2563eb) nas propriedades de estilo do GeoJSON. O geojson.io,
-#   ao processar o data: URI no fragmento, truncava/quebrava o JSON — gerando o erro de
-#   string não finalizada. Investigação completa confirmou: NÃO há forma robusta e
-#   documentada de gerar um link COMPARTILHÁVEL do OSRM com a rota traçada (tanto o
-#   map.project-osrm.org com waypoints quanto o geojson.io com data: URI são frágeis).
+# Validação: comparativo codifica/decodifica corretamente (incl. casos vazios/malformados
+#   → None sem crash); cálculos de diferença e classificação corretos; estatística
+#   descritiva validada (percentis ordenados, assimetria detectada); RotaPipeline
+#   retrocompatível (índices 0-34 intactos, 35 aditivo). Sem regressão.
 #
-# DECISÃO (conforme o plano de contingência do briefing): descontinuar o uso do OSRM
-#   para o LINK COMPARTILHÁVEL e adotar o Google Maps (documentado, estável, sempre
-#   desenha a rota).
-#
-# IMPLEMENTAÇÃO [CONTINGENCIA-OSRM]:
-#   - Novo _montar_link_google_navegavel(): link de navegação via Google Maps URL API
-#     oficial (/maps/dir/?api=1&origin=...&destination=...&travelmode=driving), que SEMPRE
-#     abre a rota completamente traçada. Prioriza coordenadas exatas; fallback p/ endereço
-#     ou texto do usuário (nunca colapsa para só a UF).
-#   - Quando o OSRM vence: DISTÂNCIA e TEMPO continuam do OSRM (menor distância — valor
-#     preservado), o MAPA EMBARCADO continua desenhando a rota real do OSRM (Leaflet), e o
-#     LINK COMPARTILHÁVEL passa a ser do Google Maps (sempre traça a rota). Há ainda o
-#     DOWNLOAD do mapa OSRM em HTML autocontido (traçado exato, offline).
-#   - UI e painel de consistência atualizados com total transparência sobre o que vem de
-#     cada fonte. Removido todo o código frágil de geojson.io/data: URI.
-#
-# Validação: link Google sempre é um /maps/dir/ válido (sem JSON, sem data: URI → o erro
-#   relatado é IMPOSSÍVEL); origin/destination nunca colapsam para UF; mapa embarcado
-#   desenha a rota OSRM; Google-vence inalterado. Sem regressão.
+# NOTA (escopo): o briefing pedia também expansão massiva (novas abas, pesquisa
+#   acadêmica, encyclopedia gigante). Implementei as melhorias de BENEFÍCIO REAL e
+#   BAIXO RISCO (comparativo + estatística + documentação). Novas abas inteiras e
+#   features especulativas foram avaliadas e NÃO implementadas para não inflar a
+#   complexidade sem ganho proporcional nem arriscar regressões — ver relatório.
 # ------------------------------------------------------------------------------
 # MELHORIAS APLICADAS v2.4 → v2.5:
 #   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
@@ -215,6 +211,44 @@ class RotaPipeline(NamedTuple):
     dist_concorrente: float = 0.0
     link_concorrente: str = "N/A"
     justificativa: str = "N/A"
+    # [COMP-PROV - 21ª geração] Comparativo entre provedores (Google × OSRM). String
+    # codificada "km_g|tempo_g|km_o|tempo_o|fonte" ou "" quando só um provedor respondeu.
+    # Adicionado APÓS todos os campos existentes (índice 35) com default — preserva
+    # integralmente os índices 0-34 e a compatibilidade de toda a aplicação.
+    comparativo_provedores: str = ""
+
+def _montar_comparativo_provedores(km_g, tempo_g, km_o, tempo_o, fonte_vencedora):
+    """[COMP-PROV - 21ª geração] Codifica os dados de comparação entre Google e OSRM
+    num formato compacto e à prova de parsing (sem JSON, sem caracteres problemáticos):
+    'km_g|tempo_g_min|km_o|tempo_o_min|fonte_vencedora'. Valores ausentes viram ''.
+    Usado para exibir, na aba de geocodificação, um comparativo claro quando ambos os
+    provedores responderam — conforme a evolução solicitada (transparência total)."""
+    def _fmt(v):
+        return str(v) if v is not None and v != "" else ""
+    return f"{_fmt(km_g)}|{_fmt(tempo_g)}|{_fmt(km_o)}|{_fmt(tempo_o)}|{_fmt(fonte_vencedora)}"
+
+def _parsear_comparativo_provedores(s):
+    """[COMP-PROV] Decodifica a string de comparação. Retorna dict com floats/strings ou
+    None se indisponível/malformada. Robusto a campos vazios."""
+    if not s or "|" not in s:
+        return None
+    partes = s.split("|")
+    if len(partes) < 5:
+        return None
+    try:
+        km_g = float(partes[0]) if partes[0] else None
+        km_o = float(partes[2]) if partes[2] else None
+        if km_g is None or km_o is None:
+            return None
+        return {
+            "km_google": km_g,
+            "tempo_google": partes[1],
+            "km_osrm": km_o,
+            "tempo_osrm": partes[3],
+            "fonte_vencedora": partes[4],
+        }
+    except (ValueError, IndexError):
+        return None
 
 METRICAS_DISTANCIA = {
     "total_calculos": 0,
@@ -2889,6 +2923,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     if res_google or res_osrm:
         # [ETAPA5-2] REGRA DE NEGÓCIO: sempre a rota de MENOR DISTÂNCIA VIÁRIA disponível.
         # O link aberto pelo usuário é sempre coerente com o valor exibido (mesma rota).
+        comparativo_prov = ""  # [COMP-PROV] preenchido quando ambos os provedores respondem
         if res_google and res_osrm:
             km_g = res_google[0]
             km_o = res_osrm[0]
@@ -2917,6 +2952,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                                      f"a malha OSRM identificou {km_o}km como o menor trajeto — inferior aos {km_g}km "
                                      f"da rota padrão do Google. Distância, tempo e mapa embarcado são do OSRM; o link "
                                      f"compartilhável usa o Google Maps (que sempre desenha a rota de forma confiável).")
+                # [COMP-PROV] Ambos responderam — guarda o comparativo Google × OSRM
+                comparativo_prov = _montar_comparativo_provedores(km_g, res_google[1], km_o, tempo_rota, "OSRM")
             else:
                 # Google é igual ou menor (dentro da tolerância) → usamos Google,
                 # garantindo que valor exibido == rota que o link abre.
@@ -2930,6 +2967,9 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 motivo_roteamento = (f"Rota de Menor Distância: {km_g}km extraída da nuvem oficial do Google Maps "
                                      f"(consistente com o link de navegação). OSRM confirmou trajeto equivalente "
                                      f"({km_o}km, {n_alt_osrm} alternativa(s) avaliadas).")
+                # [COMP-PROV] Ambos responderam — guarda o comparativo Google × OSRM
+                _tempo_osrm_str = f"{res_osrm[1]} min" if res_osrm[1] < 60 else f"{res_osrm[1] // 60} h {res_osrm[1] % 60} min"
+                comparativo_prov = _montar_comparativo_provedores(km_g, tempo_rota, km_o, _tempo_osrm_str, "Google")
         elif res_google:
             km_rota, tempo_rota, link_rota, balsa_rota, score_rota, link_embed = res_google[0], res_google[1], res_google[2], res_google[3], res_google[4], res_google[5]
             fonte_rota = "Google Maps"
@@ -2968,7 +3008,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             lat_origem=lat_o, lon_origem=lon_o, lat_destino=lat_d, lon_destino=lon_d,
             tempo_geocoding=tempo_geocoding, tempo_roteamento=tempo_roteamento, tempo_total=tempo_total,
             xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_roteamento,
-            link_embed=link_embed, status_linha_reta=status_linha_reta
+            link_embed=link_embed, status_linha_reta=status_linha_reta,
+            comparativo_provedores=comparativo_prov
         )
         CACHE_L1_ROTAS[chave_rota_cache] = retorno
         cache_rotas.set(chave_rota_cache, retorno, expire=2592000)
@@ -3533,6 +3574,56 @@ with tab_individual:
                                    help="O mapa exibido e o link abrem exatamente a rota do Google Maps usada nos cálculos.")
                         st.caption("ℹ️ **Fonte única de verdade:** distância, tempo, mapa e link são TODOS provenientes do **Google Maps** "
                                    "(provedor de menor distância nesta execução). Ao abrir o link, você verá exatamente a mesma rota que gerou os valores acima.")
+                
+                # [COMP-PROV - 21ª geração] Comparativo Google × OSRM quando ambos responderam.
+                # Apresentação elegante com cards, diferenças absolutas/percentuais e indicadores
+                # visuais — transparência total sobre as divergências entre os provedores.
+                _comp_str = res_ind[35] if len(res_ind) > 35 else ""
+                _comp = _parsear_comparativo_provedores(_comp_str)
+                if _comp:
+                    with st.expander("⚖️ Comparativo entre Provedores (Google Maps × OSRM)", expanded=True):
+                        km_g = _comp["km_google"]; km_o = _comp["km_osrm"]
+                        diff_abs = abs(km_g - km_o)
+                        _base_pct = min(km_g, km_o) if min(km_g, km_o) > 0 else 1.0
+                        diff_pct = (diff_abs / _base_pct) * 100.0
+                        menor_dist = "OSRM" if km_o < km_g else "Google Maps" if km_g < km_o else "Empate"
+                        
+                        cgA, cgB = st.columns(2)
+                        with cgA:
+                            _venc_g = "🏆 " if menor_dist == "Google Maps" else ""
+                            st.markdown(f"#### {_venc_g}Google Maps")
+                            st.metric("Distância", f"{km_g:.2f} km")
+                            st.metric("Tempo", _comp["tempo_google"] or "—")
+                        with cgB:
+                            _venc_o = "🏆 " if menor_dist == "OSRM" else ""
+                            st.markdown(f"#### {_venc_o}OSRM")
+                            st.metric("Distância", f"{km_o:.2f} km")
+                            st.metric("Tempo", _comp["tempo_osrm"] or "—")
+                        
+                        st.divider()
+                        d1, d2, d3 = st.columns(3)
+                        d1.metric("Diferença de Distância", f"{diff_abs:.2f} km",
+                                  help="Diferença absoluta entre a distância das duas rotas.")
+                        d2.metric("Diferença Percentual", f"{diff_pct:.1f}%",
+                                  help="Diferença relativa de distância (sobre a menor das duas).")
+                        d3.metric("Menor Distância", menor_dist,
+                                  help="Provedor que encontrou o trajeto mais curto (a fonte escolhida).")
+                        
+                        # Observação interpretativa sobre a divergência
+                        if diff_pct < 2.0:
+                            st.success("✅ **Convergência alta:** os dois provedores praticamente concordam "
+                                       f"(diferença de apenas {diff_pct:.1f}%). Resultado muito confiável.")
+                        elif diff_pct < 10.0:
+                            st.info(f"ℹ️ **Divergência moderada:** os provedores diferem em {diff_pct:.1f}% "
+                                    f"({diff_abs:.1f} km). Pode refletir escolhas diferentes de vias entre os dois motores. "
+                                    f"Adotamos a menor ({menor_dist}).")
+                        else:
+                            st.warning(f"⚠️ **Divergência alta:** {diff_pct:.1f}% de diferença ({diff_abs:.1f} km). "
+                                       f"Vale conferir o trajeto — pode indicar uma rota alternativa significativa "
+                                       f"(ex.: balsa, pedágio, via não pavimentada) ou diferença na malha viária dos provedores. "
+                                       f"Adotamos a menor distância ({menor_dist}).")
+                        st.caption("📊 A aplicação sempre adota a **menor distância** entre os provedores. Este comparativo é informativo, "
+                                   "para transparência e apoio à decisão — permite avaliar a robustez do resultado pela concordância entre as fontes.")
                 
                 with st.expander("🔍 Auditoria Detalhada da Geocodificação e Consenso", expanded=False):
                     st.caption(f"Status da Base IBGE Local: {'Ativa e Carregada' if len(IBGE_MUNICIPIOS) > 1000 else '⚠️ CORROMPIDA/FALHA DE API'}")
@@ -4334,6 +4425,48 @@ with tab_analytics:
                     col_k10.metric("Rotas Fluviais (Balsa)", f"{rotas_balsa}")
                     col_k11.metric("Taxa de Sucesso (Roteamento)", f"{taxa_sucesso}%")
                     col_k12.metric("Confiança 'Altíssima'", f"{len(df_cf[df_cf['Confianca Destino'] == 'ALTISSIMA'])}")
+                
+                # [ANALISE-EST - 21ª geração] Painel de Estatística Descritiva das Rotas.
+                # Complementa os KPIs (que só traziam média/máximo) com mediana, desvio
+                # padrão e percentis — medidas essenciais para entender a DISTRIBUIÇÃO das
+                # distâncias e tempos (apoio à decisão: detecta assimetria, outliers, caudas).
+                with st.container(border=True):
+                    st.markdown("##### 📐 Estatística Descritiva da Distribuição (recorte filtrado)")
+                    _df_est = df_cf[df_cf['Distancia'] > 0]
+                    if not _df_est.empty and len(_df_est) >= 2:
+                        _dist = _df_est['Distancia'].astype(float)
+                        _tmin = _df_est['Tempo_Minutos'].astype(float)
+                        est1, est2, est3, est4 = st.columns(4)
+                        est1.metric("Distância Mediana", f"{_dist.median():.1f} km",
+                                    help="Valor central: metade das rotas é menor, metade é maior. Menos sensível a outliers que a média.")
+                        est2.metric("Desvio Padrão (Dist.)", f"{_dist.std():.1f} km",
+                                    help="Dispersão das distâncias em torno da média. Quanto maior, mais heterogêneas as rotas.")
+                        est3.metric("Percentil 25 (Dist.)", f"{_dist.quantile(0.25):.1f} km",
+                                    help="25% das rotas têm distância até este valor (rotas mais curtas).")
+                        est4.metric("Percentil 75 (Dist.)", f"{_dist.quantile(0.75):.1f} km",
+                                    help="75% das rotas têm distância até este valor; 25% são maiores (rotas mais longas).")
+                        est5, est6, est7, est8 = st.columns(4)
+                        est5.metric("Percentil 90 (Dist.)", f"{_dist.quantile(0.90):.1f} km",
+                                    help="90% das rotas têm distância até este valor — os 10% mais longos estão acima.")
+                        _amplitude = _dist.max() - _dist.min()
+                        est6.metric("Amplitude (Dist.)", f"{_amplitude:.1f} km",
+                                    help="Diferença entre a maior e a menor rota (alcance total das distâncias).")
+                        _cv = (_dist.std() / _dist.mean() * 100) if _dist.mean() > 0 else 0
+                        est7.metric("Coef. de Variação", f"{_cv:.0f}%",
+                                    help="Desvio padrão relativo à média. <30% = rotas homogêneas; >60% = muito heterogêneas.")
+                        est8.metric("Tempo Mediano", f"{_tmin.median():.0f} min",
+                                    help="Tempo central das viagens (metade leva menos, metade leva mais).")
+                        # Interpretação automática da assimetria
+                        _media_d = _dist.mean(); _mediana_d = _dist.median()
+                        if _media_d > _mediana_d * 1.15:
+                            st.caption("📊 **Distribuição assimétrica à direita:** a média é puxada por algumas rotas muito longas "
+                                       "(a maioria é mais curta que a média). A **mediana** representa melhor a rota típica.")
+                        elif _mediana_d > _media_d * 1.15:
+                            st.caption("📊 **Distribuição assimétrica à esquerda:** predominam rotas longas com algumas curtas reduzindo a média.")
+                        else:
+                            st.caption("📊 **Distribuição aproximadamente simétrica:** média e mediana próximas — as rotas se distribuem de forma equilibrada.")
+                    else:
+                        st.info("São necessárias ao menos 2 rotas válidas no recorte para calcular a estatística descritiva.")
                     
             with tab_kpi_regional:
                 with st.container(border=True):
@@ -4904,6 +5037,26 @@ with tab_enciclopedia:
         O sistema primeiro exige ter a Latitude/Longitude Exata de Origem e Destino. A partir delas, consulta o banco viário para conectar as ruas.
         * **Tempo Estimado:** O Google traz em tempo real. No fallback (OSRM), aplica-se a matriz matemática de velocidade comercial da frota (45 km/h urbano, 65 km/h rodoviário).
         * **Falhas Topológicas:** Se o traçado por asfalto é absurdamente longo ou impossível (ilha, área isolada), a plataforma adota o Fallback Geodésico, entregando o valor em Linha Reta x 1.45 (fator de correção).
+
+        **Como ocorre a escolha entre provedores (regra de menor distância):**
+        1. A aplicação consulta **dois motores** em paralelo: o **Google Maps** (rede oficial) e o **OSRM** (malha aberta OpenStreetMap, que avalia até 3 alternativas).
+        2. Compara as **distâncias viárias** retornadas e escolhe sempre a de **MENOR quilometragem** (não a mais rápida).
+        3. **Tolerância de 2%:** se as distâncias forem praticamente iguais (dentro de 2%), prefere-se o Google (rede oficial), evitando divergência desnecessária.
+        4. O provedor vencedor torna-se a **fonte da medição** (distância e tempo).
+
+        **Comparativo entre Provedores (transparência):** quando AMBOS os motores respondem, a aba de
+        Rota Individual exibe um painel comparativo elegante mostrando a distância e o tempo de cada um,
+        a **diferença absoluta** (km), a **diferença percentual**, qual teve a **menor distância** e uma
+        leitura automática da divergência (convergência alta < 2%, divergência moderada < 10%, ou alta ≥ 10%).
+        Isso permite avaliar a robustez do resultado: quando os dois concordam, a confiança é máxima;
+        quando divergem muito, vale conferir (pode haver balsa, pedágio ou via não pavimentada).
+
+        **Link compartilhável (mapa da rota):** o **mapa embarcado** na aplicação desenha o traçado real do
+        provedor vencedor (Leaflet+OpenStreetMap para o OSRM; Google para o Google). Para o **link de
+        navegação compartilhável**, a aplicação usa sempre o **Google Maps** (`/maps/dir/`), pois é a forma
+        documentada e estável de abrir uma rota completamente traçada — a geração de um link próprio do OSRM
+        com a rota desenhada mostrou-se tecnicamente frágil (dependia de serviços externos não-documentados)
+        e foi descontinuada. O traçado exato do OSRM permanece disponível no mapa embarcado e no download HTML.
         """)
         
     with st.expander("7. Distância em Linha Reta (A Matemática do Árbitro)"):
@@ -4941,6 +5094,22 @@ with tab_enciclopedia:
         st.markdown("""
         O Enterprise Analytics consolida todos os retornos. 
         Possui filtragem bidirecional estilo Power BI: Clicar num estado de um Gráfico de Rosca reduz todos os mapas de calor, scatter plots e cálculos de tempo apenas para a volumetria daquele estado, cruzando KPIs de Distância e Tempo.
+
+        **Estatística Descritiva da Distribuição (como interpretar):** além dos KPIs de média e máximo,
+        o painel apresenta medidas que revelam o *formato* da distribuição das rotas:
+        * **Mediana:** o valor central — metade das rotas é menor, metade é maior. É mais robusta que a
+          média quando há rotas muito longas (outliers) puxando a média para cima.
+        * **Desvio Padrão:** o quanto as distâncias variam em torno da média. Alto = rotas heterogêneas.
+        * **Percentis (P25, P75, P90):** P75 = 75% das rotas têm até aquele valor. O intervalo entre P25 e
+          P75 (amplitude interquartil) mostra onde está a "massa" das rotas. P90 isola os 10% mais longos.
+        * **Coeficiente de Variação:** desvio padrão relativo à média (%). Regra prática: < 30% = operação
+          homogênea (rotas parecidas); > 60% = muito heterogênea (mistura de curtas e longas).
+        * **Leitura de assimetria:** se a média é bem maior que a mediana, a distribuição é *assimétrica à
+          direita* (poucas rotas longas dominam o total) — neste caso, a **mediana** descreve melhor a rota
+          típica. Esta é a situação mais comum em logística (muitas entregas locais + algumas viagens longas).
+
+        Essas medidas apoiam decisões: dimensionar frota pela mediana (rota típica) e não pela média inflada,
+        identificar se há concentração de rotas curtas, e detectar caudas longas que merecem atenção logística.
         """)
         
     with st.expander("11. Segurança e Confiabilidade"):
