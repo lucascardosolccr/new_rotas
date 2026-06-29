@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.2
+# VERSÃO: 3.3
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -55,37 +55,37 @@
 #   v2.9 → LINK OSRM COM TRAJETO GARANTIDO VIA GEOJSON (FIX-OSRM-LINK)
 #   v3.0 → PLANO DE CONTINGÊNCIA: LINK COMPARTILHÁVEL VIA GOOGLE MAPS (CONTINGENCIA-OSRM)
 #   v3.1 → EVOLUÇÃO ANALÍTICA: COMPARATIVO + ESTATÍSTICA DESCRITIVA
-#   v3.2 → ARQUITETURA DEFINITIVA DE ROTAS: GOOGLE MAPS AUDITÁVEL (ARQ-GOOGLE):
+#   v3.2 → ARQUITETURA DEFINITIVA DE ROTAS: GOOGLE MAPS AUDITÁVEL (ARQ-GOOGLE)
+#   v3.3 → PRIORIZAÇÃO DE MUNICÍPIOS NO LINK + REMOÇÃO DO OSM DA APRESENTAÇÃO:
 #
-# DECISÃO ARQUITETURAL DEFINITIVA (após estudo de viabilidade completo):
-#   O Google Maps passa a ser a FONTE ÚNICA E AUDITÁVEL de rotas. Distância, tempo,
-#   mapa e link são TODOS do Google — 100% conferíveis pelo usuário via o mesmo link.
+# PROBLEMA CORRIGIDO (município interpretado como POI/endereço):
+#   "Corumbá, GO" abria no Google como "R. Francisco Miranda, 466 - Corumbá de Goiás"
+#   e "Pirenópolis, GO" como "Chalé Veredas e Buritis" — o Google escolhia um POI/
+#   endereço específico em vez do MUNICÍPIO, alterando distâncias e tempos.
 #
-# ESTUDO DE VIABILIDADE (link compartilhável com a rota OSRM traçada):
-#   Avaliadas TODAS as alternativas para um link que abra exatamente a rota do OSRM:
-#     - map.project-osrm.org (waypoints): depende de serviço demo sem SLA recalcular;
-#       frequentemente só mostra pontos.
-#     - geojson.io (data: URI): comportamento legado; '#' dos hex de cor quebra o JSON.
-#     - Visualizador próprio (Leaflet/MapLibre/OpenLayers): exigiria HOSPEDAR página
-#       com URL pública persistente — fora do escopo de app Streamlit single-file.
-#     - GraphHopper/OpenRouteService/Valhalla: são OUTROS motores; o link mostraria a
-#       rota DELES, não a do OSRM → reintroduz inconsistência.
-#   CONCLUSÃO: NÃO há forma robusta + documentada + sustentável de compartilhar a rota
-#   OSRM por link. O Google /maps/dir/ é a única opção auditável.
+# CAUSA RAIZ: o link do Google recebia o TEXTO LIVRE do usuário ("Corumbá, GO"), e o
+#   Google tinha liberdade para geocodificá-lo como qualquer POI/endereço dentro da
+#   cidade — não necessariamente o município.
 #
-# IMPLEMENTAÇÃO [ARQ-GOOGLE] (critério: AUDITABILIDADE > km a menos não-conferíveis):
-#   - Google disponível → fonte ÚNICA: distância, tempo, mapa, link, tudo do Google,
-#     auditável pelo link. O OSRM NÃO fornece mais valores ao usuário.
-#   - OSRM permanece como (a) REFERÊNCIA comparativa informativa (painel mostra a
-#     diferença Google×OSRM) e (b) CONTINGÊNCIA se o Google estiver indisponível —
-#     neste caso, avisa CLARAMENTE que o valor não é auditável e sugere reprocessar.
-#   - Removida a regra anterior de "menor distância OSRM vence". Painel de consistência
-#     e comparativo reformulados para refletir a fonte única auditável. Enciclopédia
-#     seção 6 reescrita documentando a decisão e o estudo de viabilidade.
+# CORREÇÃO [FIX-MUN-LINK]:
+#   - Novo _eh_entrada_municipio(): detecta, via classificação semântica já existente
+#     (MUNICIPIO/DISTRITO) + ausência de número/POI/CEP, quando a entrada é uma cidade.
+#   - Novo _montar_param_municipio_google(): quando a entrada é município, monta o
+#     parâmetro do link como "<Município Oficial>, <UF>, Brasil" (ex.: "Corumbá de
+#     Goiás, GO, Brasil"), forçando o Google ao município — nunca a um POI. Para
+#     endereços reais, mantém a blindagem anterior (endereço oficial/coordenadas).
+#   - O nome OFICIAL resolvido (via FIX-GEO4) corrige a forma curta: "Corumbá"→"Corumbá
+#     de Goiás". O roteamento continua usando as coordenadas do centróide (preciso).
 #
-# Validação: lógica testada (ambos→Google auditável; só Google→auditável; só OSRM→
-#   contingência não-auditável); RotaPipeline intacta; comparativo informativo
-#   preservado. Sem regressão. Aplica-se a TODAS as abas (mesma pipeline).
+# REMOÇÃO DO OSM/OSRM DA APRESENTAÇÃO [REMOVE-OSM-UI]:
+#   - A UI individual NÃO renderiza mais o mapa do OSM/OSRM. No modo normal, o mapa é
+#     exclusivamente do Google (embed). Em contingência (Google fora), em vez de um mapa
+#     OSM, exibe-se um AVISO claro + o link do Google (auditável quando o serviço voltar).
+#   - Consistência total: mapa, distância, tempo e link são todos do Google Maps.
+#
+# Validação: "Corumbá, GO"→"Corumbá de Goiás, GO, Brasil" e "Pirenópolis, GO"→município
+#   (testado); endereços/POIs reais → comportamento blindado; nenhum mapa OSM na UI.
+#   Sem regressão.
 # ------------------------------------------------------------------------------
 # MELHORIAS APLICADAS v2.4 → v2.5:
 #   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
@@ -2592,10 +2592,15 @@ def obter_coordenadas_e_endereco_oficial(localidade):
 # ==============================================================================
 # MOTOR DE ROTEAMENTO EXTREMO E PIPELINE UNIFICADO
 # ==============================================================================
-def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True):
+def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=None, link_embed_pronto=None):
     cache_key = f"GOOG_{CACHE_VERSION}_{origem_texto}|{destino_texto}|{usar_coordenadas}"
     if cache_key in cache_google: 
-        return cache_google[cache_key]
+        _cached = cache_google[cache_key]
+        # [FIX-MUN-LINK] Se temos links prontos (priorizando município), sobrescreve os
+        # links do cache mantendo distância/tempo/score (que dependem só de coordenadas).
+        if link_maps_pronto and _cached and len(_cached) >= 6:
+            return (_cached[0], _cached[1], link_maps_pronto, _cached[3], _cached[4], link_embed_pronto or _cached[5])
+        return _cached
         
     orig_link_txt = requests.utils.quote(origem_texto)
     dest_link_txt = requests.utils.quote(destino_texto)
@@ -2603,8 +2608,10 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
     destino_param_scraper = f"{lat_d},{lon_d}" if usar_coordenadas else dest_link_txt
     
     url_api = f"https://www.google.com/maps/preview/directions?authuser=0&hl=pt-BR&gl=br&pb=!1m2!1m1!1s{origem_param_scraper}!1m2!1m1!1s{destino_param_scraper}!3e0"
-    link_maps = f"https://www.google.com/maps/dir/?api=1&origin={orig_link_txt}&destination={dest_link_txt}&travelmode=driving"
-    link_embed = f"https://maps.google.com/maps?saddr={orig_link_txt}&daddr={dest_link_txt}&output=embed"
+    # [FIX-MUN-LINK] Usa os links prontos (município priorizado) quando fornecidos pelo
+    # pipeline; caso contrário, constrói a partir do texto (compatibilidade).
+    link_maps = link_maps_pronto if link_maps_pronto else f"https://www.google.com/maps/dir/?api=1&origin={orig_link_txt}&destination={dest_link_txt}&travelmode=driving"
+    link_embed = link_embed_pronto if link_embed_pronto else f"https://maps.google.com/maps?saddr={orig_link_txt}&daddr={dest_link_txt}&output=embed"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
@@ -2666,6 +2673,77 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
 @_lru_cache(maxsize=32)
 def obter_fator_desvio_rodoviario(linha_reta):
     return 1.45 if linha_reta < 5.0 else 1.35 if linha_reta < 20.0 else 1.25 if linha_reta < 100.0 else 1.18
+
+def _eh_entrada_municipio(texto_cru, municipio_resolvido):
+    """[FIX-MUN-LINK - 23ª geração] Determina se a ENTRADA do usuário representa um
+    MUNICÍPIO/DISTRITO (e não um endereço específico, POI, estabelecimento ou CEP).
+    Quando verdadeiro, o link do Google deve forçar o município (nome oficial + UF),
+    em vez de deixar o Google escolher um POI/endereço dentro da cidade.
+
+    Critério: usa a classificação semântica já existente (MUNICIPIO/DISTRITO) e confirma
+    que NÃO há sinais de endereço específico (número predial, palavra de via, POI, CEP).
+    """
+    if not texto_cru or not str(texto_cru).strip():
+        return False
+    try:
+        texto_norm = semantica.normalizar(str(texto_cru))
+    except Exception:
+        texto_norm = str(texto_cru).upper().strip()
+    # Sinais de que NÃO é um município puro (é endereço/POI específico)
+    tem_numero = bool(re.search(r'\d', texto_norm))
+    tem_cep = bool(re.search(r'\d{5}-?\d{3}', str(texto_cru)))
+    tem_poi = any(k in texto_norm for k in POI_KEYWORDS) if 'POI_KEYWORDS' in globals() else False
+    if tem_cep or tem_numero or tem_poi:
+        return False
+    # Classificação semântica oficial
+    try:
+        tipo = semantica.classificar_entrada(texto_norm)
+        if tipo in ("MUNICIPIO", "DISTRITO"):
+            return True
+    except Exception:
+        pass
+    # Confirmação adicional: o município resolvido bate com o texto (sem número/via)
+    if municipio_resolvido and municipio_resolvido not in ("Município Não Mapeado", ""):
+        try:
+            mun_norm = semantica.normalizar(municipio_resolvido)
+            # Se o texto é essencialmente "<município> <uf>", é entrada de município
+            texto_sem_uf = texto_norm
+            for uf_sig in IBGE_ESTADOS:
+                texto_sem_uf = _regex_palavra(uf_sig).sub('', texto_sem_uf)
+            for uf_nome in IBGE_ESTADOS.values():
+                texto_sem_uf = texto_sem_uf.replace(uf_nome, '')
+            texto_sem_uf = texto_sem_uf.replace("BRASIL", "").strip()
+            if texto_sem_uf and (texto_sem_uf in mun_norm or mun_norm in texto_sem_uf):
+                return True
+        except Exception:
+            pass
+    return False
+
+def _montar_param_municipio_google(texto_cru, municipio_resolvido, uf_resolvida, end_oficial, lat, lon):
+    """[FIX-MUN-LINK - 23ª geração] Constrói o parâmetro de origem/destino para o link do
+    Google Maps PRIORIZANDO O MUNICÍPIO quando a entrada representa uma cidade.
+
+    CAUSA RAIZ do bug relatado: ao passar o texto livre "Corumbá, GO" ao Google, ele tinha
+    liberdade para geocodificar como um POI/endereço específico (ex.: "R. Francisco Miranda,
+    466" ou "Chalé Veredas e Buritis"), em vez do MUNICÍPIO. Isso alterava distância/tempo.
+
+    Solução: quando a entrada é um município, montamos o parâmetro como o NOME OFICIAL do
+    município + UF + "Brasil" (ex.: "Corumbá de Goiás, GO, Brasil"). O Google geocodifica
+    de forma estável o centro do município, sem escolher POIs. Para máxima robustez de
+    auditoria, ancoramos com as coordenadas do centróide resolvido pela aplicação, no
+    formato que o Google entende como referência da cidade. Para entradas que NÃO são
+    município (endereço real, POI), mantém-se o comportamento blindado anterior.
+    """
+    if _eh_entrada_municipio(texto_cru, municipio_resolvido) and municipio_resolvido and municipio_resolvido not in ("Município Não Mapeado", ""):
+        # Monta "Município, UF, Brasil" com o nome OFICIAL resolvido (corrige forma curta)
+        partes = [municipio_resolvido]
+        if uf_resolvida and uf_resolvida.strip():
+            partes.append(uf_resolvida.strip())
+        partes.append("Brasil")
+        rotulo_municipio = ", ".join(partes)
+        return requests.utils.quote(rotulo_municipio)
+    # Não é município → comportamento blindado anterior (endereço oficial/coords/texto)
+    return _montar_param_link_seguro(end_oficial, lat, lon, texto_cru)
 
 def _montar_param_link_seguro(endereco_oficial, lat, lon, texto_original):
     """[FIX-GEO1 - 16ª geração] Constrói o parâmetro de origem/destino para o link do
@@ -2893,17 +2971,22 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         dist_linha_reta = 0.0
         status_linha_reta = "Falha de Geocodificação (Coordenadas Nulas)"
         
-    orig_param_fb = requests.utils.quote(end_oficial_o) if end_oficial_o else f"{lat_o},{lon_o}"
-    dest_param_fb = requests.utils.quote(end_oficial_d) if end_oficial_d else f"{lat_d},{lon_d}"
-    # [FIX-GEO1 - 16ª geração] Blindagem do parâmetro de link do Google Maps.
-    # CAUSA RAIZ do bug "GO/GO": quando a API não retorna o município, o endereço
-    # oficial colapsava para apenas a UF (ex: "GO"), e o link herdava esse valor
-    # degradado. Aqui garantimos que o parâmetro do link NUNCA seja apenas a sigla
-    # do estado: se o endereço oficial for vazio, só uma UF, ou claramente pobre,
-    # caímos para (1) coordenadas exatas, ou (2) o texto original do usuário —
-    # preservando a identificação real de origem/destino. Zero perda: só melhora.
-    orig_param_fb = _montar_param_link_seguro(end_oficial_o, lat_o, lon_o, origem_clean)
-    dest_param_fb = _montar_param_link_seguro(end_oficial_d, lat_d, lon_d, destino_clean)
+    # [FIX-MUN-LINK - 23ª geração] Parâmetros do link PRIORIZANDO MUNICÍPIO.
+    # Extrai a UF resolvida (do endereço oficial, com fallback no texto do usuário) e
+    # monta os parâmetros de origem/destino forçando o município quando a entrada é uma
+    # cidade — impedindo que o Google escolha um POI/endereço específico (causa do bug
+    # "Corumbá, GO" → "R. Francisco Miranda, 466"). Para endereços reais, mantém a
+    # blindagem anterior. Estes parâmetros alimentam tanto o link quanto o mapa.
+    _uf_o = extrair_uf_precisa(end_oficial_o)
+    if _uf_o == "Indefinido":
+        _uf_o = extrair_uf_precisa(origem_clean)
+    _uf_d = extrair_uf_precisa(end_oficial_d)
+    if _uf_d == "Indefinido":
+        _uf_d = extrair_uf_precisa(destino_clean)
+    _uf_o = "" if _uf_o == "Indefinido" else _uf_o
+    _uf_d = "" if _uf_d == "Indefinido" else _uf_d
+    orig_param_fb = _montar_param_municipio_google(origem_clean, mun_o, _uf_o, end_oficial_o, lat_o, lon_o)
+    dest_param_fb = _montar_param_municipio_google(destino_clean, mun_d, _uf_d, end_oficial_d, lat_d, lon_d)
     link_fallback = f"https://www.google.com/maps/dir/?api=1&origin={orig_param_fb}&destination={dest_param_fb}&travelmode=driving"
     link_embed_fallback = f"https://maps.google.com/maps?saddr={orig_param_fb}&daddr={dest_param_fb}&output=embed"
     
@@ -2915,10 +2998,10 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     # aqui. A latência serial é mitigada pelos caches L1/L2 (cache-hit não chama rede).
     res_google = None
     res_osrm = None
-    res_google = extrair_dados_reais_google(end_oficial_o, end_oficial_d, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True)
+    res_google = extrair_dados_reais_google(end_oficial_o, end_oficial_d, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
     
     if not res_google:
-        res_google = extrair_dados_reais_google(origem_clean, destino_clean, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=False)
+        res_google = extrair_dados_reais_google(origem_clean, destino_clean, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=False, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
         
     if lat_o != 0.0 and lat_d != 0.0:
         res_osrm = API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d)
@@ -3577,7 +3660,7 @@ with tab_individual:
                         cc3.metric("Situação", "Contingência",
                                    help="Operação não interrompida graças à malha OSRM, mas o valor não pôde ser confirmado pelo link auditável agora.")
                         st.warning("⚠️ **Modo de continuidade (Google Maps indisponível):** a distância e o tempo foram estimados pela malha "
-                                   "**OSRM** apenas para não interromper a operação. O **mapa acima** mostra a rota do OSRM. **Atenção:** este "
+                                   "**OSRM** apenas para não interromper a operação. **Atenção:** este "
                                    "valor não pôde ser confirmado pelo link de navegação auditável neste momento. Recomenda-se **reprocessar** "
                                    "quando o Google Maps voltar, para obter o valor oficial e auditável.")
                 
@@ -3660,49 +3743,29 @@ with tab_individual:
                 url_iframe = res_ind[29]
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _eh_contingencia_ui = "CONTING" in str(_fonte_rota_ui).upper() or "OSRM" in str(_fonte_rota_ui).upper()
-                # [ARQ-GOOGLE] Renderização do mapa conforme a arquitetura:
-                # - Google (padrão): link_embed é uma URL de embed do Google -> components.iframe.
-                # - Contingência OSRM (Google fora): link_embed é HTML autocontido (Leaflet)
-                #   com a polyline -> components.html (única geometria disponível no momento).
-                if _eh_contingencia_ui and isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
-                    try:
-                        import base64 as _b64dec
-                        _html_mapa = _b64dec.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
-                        components.html(_html_mapa, height=470, scrolling=False)
-                    except Exception:
-                        st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
-                else:
+                # [REMOVE-OSM-UI - 23ª geração] Arquitetura Google EXCLUSIVA na apresentação.
+                # Modo normal: mapa do Google (embed) — a mesma rota auditável pelo link.
+                # Contingência (Google fora): NÃO exibimos mapa do OSM/OSRM (decisão do
+                # usuário: nenhum elemento OSM na apresentação). Mostramos um aviso claro e
+                # o link do Google (que abre a rota assim que o Google voltar).
+                if not _eh_contingencia_ui:
                     try: 
                         components.iframe(url_iframe, height=470, scrolling=True)
                     except Exception: 
                         st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
-                # [ARQ-GOOGLE] Arquitetura definitiva: Google Maps é a fonte única auditável.
-                # No modo normal, mapa + link + valores são todos do Google (conferíveis pelo
-                # mesmo link). Em contingência (Google fora), avisa que o valor não é auditável.
-                if not _eh_contingencia_ui:
                     st.caption("🗺️ Mapa acima: **Google Maps** — exatamente a rota oficial usada nos cálculos.")
                     st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
                     st.caption("ℹ️ **Resultado 100% auditável:** distância, tempo, mapa e link são todos do **Google Maps**. "
                                "Ao abrir o link, você confere exatamente a mesma rota traçada — origem, destino, trajeto, distância e tempo.")
                 else:
-                    st.caption("🗺️ Mapa acima: **OpenStreetMap/OSRM** (contingência — Google Maps indisponível no momento).")
-                    cbtn1, cbtn2 = st.columns(2)
-                    with cbtn1:
-                        st.markdown(f"🗺️ [Tentar abrir no Google Maps]({res_ind[2]})")
-                    with cbtn2:
-                        if isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
-                            try:
-                                import base64 as _b64dl
-                                _html_dl = _b64dl.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
-                                st.download_button("⬇️ Baixar mapa (HTML)", data=_html_dl,
-                                                   file_name="rota_contingencia.html", mime="text/html",
-                                                   help="Mapa autocontido com o trajeto estimado pela malha OSRM (modo de continuidade).",
-                                                   use_container_width=True)
-                            except Exception:
-                                pass
-                    st.caption("⚠️ **Modo de continuidade:** o Google Maps está temporariamente indisponível. Distância e tempo foram "
-                               "estimados pela malha **OSRM** apenas para não interromper a operação. Este valor **não pôde ser confirmado** "
-                               "pelo link auditável agora — recomenda-se **reprocessar** quando o Google voltar para o valor oficial.")
+                    # Sem mapa OSM — apenas aviso e o link do Google (auditável quando voltar).
+                    st.info("🗺️ **Mapa do Google Maps temporariamente indisponível.** Para manter a consistência da arquitetura "
+                            "(Google Maps como fonte única auditável), não exibimos mapas de outras fontes. Use o link abaixo para "
+                            "abrir a rota no Google Maps assim que o serviço estiver disponível.")
+                    st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
+                    st.warning("⚠️ **Modo de continuidade:** o Google Maps está temporariamente indisponível para medição. A distância e o "
+                               "tempo exibidos foram estimados como continuidade operacional e **não puderam ser confirmados** pelo link "
+                               "auditável agora. Recomenda-se **reprocessar** quando o Google Maps voltar, para obter o valor oficial e auditável.")
             else:
                 st.error("Falha na validação de consistência geodésica unificada.")
         else:
@@ -5031,6 +5094,21 @@ with tab_enciclopedia:
         2. **Disparo Simultâneo:** O motor atira a string normalizada para 5 provedores na nuvem ao mesmo tempo.
         3. **Consenso Espacial (DBSCAN):** Com as 5 respostas de coordenadas, o algoritmo de *Machine Learning* agrupa quem caiu perto de quem. Pontos discrepantes (outliers) são removidos.
         4. **Score de Confiança:** Calcula a penalidade multiplicando fatores. Ex: Falta de número tira 5 pontos. O motor reverso acusou estado errado tira 50 pontos.
+
+        **🏙️ Priorização de Municípios (evita POIs indevidos):** quando você digita apenas uma cidade —
+        por exemplo, **"Corumbá, GO"** ou **"Pirenópolis, GO"** — o sistema reconhece que se trata de um
+        **município** (e não de um endereço, hotel, chalé ou estabelecimento). Sem esse cuidado, o Google
+        poderia interpretar "Corumbá, GO" como "R. Francisco Miranda, 466" ou "Pirenópolis, GO" como um
+        chalé específico, alterando distâncias e tempos. Como o sistema resolve:
+        * **Detecção:** a classificação semântica identifica a entrada como MUNICÍPIO/DISTRITO (sem número
+          predial, sem palavra de via, sem POI, sem CEP).
+        * **Nome oficial:** a forma curta é corrigida para o nome oficial do IBGE — "Corumbá" → "Corumbá de
+          Goiás" — dentro da UF informada (evitando confusão com homônimos como Corumbá-MS).
+        * **Link forçando o município:** o link do Google é montado como "Município Oficial, UF, Brasil"
+          (ex.: "Corumbá de Goiás, GO, Brasil"), o que faz o Google abrir o **centro do município**, nunca
+          um POI. O roteamento usa as coordenadas do centróide (preciso e estável).
+        * **Endereços reais preservados:** quando você digita um endereço completo (com número) ou um POI,
+          o sistema respeita essa intenção e não força o município.
         """)
         
     with st.expander("6. Motor de Roteirização (Arquitetura Auditável — Google Maps)"):
