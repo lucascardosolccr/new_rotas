@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 2.9
+# VERSÃO: 3.0
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -52,34 +52,41 @@
 #   v2.6 → IDENTIFICAÇÃO GEOGRÁFICA + PAINEL DE ALOCAÇÃO (FIX-GEO)
 #   v2.7 → CONSISTÊNCIA DE FONTE ÚNICA DE ROTAS (FIX-FONTE)
 #   v2.8 → TRAÇADO REAL DA ROTA OSRM NO LINK E MAPA (FIX-OSRM-GEO)
-#   v2.9 → LINK OSRM COM TRAJETO GARANTIDO VIA GEOJSON (FIX-OSRM-LINK):
+#   v2.9 → LINK OSRM COM TRAJETO GARANTIDO VIA GEOJSON (FIX-OSRM-LINK)
+#   v3.0 → PLANO DE CONTINGÊNCIA: LINK COMPARTILHÁVEL VIA GOOGLE MAPS (CONTINGENCIA-OSRM):
 #
-# PROBLEMA CORRIGIDO (link externo do OSRM ainda sem traçado):
-#   Mesmo após v2.8 (mapa embarcado desenhando a rota), o LINK externo "Abrir Rota"
-#   ainda dependia do visualizador map.project-osrm.org com apenas waypoints loc= —
-#   que muitas vezes mostrava só os pontos, sem o trajeto, pois dependia de um serviço
-#   EXTERNO recalcular a rota.
+# PROBLEMA CORRIGIDO (erro de JSON ao abrir o link do OSRM):
+#   Ao clicar para abrir a rota do OSRM, o visualizador retornava o erro "String não
+#   finalizada em JSON na posição 124 (linha 1 coluna 125)". A rota não era exibida.
 #
-# CAUSA RAIZ: a geometria real da rota NÃO viajava com o link. O link só tinha os
-#   waypoints (origem/destino), delegando a um serviço externo a recomputação do
-#   percurso — sem garantia de que o trajeto fosse desenhado.
+# CAUSA RAIZ DIAGNOSTICADA: a abordagem da v2.9 (link via geojson.io com a geometria em
+#   data: URI no fragmento da URL) dependia de comportamento LEGADO/NÃO-DOCUMENTADO do
+#   geojson.io. A posição 124 do JSON corresponde exatamente ao caractere '#' dos códigos
+#   de cor hexadecimais (#2563eb) nas propriedades de estilo do GeoJSON. O geojson.io,
+#   ao processar o data: URI no fragmento, truncava/quebrava o JSON — gerando o erro de
+#   string não finalizada. Investigação completa confirmou: NÃO há forma robusta e
+#   documentada de gerar um link COMPARTILHÁVEL do OSRM com a rota traçada (tanto o
+#   map.project-osrm.org com waypoints quanto o geojson.io com data: URI são frágeis).
 #
-# CORREÇÃO [FIX-OSRM-LINK1]:
-#   [GeoJSON] A geometria EXATA da rota (decodificada da polyline OSRM) passa a viajar
-#         JUNTO com o link, em formato GeoJSON (LineString + pontos origem/destino). O
-#         link aponta para o visualizador geojson.io, que desenha o trajeto a partir da
-#         própria geometria — SEM depender de nenhum serviço recalcular nada. Padrão
-#         aberto, compatível com Leaflet/OpenLayers/MapLibre/QGIS.
-#   [Simplificação] Para rotas muito longas, a geometria do link é amostrada a no máximo
-#         300 vértices (mantém a URL dentro de limites de navegador); o mapa embarcado
-#         usa a polyline COMPLETA (fidelidade máxima).
-#   [Download standalone] Botão para baixar um mapa HTML autocontido (Leaflet+OSM) que
-#         SEMPRE desenha o trajeto completo em tela cheia (garantia total, offline, sem
-#         dependência de serviço externo) — com badge de distância/tempo.
+# DECISÃO (conforme o plano de contingência do briefing): descontinuar o uso do OSRM
+#   para o LINK COMPARTILHÁVEL e adotar o Google Maps (documentado, estável, sempre
+#   desenha a rota).
 #
-# Validação: GeoJSON com ordem [lon,lat] correta (vetor de teste); URL bounded (~7KB p/
-#   rota longa de 300 pts); extremos preservados na simplificação; HTML standalone
-#   desenha a polyline; rota curta inalterada. Google sem alteração. Sem regressão.
+# IMPLEMENTAÇÃO [CONTINGENCIA-OSRM]:
+#   - Novo _montar_link_google_navegavel(): link de navegação via Google Maps URL API
+#     oficial (/maps/dir/?api=1&origin=...&destination=...&travelmode=driving), que SEMPRE
+#     abre a rota completamente traçada. Prioriza coordenadas exatas; fallback p/ endereço
+#     ou texto do usuário (nunca colapsa para só a UF).
+#   - Quando o OSRM vence: DISTÂNCIA e TEMPO continuam do OSRM (menor distância — valor
+#     preservado), o MAPA EMBARCADO continua desenhando a rota real do OSRM (Leaflet), e o
+#     LINK COMPARTILHÁVEL passa a ser do Google Maps (sempre traça a rota). Há ainda o
+#     DOWNLOAD do mapa OSRM em HTML autocontido (traçado exato, offline).
+#   - UI e painel de consistência atualizados com total transparência sobre o que vem de
+#     cada fonte. Removido todo o código frágil de geojson.io/data: URI.
+#
+# Validação: link Google sempre é um /maps/dir/ válido (sem JSON, sem data: URI → o erro
+#   relatado é IMPOSSÍVEL); origin/destination nunca colapsam para UF; mapa embarcado
+#   desenha a rota OSRM; Google-vence inalterado. Sem regressão.
 # ------------------------------------------------------------------------------
 # MELHORIAS APLICADAS v2.4 → v2.5:
 #   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
@@ -2653,6 +2660,27 @@ def _montar_param_link_seguro(endereco_oficial, lat, lon, texto_original):
     # Sem nada utilizável (não deveria ocorrer) — devolve o que houver
     return requests.utils.quote(end) if end else f"{lat},{lon}"
 
+def _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_o="", end_d="", txt_o="", txt_d=""):
+    """[CONTINGENCIA-OSRM - 20ª geração] Constrói um link de navegação do Google Maps
+    ROBUSTO e CONFIÁVEL, que SEMPRE abre a rota completamente traçada entre origem e
+    destino. Usa a Google Maps URL API oficial e documentada (/maps/dir/?api=1), que
+    desenha o percurso viário entre os pontos de forma estável.
+
+    Por que este caminho: após investigação, concluiu-se que NÃO há forma robusta e
+    documentada de gerar um link COMPARTILHÁVEL do OSRM com a rota traçada — o
+    map.project-osrm.org (waypoints) e o geojson.io (data: URI) dependem de comportamentos
+    não-documentados/legados e falhavam (ex.: "String não finalizada em JSON" no
+    geojson.io, que trunca o data: URI). Conforme o plano de contingência, o link
+    compartilhável passa a ser sempre do Google Maps (documentado e estável), enquanto o
+    mapa EMBARCADO na aplicação continua desenhando a rota real (Leaflet) do provedor.
+
+    Prioriza coordenadas exatas (origin=lat,lon) — apontam ao ponto certo e o Google
+    traça a rota viária entre eles; com fallback para endereço oficial ou texto original.
+    """
+    orig = _montar_param_link_seguro(end_o, lat_o, lon_o, txt_o)
+    dest = _montar_param_link_seguro(end_d, lat_d, lon_d, txt_d)
+    return f"https://www.google.com/maps/dir/?api=1&origin={orig}&destination={dest}&travelmode=driving"
+
 def _decodificar_polyline(polyline_str, precision=5):
     """[FIX-OSRM-GEO2 - 18ª geração] Decodifica uma polyline codificada (formato Google/
     OSRM) em uma lista de coordenadas [(lat, lon), ...]. O OSRM retorna a geometria da
@@ -2730,86 +2758,26 @@ map.fitBounds(linha.getBounds(),{{padding:[30,30]}});
     import base64 as _b64
     return "data:text/html;base64," + _b64.b64encode(html.encode("utf-8")).decode("ascii")
 
-def _simplificar_pontos(pontos, max_pontos=300):
-    """[FIX-OSRM-LINK1 - 19ª geração] Reduz o número de pontos de uma rota para no
-    máximo `max_pontos`, preservando o primeiro e o último e amostrando uniformemente
-    os intermediários. Usado APENAS para o link externo (GeoJSON na URL), de modo a
-    manter a URL dentro de limites práticos de navegador em rotas muito longas. O mapa
-    EMBARCADO continua usando a polyline COMPLETA (traçado de máxima fidelidade). Em
-    rotas típicas (< 300 vértices) nada muda — retorna os pontos originais."""
-    n = len(pontos)
-    if n <= max_pontos:
-        return pontos
-    # Amostragem uniforme preservando extremos
-    passo = n / float(max_pontos - 1)
-    indices = sorted(set([int(round(i * passo)) for i in range(max_pontos)] + [0, n - 1]))
-    indices = [i for i in indices if 0 <= i < n]
-    return [pontos[i] for i in indices]
-
-def _polyline_para_geojson(geometria_polyline, lat_o, lon_o, lat_d, lon_d, max_pontos=300):
-    """[FIX-OSRM-LINK1 - 19ª geração] Converte a polyline da rota OSRM em um objeto
-    GeoJSON FeatureCollection com a LineString do trajeto + pontos de origem/destino.
-    GeoJSON é o padrão aberto universal para geometrias geográficas, aceito por
-    praticamente todos os visualizadores de mapa (geojson.io, Leaflet, OpenLayers,
-    MapLibre, QGIS, etc). Assim a rota EXATA viaja junto com o link, sem depender de
-    nenhum serviço externo recalcular o trajeto. Coordenadas em [lon, lat] (ordem GeoJSON).
-    Para o link externo, a rota é simplificada a no máximo `max_pontos` vértices (bound
-    de URL); o traçado permanece fiel visualmente."""
-    pontos = _decodificar_polyline(geometria_polyline) if geometria_polyline else []
-    if not pontos:
-        pontos = [(lat_o, lon_o), (lat_d, lon_d)]
-    if max_pontos:
-        pontos = _simplificar_pontos(pontos, max_pontos)
-    # GeoJSON usa [longitude, latitude] — atenção à ordem (inversa de lat/lon)
-    coords_linha = [[round(lo, 5), round(la, 5)] for la, lo in pontos]
-    geojson = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {"name": "Rota OSRM (menor distância)", "stroke": "#2563eb", "stroke-width": 5, "stroke-opacity": 0.85},
-                "geometry": {"type": "LineString", "coordinates": coords_linha}
-            },
-            {
-                "type": "Feature",
-                "properties": {"name": "Origem", "marker-color": "#16a34a"},
-                "geometry": {"type": "Point", "coordinates": [round(lon_o, 5), round(lat_o, 5)]}
-            },
-            {
-                "type": "Feature",
-                "properties": {"name": "Destino", "marker-color": "#dc2626"},
-                "geometry": {"type": "Point", "coordinates": [round(lon_d, 5), round(lat_d, 5)]}
-            }
-        ]
-    }
-    return geojson
-
 def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, geometria_polyline="", distancia_km="", tempo_str=""):
-    """[FIX-OSRM-LINK1 - 19ª geração] Constrói links que representam EXATAMENTE a rota do
-    OSRM com o trajeto DESENHADO, para uso quando o OSRM é o provedor vencedor.
+    """[CONTINGENCIA-OSRM - 20ª geração] Gera o mapa EMBARCADO do OSRM (Leaflet+OSM) que
+    desenha a polyline real da rota. Retorna (None, link_embed): o primeiro elemento é
+    None porque o link COMPARTILHÁVEL não é mais gerado aqui — após investigação, concluiu-
+    se que não há forma robusta/documentada de compartilhar a rota OSRM por link.
 
-    CAUSA RAIZ corrigida: o link anterior (map.project-osrm.org com waypoints loc=)
-    dependia de um serviço EXTERNO recalcular a rota a partir dos pontos — e muitas vezes
-    mostrava só os marcadores, sem o trajeto. A geometria real NÃO viajava com o link.
-
-    SOLUÇÃO: a geometria exata da rota (decodificada da polyline OSRM) viaja junto com o
-    link em formato GeoJSON. Assim o trajeto é SEMPRE desenhado, sem depender de nenhum
-    serviço recalcular nada. Devolve:
-      - link_rota: visualizador GeoJSON (geojson.io) que recebe a LineString da rota na
-        própria URL e DESENHA o trajeto completo. Padrão aberto, sem dependência de motor.
-      - link_embed: mapa HTML autocontido (Leaflet+OSM) que desenha a mesma polyline.
-    Single source of truth: distância, tempo, geometria, mapa e link, todos do OSRM.
+    HISTÓRICO da investigação (por que o link próprio do OSRM foi descontinuado):
+      - map.project-osrm.org com waypoints loc=: dependia de serviço externo recalcular a
+        rota; frequentemente mostrava só os pontos, sem o trajeto.
+      - geojson.io com data: URI no fragmento: comportamento legado/não-documentado; o
+        serviço truncava o data: URI e gerava o erro "String não finalizada em JSON na
+        posição N" (os hex de cor #RRGGBB e a estrutura data:,<json> quebravam o parser).
+    Ambos eram frágeis e dependiam de comportamento não-documentado. Conforme o plano de
+    contingência, o link compartilhável passou a ser sempre do Google Maps (documentado,
+    estável, sempre desenha a rota) — ver _montar_link_google_navegavel. O mapa EMBARCADO
+    aqui continua mostrando o traçado real do OSRM (Leaflet), e há download do mapa HTML.
     """
-    # [FIX-OSRM-LINK1] GeoJSON com a geometria EXATA da rota (LineString + pontos).
-    geojson_obj = _polyline_para_geojson(geometria_polyline, lat_o, lon_o, lat_d, lon_d)
-    geojson_str = json.dumps(geojson_obj, separators=(',', ':'))
-    # geojson.io aceita o GeoJSON via fragmento de URL (#data=data:application/json,...)
-    # e desenha a LineString — o trajeto viaja COM o link, sem recomputação externa.
-    geojson_encoded = urllib.parse.quote(geojson_str)
-    link_geojson = f"https://geojson.io/#data=data:application/json,{geojson_encoded}"
-    # Mapa embarcado que DESENHA a polyline real da rota (traçado exato, autocontido).
+    # Mapa embarcado que DESENHA a polyline real da rota OSRM (traçado exato, autocontido).
     link_embed_osm = _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d, distancia_km, tempo_str)
-    return link_geojson, link_embed_osm
+    return None, link_embed_osm
 
 def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     start_total = time.time()
@@ -2937,14 +2905,18 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 tempo_m = res_osrm[1]
                 tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
                 _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
-                link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm, f"{km_rota} km", tempo_rota)
+                # [CONTINGENCIA-OSRM] Mapa EMBARCADO desenha a rota real do OSRM (Leaflet);
+                # o link COMPARTILHÁVEL é do Google Maps (documentado, sempre traça a rota),
+                # pois não há forma robusta de compartilhar a rota OSRM por link.
+                _, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm, f"{km_rota} km", tempo_rota)
+                link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
                 balsa_rota = res_osrm[2]
                 fonte_rota = "OSRM (Menor Distância)"
                 score_rota = 88
                 motivo_roteamento = (f"Rota de Menor Distância: entre {n_alt_osrm} alternativa(s) viária(s), "
                                      f"a malha OSRM identificou {km_o}km como o menor trajeto — inferior aos {km_g}km "
-                                     f"da rota padrão do Google. FONTE ÚNICA: distância, tempo, mapa e link são todos "
-                                     f"do OSRM (o link abre exatamente esta rota no visualizador OSRM/OpenStreetMap).")
+                                     f"da rota padrão do Google. Distância, tempo e mapa embarcado são do OSRM; o link "
+                                     f"compartilhável usa o Google Maps (que sempre desenha a rota de forma confiável).")
             else:
                 # Google é igual ou menor (dentro da tolerância) → usamos Google,
                 # garantindo que valor exibido == rota que o link abre.
@@ -2972,13 +2944,16 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             n_alt_osrm = res_osrm[3] if len(res_osrm) > 3 else 1
             tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
             _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
-            link_rota, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm, f"{km_rota} km", tempo_rota)
+            # [CONTINGENCIA-OSRM] Mapa embarcado desenha a rota OSRM; link compartilhável
+            # do Google Maps (sempre traça a rota de forma confiável e documentada).
+            _, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm, f"{km_rota} km", tempo_rota)
+            link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
             balsa_rota = res_osrm[2]
             fonte_rota = "OSRM Routing"
             score_rota = 85
-            motivo_roteamento = (f"Fonte Única OSRM: Google Maps indisponível (Timeout). Rota de menor distância "
-                                 f"({km_rota}km entre {n_alt_osrm} alternativa(s)) calculada pela malha OSRM. "
-                                 f"Mapa e link representam exatamente esta rota OSRM (OpenStreetMap).")
+            motivo_roteamento = (f"Distância e tempo via malha OSRM: Google Maps indisponível para medição "
+                                 f"({km_rota}km entre {n_alt_osrm} alternativa(s)). Mapa embarcado desenha a rota OSRM; "
+                                 f"o link compartilhável usa o Google Maps (que sempre traça a rota de forma confiável).")
             
         tempo_roteamento = round(time.time() - start_rot, 2)
         tempo_total = round(time.time() - start_total, 2)
@@ -3534,23 +3509,30 @@ with tab_individual:
                 st.info(f"🧭 **Estratégia de Roteamento (XAI):** {res_ind[28]}")
                 st.caption(f"📏 **Status da Linha Reta:** {res_ind[30] if len(res_ind) > 30 else 'Não Mapeado'}")
                 
-                # [ETAPA5-3 + FIX-FONTE3] Painel de consistência: fonte ÚNICA de verdade.
-                # Deixa explícito que distância, tempo, mapa e link vêm TODOS do mesmo
-                # provedor vencedor (o de menor distância), sem mistura entre fontes.
+                # [ETAPA5-3 + CONTINGENCIA-OSRM] Painel de consistência transparente.
+                # Quando o Google vence: distância, tempo, mapa e link são todos do Google.
+                # Quando o OSRM vence: distância/tempo/mapa embarcado são do OSRM e o link
+                # compartilhável é do Google (sempre traça a rota de forma confiável).
                 fonte_rota_exibida = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _eh_osrm_painel = "OSRM" in str(fonte_rota_exibida).upper()
-                _nome_provedor = "OSRM / OpenStreetMap" if _eh_osrm_painel else "Google Maps"
                 with st.container(border=True):
                     cc1, cc2, cc3 = st.columns(3)
-                    cc1.metric("Fonte Única da Rota", fonte_rota_exibida,
-                               help="Provedor vencedor (menor distância). TODOS os dados — distância, tempo, mapa e link — vêm desta única fonte.")
+                    cc1.metric("Fonte da Medição", fonte_rota_exibida,
+                               help="Provedor que forneceu a distância e o tempo (o de menor distância).")
                     cc2.metric("Critério Aplicado", "Menor Distância",
                                help="Regra de negócio: entre as rotas viáveis, é sempre escolhida a de MENOR quilometragem (não a mais rápida).")
-                    cc3.metric("Mapa + Link Sincronizados", "✅ Sim",
-                               help=f"O mapa exibido e o link abrem exatamente a rota do {_nome_provedor} usada nos cálculos. Sem mistura entre provedores.")
-                    st.caption(f"ℹ️ **Fonte única de verdade:** distância, tempo, mapa e link são TODOS provenientes do **{_nome_provedor}** "
-                               f"(provedor de menor distância nesta execução). Não há mistura de dados entre Google e OSRM. "
-                               f"Ao abrir o link, você verá exatamente a mesma rota que gerou os valores acima.")
+                    if _eh_osrm_painel:
+                        cc3.metric("Link Compartilhável", "Google Maps",
+                                   help="Distância/tempo/mapa do OSRM; link de navegação via Google Maps (sempre desenha a rota de forma confiável).")
+                        st.caption("ℹ️ **Distância e tempo** são do **OSRM** (menor distância) e o **mapa acima** mostra a rota exata do OSRM. "
+                                   "O **link compartilhável** usa o **Google Maps**, que abre a rota traçada de forma confiável — a geração de um "
+                                   "link próprio do OSRM com a rota desenhada mostrou-se tecnicamente frágil e foi descontinuada. O traçado exato "
+                                   "do OSRM permanece disponível no mapa embarcado e no download do mapa HTML.")
+                    else:
+                        cc3.metric("Mapa + Link Sincronizados", "✅ Google Maps",
+                                   help="O mapa exibido e o link abrem exatamente a rota do Google Maps usada nos cálculos.")
+                        st.caption("ℹ️ **Fonte única de verdade:** distância, tempo, mapa e link são TODOS provenientes do **Google Maps** "
+                                   "(provedor de menor distância nesta execução). Ao abrir o link, você verá exatamente a mesma rota que gerou os valores acima.")
                 
                 with st.expander("🔍 Auditoria Detalhada da Geocodificação e Consenso", expanded=False):
                     st.caption(f"Status da Base IBGE Local: {'Ativa e Carregada' if len(IBGE_MUNICIPIOS) > 1000 else '⚠️ CORROMPIDA/FALHA DE API'}")
@@ -3604,24 +3586,27 @@ with tab_individual:
                     st.caption("🗺️ Mapa acima: malha **OpenStreetMap/OSRM** com o **trajeto completo desenhado** — exatamente a rota de menor distância usada nos cálculos.")
                     cbtn1, cbtn2 = st.columns(2)
                     with cbtn1:
-                        st.markdown(f"🧭 [Abrir rota traçada (GeoJSON)]({res_ind[2]})")
+                        # [CONTINGENCIA-OSRM] Link compartilhável robusto via Google Maps,
+                        # que sempre desenha a rota traçada (a abordagem de link do OSRM —
+                        # geojson.io/map.project-osrm — provou-se frágil e não-documentada).
+                        st.markdown(f"🗺️ [Abrir rota traçada (Google Maps)]({res_ind[2]})")
                     with cbtn2:
-                        # [FIX-OSRM-LINK1] Mapa standalone para download — GARANTE o traçado
-                        # completo (HTML autocontido com a polyline), sem depender de serviço
-                        # externo. O usuário abre e vê a rota exata desenhada, em tela cheia.
+                        # Mapa standalone para download — GARANTE o traçado OSRM completo
+                        # (HTML autocontido com a polyline), independente de serviço externo.
                         if isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
                             try:
                                 import base64 as _b64dl
                                 _html_dl = _b64dl.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
-                                st.download_button("⬇️ Baixar mapa da rota (HTML)", data=_html_dl,
+                                st.download_button("⬇️ Baixar mapa OSRM (HTML)", data=_html_dl,
                                                    file_name="rota_osrm_tracada.html", mime="text/html",
-                                                   help="Baixa um mapa autocontido que desenha o trajeto completo da rota OSRM. Abra no navegador para ver o percurso exato.",
+                                                   help="Baixa um mapa autocontido que desenha o trajeto exato da rota OSRM. Abra no navegador para ver o percurso completo.",
                                                    use_container_width=True)
                             except Exception:
                                 pass
-                    st.caption("ℹ️ Esta rota foi calculada pelo **OSRM** (menor distância). O link **GeoJSON** carrega a geometria exata da rota — "
-                               "o trajeto é desenhado a partir dos próprios dados, sem depender de nenhum serviço recalcular o percurso. "
-                               "Para garantia total, baixe o mapa HTML autocontido (sempre desenha o trajeto completo).")
+                    st.caption("ℹ️ **Distância e tempo** são do **OSRM** (menor distância encontrada). O **mapa acima** desenha a rota exata do OSRM. "
+                               "Para o **link compartilhável**, usamos o **Google Maps**, que abre a rota traçada de forma confiável e estável — "
+                               "a geração de um link próprio do OSRM com a rota desenhada mostrou-se tecnicamente frágil. Para ver/guardar o traçado "
+                               "exato do OSRM, use o botão de download do mapa HTML.")
                 else:
                     st.caption("🗺️ Mapa acima: **Google Maps** — exatamente a rota de menor distância usada nos cálculos.")
                     st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
