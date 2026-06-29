@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.6
+# VERSÃO: 3.7
 # DATA: 2026-06
 # DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
 #
@@ -59,7 +59,27 @@
 #   v3.3 → PRIORIZAÇÃO DE MUNICÍPIOS NO LINK + REMOÇÃO DO OSM DA APRESENTAÇÃO
 #   v3.4 → EXPORTAÇÕES AVANÇADAS PARA GIS (EXPORT-GIS)
 #   v3.5 → MUNICÍPIO POR COORDENADAS + REMOÇÃO TOTAL DO OSRM
-#   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO):
+#   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
+#   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO:
+#
+# PRIORIDADE MÁXIMA Nº 1 RESOLVIDA (mapa do Google só mostrava 2 marcadores):
+#   O endpoint clássico ?saddr&daddr&output=embed tornou-se instável e renderiza só dois
+#   marcadores, sem o traçado. SOLUÇÃO [VIS-GOOGLE-GEO]: o scraper EXTRAI A GEOMETRIA
+#   (polyline) da rota do Google (índice 6, aditivo), VALIDA-A geograficamente (rota deve
+#   começar perto da origem, terminar perto do destino, dentro da caixa plausível) e
+#   desenha o TRAÇADO COMPLETO num mapa Leaflet autocontido (fit bounds + zoom). Se a
+#   extração falhar, cai no embed clássico (degradação graciosa, zero risco de rota errada).
+#   Há download do mapa HTML também para o Google. Unificado em _gerar_mapa_leaflet_rota.
+#
+# NOMES GUIAM A APRESENTAÇÃO [VIS-NAMES]: mapas rotulam origem/destino pelo NOME OFICIAL
+#   (não lat/lon); badge mostra provedor, distância, tempo e nomes. Novo _escapar_js()
+#   blinda os nomes no HTML/JS do mapa.
+#
+# Validação: extração + validação geográfica testadas (aceita rota correta, REJEITA
+#   polyline de outra região, degrada sem geometria); decoder vs vetor canônico; retorno
+#   de 7 elementos retrocompatível (callers usam 0-5); RotaPipeline íntegra. Sem regressão.
+# ------------------------------------------------------------------------------
+#   [Detalhes da v3.6 abaixo]
 #
 # MUDANÇA DE DIREÇÃO (decisão do usuário): restaurar o modelo híbrido (Google + OSRM)
 # com seleção automática de MENOR DISTÂNCIA, porém reestruturado e muito superior ao
@@ -987,6 +1007,15 @@ def _escapar_xml(texto):
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
              .replace('"', "&quot;").replace("'", "&apos;"))
 
+def _escapar_js(texto):
+    """[VIS-NAMES - 27ª geração] Escapa um texto para uso seguro dentro de strings JS e
+    HTML embarcados no mapa Leaflet (data URI). Neutraliza aspas, barras, sinais de < >
+    e quebras de linha — impedindo que um nome de localidade quebre o HTML/JS do mapa."""
+    s = str(texto)
+    return (s.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+             .replace("<", "&lt;").replace(">", "&gt;")
+             .replace("\n", " ").replace("\r", " ").replace("\u2028", " ").replace("\u2029", " "))
+
 def _df_para_kml(df):
     """[EXPORT-GIS - 24ª geração] Converte o DataFrame em KML (Google Earth/Maps). Cada
     rota vira um Placemark de origem, um de destino e uma linha conectando-os. Abre
@@ -1206,6 +1235,15 @@ _RE_DIST_G4 = re.compile(r'(\d+)\s*km')
 _RE_TIME_G1 = re.compile(r'\"(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\"')
 _RE_TIME_G2 = re.compile(r'(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)')
 _RE_TIME_G3 = re.compile(r'\\x22(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\\x22')
+
+# [VIS-GOOGLE-GEO - 27ª geração] Padrões para EXTRAIR A GEOMETRIA (polyline codificada)
+# da rota a partir da resposta do endpoint maps/preview/directions do Google. A resposta
+# embute a polyline da rota em blocos como [[...]],"<polyline>" — capturamos o trecho
+# codificado (caracteres ASCII imprimíveis típicos de polyline) para desenhar o traçado
+# completo no mapa, em vez de apenas dois marcadores. Vários formatos são tentados em
+# ordem de especificidade. A polyline do Google usa precisão 5 (mesma do OSRM polyline).
+_RE_GOOG_POLY1 = re.compile(r'\\"([a-zA-Z0-9_~`?@\[\]\\^{|}<>=;:/.\-+*&%$#!()\']{30,})\\"')
+_RE_GOOG_POLY2 = re.compile(r'"([a-zA-Z0-9_~`?@\[\]\^{|}<>=;:/.\-+*&%$#!()\']{30,})"')
 
 # [M13] Padrões de rodovia pré-compilados como constante global
 # Eliminam recompilação em loop duplo de candidatos no consenso Bayesiano
@@ -2715,9 +2753,10 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
     if cache_key in cache_google: 
         _cached = cache_google[cache_key]
         # [FIX-MUN-LINK] Se temos links prontos (priorizando município), sobrescreve os
-        # links do cache mantendo distância/tempo/score (que dependem só de coordenadas).
+        # links do cache mantendo distância/tempo/score/geometria (dependem só de coords).
         if link_maps_pronto and _cached and len(_cached) >= 6:
-            return (_cached[0], _cached[1], link_maps_pronto, _cached[3], _cached[4], link_embed_pronto or _cached[5])
+            _geo_c = _cached[6] if len(_cached) > 6 else ""  # [VIS-GOOGLE-GEO] preserva geometria
+            return (_cached[0], _cached[1], link_maps_pronto, _cached[3], _cached[4], link_embed_pronto or _cached[5], _geo_c)
         return _cached
         
     orig_link_txt = requests.utils.quote(origem_texto)
@@ -2781,7 +2820,13 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
                 
             score_google = 80 + (10 if km_puro > 0 else 0) + (10 if tempo_str else 0)
             score_google = min(score_google, 100)
-            res = (km_puro, tempo_str, link_maps, envolve_balsa, score_google, link_embed)
+            # [VIS-GOOGLE-GEO - 27ª geração] PRIORIDADE MÁXIMA Nº 1: extrai a GEOMETRIA da
+            # rota do Google e desenha o TRAÇADO COMPLETO no mapa embarcado (antes só dois
+            # marcadores). A geometria é validada geograficamente; se válida, o mapa passa
+            # a ser um Leaflet autocontido com a polyline real (curvas, conversões). Se a
+            # extração falhar, mantém-se o embed clássico do Google (degradação graciosa).
+            geo_google = _extrair_geometria_google(texto_resposta, lat_o, lon_o, lat_d, lon_d)
+            res = (km_puro, tempo_str, link_maps, envolve_balsa, score_google, link_embed, geo_google)
             cache_google.set(cache_key, res, expire=2592000)
             return res
     except Exception: 
@@ -2920,6 +2965,76 @@ def _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_o="", end_d=""
     dest = _montar_param_link_seguro(end_d, lat_d, lon_d, txt_d)
     return f"https://www.google.com/maps/dir/?api=1&origin={orig}&destination={dest}&travelmode=driving"
 
+def _extrair_geometria_google(texto_resposta, lat_o, lon_o, lat_d, lon_d):
+    """[VIS-GOOGLE-GEO - 27ª geração] Extrai e VALIDA a geometria (polyline) da rota a
+    partir da resposta do endpoint de direções do Google. A resposta é ofuscada e não
+    documentada, então em vez de confiar num delimitador fixo, testamos os candidatos a
+    polyline e VALIDAMOS geograficamente: a polyline é aceita apenas se, ao decodificar,
+    (a) tiver vários pontos, (b) começar perto da origem e terminar perto do destino, e
+    (c) ficar dentro de uma caixa delimitadora plausível. Isso garante robustez: se a
+    extração falhar ou vier lixo, retornamos "" e o mapa cai graciosamente nos marcadores.
+
+    Retorna a string de polyline VÁLIDA (precisão 5) ou "" se nenhuma candidata passar.
+    """
+    if not texto_resposta or (lat_o == 0 and lon_o == 0):
+        return ""
+
+    def _valida(poly):
+        try:
+            pts = _decodificar_polyline(poly, precision=5)
+        except Exception:
+            return False
+        if not pts or len(pts) < 2:
+            return False
+        # Tolerância: a rota deve começar perto da origem e terminar perto do destino.
+        # 0.20° ~ 22km de folga (cobre o offset entre o centróide e o ponto exato da via).
+        tol = 0.20
+        p_ini, p_fim = pts[0], pts[-1]
+        perto_ini = abs(p_ini[0] - lat_o) < tol and abs(p_ini[1] - lon_o) < tol
+        perto_fim = abs(p_fim[0] - lat_d) < tol and abs(p_fim[1] - lon_d) < tol
+        # Também aceita invertido (origem/destino trocados na geometria)
+        perto_ini_inv = abs(p_ini[0] - lat_d) < tol and abs(p_ini[1] - lon_d) < tol
+        perto_fim_inv = abs(p_fim[0] - lat_o) < tol and abs(p_fim[1] - lon_o) < tol
+        if not ((perto_ini and perto_fim) or (perto_ini_inv and perto_fim_inv)):
+            return False
+        # Caixa delimitadora plausível: todos os pontos dentro do bounding box origem-destino
+        # expandido por 1° (~111km), evitando aceitar polylines de outra região por acaso.
+        lat_min, lat_max = min(lat_o, lat_d) - 1.0, max(lat_o, lat_d) + 1.0
+        lon_min, lon_max = min(lon_o, lon_d) - 1.0, max(lon_o, lon_d) + 1.0
+        for (la, lo) in pts:
+            if not (lat_min <= la <= lat_max and lon_min <= lo <= lon_max):
+                return False
+        return True
+
+    # Coleta candidatos de ambos os padrões, prioriza os mais longos (rotas têm muitos pontos)
+    candidatos = set()
+    for rgx in (_RE_GOOG_POLY1, _RE_GOOG_POLY2):
+        try:
+            for m in rgx.finditer(texto_resposta):
+                cand = m.group(1)
+                # Polyline não contém aspas nem vírgulas; filtro rápido de sanidade
+                if cand and '"' not in cand and ',' not in cand:
+                    candidatos.add(cand)
+        except Exception:
+            continue
+    # Testa do mais longo para o mais curto (a geometria completa é a mais longa válida)
+    for cand in sorted(candidatos, key=len, reverse=True):
+        if _valida(cand):
+            return cand
+    return ""
+
+def _gerar_mapa_rota_google(geometria_polyline, lat_o, lon_o, lat_d, lon_d, nome_origem="", nome_destino="", distancia_km="", tempo_str=""):
+    """[VIS-GOOGLE-GEO - 27ª geração] Gera o mapa EMBARCADO da rota do GOOGLE desenhando o
+    TRAÇADO COMPLETO (Leaflet + OpenStreetMap) a partir da polyline decodificada do Google.
+    Resolve a PRIORIDADE MÁXIMA Nº 1: o mapa do Google mostrava só 2 marcadores; agora
+    desenha a geometria integral da rota (curvas, conversões, segmentos), com nomes
+    oficiais de origem/destino, distância e tempo. Se a geometria não estiver disponível,
+    cai graciosamente para os marcadores (degradação segura). Reusa a infra de mapa do
+    OSRM mas com rótulos por NOME (não coordenadas), conforme pedido."""
+    return _gerar_mapa_leaflet_rota(geometria_polyline, lat_o, lon_o, lat_d, lon_d,
+                                    nome_origem, nome_destino, distancia_km, tempo_str,
+                                    provedor="Google Maps", cor="#1a73e8")
+
 def _decodificar_polyline(polyline_str, precision=5):
     """[FIX-OSRM-GEO2 - 18ª geração] Decodifica uma polyline codificada (formato Google/
     OSRM) em uma lista de coordenadas [(lat, lon), ...]. O OSRM retorna a geometria da
@@ -2960,42 +3075,57 @@ def _decodificar_polyline(polyline_str, precision=5):
         coordenadas.append((lat / fator, lng / fator))
     return coordenadas
 
-def _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d, distancia_km="", tempo_str=""):
-    """[FIX-OSRM-GEO2 / FIX-OSRM-LINK1] Gera um mapa HTML (Leaflet + OpenStreetMap) que
-    DESENHA o traçado completo da rota OSRM a partir da geometria decodificada. Antes,
-    o mapa do OSRM mostrava apenas os dois pontos (origem/destino) sem o trajeto. Agora
-    a polyline da rota vencedora é decodificada e desenhada como uma linha contínua,
-    com marcadores de origem e destino e um badge de distância/tempo — o mapa representa
-    EXATAMENTE a rota usada nos cálculos. Retorna um data URI (HTML autocontido) usado
-    tanto no mapa embarcado quanto no download do mapa standalone.
+def _gerar_mapa_leaflet_rota(geometria_polyline, lat_o, lon_o, lat_d, lon_d, nome_origem="", nome_destino="", distancia_km="", tempo_str="", provedor="OSRM", cor="#2563eb"):
+    """[VIS-NAMES - 27ª geração] Gerador UNIFICADO de mapa de rota (Leaflet+OSM) que
+    DESENHA o traçado completo a partir da polyline decodificada, com rótulos por NOME
+    (origem/destino), distância, tempo e provedor — conforme o pedido de priorizar nomes
+    em vez de coordenadas. Usado tanto pela rota do Google quanto pela do OSRM. Se a
+    geometria estiver ausente, posiciona ao menos origem/destino (degradação graciosa).
+    Retorna um data URI (HTML autocontido) — abre offline em qualquer navegador.
     """
     pontos = _decodificar_polyline(geometria_polyline) if geometria_polyline else []
-    if not pontos:
-        # Sem geometria: ao menos posiciona origem e destino (degradação graciosa)
+    tem_geometria = len(pontos) >= 2
+    if not tem_geometria:
         pontos = [(lat_o, lon_o), (lat_d, lon_d)]
-    # Serializa os pontos para JS
     pontos_js = "[" + ",".join(f"[{la:.6f},{lo:.6f}]" for la, lo in pontos) + "]"
-    info_badge = ""
+    # Rótulos por NOME (escapados para uso seguro em JS/HTML)
+    _no = _escapar_js(nome_origem) if nome_origem else "Origem"
+    _nd = _escapar_js(nome_destino) if nome_destino else "Destino"
+    _aviso_geo = "" if tem_geometria else (
+        '<div style="position:absolute;bottom:10px;left:10px;z-index:1000;background:#fff8e1;'
+        'padding:4px 10px;border-radius:6px;font-family:system-ui;font-size:11px;color:#8a6d00">'
+        '⚠️ Traçado indisponível — exibindo origem e destino</div>')
+    badge_metricas = ""
     if distancia_km or tempo_str:
-        info_badge = (f'<div style="position:absolute;top:10px;left:50px;z-index:1000;background:#fff;'
-                      f'padding:6px 12px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.2);'
-                      f'font-family:system-ui,sans-serif;font-size:13px">'
-                      f'<b>Rota OSRM</b> (menor distância) &nbsp; 📏 {distancia_km} &nbsp; ⏱️ {tempo_str}</div>')
+        badge_metricas = f' &nbsp; 📏 {_escapar_js(str(distancia_km))} &nbsp; ⏱️ {_escapar_js(str(tempo_str))}'
+    info_badge = (f'<div style="position:absolute;top:10px;left:50px;right:10px;z-index:1000;background:#fff;'
+                  f'padding:6px 12px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.2);'
+                  f'font-family:system-ui,sans-serif;font-size:13px;max-width:90%">'
+                  f'<b>{_escapar_js(provedor)}</b>{badge_metricas}<br>'
+                  f'<span style="color:#16a34a">●</span> {_no} &nbsp;→&nbsp; '
+                  f'<span style="color:#dc2626">●</span> {_nd}</div>')
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>html,body,#map{{height:100%;margin:0;padding:0}}#map{{width:100%;height:100%}}</style>
-</head><body>{info_badge}<div id="map"></div><script>
+</head><body>{info_badge}{_aviso_geo}<div id="map"></div><script>
 var pts={pontos_js};
 var map=L.map('map');
-L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap | Rota: OSRM (menor distância)'}}).addTo(map);
-var linha=L.polyline(pts,{{color:'#2563eb',weight:5,opacity:0.85}}).addTo(map);
-L.marker(pts[0]).addTo(map).bindPopup('<b>Origem</b>');
-L.marker(pts[pts.length-1]).addTo(map).bindPopup('<b>Destino</b>');
-map.fitBounds(linha.getBounds(),{{padding:[30,30]}});
+L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap | Rota: {_escapar_js(provedor)}'}}).addTo(map);
+var linha=L.polyline(pts,{{color:'{cor}',weight:5,opacity:0.85}}).addTo(map);
+L.marker(pts[0]).addTo(map).bindPopup('<b>Origem:</b><br>{_no}').openPopup();
+L.marker(pts[pts.length-1]).addTo(map).bindPopup('<b>Destino:</b><br>{_nd}');
+map.fitBounds(linha.getBounds(),{{padding:[40,40]}});
 </script></body></html>"""
     import base64 as _b64
     return "data:text/html;base64," + _b64.b64encode(html.encode("utf-8")).decode("ascii")
+
+def _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d, distancia_km="", tempo_str="", nome_origem="", nome_destino=""):
+    """[FIX-OSRM-GEO2] Mapa da rota OSRM com traçado completo. Agora delega ao gerador
+    unificado, com rótulos por NOME (não coordenadas). Mantido para compatibilidade."""
+    return _gerar_mapa_leaflet_rota(geometria_polyline, lat_o, lon_o, lat_d, lon_d,
+                                    nome_origem, nome_destino, distancia_km, tempo_str,
+                                    provedor="OSRM (menor distância)", cor="#2563eb")
 
 def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, geometria_polyline="", distancia_km="", tempo_str=""):
     """[CONTINGENCIA-OSRM - 20ª geração] Gera o mapa EMBARCADO do OSRM (Leaflet+OSM) que
@@ -3174,8 +3304,11 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
             balsa_rota = res_osrm[2]
             score_rota = res_osrm[5] if len(res_osrm) > 5 else 88
-            # Mapa EMBARCADO desenha a geometria EXATA do OSRM (Leaflet+OSM, traçado fiel).
-            _, link_embed = _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, _geo_osrm, f"{km_rota} km", tempo_rota)
+            # [VIS-NAMES] Mapa EMBARCADO desenha a geometria EXATA do OSRM com rótulos por
+            # NOME oficial (origem/destino), não coordenadas — conforme o pedido.
+            link_embed = _gerar_mapa_rota_osrm(_geo_osrm, lat_o, lon_o, lat_d, lon_d,
+                                               f"{km_rota} km", tempo_rota,
+                                               nome_origem=end_oficial_o, nome_destino=end_oficial_d)
             # Link de navegação compartilhável via Google (sempre traça a rota de forma estável).
             link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
             fonte_rota = "OSRM (Menor Distância)"
@@ -3195,7 +3328,16 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             link_rota = res_google[2]      # /maps/dir/ — abre exatamente esta rota traçada
             balsa_rota = res_google[3]
             score_rota = res_google[4]
-            link_embed = res_google[5]     # mapa embarcado do Google (mesma rota)
+            # [VIS-GOOGLE-GEO] PRIORIDADE MÁXIMA Nº 1: se extraímos a geometria do Google,
+            # o mapa embarcado desenha o TRAÇADO COMPLETO (Leaflet) com nomes oficiais —
+            # não mais só dois marcadores. Sem geometria, usa o embed clássico do Google.
+            _geo_google = res_google[6] if len(res_google) > 6 else ""
+            if _geo_google:
+                link_embed = _gerar_mapa_rota_google(_geo_google, lat_o, lon_o, lat_d, lon_d,
+                                                     nome_origem=end_oficial_o, nome_destino=end_oficial_d,
+                                                     distancia_km=f"{km_rota} km", tempo_str=tempo_rota)
+            else:
+                link_embed = res_google[5]     # embed clássico do Google (degradação graciosa)
             fonte_rota = "Google Maps"
             if res_osrm:
                 motivo_roteamento = (f"Google Maps venceu com a menor distância (ou empate técnico ≤2%): {km_g}km "
@@ -3880,47 +4022,53 @@ with tab_individual:
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _eh_geodesico_ui = "GEOD" in str(_fonte_rota_ui).upper()
                 _eh_osrm_ui = "OSRM" in str(_fonte_rota_ui).upper()
-                # [ARQ-HIBRIDO - 26ª geração] Renderização do mapa conforme o vencedor:
-                # - Google vence: embed do Google (iframe) — rota auditável pelo link.
-                # - OSRM vence: HTML autocontido (Leaflet) que DESENHA a geometria exata do
-                #   OSRM (components.html) + botão para BAIXAR o mapa (traçado offline).
-                # - Geodésico: embed do Google com os dois pontos (distância estimada).
-                if _eh_osrm_ui and isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
+                _eh_mapa_leaflet = isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,")
+                # [VIS-GOOGLE-GEO - 27ª geração] Renderização do mapa com TRAÇADO COMPLETO:
+                # - Mapa Leaflet autocontido (data URI): vale para Google OU OSRM quando a
+                #   GEOMETRIA foi extraída — desenha a rota inteira (components.html) + download.
+                # - Embed clássico do Google (URL http): quando não há geometria (degradação).
+                # - Geodésico: embed com os dois pontos (distância estimada).
+                if _eh_mapa_leaflet:
                     try:
                         import base64 as _b64dec
                         _html_mapa = _b64dec.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
                         components.html(_html_mapa, height=470, scrolling=False)
                     except Exception:
                         st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
-                    st.caption("🗺️ Mapa acima: malha **OpenStreetMap/OSRM** com o **traçado completo desenhado** — exatamente a rota de menor distância usada nos cálculos.")
+                    _prov_nome = "OSRM" if _eh_osrm_ui else "Google Maps"
+                    _arq_nome = "rota_osrm_tracada.html" if _eh_osrm_ui else "rota_google_tracada.html"
+                    st.caption(f"🗺️ Mapa acima: **{_prov_nome}** com o **traçado completo desenhado** (geometria real da rota) — origem e destino pelo nome.")
                     cbtn1, cbtn2 = st.columns(2)
                     with cbtn1:
                         st.markdown(f"🧭 [Abrir navegação no Google Maps]({res_ind[2]})")
                     with cbtn2:
-                        if isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,"):
-                            try:
-                                import base64 as _b64dl
-                                _html_dl = _b64dl.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
-                                st.download_button("⬇️ Baixar mapa da rota OSRM (HTML)", data=_html_dl,
-                                                   file_name="rota_osrm_tracada.html", mime="text/html",
-                                                   help="Mapa autocontido que desenha o traçado EXATO da rota OSRM. Abre offline em qualquer navegador — robusto e auditável.",
-                                                   use_container_width=True)
-                            except Exception:
-                                pass
-                    st.caption("ℹ️ **OSRM venceu (menor distância).** O **mapa** e o **download HTML** mostram a **geometria exata** do trajeto OSRM "
-                               "(traçado fiel ao cálculo). O **link de navegação** abre a rota no **Google Maps** — forma estável e documentada de "
-                               "navegar. O download é a forma robusta e auditável de guardar/compartilhar o traçado exato do OSRM, sem depender de "
-                               "serviços externos.")
+                        try:
+                            import base64 as _b64dl
+                            _html_dl = _b64dl.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
+                            st.download_button(f"⬇️ Baixar mapa da rota ({_prov_nome}) — HTML", data=_html_dl,
+                                               file_name=_arq_nome, mime="text/html",
+                                               help="Mapa autocontido que desenha o traçado EXATO da rota. Abre offline em qualquer navegador — robusto e auditável.",
+                                               use_container_width=True)
+                        except Exception:
+                            pass
+                    if _eh_osrm_ui:
+                        st.caption("ℹ️ **OSRM venceu (menor distância).** O **mapa** e o **download HTML** mostram a **geometria exata** do trajeto. "
+                                   "O **link de navegação** abre a rota no **Google Maps**. O download é a forma robusta e auditável de guardar/"
+                                   "compartilhar o traçado exato, sem depender de serviços externos. Veja o **comparativo** abaixo.")
+                    else:
+                        st.caption("ℹ️ **Google Maps venceu (menor distância).** O **mapa** desenha o **traçado completo** da rota (não apenas dois "
+                                   "marcadores). O **link** abre exatamente esta rota no Google Maps — 100% auditável. Você também pode **baixar** o "
+                                   "mapa com o traçado para conferência offline.")
                 else:
                     try: 
                         components.iframe(url_iframe, height=470, scrolling=True)
                     except Exception: 
                         st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
                     if not _eh_geodesico_ui:
-                        st.caption("🗺️ Mapa acima: **Google Maps** — exatamente a rota oficial usada nos cálculos.")
+                        st.caption("🗺️ Mapa acima: **Google Maps** — a rota oficial usada nos cálculos.")
                         st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
-                        st.caption("ℹ️ **Google Maps venceu (menor distância) — resultado 100% auditável:** distância, tempo, mapa e link são todos "
-                                   "do **Google Maps**. Ao abrir o link, você confere exatamente a mesma rota traçada.")
+                        st.caption("ℹ️ **Google Maps venceu (menor distância) — resultado auditável:** distância, tempo, mapa e link são todos "
+                                   "do **Google Maps**. Ao abrir o link, você confere exatamente a mesma rota traçada pelo nome das localidades.")
                     else:
                         st.caption("🗺️ Mapa acima: **Google Maps** (origem e destino). A linha de rota não foi medida — veja o aviso abaixo.")
                         st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
@@ -5322,14 +5470,23 @@ with tab_enciclopedia:
         * **Tolerância de 2%:** em empate técnico, prefere-se o Google (link de navegação auditável),
           evitando alternância sem ganho real. Acima de 2%, a menor distância vence sempre.
 
-        **Cenário 1 — Google vence:** distância, tempo, mapa e link são do Google. O OSRM aparece no
-        comparativo (diferença abs/%/tempo) para transparência.
+        **Cenário 1 — Google vence:** distância, tempo, mapa e link são do Google. **O mapa embarcado
+        desenha o TRAÇADO COMPLETO da rota** (geometria real extraída do Google — curvas, conversões,
+        segmentos), com origem e destino identificados **pelo nome oficial**, não por coordenadas. O OSRM
+        aparece no comparativo (diferença abs/%/tempo) para transparência.
 
         **Cenário 2 — OSRM vence:** distância e tempo são do OSRM; o **mapa desenha a geometria exata** do
         trajeto OSRM; há **download de um mapa HTML autocontido** com o traçado exato (abre offline em
         qualquer navegador — robusto e auditável); o **link de navegação** abre a rota no Google Maps
         (forma estável de navegar). Um **comparativo obrigatório** mostra os valores do Google ao lado,
         com selo do vencedor e a explicação da diferença.
+
+        **🗺️ Mapas com traçado real (não apenas marcadores):** os mapas embarcados desenham a **geometria
+        completa** da rota — tanto para o Google quanto para o OSRM. A geometria é extraída e **validada
+        geograficamente** (a rota tem que começar perto da origem e terminar perto do destino); se a
+        extração falhar, o mapa cai graciosamente para origem/destino, sem nunca exibir uma rota errada.
+        Os rótulos priorizam o **nome oficial** das localidades, com ajuste automático de enquadramento
+        (fit bounds) e zoom adequado.
 
         **🔗 Sobre o link da rota OSRM (investigação técnica):** não existe forma robusta, documentada e
         sustentável de um link COMPARTILHÁVEL público que abra a geometria exata do OSRM — os visualizadores
@@ -5338,6 +5495,11 @@ with tab_enciclopedia:
         A solução robusta e auditável adotada: o **mapa embarcado** desenha a geometria exata, o **download
         HTML** guarda o traçado exato offline, e a **navegação** usa o Google. Assim o trajeto do OSRM é
         sempre visualizável e auditável, mesmo sem um link público de terceiros.
+
+        **Nomes guiam a experiência (coordenadas são suporte técnico):** o usuário informa nomes de
+        localidades; a aplicação os identifica, valida e normaliza para os nomes oficiais; as coordenadas
+        são obtidas apenas como suporte interno (cálculo e ancoragem da rota); e toda a apresentação —
+        mapas, links, comparativo — é guiada pelos nomes oficiais.
 
         **Geocodificação para a rota:** quando você informa um município (ex.: "Corumbá, GO"), a aplicação
         ancora o ponto nas **coordenadas exatas do centróide oficial** do município — assim nenhum motor
