@@ -1286,7 +1286,14 @@ realizar_manutencao_logs_google()
 
 session = requests.Session()
 retry_strategy = Retry(total=5, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
-adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=24, pool_maxsize=24)
+# [PERF-NET - 33ª geração] pool_maxsize alinhado ao TETO de workers (32). O pool de rotas
+# pode chegar a min(32, cpu*4)=32 threads, todas batendo no MESMO host (OSRM/Google) na
+# fase de roteamento — a fase de rede dominante em lotes cidade-a-cidade (geocodificação
+# de municípios é offline via IBGE). Com pool_maxsize=24, as 8 conexões excedentes eram
+# DESCARTADAS pelo urllib3 ("connection pool is full"), pagando handshake TLS NOVO (~100-300ms)
+# a cada chamada. Com 32, todas reusam conexões keep-alive do pool. Conexões são lazy (criadas
+# sob demanda), então em máquinas pequenas (8 workers) não há desperdício. Zero risco.
+adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=32, pool_maxsize=32)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
 # [G21] Cookie CONSENT hardcoded removido — token de 2023 expirado e desnecessário
@@ -1328,6 +1335,28 @@ def _obter_executor_apis():
 EXECUTOR_GLOBAL = _obter_executor_global()
 FILA_NOMINATIM = _obter_fila_nominatim()
 EXECUTOR_APIS = _obter_executor_apis()
+
+# [NOMINATIM-THROTTLE - 33ª geração] Rate limiter DELTA-BASED para o Nominatim.
+# GARGALO: a política do Nominatim exige no máximo 1 req/s. Antes, cada chamada dormia
+# 1.1s FIXO *antes* da request (time.sleep(1.1)) — esse sleep SOMAVA ao tempo da própria
+# request, espaçando os INÍCIOS em ~1.1s + t_request (ex.: 1.6s) → throughput efetivo de
+# só ~0.62 req/s. Aqui dormimos apenas o tempo RESTANTE para manter 1.1s entre INÍCIOS de
+# chamada (1 req / 1.1s ≈ 0.91 req/s) — respeitando a política, porém ~45% mais rápido no
+# Nominatim, que é o ponto serial dominante em lotes com endereços/POIs/reverse.
+# SEGURO: todas as chamadas ao Nominatim são serializadas por FILA_NOMINATIM (max_workers=1),
+# então o timestamp abaixo é lido/escrito por UMA thread por vez (sem condição de corrida).
+# A 1ª chamada não dorme (timestamp inicial 0.0 → espera negativa → sleep 0).
+_NOMINATIM_INTERVALO = 1.1   # segundos entre inícios de chamada (1 req/s + margem de 10%)
+_NOMINATIM_ULTIMO = 0.0      # epoch da última chamada (atualizado dentro da FILA serial)
+
+def _throttle_nominatim():
+    """Espera apenas o delta necessário para manter ~1 req/s no Nominatim (ver nota acima)."""
+    global _NOMINATIM_ULTIMO
+    espera = _NOMINATIM_INTERVALO - (time.time() - _NOMINATIM_ULTIMO)
+    if espera > 0:
+        time.sleep(espera)
+    _NOMINATIM_ULTIMO = time.time()
+
 
 # Padrões Regex Globais de Otimização Scraper Google
 _RE_DIST_G1 = re.compile(r'\"([\d\.,]+)\s*km\"')
@@ -2090,7 +2119,7 @@ def cascata_postal_tripla(cep_limpo):
         
     try:
         def _nom_cep():
-            time.sleep(1.1)
+            _throttle_nominatim()
             url = f"https://nominatim.openstreetmap.org/search?format=json&postalcode={cep_limpo}&countrycodes=br&limit=1"
             return session.get(url, headers={"User-Agent": "RotasEnterprise/8.0"}, timeout=4).json()
         r_nom = FILA_NOMINATIM.submit(_nom_cep).result()
@@ -2206,7 +2235,7 @@ def executar_reverse_geocoding_multimotor(lat, lon):
     res = {"logradouro": "", "bairro": "", "cidade": "", "municipio": "", "distrito": "", "estado": "", "cep": ""}
     try:
         def _nom_rev():
-            time.sleep(1.1)
+            _throttle_nominatim()
             url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&addressdetails=1"
             return session.get(url, headers={"User-Agent": "RotasEnterprise/8.0"}, timeout=4).json()
         r_nom = FILA_NOMINATIM.submit(_nom_rev).result().get("address", {})
@@ -2275,7 +2304,7 @@ def API_Nominatim(query, ctx=None):
     start_t = time.time()
     try:
         def _call_nom():
-            time.sleep(1.1)
+            _throttle_nominatim()
             if ctx and ctx.get("logradouro") and ctx.get("municipio"):
                 rua = requests.utils.quote(ctx["logradouro"])
                 cid = requests.utils.quote(ctx["municipio"])
