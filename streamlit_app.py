@@ -1013,7 +1013,7 @@ except Exception:
 # ==============================================================================
 # CONSTANTES GLOBAIS — Definidas uma única vez, referenciadas em todo o sistema
 # ==============================================================================
-CACHE_VERSION = "V63"  # Incrementar ao alterar esquema de cache
+CACHE_VERSION = "V64"  # Incrementar ao alterar esquema de cache
 CACHE_EXPIRE_PADRAO = 2592000  # 30 dias em segundos
 
 NOVAS_COLUNAS_PADRAO = [
@@ -1246,6 +1246,25 @@ else:
 # grandes com muitas rotas repetidas (cenário B2B comum: mesmos hubs, muitos clientes).
 CACHE_L1_ROTAS = LRUDict(maxsize=20000)
 
+# [PICKLE-SAFE - 34ª geração] CORREÇÃO DEFINITIVA do _pickle.PicklingError.
+# O diskcache serializa valores via pickle. Embora o RotaPipeline seja definido em nível
+# de módulo (picklável) e os executores sejam @st.cache_resource (não serializados), uma
+# gravação de cache JAMAIS deve poder derrubar o processamento de um lote inteiro. Este
+# wrapper torna TODA escrita em diskcache resiliente: se por qualquer caminho raro um valor
+# não puder ser serializado (PicklingError, TypeError, etc.), o erro é absorvido e logado —
+# o cache L1 (RAM) continua válido e o valor é recomputável. Resultado: a falha de
+# serialização deixa de ser fatal, em definitivo, sem afetar precisão nem resultado.
+def _cache_set_seguro(cache, chave, valor, expire=2592000):
+    try:
+        cache.set(chave, valor, expire=expire)
+        return True
+    except Exception as e:  # PicklingError/TypeError/AttributeError/etc. — nunca fatal
+        try:
+            logger.warning(f"[PICKLE-SAFE] Cache não persistido (degradação graciosa, L1 mantém): {type(e).__name__}")
+        except Exception:
+            pass
+        return False
+
 # [M20] Pré-instanciar 3 DBSCANs com eps fixos — elimina instanciação por geocodificação
 _DBSCAN_PRESETS = {
     0.5:  DBSCAN(eps=0.5 / 6371.0,  min_samples=2, metric='haversine'),
@@ -1265,7 +1284,7 @@ if f"cache_inicializado_{CACHE_VERSION}" not in st.session_state:
                   cache_cep, cache_google, cache_reverse, cache_base_local,
                   cache_aprendizado, cache_aprendizado_auto]:
             c.clear()
-        cache_geo.set(schema_tag_key, CACHE_VERSION, expire=None)
+        _cache_set_seguro(cache_geo, schema_tag_key, CACHE_VERSION, expire=None)
     else:
         logger.info(f"[M22] Schema {CACHE_VERSION} compatível. Caches preservados.")
     st.session_state[f"cache_inicializado_{CACHE_VERSION}"] = True
@@ -2723,6 +2742,95 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
 # ==============================================================================
 # ORQUESTRADOR EM CASCATA HIERÁRQUICA E OFFLINE-FIRST
 # ==============================================================================
+
+# [ANTI-ALUCINACAO - 34ª geração] Camada de validação de localidades (defesa em profundidade).
+# OBJETIVO: quando a intenção do usuário é claramente um MUNICÍPIO, NUNCA aceitar como resultado
+# final um ponto hiperespecífico (rua+número, hotel, pousada, chalé, estabelecimento). Mesmo que
+# a classificação erre OU um provedor "alucine" um POI, esta camada rejeita o resultado e devolve
+# o CENTRÓIDE oficial do IBGE com o nome qualificado. É independente da classificação — um
+# salva-vidas. NÃO afeta resultados legítimos: entradas com rua/número/POI não disparam a guarda.
+
+# Termos que, NO RESULTADO geocodificado, denunciam um ponto hiperespecífico (não um município).
+_MARCADORES_POI_RESULTADO = [
+    "HOTEL", "POUSADA", "CHALE", "CHALES", "RESTAURANTE", "MOTEL", "RESORT", "HOSTEL", "FLAT",
+    "CONDOMINIO", "EDIFICIO", "SHOPPING", "LOJA", "APARTAMENTO", "VILLA", "BUNGALOW", "INN",
+    "ENTIRE PLACE", "ENTIRE HOME", "GUEST", "BED AND BREAKFAST", "AIRBNB", "AGENCIA", "QUIOSQUE"
+]
+_MARCADORES_VIA_RESULTADO = [
+    "RUA", "AVENIDA", "TRAVESSA", "ALAMEDA", "VIELA", "LADEIRA", "BECO", "LARGO", "PRACA"
+]
+
+def _resultado_hiperespecifico(end_f):
+    """True se o endereço geocodificado parece um ponto específico (rua+número ou POI/
+    estabelecimento) em vez de um município. Um endereço municipal limpo
+    ('Município, Estado, BRASIL') nunca é sinalizado."""
+    if not end_f:
+        return False
+    alvo = unidecode(str(end_f)).upper()
+    # 1) Número de porta/casa: vírgula seguida de número curto, ou "Nº 466"
+    if re.search(r',\s*\d{1,6}(\s|,|$|-)', alvo) or re.search(r'\bN[º°O]?\.?\s*\d{1,6}\b', alvo):
+        return True
+    # 2) Abreviação de rua no início de um trecho ("R. Francisco...", "AV. ...")
+    if re.search(r'(^|,)\s*(R|AV|TV|AL|TR|PCA|ROD|EST)\.\s', alvo):
+        return True
+    # 3) Termo de via por extenso
+    if any(re.search(rf'\b{re.escape(m)}\b', alvo) for m in _MARCADORES_VIA_RESULTADO):
+        return True
+    # 4) POI/estabelecimento
+    if any(m in alvo for m in _MARCADORES_POI_RESULTADO):
+        return True
+    return False
+
+def _intencao_municipio(texto_norm, tipo_entrada, ctx):
+    """True quando a intenção do usuário é claramente um MUNICÍPIO (ou distrito), de forma
+    INDEPENDENTE da classificação. Reproduz a tolerância à forma curta do FIX-MUN-CLASS e
+    exige ausência de sinais de especificidade (número, via, POI, bairro) na entrada."""
+    if tipo_entrada in ("MUNICIPIO", "DISTRITO"):
+        return True
+    mun = ctx.get("municipio", "")
+    uf = ctx.get("uf", "")
+    if not (mun and uf):
+        return False
+    # Texto sem a UF (sigla e nome por extenso) e sem "BRASIL"
+    t = texto_norm
+    for termo in [uf, IBGE_ESTADOS.get(uf, ""), "BRASIL", "BRAZIL"]:
+        if termo:
+            t = re.sub(rf'\b{re.escape(unidecode(termo).upper())}\b', ' ', t)
+    t = re.sub(r'[^A-Z0-9]+', ' ', t).strip()
+    if not t:
+        return False  # só UF/ruído, sem termo de município → não afirmar intenção municipal
+    # Sinais de especificidade na entrada → NÃO é intenção municipal (não dispara a guarda)
+    if re.search(r'\d', t):
+        return False
+    if any(k in t for k in (semantica.via_keys + semantica.bairro_keys + POI_KEYWORDS)):
+        return False
+    # 't' é o termo do usuário para o município. Intenção municipal se casa com o nome oficial:
+    # igual, prefixo (forma curta) ou todos os tokens ⊆ nome oficial (mesma regra do FIX-MUN-CLASS)
+    mun_tokens = set(mun.split())
+    t_tokens = set(t.split())
+    return bool(t == mun or mun.startswith(t + " ") or (t_tokens and t_tokens.issubset(mun_tokens)))
+
+def _blindar_municipio(texto_norm, tipo_entrada, ctx, res_final):
+    """Camada anti-alucinação: se a intenção é município mas o resultado é hiperespecífico,
+    rejeita e devolve o centróide oficial do IBGE + nome qualificado. Caso contrário, devolve
+    o resultado inalterado (nunca piora; nunca altera endereços/POI legitimamente pedidos)."""
+    if not res_final or not _intencao_municipio(texto_norm, tipo_entrada, ctx):
+        return res_final
+    if not _resultado_hiperespecifico(res_final[2]):
+        return res_final  # resultado já é municipal/limpo
+    mun_nome = ctx.get("municipio", "")
+    uf_nome = ctx.get("uf", "")
+    if mun_nome in IBGE_MUNICIPIOS:
+        for item in IBGE_MUNICIPIOS[mun_nome]:
+            if item["uf"] == uf_nome and item.get("lat", 0.0) != 0.0:
+                endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
+                return (item["lat"], item["lon"], endereco_ibge, "MUNICIPAL", 88,
+                        ctx.get("distrito", ""), mun_nome, "VALIDACAO_ANTI_ALUCINACAO",
+                        [f"Anti-alucinação: provedor retornou ponto hiperespecífico "
+                         f"('{str(res_final[2])[:60]}') para intenção municipal; substituído pelo "
+                         f"centróide oficial do município (IBGE)."])
+    return res_final  # sem centróide IBGE disponível → mantém (não degrada)
+
 def _obter_coordenadas_e_endereco_oficial_core(localidade):
     texto_cru = str(localidade).strip()
     if not texto_cru or texto_cru.lower() == 'nan': 
@@ -2762,7 +2870,7 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
                     if item["uf"] == uf_nome and item.get("lat", 0.0) != 0.0:
                         endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
                         res_final = (item["lat"], item["lon"], endereco_ibge, "MUNICIPAL", 100, ctx.get("distrito", ""), mun_nome, "BASE_IBGE_OFFLINE", ["Otimização Direta IBGE: Busca por cidade detectada. Coordenda exata do Centróide Brasileiro extraída sem rede."])
-                        cache_geo.set(cache_key, {"lat": res_final[0], "lon": res_final[1], "endereco": res_final[2], "confianca": res_final[3], "score_num": res_final[4], "distrito": res_final[5], "municipio": res_final[6], "fonte": res_final[7]}, expire=2592000)
+                        _cache_set_seguro(cache_geo, cache_key, {"lat": res_final[0], "lon": res_final[1], "endereco": res_final[2], "confianca": res_final[3], "score_num": res_final[4], "distrito": res_final[5], "municipio": res_final[6], "fonte": res_final[7]}, expire=2592000)
                         return res_final
                         
     rua_suja = parsed_comp["resto"]
@@ -2797,7 +2905,7 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
                 val_c, lat_corrigida_c, lon_corrigida_c = validar_coordenada_brasil(lat_c, lon_c)
                 if lat_c != 0.0 and lon_c != 0.0 and val_c:
                     res_final = (lat_corrigida_c, lon_corrigida_c, addr_c, "ALTISSIMA", 100, bair, loca, "BrasilAPI/OSM Postal", ["Cascata Postal Direta."])
-                    cache_geo.set(cache_key, {"lat": lat_corrigida_c, "lon": lon_corrigida_c, "endereco": addr_c, "confianca": "ALTISSIMA", "score_num": 100, "distrito": bair, "municipio": loca, "fonte": "BrasilAPI/OSM Postal"}, expire=2592000)
+                    _cache_set_seguro(cache_geo, cache_key, {"lat": lat_corrigida_c, "lon": lon_corrigida_c, "endereco": addr_c, "confianca": "ALTISSIMA", "score_num": 100, "distrito": bair, "municipio": loca, "fonte": "BrasilAPI/OSM Postal"}, expire=2592000)
                     return res_final
                     
                 res_arc = API_ArcGIS(addr_c)
@@ -2807,7 +2915,7 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
                     val_arc, lat_corrigida_arc, lon_corrigida_arc = validar_coordenada_brasil(res_arc["lat"], res_arc["lon"])
                     if val_arc:
                         res_final = (lat_corrigida_arc, lon_corrigida_arc, addr_c, "ALTISSIMA", 100, bair, loca, "ViaCEP/ArcGIS", ["Cascata Postal Complementada por ArcGIS."])
-                        cache_geo.set(cache_key, {"lat": lat_corrigida_arc, "lon": lon_corrigida_arc, "endereco": addr_c, "confianca": "ALTISSIMA", "score_num": 100, "distrito": bair, "municipio": loca, "fonte": "ViaCEP/ArcGIS"}, expire=2592000)
+                        _cache_set_seguro(cache_geo, cache_key, {"lat": lat_corrigida_arc, "lon": lon_corrigida_arc, "endereco": addr_c, "confianca": "ALTISSIMA", "score_num": 100, "distrito": bair, "municipio": loca, "fonte": "ViaCEP/ArcGIS"}, expire=2592000)
                         return res_final
                         
     def disparar_apis_paralelas(tarefas):
@@ -2856,8 +2964,9 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
                     endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
                     res_final = (lat_c, lon_c, endereco_ibge, "MUNICIPAL", 85, ctx.get("distrito", ""), mun_nome, fonte_c, [f"Resgatado via Centróide Supremo ({fonte_c}) e Estado Confirmado."])
                     
+    res_final = _blindar_municipio(texto_norm, tipo_entrada, ctx, res_final)
     if res_final:
-        cache_geo.set(cache_key, {"lat": res_final[0], "lon": res_final[1], "endereco": res_final[2], "confianca": res_final[3], "score_num": res_final[4], "distrito": res_final[5], "municipio": res_final[6], "fonte": res_final[7]}, expire=2592000)
+        _cache_set_seguro(cache_geo, cache_key, {"lat": res_final[0], "lon": res_final[1], "endereco": res_final[2], "confianca": res_final[3], "score_num": res_final[4], "distrito": res_final[5], "municipio": res_final[6], "fonte": res_final[7]}, expire=2592000)
         return res_final
         
     return 0.0, 0.0, endereco_canonico, "BAIXA", 0, "", "", "N/A", ["Falha Geográfica Absoluta por falta de candidatos e centróides na nuvem."]
@@ -3367,7 +3476,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                         ret_cache.lat_destino, ret_cache.lon_destino, contexto="Unpoisoning NamedTuple"
                     )
                     ret_novo = ret_cache._replace(dist_linha_reta=nova_dist, status_linha_reta=novo_status)
-                    cache_rotas.set(chave_rota_cache, ret_novo, expire=2592000)
+                    _cache_set_seguro(cache_rotas, chave_rota_cache, ret_novo, expire=2592000)
                     CACHE_L1_ROTAS[chave_rota_cache] = ret_novo
                     return ret_novo
             return ret_cache
@@ -3387,7 +3496,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 else:
                     retorno_mutavel[30] = novo_status
                 retorno_novo = tuple(retorno_mutavel)
-                cache_rotas.set(chave_rota_cache, retorno_novo, expire=2592000)
+                _cache_set_seguro(cache_rotas, chave_rota_cache, retorno_novo, expire=2592000)
                 CACHE_L1_ROTAS[chave_rota_cache] = retorno_novo
                 return retorno_novo
             if len(ret_cache) == 30:
@@ -3569,7 +3678,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             link_osrm_viewer=link_osrm_viewer
         )
         CACHE_L1_ROTAS[chave_rota_cache] = retorno
-        cache_rotas.set(chave_rota_cache, retorno, expire=2592000)
+        _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
         return retorno
         
     km_terrestre = round(dist_linha_reta * obter_fator_desvio_rodoviario(dist_linha_reta), 2)
@@ -3602,7 +3711,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         link_embed=link_embed_geodesico, status_linha_reta=status_linha_reta
     )
     CACHE_L1_ROTAS[chave_rota_cache] = retorno
-    cache_rotas.set(chave_rota_cache, retorno, expire=2592000)
+    _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
     return retorno
 
 def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None):
