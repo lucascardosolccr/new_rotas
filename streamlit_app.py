@@ -3097,8 +3097,10 @@ def _montar_embed_google(param_o, param_d):
     Em ambos, é um mapa do PRÓPRIO Google (nunca OSRM), com a rota traçada e nomes.
     """
     if GOOGLE_MAPS_EMBED_API_KEY:
+        # [VIS-GOOGLE-EMBED - 32ª geração] units=metric (contexto Brasil). A doc oficial
+        # (Maps Embed API, atualizada em 2026) confirma este como o caminho moderno/suportado.
         return (f"https://www.google.com/maps/embed/v1/directions?key={GOOGLE_MAPS_EMBED_API_KEY}"
-                f"&origin={param_o}&destination={param_d}&mode=driving")
+                f"&origin={param_o}&destination={param_d}&mode=driving&units=metric")
     return f"https://maps.google.com/maps?saddr={param_o}&daddr={param_d}&output=embed"
 
 def _montar_link_osrm_viewer(geometria_polyline, nome_o, nome_d, distancia_km, tempo_str):
@@ -4249,14 +4251,23 @@ with tab_individual:
                 # Mapa e link sempre representam a MESMA rota (construídos dos mesmos parâmetros).
                 if _eh_google_ui and not _eh_mapa_leaflet:
                     # ---------- CENÁRIO 1: GOOGLE VENCE (mapa do PRÓPRIO Google, 1 link) ----------
+                    # [VIS-GOOGLE-EMBED - 32ª geração] Renderiza o embed do Google num <iframe>
+                    # com os atributos OFICIALMENTE recomendados pela doc da Maps Embed API:
+                    # referrerpolicy (p/ a restrição de chave por referrer funcionar), allowfullscreen
+                    # (usuário pode expandir o mapa) e loading="lazy" (carrega só quando visível).
                     try:
-                        components.iframe(url_iframe, height=470, scrolling=False)
+                        _src_embed = str(url_iframe).replace("&", "&amp;")
+                        components.html(
+                            f'<iframe src="{_src_embed}" width="100%" height="470" '
+                            f'style="border:0;display:block" allowfullscreen loading="lazy" '
+                            f'referrerpolicy="strict-origin-when-cross-origin"></iframe>',
+                            height=476)
                     except Exception:
                         st.warning("Renderização de mapa bloqueada pelas políticas de segurança do navegador.")
                     st.caption("🗺️ Mapa acima: **Google Maps** — rota traçada, origem e destino pelo nome.")
                     st.markdown(f"🧭 [Abrir rota no Google Maps]({res_ind[2]})")
                     _aviso_chave = "" if GOOGLE_MAPS_EMBED_API_KEY else (
-                        " _(Dica: configure `GOOGLE_MAPS_EMBED_API_KEY` nos secrets para garantir 100% o traçado da rota no mapa embarcado.)_")
+                        " _(Dica: configure `GOOGLE_MAPS_EMBED_API_KEY` nos secrets para usar a Maps Embed API oficial — garante 100% o traçado da rota.)_")
                     st.caption("ℹ️ **Google Maps venceu (menor distância).** O **mapa embarcado** e o **link** são ambos do "
                                "**Google** e representam exatamente a **mesma rota** (abrem pelos **nomes** de origem e destino) — "
                                "100% auditável. Há um **único link**, do Google." + _aviso_chave)
