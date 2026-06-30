@@ -61,8 +61,15 @@
 #   v3.5 → MUNICÍPIO POR COORDENADAS + REMOÇÃO TOTAL DO OSRM
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
-#   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência):
-#
+#   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8+ → AVALIAÇÃO CRÍTICA DE 13 MELHORIAS PROPOSTAS (auditoria de impacto):
+#     IMPLEMENTADAS (ganho real, risco ~zero): M2 (executores ThreadPool como SINGLETONS via
+#       @st.cache_resource — elimina recriação do pool a cada rerun) e M14-parcial (TomTom via
+#       st.secrets — SMTP já usava secrets). 11 itens documentados como NÃO IMPLEMENTAR por
+#       premissa inválida (M2-isolamento, M14-SMTP, M5-progresso já nativo), benefício marginal
+#       na escala real dominada por rede (M1, M4, M13), risco de regressão de precisão (M11),
+#       ou reescrita massiva sem ganho real em escala limitada por rate-limit de API (M9, M12),
+#       além de M7/M8/M10 (dependências pesadas / incompatível com arquitetura de arquivo único).
 # DIAGNÓSTICO COMPARATIVO (versão antiga × atual):
 #   A versão ANTIGA desenhava a rota no mapa embarcado porque usava o embed clássico do
 #   Google com TEXTO (nomes): maps?saddr={nome}&daddr={nome}&output=embed — esse endpoint
@@ -960,7 +967,14 @@ def gerar_insights_automaticos(df_kpi):
         pass
     return insights
 
-TOMTOM_API_KEY = "" # Insira sua credencial TomTom Logistics aqui
+# [M14 - 29ª geração] Credencial TomTom via st.secrets (não mais hardcoded no corpo do
+# código). Se não houver secrets.toml ou a chave não estiver definida, recai para string
+# vazia → o motor TomTom é desativado graciosamente (mesmo comportamento atual, mas agora
+# a chave pode ser configurada sem editar o código). As credenciais SMTP já usavam secrets.
+try:
+    TOMTOM_API_KEY = st.secrets.get("TOMTOM_API_KEY", "")
+except Exception:
+    TOMTOM_API_KEY = ""  # Sem secrets configurados → TomTom desativado (degradação graciosa)
 
 # ==============================================================================
 # CONSTANTES GLOBAIS — Definidas uma única vez, referenciadas em todo o sistema
@@ -1254,9 +1268,32 @@ CACHE_IBGE_PATH = "municipios_ibge.pkl"
 # min(32, cpu*4) para o pool de rotas — maximiza throughput sem saturar o agendador.
 _CPU_COUNT = os.cpu_count() or 4
 WORKERS_DISPONIVEIS = min(32, max(8, _CPU_COUNT * 4))
-EXECUTOR_GLOBAL = ThreadPoolExecutor(max_workers=WORKERS_DISPONIVEIS, thread_name_prefix="rota")
-FILA_NOMINATIM = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nominatim")  # rate-limit 1 req/s obrigatório
-EXECUTOR_APIS = ThreadPoolExecutor(max_workers=min(24, _CPU_COUNT * 3), thread_name_prefix="geoapi")
+
+# [M2 - 29ª geração] Executores como SINGLETONS via @st.cache_resource.
+# CAUSA RAIZ: como este é o script principal do Streamlit, todo o corpo do módulo
+# RE-EXECUTA a cada rerun. Definir os ThreadPoolExecutor como globais soltas fazia um
+# NOVO pool ser criado a cada interação (churn de threads / GC do pool antigo a cada
+# rerun, inclusive entre os chunks do lote, que dependem de st.rerun). Com cache_resource,
+# o pool é criado UMA vez e reusado em todos os reruns — estável durante todo o lote.
+# NOTA: cache_resource é um singleton por PROCESSO (compartilhado entre sessões), igual a
+# uma global — não isola por usuário (isso não muda o comportamento atual de compartilhar
+# o pool; apenas elimina a recriação por rerun). Os nomes globais abaixo são preservados,
+# então TODAS as referências existentes (EXECUTOR_GLOBAL, etc.) continuam funcionando.
+@st.cache_resource(show_spinner=False)
+def _obter_executor_global():
+    return ThreadPoolExecutor(max_workers=WORKERS_DISPONIVEIS, thread_name_prefix="rota")
+
+@st.cache_resource(show_spinner=False)
+def _obter_fila_nominatim():
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="nominatim")  # rate-limit 1 req/s obrigatório
+
+@st.cache_resource(show_spinner=False)
+def _obter_executor_apis():
+    return ThreadPoolExecutor(max_workers=min(24, _CPU_COUNT * 3), thread_name_prefix="geoapi")
+
+EXECUTOR_GLOBAL = _obter_executor_global()
+FILA_NOMINATIM = _obter_fila_nominatim()
+EXECUTOR_APIS = _obter_executor_apis()
 
 # Padrões Regex Globais de Otimização Scraper Google
 _RE_DIST_G1 = re.compile(r'\"([\d\.,]+)\s*km\"')
