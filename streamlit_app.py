@@ -62,6 +62,21 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8++ → APRESENTAÇÃO DINÂMICA POR PROVEDOR VENCEDOR [VIS-DINAMICA / VIS-OSRM-LINK - 30ª geração]:
+#     PROBLEMA: "independentemente do vencedor, o mapa embarcado continuava sendo só o do OSRM".
+#     CAUSA RAIZ: no cenário Google-vence, quando a extração da polyline do Google falhava (frequente),
+#       o mapa caía na geometria do OSRM como "traçado de referência" — daí parecer "sempre OSRM".
+#     SOLUÇÃO (arquitetura por vencedor, mapa=link sempre):
+#       • GOOGLE vence → mapa embarcado EXCLUSIVAMENTE do Google (embed http: Embed API se houver a
+#         chave GOOGLE_MAPS_EMBED_API_KEY, senão ?saddr&daddr&output=embed COM NOMES) + 1 ÚNICO link
+#         (Google). NUNCA usa geometria do OSRM. Mapa e link saem dos MESMOS params (nome qualificado).
+#       • OSRM vence → mapa embarcado EXCLUSIVAMENTE do OSRM (Leaflet, geometria exata, nomes) + 2 links:
+#         (1) Google Maps (comparação) e (2) VISUALIZADOR PRÓPRIO via "?rota=osrm&g=<polyline>&o&d&km&t"
+#         — o próprio app entra em modo visualizador e reproduz FIELMENTE o mesmo mapa (mesma geometria,
+#         mesmos nomes), sem depender de serviço externo. Mantém o download HTML (fidelidade offline).
+#         Salvaguarda: se a URL do visualizador ficar longa demais (>7,5k), recai no download.
+#       • Geodésico → ligação direta estimada (Leaflet) + 1 link + aviso (inalterado).
+#     RotaPipeline: +índice 36 (link_osrm_viewer, default ""); CACHE_VERSION V61→V62.
 #   v3.8+ → AVALIAÇÃO CRÍTICA DE 13 MELHORIAS PROPOSTAS (auditoria de impacto):
 #     IMPLEMENTADAS (ganho real, risco ~zero): M2 (executores ThreadPool como SINGLETONS via
 #       @st.cache_resource — elimina recriação do pool a cada rerun) e M14-parcial (TomTom via
@@ -127,20 +142,24 @@
 #   - Os DOIS motores (Google Maps + OSRM) são executados em toda rota.
 #   - A aplicação compara as distâncias e adota a MENOR (tolerância de 2% a favor do
 #     Google, que tem link de navegação 100% auditável — evita alternância sem ganho).
-#   - GOOGLE vence → distância/tempo/mapa/link do Google + OSRM no comparativo.
-#   - OSRM vence → distância/tempo do OSRM + MAPA que desenha a GEOMETRIA EXATA do OSRM
-#     (Leaflet, traçado fiel) + DOWNLOAD do mapa HTML autocontido (rota exata, offline,
-#     auditável) + link de navegação via Google + comparativo obrigatório.
+#   - GOOGLE vence → mapa embarcado EXCLUSIVAMENTE do Google (embed http, rota traçada,
+#     nomes) + 1 ÚNICO link (Google). NUNCA usa geometria do OSRM. + OSRM no comparativo.
+#   - OSRM vence → mapa embarcado EXCLUSIVAMENTE do OSRM (Leaflet, GEOMETRIA EXATA, nomes)
+#     + 2 links: (1) Google (comparação) e (2) VISUALIZADOR PRÓPRIO da rota OSRM + DOWNLOAD
+#     do mapa HTML autocontido (rota exata, offline) + comparativo obrigatório.
 #   - Comparativo RICO e VISUAL: cards lado a lado, selo do vencedor (🏆), diferença
 #     absoluta/percentual/tempo, leitura automática de convergência/divergência.
 #
-# LINK DA ROTA OSRM (investigação completa, conforme prioridade máxima do briefing):
+# LINK DA ROTA OSRM [VIS-OSRM-LINK - 30ª geração] — SOLUÇÃO FINAL (visualizador próprio):
 #   Reconfirmado que NÃO há link COMPARTILHÁVEL público robusto/documentado que abra a
-#   geometria exata do OSRM (geojson.io/map.project-osrm são frágeis; visualizador próprio
-#   exigiria hospedar URL pública — fora do escopo single-file). SOLUÇÃO robusta e
-#   auditável adotada: (1) mapa Leaflet embarcado desenha a geometria EXATA; (2) DOWNLOAD
-#   de HTML autocontido com a rota exata (abre offline em qualquer navegador, sem depender
-#   de serviço externo — robusto e sustentável); (3) link de navegação via Google Maps.
+#   geometria exata do OSRM (geojson.io/map.project-osrm são frágeis/legados). SOLUÇÃO
+#   adotada, robusta e auditável, DENTRO do modelo single-file: a própria aplicação serve um
+#   VISUALIZADOR via query param ("?rota=osrm&g=<polyline>&o&d&km&t") — ao abrir o link, o app
+#   entra num modo visualizador que reproduz FIELMENTE o mesmo mapa embarcado (mesma geometria
+#   decodificada, mesmos nomes), sem hospedagem extra nem dependência externa. Complementos:
+#   (1) mapa Leaflet embarcado desenha a geometria EXATA; (2) DOWNLOAD de HTML autocontido
+#   (fidelidade offline); (3) link Google para comparação. Salvaguarda: URL muito longa
+#   (>7,5k) → recai no download.
 #
 # Validação: 5 cenários testados (OSRM vence; Google vence; empate→Google; só OSRM;
 #   só Google); comparativo correto; mapa OSRM desenha geometria; RotaPipeline íntegra;
@@ -278,6 +297,11 @@ class RotaPipeline(NamedTuple):
     # Adicionado APÓS todos os campos existentes (índice 35) com default — preserva
     # integralmente os índices 0-34 e a compatibilidade de toda a aplicação.
     comparativo_provedores: str = ""
+    # [VIS-DINAMICA - 30ª geração] Link do VISUALIZADOR PRÓPRIO da rota OSRM (índice 36,
+    # default ""). Quando o OSRM vence, guarda um link relativo "?rota=osrm&g=...&o=...&d=..."
+    # que abre o próprio app num visualizador que reproduz EXATAMENTE o mapa embarcado
+    # (mesma geometria, mesmos nomes). Vazio quando o Google vence ou no fallback geodésico.
+    link_osrm_viewer: str = ""
 
 def _montar_comparativo_provedores(km_g, tempo_g, km_o, tempo_o, fonte_vencedora):
     """[COMP-PROV - 21ª geração] Codifica os dados de comparação entre Google e OSRM
@@ -976,10 +1000,20 @@ try:
 except Exception:
     TOMTOM_API_KEY = ""  # Sem secrets configurados → TomTom desativado (degradação graciosa)
 
+# [VIS-DINAMICA - 30ª geração] Chave (opcional) da Google Maps Embed API. Se configurada,
+# o mapa embarcado do cenário "Google vence" usa o endpoint OFICIAL e suportado
+# /maps/embed/v1/directions (traça a rota de forma garantida, com fit bounds e nomes).
+# Sem chave, recai para o embed clássico ?saddr&daddr&output=embed COM NOMES (que também
+# desenha as direções). Configurar a chave garante 100% o traçado da rota do Google.
+try:
+    GOOGLE_MAPS_EMBED_API_KEY = st.secrets.get("GOOGLE_MAPS_EMBED_API_KEY", "")
+except Exception:
+    GOOGLE_MAPS_EMBED_API_KEY = ""
+
 # ==============================================================================
 # CONSTANTES GLOBAIS — Definidas uma única vez, referenciadas em todo o sistema
 # ==============================================================================
-CACHE_VERSION = "V61"  # Incrementar ao alterar esquema de cache
+CACHE_VERSION = "V62"  # Incrementar ao alterar esquema de cache
 CACHE_EXPIRE_PADRAO = 2592000  # 30 dias em segundos
 
 NOVAS_COLUNAS_PADRAO = [
@@ -3031,6 +3065,49 @@ def _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_o="", end_d=""
     dest = _montar_param_link_seguro(end_d, lat_d, lon_d, txt_d)
     return f"https://www.google.com/maps/dir/?api=1&origin={orig}&destination={dest}&travelmode=driving"
 
+def _montar_embed_google(param_o, param_d):
+    """[VIS-DINAMICA - 30ª geração] Monta a URL do MAPA EMBARCADO do Google (cenário em que
+    o Google vence), recebendo os parâmetros de origem/destino JÁ montados (nome oficial
+    qualificado, URL-encoded — os MESMOS usados no link de navegação, garantindo mapa=link).
+
+    Dois caminhos, em ordem de robustez:
+      1. Embed API oficial (/maps/embed/v1/directions) — SE houver chave configurada. É a
+         forma SUPORTADA e garantida de traçar a rota do Google, com fit bounds e nomes.
+      2. Embed clássico (?saddr&daddr&output=embed) COM NOMES — sem chave. Esse endpoint
+         renderiza as DIREÇÕES (a rota desenhada) quando recebe NOMES (não coordenadas);
+         é o mesmo que a versão antiga usava e que desenhava o trajeto corretamente.
+    Em ambos, é um mapa do PRÓPRIO Google (nunca OSRM), com a rota traçada e nomes.
+    """
+    if GOOGLE_MAPS_EMBED_API_KEY:
+        return (f"https://www.google.com/maps/embed/v1/directions?key={GOOGLE_MAPS_EMBED_API_KEY}"
+                f"&origin={param_o}&destination={param_d}&mode=driving")
+    return f"https://maps.google.com/maps?saddr={param_o}&daddr={param_d}&output=embed"
+
+def _montar_link_osrm_viewer(geometria_polyline, nome_o, nome_d, distancia_km, tempo_str):
+    """[VIS-DINAMICA / VIS-OSRM-LINK - 30ª geração] Monta o link do VISUALIZADOR PRÓPRIO da
+    rota OSRM — a solução robusta e auditável para "um link do OSRM que reproduza EXATAMENTE
+    o mapa embarcado". É um link RELATIVO ao próprio app ("?rota=osrm&g=<polyline>&o=<nome>
+    &d=<nome>&km=<>&t=<>"). Ao abri-lo, o app entra num modo visualizador que renderiza o
+    MESMO mapa Leaflet, a partir da MESMA geometria (polyline codificada do OSRM) e dos
+    MESMOS nomes — fidelidade total, servido pela própria aplicação, sem depender de
+    serviços externos (geojson.io/map.project-osrm são frágeis e não-documentados).
+
+    SALVAGUARDA DE TAMANHO: rotas muito longas geram polylines longas; se o link exceder um
+    limite seguro de URL (~7,5k chars), retorna "" e a UI recai no DOWNLOAD do HTML (que tem
+    fidelidade exata e funciona offline). Assim nunca se gera um link quebrado.
+    """
+    if not geometria_polyline:
+        return ""
+    g = urllib.parse.quote(geometria_polyline, safe="")
+    o = urllib.parse.quote(str(nome_o or "Origem"), safe="")
+    d = urllib.parse.quote(str(nome_d or "Destino"), safe="")
+    km_q = urllib.parse.quote(str(distancia_km or ""), safe="")
+    t = urllib.parse.quote(str(tempo_str or ""), safe="")
+    link = f"?rota=osrm&g={g}&o={o}&d={d}&km={km_q}&t={t}"
+    if len(link) > 7500:
+        return ""  # URL longa demais → UI usa o download (fidelidade exata offline)
+    return link
+
 def _extrair_geometria_google(texto_resposta, lat_o, lon_o, lat_d, lon_d):
     """[VIS-GOOGLE-GEO - 27ª geração] Extrai e VALIDA a geometria (polyline) da rota a
     partir da resposta do endpoint de direções do Google. A resposta é ofuscada e não
@@ -3350,6 +3427,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         # depender de serviço externo); (3) link de navegação via Google (sempre traça).
         # ======================================================================
         comparativo_prov = ""
+        link_osrm_viewer = ""  # [VIS-DINAMICA] default; preenchido só quando o OSRM vence
         km_g = res_google[0] if res_google else None
         km_o = res_osrm[0] if res_osrm else None
         n_alt_osrm = (res_osrm[3] if res_osrm and len(res_osrm) > 3 else 1)
@@ -3375,62 +3453,54 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             link_embed = _gerar_mapa_rota_osrm(_geo_osrm, lat_o, lon_o, lat_d, lon_d,
                                                f"{km_rota} km", tempo_rota,
                                                nome_origem=end_oficial_o, nome_destino=end_oficial_d)
-            # Link de navegação compartilhável via Google (sempre traça a rota de forma estável).
+            # [VIS-DINAMICA - 30ª geração] LINK 2 (OSRM): visualizador PRÓPRIO que reproduz
+            # EXATAMENTE este mapa embarcado (mesma geometria, mesmos nomes), servido pelo
+            # próprio app via "?rota=osrm&...". É a solução robusta/auditável para o link OSRM.
+            link_osrm_viewer = _montar_link_osrm_viewer(_geo_osrm, end_oficial_o, end_oficial_d,
+                                                        f"{km_rota} km", tempo_rota)
+            # [VIS-DINAMICA] LINK 1 (Google): referência comparativa — sempre traça a rota.
             link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
             fonte_rota = "OSRM (Menor Distância)"
             if res_google:
                 _delta = km_g - km_o
                 motivo_roteamento = (f"OSRM venceu com a MENOR distância: {km_o}km contra {km_g}km do Google "
                                      f"(~{_delta:.1f}km a menos, entre {n_alt_osrm} alternativa(s) viária(s) avaliadas). "
-                                     f"O mapa desenha a geometria exata do OSRM; o link de navegação abre a rota no "
-                                     f"Google Maps e há download do mapa HTML com o traçado exato do OSRM. Veja o comparativo.")
+                                     f"Mapa embarcado EXCLUSIVAMENTE do OSRM (geometria exata, nomes). Dois links: Google "
+                                     f"Maps (comparação) e o visualizador OSRM que reproduz fielmente este mesmo mapa.")
             else:
                 motivo_roteamento = (f"Distância e tempo via malha OSRM ({km_o}km): o Google Maps não respondeu para "
-                                     f"medição. O mapa desenha a geometria exata do OSRM e há download do traçado em HTML.")
+                                     f"medição. Mapa embarcado do OSRM (geometria exata, nomes) + link do visualizador OSRM.")
         else:
             # ---------------- GOOGLE É O VENCEDOR ----------------
             km_rota = res_google[0]
             tempo_rota = res_google[1]
-            link_rota = res_google[2]      # /maps/dir/ — abre exatamente esta rota (por NOME)
             balsa_rota = res_google[3]
             score_rota = res_google[4]
-            # [VIS-ALWAYS-DRAW - 28ª geração] PRIORIDADE MÁXIMA Nº 1 (mapa sem traçado):
-            # O mapa embarcado SEMPRE desenha o traçado da rota — NUNCA apenas marcadores.
-            # Hierarquia de geometria (degradação graciosa, sempre com NOMES nos rótulos):
-            #   1) Geometria do PRÓPRIO Google (extraída e validada) → traçado idêntico ao Google.
-            #   2) Se a extração do Google falhar, usa a geometria CONFIÁVEL do OSRM (que rodou
-            #      no modelo híbrido) — trajeto praticamente idêntico, claramente rotulado.
-            #   3) Sem nenhuma geometria, desenha a ligação direta origem→destino (Leaflet),
-            #      ainda com nomes — melhor que o embed clássico de coordenadas.
-            # Isso elimina de vez o "mapa só com 2 marcadores": há sempre um traçado desenhado.
-            _geo_google = res_google[6] if len(res_google) > 6 else ""
-            _geo_osrm_disp = res_osrm[4] if (res_osrm and len(res_osrm) > 4) else ""
-            if _geo_google:
-                link_embed = _gerar_mapa_rota_google(_geo_google, lat_o, lon_o, lat_d, lon_d,
-                                                     nome_origem=end_oficial_o, nome_destino=end_oficial_d,
-                                                     distancia_km=f"{km_rota} km", tempo_str=tempo_rota)
-            elif _geo_osrm_disp:
-                # Traçado de referência do OSRM (geometria confiável) — distância/tempo do Google.
-                link_embed = _gerar_mapa_leaflet_rota(_geo_osrm_disp, lat_o, lon_o, lat_d, lon_d,
-                                                      end_oficial_o, end_oficial_d,
-                                                      f"{km_rota} km", tempo_rota,
-                                                      provedor="Google Maps (traçado de referência)", cor="#1a73e8")
-            else:
-                # Sem geometria de nenhum motor: ligação direta com nomes (melhor que coords).
-                link_embed = _gerar_mapa_leaflet_rota("", lat_o, lon_o, lat_d, lon_d,
-                                                      end_oficial_o, end_oficial_d,
-                                                      f"{km_rota} km", tempo_rota,
-                                                      provedor="Google Maps", cor="#1a73e8")
+            # [VIS-DINAMICA - 30ª geração] CENÁRIO 1 — GOOGLE VENCE: o mapa embarcado é
+            # EXCLUSIVAMENTE do Google (NUNCA OSRM) e há UM ÚNICO link (Google). O mapa e o
+            # link são construídos a partir dos MESMOS parâmetros (nome oficial qualificado),
+            # garantindo "mapa = link" — representam exatamente a mesma rota.
+            #
+            # MUDANÇA-CHAVE (corrige o "mapa sempre OSRM"): a versão anterior, quando a
+            # extração da polyline do Google falhava, caía na geometria do OSRM como traçado
+            # de referência — era ISSO que fazia o mapa parecer "sempre OSRM". Removido. Agora
+            # o mapa do cenário Google é um embed do PRÓPRIO Google (Embed API se houver chave,
+            # senão ?saddr&daddr&output=embed COM NOMES, que desenha as direções).
+            _param_o_g = _montar_param_link_seguro(end_oficial_o, lat_o, lon_o, origem_clean)
+            _param_d_g = _montar_param_link_seguro(end_oficial_d, lat_d, lon_d, destino_clean)
+            link_rota = f"https://www.google.com/maps/dir/?api=1&origin={_param_o_g}&destination={_param_d_g}&travelmode=driving"
+            link_embed = _montar_embed_google(_param_o_g, _param_d_g)  # mapa do PRÓPRIO Google (http)
+            link_osrm_viewer = ""  # Google vence → não há link OSRM (apenas 1 link, do Google)
             fonte_rota = "Google Maps"
             if res_osrm:
                 motivo_roteamento = (f"Google Maps venceu com a menor distância (ou empate técnico ≤2%): {km_g}km "
-                                     f"contra {km_o}km do OSRM. Distância, tempo e link são do Google Maps e "
-                                     f"100% auditáveis pelo link (que abre pela origem/destino por nome). O mapa desenha "
-                                     f"o traçado da rota e o OSRM aparece no comparativo para transparência.")
+                                     f"contra {km_o}km do OSRM. Mapa embarcado EXCLUSIVAMENTE do Google (rota traçada, "
+                                     f"nomes) e UM ÚNICO link (Google) — mapa e link são a MESMA rota, 100% auditáveis. "
+                                     f"O OSRM aparece apenas no comparativo, para transparência.")
             else:
-                motivo_roteamento = (f"Rota oficial do Google Maps: {km_rota}km. Distância, tempo, mapa e link são "
-                                     f"todos do Google e auditáveis — o link abre exatamente esta rota traçada pelos "
-                                     f"nomes das localidades. (OSRM indisponível para comparação nesta execução.)")
+                motivo_roteamento = (f"Rota oficial do Google Maps: {km_rota}km. Mapa embarcado e link são ambos do "
+                                     f"Google e auditáveis — abrem exatamente esta rota traçada pelos nomes das "
+                                     f"localidades. (OSRM indisponível para comparação nesta execução.)")
             
         tempo_roteamento = round(time.time() - start_rot, 2)
         tempo_total = round(time.time() - start_total, 2)
@@ -3446,7 +3516,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             tempo_geocoding=tempo_geocoding, tempo_roteamento=tempo_roteamento, tempo_total=tempo_total,
             xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_roteamento,
             link_embed=link_embed, status_linha_reta=status_linha_reta,
-            comparativo_provedores=comparativo_prov
+            comparativo_provedores=comparativo_prov,
+            link_osrm_viewer=link_osrm_viewer
         )
         CACHE_L1_ROTAS[chave_rota_cache] = retorno
         cache_rotas.set(chave_rota_cache, retorno, expire=2592000)
@@ -3869,6 +3940,39 @@ def get_agg_func(op_name):
 # ==============================================================================
 # INTERFACE STREAMLIT COM ENGINE DE SIDEBAR MANUAL E ABAS DE AUDITORIA
 # ==============================================================================
+
+# [VIS-OSRM-LINK / VIS-DINAMICA - 30ª geração] VISUALIZADOR PRÓPRIO DA ROTA OSRM.
+# Quando o app é aberto com "?rota=osrm&g=<polyline>&o=<nome>&d=<nome>&km=<>&t=<>", entra
+# num modo visualizador autônomo que reproduz EXATAMENTE o mesmo mapa embarcado do OSRM —
+# reaproveitando _gerar_mapa_rota_osrm (mesma geometria, mesmos nomes) — e encerra com
+# st.stop() antes de montar o restante da interface. É a solução robusta e auditável para
+# "um link do OSRM que reproduza fielmente o mapa", servida pela própria aplicação, sem
+# depender de serviços externos (geojson.io/map.project-osrm são frágeis/não-documentados).
+_qp_rota = st.query_params.get("rota", "")
+if _qp_rota == "osrm" and st.query_params.get("g"):
+    _vg = st.query_params.get("g", "")
+    _vo = st.query_params.get("o", "Origem")
+    _vd = st.query_params.get("d", "Destino")
+    _vkm = st.query_params.get("km", "")
+    _vt = st.query_params.get("t", "")
+    st.markdown("""<div class="corporate-header">
+        <h1 class="corporate-title">🗺️ Rota OSRM — traçado exato</h1>
+        <p class="corporate-subtitle">Visualizador da rota (OSRM venceu pela menor distância). Mesma geometria e mesmos nomes do mapa embarcado.</p>
+    </div>""", unsafe_allow_html=True)
+    _uri_v = _gerar_mapa_rota_osrm(_vg, 0.0, 0.0, 0.0, 0.0, _vkm, _vt, nome_origem=_vo, nome_destino=_vd)
+    try:
+        import base64 as _b64v
+        _html_v = _b64v.b64decode(_uri_v.split(",", 1)[1]).decode("utf-8")
+        components.html(_html_v, height=640, scrolling=False)
+    except Exception:
+        st.error("Não foi possível renderizar o mapa da rota.")
+    _legenda_v = f"**Origem:** {_vo}  →  **Destino:** {_vd}"
+    if _vkm or _vt:
+        _legenda_v += f"   ·   📏 {_vkm}   ·   ⏱️ {_vt}"
+    st.caption(_legenda_v)
+    st.markdown("[← Voltar à aplicação](./)")
+    st.stop()
+
 st.markdown("""
 <div class="corporate-header">
     <h1 class="corporate-title">🗺️ Motor Nacional de Roteirização Inteligente</h1>
@@ -4115,14 +4219,31 @@ with tab_individual:
                             
                 url_iframe = res_ind[29]
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
+                _link_osrm_viewer = res_ind[36] if len(res_ind) > 36 else ""
                 _eh_geodesico_ui = "GEOD" in str(_fonte_rota_ui).upper()
                 _eh_osrm_ui = "OSRM" in str(_fonte_rota_ui).upper()
+                _eh_google_ui = (not _eh_geodesico_ui) and (not _eh_osrm_ui)
                 _eh_mapa_leaflet = isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,")
-                # [VIS-ALWAYS-DRAW - 28ª geração] O mapa embarcado SEMPRE desenha o traçado da
-                # rota (Leaflet autocontido), com origem/destino pelo NOME — nunca apenas dois
-                # marcadores nem pares de coordenadas. Vale para os 3 cenários: Google vence,
-                # OSRM vence e projeção geodésica (que desenha a ligação direta estimada).
-                if _eh_mapa_leaflet:
+                # [VIS-DINAMICA - 30ª geração] APRESENTAÇÃO DINÂMICA POR PROVEDOR VENCEDOR:
+                #   • GOOGLE vence → mapa embarcado EXCLUSIVAMENTE do Google (iframe http) + 1 link (Google).
+                #   • OSRM vence   → mapa embarcado EXCLUSIVAMENTE do OSRM (Leaflet) + 2 links (Google + visualizador OSRM).
+                #   • Geodésico    → ligação direta estimada (Leaflet) + 1 link + aviso.
+                # Mapa e link sempre representam a MESMA rota (construídos dos mesmos parâmetros).
+                if _eh_google_ui and not _eh_mapa_leaflet:
+                    # ---------- CENÁRIO 1: GOOGLE VENCE (mapa do PRÓPRIO Google, 1 link) ----------
+                    try:
+                        components.iframe(url_iframe, height=470, scrolling=False)
+                    except Exception:
+                        st.warning("Renderização de mapa bloqueada pelas políticas de segurança do navegador.")
+                    st.caption("🗺️ Mapa acima: **Google Maps** — rota traçada, origem e destino pelo nome.")
+                    st.markdown(f"🧭 [Abrir rota no Google Maps]({res_ind[2]})")
+                    _aviso_chave = "" if GOOGLE_MAPS_EMBED_API_KEY else (
+                        " _(Dica: configure `GOOGLE_MAPS_EMBED_API_KEY` nos secrets para garantir 100% o traçado da rota no mapa embarcado.)_")
+                    st.caption("ℹ️ **Google Maps venceu (menor distância).** O **mapa embarcado** e o **link** são ambos do "
+                               "**Google** e representam exatamente a **mesma rota** (abrem pelos **nomes** de origem e destino) — "
+                               "100% auditável. Há um **único link**, do Google." + _aviso_chave)
+                elif _eh_mapa_leaflet:
+                    # ---------- CENÁRIOS 2 e 3: OSRM vence / Geodésico (Leaflet autocontido) ----------
                     try:
                         import base64 as _b64dec
                         _html_mapa = _b64dec.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
@@ -4131,44 +4252,57 @@ with tab_individual:
                         st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
                     if _eh_geodesico_ui:
                         _prov_nome, _arq_nome = "Projeção Geodésica", "rota_estimada.html"
-                    elif _eh_osrm_ui:
-                        _prov_nome, _arq_nome = "OSRM", "rota_osrm_tracada.html"
-                    else:
-                        _prov_nome, _arq_nome = "Google Maps", "rota_google_tracada.html"
-                    if _eh_geodesico_ui:
                         st.caption(f"🗺️ Mapa acima: **{_prov_nome}** — ligação direta origem→destino (estimativa), identificadas pelo nome.")
                     else:
-                        st.caption(f"🗺️ Mapa acima: **{_prov_nome}** com o **traçado da rota desenhado** — origem e destino pelo nome.")
-                    cbtn1, cbtn2 = st.columns(2)
-                    with cbtn1:
-                        st.markdown(f"🧭 [Abrir rota no Google Maps]({res_ind[2]})")
-                    with cbtn2:
+                        _prov_nome, _arq_nome = "OSRM", "rota_osrm_tracada.html"
+                        st.caption(f"🗺️ Mapa acima: **OSRM** com o **traçado da rota desenhado** — origem e destino pelo nome.")
+                    if _eh_osrm_ui:
+                        # DOIS links: (1) Google comparativo, (2) visualizador OSRM (reproduz este mapa).
+                        cbtn1, cbtn2 = st.columns(2)
+                        with cbtn1:
+                            st.markdown(f"🧭 [Google Maps (comparação)]({res_ind[2]})")
+                        with cbtn2:
+                            if _link_osrm_viewer:
+                                st.markdown(f'<a href="{_link_osrm_viewer}" target="_blank" rel="noopener" '
+                                            f'style="text-decoration:none">🛰️ <b>Visualizador OSRM</b> (mesma rota)</a>',
+                                            unsafe_allow_html=True)
+                            else:
+                                st.caption("🛰️ Rota muito longa p/ link — use o **download** abaixo (traçado exato OSRM).")
                         try:
                             import base64 as _b64dl
                             _html_dl = _b64dl.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
-                            st.download_button(f"⬇️ Baixar mapa ({_prov_nome}) — HTML", data=_html_dl,
+                            st.download_button(f"⬇️ Baixar mapa (OSRM) — HTML", data=_html_dl,
                                                file_name=_arq_nome, mime="text/html",
-                                               help="Mapa autocontido que desenha o traçado da rota. Abre offline em qualquer navegador — robusto e auditável.",
+                                               help="Mapa autocontido com o traçado exato do OSRM. Abre offline em qualquer navegador.",
                                                use_container_width=True)
                         except Exception:
                             pass
-                    if _eh_geodesico_ui:
+                        st.caption("ℹ️ **OSRM venceu (menor distância).** Mapa embarcado **exclusivamente do OSRM** (geometria exata, nomes). "
+                                   "**Dois links:** o **Google Maps** (comparação) e o **Visualizador OSRM** — que abre num link próprio do app e "
+                                   "reproduz **fielmente este mesmo mapa** (mesma geometria, mesmos nomes). Veja também o **comparativo** abaixo.")
+                    else:
+                        # Geodésico: 1 link + download + aviso.
+                        cbtn1, cbtn2 = st.columns(2)
+                        with cbtn1:
+                            st.markdown(f"🧭 [Abrir rota no Google Maps]({res_ind[2]})")
+                        with cbtn2:
+                            try:
+                                import base64 as _b64dl2
+                                _html_dl2 = _b64dl2.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
+                                st.download_button(f"⬇️ Baixar mapa (estimativa) — HTML", data=_html_dl2,
+                                                   file_name=_arq_nome, mime="text/html",
+                                                   help="Mapa autocontido. Abre offline em qualquer navegador.",
+                                                   use_container_width=True)
+                            except Exception:
+                                pass
                         st.warning("📐 **Distância estimada (Projeção Geodésica):** nenhum motor viário retornou a rota no momento, então "
                                    "a quilometragem foi **estimada** pela linha reta × fator de desvio rodoviário (o mapa mostra a ligação "
                                    "direta). Recomenda-se **reprocessar** quando os motores responderem, para obter a rota viária oficial.")
-                    elif _eh_osrm_ui:
-                        st.caption("ℹ️ **OSRM venceu (menor distância).** O **mapa** e o **download HTML** mostram a **geometria exata** do trajeto. "
-                                   "O **link** abre a rota no **Google Maps** pelos nomes das localidades. O download guarda o traçado exato offline, "
-                                   "sem depender de serviços externos. Veja o **comparativo** abaixo.")
-                    else:
-                        st.caption("ℹ️ **Google Maps venceu (menor distância).** O **mapa** desenha o **traçado da rota** (não apenas dois marcadores). "
-                                   "O **link** abre exatamente esta rota no Google Maps pelos **nomes** de origem e destino — 100% auditável. Você "
-                                   "também pode **baixar** o mapa para conferência offline.")
                 else:
-                    # Rede de segurança rara: link_embed http (só se coords forem nulas). Usa iframe.
-                    try: 
+                    # Rede de segurança rara: link_embed http inesperado. Usa iframe + link Google.
+                    try:
                         components.iframe(url_iframe, height=470, scrolling=True)
-                    except Exception: 
+                    except Exception:
                         st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
                     st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
             else:
