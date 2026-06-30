@@ -1013,7 +1013,7 @@ except Exception:
 # ==============================================================================
 # CONSTANTES GLOBAIS — Definidas uma única vez, referenciadas em todo o sistema
 # ==============================================================================
-CACHE_VERSION = "V64"  # Incrementar ao alterar esquema de cache
+CACHE_VERSION = "V65"  # Incrementar ao alterar esquema de cache
 CACHE_EXPIRE_PADRAO = 2592000  # 30 dias em segundos
 
 NOVAS_COLUNAS_PADRAO = [
@@ -3183,21 +3183,35 @@ def _montar_param_link_seguro(endereco_oficial, lat, lon, texto_original):
     end = (endereco_oficial or "").strip()
     # Detecta endereço "pobre": vazio, ou que é só a sigla/nome de uma UF (+ "BRASIL").
     # Ex.: "GO", "GO, BRASIL", "GOIAS, BRASIL" — todos colapsaram e perderam o município.
-    tokens_significativos = [t for t in re.split(r'[,\s]+', end.upper())
-                             if t and t not in ("BRASIL", "BR") and t not in IBGE_ESTADOS
-                             and t not in IBGE_ESTADOS.values()]
-    endereco_pobre = (not end) or (len(tokens_significativos) == 0)
+    # [FIX-NOMES-EMBED - 35ª geração] Detecção de endereço "pobre" robusta a UFs de nome
+    # COMPOSTO. A versão anterior filtrava token a token contra IBGE_ESTADOS.values(), então
+    # nomes como "MATO GROSSO"/"RIO DE JANEIRO" (multi-palavra) escapavam e o endereço era
+    # tratado como "rico" indevidamente. Aqui removemos "BRASIL/BR" e verificamos se o que
+    # SOBRA é exatamente uma UF (sigla OU nome por extenso) — nesse caso, perdeu-se o
+    # município/logradouro e o endereço é pobre.
+    _end_sem_pais = re.sub(r'\b(BRASIL|BRAZIL|BR)\b', ' ', end.upper())
+    _end_sem_pais = re.sub(r'[,\s]+', ' ', _end_sem_pais).strip()
+    _ufs_todas = set(IBGE_ESTADOS.keys()) | {str(v).upper().strip() for v in IBGE_ESTADOS.values()}
+    endereco_pobre = (not end) or (not _end_sem_pais) or (_end_sem_pais in _ufs_todas)
 
     if not endereco_pobre:
         return requests.utils.quote(end)
-    # Endereço degradado → prefere coordenadas exatas (apontam ao local certo)
+    # [FIX-NOMES-EMBED - 35ª geração] CAUSA RAIZ das coordenadas no mapa/link: quando o
+    # endereço oficial degradava (ex.: API devolveu só a UF, ou o centróide IBGE do município
+    # veio 0,0 e a cascata empobreceu o resultado), este builder devolvia COORDENADAS como
+    # elemento visual — exatamente o que o usuário relata ("-12.73..., -51.71..."). O script
+    # antigo NUNCA faz isso: ele sempre usa o NOME (origem_texto/origem_clean). Adotamos a
+    # mesma estratégia robusta: o TEXTO DO USUÁRIO sempre carrega o nome que ele digitou
+    # ("Ribeirão Cascalheira, MT"), que o Google resolve e EXIBE como nome. As coordenadas
+    # passam a ser apenas a ÚLTIMA âncora (caso não exista texto algum — não deve ocorrer).
+    texto_seg = (texto_original or "").strip()
+    _texto_e_coordenada = bool(re.match(r'^\s*-?\d{1,3}\.\d+\s*,\s*-?\d{1,3}\.\d+\s*$', texto_seg))
+    if texto_seg and texto_seg.lower() != "nan" and not _texto_e_coordenada:
+        return requests.utils.quote(texto_seg)
+    # Última âncora: coordenadas exatas (só quando não há texto utilizável, ou o próprio
+    # texto do usuário JÁ é uma coordenada — caso em que mostrar coordenadas é o correto).
     if lat and lon and lat != 0.0 and lon != 0.0:
         return f"{lat},{lon}"
-    # Última rede de segurança: o texto original do usuário (carrega o município digitado)
-    texto_seg = (texto_original or "").strip()
-    if texto_seg and texto_seg.lower() != "nan":
-        return requests.utils.quote(texto_seg)
-    # Sem nada utilizável (não deveria ocorrer) — devolve o que houver
     return requests.utils.quote(end) if end else f"{lat},{lon}"
 
 def _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_o="", end_d="", txt_o="", txt_d=""):
@@ -3644,8 +3658,16 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             # de referência — era ISSO que fazia o mapa parecer "sempre OSRM". Removido. Agora
             # o mapa do cenário Google é um embed do PRÓPRIO Google (Embed API se houver chave,
             # senão ?saddr&daddr&output=embed COM NOMES, que desenha as direções).
-            _param_o_g = _montar_param_link_seguro(end_oficial_o, lat_o, lon_o, origem_clean)
-            _param_d_g = _montar_param_link_seguro(end_oficial_d, lat_d, lon_d, destino_clean)
+            # [FIX-MUN-EMBED - 35ª geração] Usa o MESMO builder do link de fallback
+            # (_montar_param_municipio_google), que para municípios devolve o NOME oficial
+            # totalmente qualificado ("Município, Estado, Brasil") e, para os demais, delega
+            # ao builder blindado (que agora prefere o nome ao invés de coordenadas). Antes,
+            # este ramo chamava _montar_param_link_seguro diretamente — inconsistente com o
+            # fallback e suscetível a devolver coordenadas. Agora mapa e link do Google saem
+            # exatamente dos MESMOS parâmetros por NOME, reproduzindo o comportamento do
+            # script antigo (que sempre desenhava a rota com nomes).
+            _param_o_g = _montar_param_municipio_google(origem_clean, mun_o, _uf_o, end_oficial_o, lat_o, lon_o)
+            _param_d_g = _montar_param_municipio_google(destino_clean, mun_d, _uf_d, end_oficial_d, lat_d, lon_d)
             link_rota = f"https://www.google.com/maps/dir/?api=1&origin={_param_o_g}&destination={_param_d_g}&travelmode=driving"
             link_embed = _montar_embed_google(_param_o_g, _param_d_g)  # mapa do PRÓPRIO Google (http)
             link_osrm_viewer = ""  # Google vence → não há link OSRM (apenas 1 link, do Google)
