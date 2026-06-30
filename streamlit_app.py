@@ -62,6 +62,21 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (36ª geração) → BASE NACIONAL IBGE: CÓDIGO OFICIAL + CENTRÓIDE MUNICIPAL REARMADO
+#     [BASE-IBGE-COD + BASE-IBGE-CENTROIDE]. A base do IBGE já era a fonte nacional integrada
+#     (carregar_dados_ibge: municípios/estados/distritos, pickle 30 dias) e o reconhecimento por
+#     nome (com/sem acento, forma curta, fuzzy) já existia (FIX-MUN-CLASS + anti-alucinação).
+#     DOIS GAPS REAIS CORRIGIDOS: (1) o payload /localidades/municipios traz o código IBGE em
+#     mun["id"] mas ele NÃO era armazenado → agora é (custo de rede zero, pkl v2). (2) esse mesmo
+#     endpoint NÃO traz lat/lon (todos os municípios ficavam lat=0.0), o que mantinha o atalho de
+#     centróide offline e a BLINDAGEM ANTI-ALUCINAÇÃO praticamente DESLIGADOS em produção (exigiam
+#     lat≠0 que nunca existia). Novo resolvedor _centroide_municipio rearma ambos: usa lat/lon
+#     offline se existir, senão o centróide por cidade+UF (ArcGIS/Nominatim — centro da cidade,
+#     nunca POI), memorizado em RAM. Município reconhecido vira a referência oficial ANTES da
+#     cascata (mais rápido) e nunca mais é confundido com rua/hotel. Fall-through preservado:
+#     se nenhum centróide responder, mantém o fluxo antigo. ViaCEP/Correios já no cascata de CEP;
+#     gazetteers externos (GeoNames/Natural Earth/OSM) dispensados (sem ganho p/ municípios BR já
+#     100% cobertos offline pelo IBGE). Cache V65→V66. Sem regressão, sem perda de precisão.
 #   v3.8++ → APRESENTAÇÃO DINÂMICA POR PROVEDOR VENCEDOR [VIS-DINAMICA / VIS-OSRM-LINK - 30ª geração]:
 #     PROBLEMA: "independentemente do vencedor, o mapa embarcado continuava sendo só o do OSRM".
 #     CAUSA RAIZ: no cenário Google-vence, quando a extração da polyline do Google falhava (frequente),
@@ -1013,7 +1028,7 @@ except Exception:
 # ==============================================================================
 # CONSTANTES GLOBAIS — Definidas uma única vez, referenciadas em todo o sistema
 # ==============================================================================
-CACHE_VERSION = "V65"  # Incrementar ao alterar esquema de cache
+CACHE_VERSION = "V66"  # Incrementar ao alterar esquema de cache
 CACHE_EXPIRE_PADRAO = 2592000  # 30 dias em segundos
 
 NOVAS_COLUNAS_PADRAO = [
@@ -1318,7 +1333,7 @@ session.mount("http://", adapter)
 # [G21] Cookie CONSENT hardcoded removido — token de 2023 expirado e desnecessário
 # User-Agent moderno suficiente para requests de roteamento
 
-CACHE_IBGE_PATH = "municipios_ibge.pkl"
+CACHE_IBGE_PATH = "municipios_ibge_v2.pkl"   # [BASE-IBGE-COD] v2: base enriquecida com código IBGE oficial; força reconstrução do pkl antigo
 
 # ==============================================================================
 # INFRAESTRUTURA DE CONCORRÊNCIA E FILAS (THREAD-SAFE GLOBALS)
@@ -1491,6 +1506,7 @@ def carregar_dados_ibge():
                 base_mun[nome_norm].append({
                     "uf": uf_sigla, 
                     "municipio": nome_norm,
+                    "codigo_ibge": mun.get("id"),   # [BASE-IBGE-COD] código oficial 7 díg. (já vem no payload, custo de rede zero)
                     "lat": mun.get("lat", 0.0), 
                     "lon": mun.get("lon", 0.0)
                 })
@@ -1506,6 +1522,7 @@ def carregar_dados_ibge():
                 base_dist[nome_dist].append({
                     "uf": uf_dist, 
                     "municipio": nome_muni,
+                    "codigo_ibge": dist.get("id"),   # [BASE-IBGE-COD] código oficial do distrito
                     "lat": dist.get("lat", 0.0), 
                     "lon": dist.get("lon", 0.0)
                 })
@@ -2211,6 +2228,42 @@ def obter_coordenada_centroide_supremo(mun_nome, uf_nome):
         
     return 0.0, 0.0, None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [BASE-IBGE-CENTROIDE] Resolvedor unificado de centróide municipal + código IBGE
+# A API /localidades/municipios do IBGE NÃO traz lat/lon (só o código `id`); por
+# isso o centróide é resolvido por cidade+UF via ArcGIS/Nominatim (que devolvem o
+# CENTRO da cidade, jamais um POI) e memorizado em RAM. Se um dia a base offline
+# passar a ter lat≠0 (ex.: malha IBGE), ela é usada com prioridade. Esta função
+# rearma, em produção, o atalho municipal e a blindagem anti-alucinação — que antes
+# dependiam de um lat IBGE que nunca existia (ficavam, na prática, desligados).
+# ─────────────────────────────────────────────────────────────────────────────
+_CENTROIDE_MUN_CACHE = {}
+
+def _info_municipio_ibge(mun_nome, uf_nome):
+    """Retorna (item_da_base | None, codigo_ibge | None) do município na UF informada."""
+    if mun_nome in IBGE_MUNICIPIOS:
+        for item in IBGE_MUNICIPIOS[mun_nome]:
+            if item.get("uf") == uf_nome:
+                return item, item.get("codigo_ibge")
+    return None, None
+
+def _centroide_municipio(mun_nome, uf_nome):
+    """Centróide oficial do município (lat, lon). Prioriza lat/lon do IBGE offline
+    quando existir (>0); senão resolve por cidade+UF (centro da cidade) e memoriza.
+    Retorna (0.0, 0.0) apenas se nenhuma fonte responder — preservando o fall-through."""
+    chave = (mun_nome, uf_nome)
+    if chave in _CENTROIDE_MUN_CACHE:
+        return _CENTROIDE_MUN_CACHE[chave]
+    item, _cod = _info_municipio_ibge(mun_nome, uf_nome)
+    if item and item.get("lat", 0.0) != 0.0 and item.get("lon", 0.0) != 0.0:
+        par = (item["lat"], item["lon"])
+        _CENTROIDE_MUN_CACHE[chave] = par
+        return par
+    lat_c, lon_c, _fonte = obter_coordenada_centroide_supremo(mun_nome, uf_nome)
+    par = (lat_c, lon_c) if (lat_c != 0.0 and lon_c != 0.0) else (0.0, 0.0)
+    _CENTROIDE_MUN_CACHE[chave] = par
+    return par
+
 def obedience_base_local(contexto_estruturado):
     if contexto_estruturado["logradouro"] and contexto_estruturado["municipio"] and contexto_estruturado["uf"]:
         chave_cnefe = f"{contexto_estruturado['logradouro']}_{contexto_estruturado['municipio']}_{contexto_estruturado['uf']}"
@@ -2820,16 +2873,22 @@ def _blindar_municipio(texto_norm, tipo_entrada, ctx, res_final):
         return res_final  # resultado já é municipal/limpo
     mun_nome = ctx.get("municipio", "")
     uf_nome = ctx.get("uf", "")
-    if mun_nome in IBGE_MUNICIPIOS:
-        for item in IBGE_MUNICIPIOS[mun_nome]:
-            if item["uf"] == uf_nome and item.get("lat", 0.0) != 0.0:
+    # [BASE-IBGE-CENTROIDE] resolve o centróide municipal (offline se houver; senão
+    # por cidade+UF). Antes exigia lat IBGE ≠ 0 — que nunca existe — então a blindagem
+    # ficava inerte em produção. Agora ela realmente substitui o ponto hiperespecífico.
+    if mun_nome and uf_nome:
+        _item, _cod = _info_municipio_ibge(mun_nome, uf_nome)
+        if _item is not None:
+            lat_c, lon_c = _centroide_municipio(mun_nome, uf_nome)
+            if lat_c != 0.0 and lon_c != 0.0:
                 endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
-                return (item["lat"], item["lon"], endereco_ibge, "MUNICIPAL", 88,
+                _cod_txt = f" (código IBGE {_cod})" if _cod else ""
+                return (lat_c, lon_c, endereco_ibge, "MUNICIPAL", 88,
                         ctx.get("distrito", ""), mun_nome, "VALIDACAO_ANTI_ALUCINACAO",
                         [f"Anti-alucinação: provedor retornou ponto hiperespecífico "
                          f"('{str(res_final[2])[:60]}') para intenção municipal; substituído pelo "
-                         f"centróide oficial do município (IBGE)."])
-    return res_final  # sem centróide IBGE disponível → mantém (não degrada)
+                         f"centróide oficial do município{_cod_txt} (base IBGE)."])
+    return res_final  # sem centróide disponível → mantém (não degrada)
 
 def _obter_coordenadas_e_endereco_oficial_core(localidade):
     texto_cru = str(localidade).strip()
@@ -2865,13 +2924,22 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
         mun_nome = ctx["municipio"]
         uf_nome = ctx["uf"]
         if tipo_entrada == "MUNICIPIO":
-            if mun_nome in IBGE_MUNICIPIOS:
-                for item in IBGE_MUNICIPIOS[mun_nome]:
-                    if item["uf"] == uf_nome and item.get("lat", 0.0) != 0.0:
-                        endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
-                        res_final = (item["lat"], item["lon"], endereco_ibge, "MUNICIPAL", 100, ctx.get("distrito", ""), mun_nome, "BASE_IBGE_OFFLINE", ["Otimização Direta IBGE: Busca por cidade detectada. Coordenda exata do Centróide Brasileiro extraída sem rede."])
-                        _cache_set_seguro(cache_geo, cache_key, {"lat": res_final[0], "lon": res_final[1], "endereco": res_final[2], "confianca": res_final[3], "score_num": res_final[4], "distrito": res_final[5], "municipio": res_final[6], "fonte": res_final[7]}, expire=2592000)
-                        return res_final
+            # [BASE-IBGE-CENTROIDE] entrada é um município reconhecido na base nacional:
+            # resolve o centróide (offline se houver lat≠0; senão por cidade+UF) e o torna a
+            # referência oficial do pipeline ANTES da cascata de geocodificação. Se o centróide
+            # responder, retorna cedo (mais rápido que a cascata); senão, segue o fluxo normal.
+            _item, _cod = _info_municipio_ibge(mun_nome, uf_nome)
+            if _item is not None:
+                lat_c, lon_c = _centroide_municipio(mun_nome, uf_nome)
+                if lat_c != 0.0 and lon_c != 0.0:
+                    _fonte_mun = "BASE_IBGE_OFFLINE" if (_item.get("lat", 0.0) != 0.0) else "BASE_IBGE_CENTROIDE"
+                    endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
+                    _cod_txt = f" Código IBGE {_cod}." if _cod else ""
+                    res_final = (lat_c, lon_c, endereco_ibge, "MUNICIPAL", 100, ctx.get("distrito", ""), mun_nome, _fonte_mun,
+                                 [f"Referência oficial da base nacional IBGE: município reconhecido pelo nome.{_cod_txt} "
+                                  f"Centróide municipal usado como entrada do pipeline (sem ponto hiperespecífico)."])
+                    _cache_set_seguro(cache_geo, cache_key, {"lat": res_final[0], "lon": res_final[1], "endereco": res_final[2], "confianca": res_final[3], "score_num": res_final[4], "distrito": res_final[5], "municipio": res_final[6], "fonte": res_final[7]}, expire=2592000)
+                    return res_final
                         
     rua_suja = parsed_comp["resto"]
     for loc in [ctx.get("municipio", ""), ctx.get("distrito", ""), ctx.get("uf", ""), "BRASIL", "DF"]:
@@ -2947,22 +3015,24 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
     if not res_final and ctx.get("municipio") and ctx.get("uf"):
         mun_nome = ctx["municipio"]
         uf_nome = ctx["uf"]
-        if mun_nome in IBGE_MUNICIPIOS:
-            for item in IBGE_MUNICIPIOS[mun_nome]:
-                if item["uf"] == uf_nome and item.get("lat", 0.0) != 0.0:
-                    endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
-                    res_final = (item["lat"], item["lon"], endereco_ibge, "MUNICIPAL", 90, ctx.get("distrito", ""), mun_nome, "BASE_IBGE_OFFLINE", ["Blindagem Ativa IBGE: APIs falharam, coordenada estrita recuperada da base local offline para a UF."])
-                    break
-                    
+        _item, _cod = _info_municipio_ibge(mun_nome, uf_nome)
+        # offline com lat≠0 (caso a base passe a ter coordenada própria): confiança alta, sem reverse
+        if _item is not None and _item.get("lat", 0.0) != 0.0 and _item.get("lon", 0.0) != 0.0:
+            endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
+            res_final = (_item["lat"], _item["lon"], endereco_ibge, "MUNICIPAL", 90, ctx.get("distrito", ""), mun_nome, "BASE_IBGE_OFFLINE", ["Blindagem Ativa IBGE: APIs falharam, coordenada offline recuperada da base local para a UF."])
+
         if not res_final:
-            lat_c, lon_c, fonte_c = obter_coordenada_centroide_supremo(mun_nome, uf_nome)
+            # [BASE-IBGE-CENTROIDE] centróide municipal via helper compartilhado (reaproveita
+            # cache em RAM, evitando nova chamada de rede se o município já foi resolvido).
+            lat_c, lon_c = _centroide_municipio(mun_nome, uf_nome)
             if lat_c != 0.0 and lon_c != 0.0:
                 val_rev = executar_reverse_geocoding_multimotor(lat_c, lon_c)
                 est_rev = unidecode(val_rev.get("estado", "")).upper()
                 nome_estado_inf = unidecode(IBGE_ESTADOS.get(uf_nome, uf_nome)).upper()
                 if uf_nome in est_rev or nome_estado_inf in est_rev:
                     endereco_ibge = f"{mun_nome}, {IBGE_ESTADOS.get(uf_nome, uf_nome)}, BRASIL"
-                    res_final = (lat_c, lon_c, endereco_ibge, "MUNICIPAL", 85, ctx.get("distrito", ""), mun_nome, fonte_c, [f"Resgatado via Centróide Supremo ({fonte_c}) e Estado Confirmado."])
+                    _cod_txt = f" Código IBGE {_cod}." if _cod else ""
+                    res_final = (lat_c, lon_c, endereco_ibge, "MUNICIPAL", 85, ctx.get("distrito", ""), mun_nome, "BASE_IBGE_CENTROIDE", [f"Resgatado via centróide municipal da base nacional e UF confirmada.{_cod_txt}"])
                     
     res_final = _blindar_municipio(texto_norm, tipo_entrada, ctx, res_final)
     if res_final:
