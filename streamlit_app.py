@@ -62,6 +62,34 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (40ª geração) → CAUSA RAIZ DA DIVERGÊNCIA OSRM (SNAP) + VALIDAÇÃO ESPACIAL
+#     [OSRM-SNAP + VALID-ESPACIAL]. CAUSA RAIZ COMPROVADA: Google e OSRM já recebem a MESMA
+#     origem/destino validados; a divergência vem do OSRM PROJETAR (snap) a coordenada enviada
+#     no nó viário mais próximo da malha OSM — em área rural esparsa, isso desloca origem/destino
+#     em km. Prova: o OSRM retorna os waypoints "snapados" + a distância do snap (agora capturados
+#     no índice 5 do retorno de API_OSRM_Routing; score_rota fixado em 88 p/ não colidir). O
+#     painel de auditoria passa a exibir coordenada ENVIADA × USADA (pós-snap) × deslocamento (m).
+#     VALIDAÇÃO ESPACIAL: confere se os pontos snapados seguem dentro da bounding box da UF pedida
+#     e se o snap ficou no limiar (3 km); alertas exibidos. GUARD de confiança: se o snap jogar
+#     origem/destino p/ FORA da UF (erro objetivo), o OSRM NÃO vence o Google (a regra "menor
+#     distância" é mantida; só rejeita resultado do OSRM comprovadamente inválido — atende ao
+#     pedido "só aceitar rota com confiança mínima"); sem Google, usa o OSRM com o alerta. Provado
+#     por teste isolado (6 cenários: snap pequeno/grande, cross-UF, sem Google, sem UF, resposta
+#     vazia). Docs: Enciclopédia seção 16. Sem regressão; nenhuma perda de exatidão/desempenho.
+#   v3.8 (39ª geração) → ALOCAÇÃO 100% CONTÍNUA + CAMADA ÚNICA + AUDITORIA DE MOTORES
+#     [FLUXO-CONTINUO + AUDIT-MOTORES]. (1) A Alocação tinha um estol RESTANTE: a geocodificação
+#     dos destinos era síncrona numa única execução (a 38ª geração só havia dado time-box ao
+#     roteamento). Agora ela é uma FASE própria time-boxed ('geo_destinos': mini-lotes ~8s +
+#     rerun → matriz competitiva → roteamento), tornando a Alocação tão contínua quanto o Lote.
+#     (2) Camada única de identificação CONFIRMADA e tornada TRANSPARENTE: origem/destino já
+#     passam por uma só geocodificação validada (com anti-alucinação); o Google recebe o NOME
+#     oficial e o OSRM recebe a COORDENADA validada (mesma do geocode) — ambos partem do mesmo
+#     ponto (o OSRM não reinterpreta o texto). (3) Novo campo RotaPipeline.auditoria_motores
+#     (índice 39, default None → 40 campos; 0-38 preservados) captura o rastro: texto original →
+#     normalizado → validado → coordenada → parâmetros/URLs de cada motor → consenso/divergência.
+#     Novo painel na rota individual: "🔎 Auditoria das Consultas aos Motores de Rota". Provado
+#     por teste isolado (rastro, ordem lon/lat do OSRM, divergência, fallback, coords nulas).
+#     Docs: Enciclopédia seção 15. Sem regressão, sem perda de desempenho/exatidão.
 #   v3.8 (38ª geração) → FLUXO CONTÍNUO: FIM DAS INTERRUPÇÕES NO LOTE [FLUXO-CONTINUO]
 #     CAUSA RAIZ do "para no meio e exige novo clique": execuções longas do Streamlit (um chunk
 #     fixo de 200 rotas esperava a rota mais lenta; e o pré-aquecimento geocodificava TODOS os
@@ -356,6 +384,10 @@ class RotaPipeline(NamedTuple):
     #   link_rota_comparativo: link do provedor comparativo (viewer OSRM ou link Google navegável).
     link_embed_comparativo: str = ""
     link_rota_comparativo: str = ""
+    # [AUDIT-MOTORES - 39ª geração] Rastro completo das consultas enviadas a cada motor de rota:
+    # texto original → normalizado → validado → coordenadas → parâmetros/URLs por motor + consenso.
+    # Índice 40, default None (aditivo; não afeta índices 0-39). É um dicionário estruturado.
+    auditoria_motores: dict = None
 
 def _montar_comparativo_provedores(km_g, tempo_g, km_o, tempo_o, fonte_vencedora):
     """[COMP-PROV - 21ª geração] Codifica os dados de comparação entre Google e OSRM
@@ -2518,11 +2550,31 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
                     if step.get("mode") == "ferry" or step.get("maneuver", {}).get("type") == "ferry":
                         usa_balsa = "Sim"
                         break
-                        
+
+            # [OSRM-SNAP - 40ª geração] Captura os waypoints "snapados" à malha viária do OSM e a
+            # DISTÂNCIA do snap (metros entre a coordenada enviada e o nó viário mais próximo). É a
+            # EVIDÊNCIA técnica da causa raiz da divergência: o OSRM não usa a coordenada enviada
+            # diretamente — ele a projeta na via mais próxima. Em malha rural esparsa, esse snap
+            # pode deslocar a origem/destino em quilômetros. Retornado no índice 5 (aditivo).
+            snap_info = None
+            try:
+                wps = r.get("waypoints", [])
+                if len(wps) >= 2:
+                    _oloc = wps[0].get("location", [None, None])  # [lon, lat] já snapado
+                    _dloc = wps[1].get("location", [None, None])
+                    snap_info = {
+                        "orig_snap_lat": _oloc[1], "orig_snap_lon": _oloc[0],
+                        "orig_snap_dist_m": round(float(wps[0].get("distance", 0.0)), 1),
+                        "dest_snap_lat": _dloc[1], "dest_snap_lon": _dloc[0],
+                        "dest_snap_dist_m": round(float(wps[1].get("distance", 0.0)), 1),
+                    }
+            except Exception:
+                snap_info = None
+
             registrar_telemetria("OSRM", True, time.time() - start_t)
-            # Retorno ampliado (índice 4 = geometria). Consumidores antigos usam res[0..3]
-            # com guarda len() — a geometria é puramente aditiva, sem quebrar compatibilidade.
-            return (distancia_km, tempo_min, usa_balsa, n_alternativas, geometria_polyline)
+            # Retorno ampliado (idx 4 = geometria, idx 5 = snap_info). Consumidores antigos usam
+            # res[0..4] com guarda len() — os campos novos são aditivos, sem quebrar compatibilidade.
+            return (distancia_km, tempo_min, usa_balsa, n_alternativas, geometria_polyline, snap_info)
     except Exception: 
         pass
     registrar_telemetria("OSRM", False, time.time() - start_t)
@@ -3572,6 +3624,64 @@ def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, geometria_polyline="", distan
     link_embed_osm = _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d, distancia_km, tempo_str)
     return None, link_embed_osm
 
+def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
+                              lat_o, lon_o, lat_d, lon_d,
+                              fonte_geo_o, fonte_geo_d, score_o, score_d,
+                              google_param_o, google_param_d, google_link,
+                              km_google, km_osrm, vencedor,
+                              osrm_snap=None, validacao_espacial=None):
+    """[AUDIT-MOTORES] Monta o rastro completo das consultas enviadas a cada motor de rota.
+    Torna auditável e transparente que TODOS os motores partem da MESMA geocodificação
+    validada: origem/destino são normalizados, validados na base nacional e convertidos numa
+    ÚNICA representação (nome oficial + coordenada). O Google recebe o nome oficial (para
+    desenhar a rota pelos nomes); o OSRM recebe a coordenada validada. Ambos derivam do mesmo
+    resultado — o que este rastro evidencia campo a campo. Inclui também o SNAP do OSRM
+    (coordenada projetada na via + distância do snap) e a VALIDAÇÃO ESPACIAL da rota."""
+    try:
+        norm_o = semantica.normalizar(origem_txt)
+        norm_d = semantica.normalizar(destino_txt)
+    except Exception:
+        norm_o, norm_d = origem_txt, destino_txt
+    osrm_url = ""
+    try:
+        if lat_o and lon_o and lat_d and lon_d and lat_o != 0.0 and lat_d != 0.0:
+            osrm_url = (f"http://router.project-osrm.org/route/v1/driving/"
+                        f"{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3")
+    except Exception:
+        osrm_url = ""
+    div_abs = div_pct = None
+    if km_google and km_osrm and km_google > 0 and km_osrm > 0:
+        div_abs = round(abs(km_google - km_osrm), 2)
+        div_pct = round((div_abs / max(km_google, km_osrm)) * 100, 1)
+    # Bloco de snap do OSRM: coordenada enviada → coordenada usada (após snap) → distância do snap
+    osrm_bloco = {
+        "origem_enviada": f"{lat_o}, {lon_o}", "destino_enviada": f"{lat_d}, {lon_d}",
+        "url": osrm_url, "distancia_km": km_osrm, "tipo_entrada": "Coordenada validada (mesmo geocode)",
+    }
+    if osrm_snap:
+        osrm_bloco["origem_usada_pos_snap"] = f"{osrm_snap.get('orig_snap_lat')}, {osrm_snap.get('orig_snap_lon')}"
+        osrm_bloco["destino_usada_pos_snap"] = f"{osrm_snap.get('dest_snap_lat')}, {osrm_snap.get('dest_snap_lon')}"
+        osrm_bloco["origem_snap_dist_m"] = osrm_snap.get("orig_snap_dist_m")
+        osrm_bloco["destino_snap_dist_m"] = osrm_snap.get("dest_snap_dist_m")
+    return {
+        "origem": {
+            "texto_original": origem_txt, "normalizado": norm_o, "validado_oficial": end_of_o,
+            "coordenada": f"{lat_o}, {lon_o}", "fonte_geocodificacao": fonte_geo_o, "score_confianca": score_o,
+        },
+        "destino": {
+            "texto_original": destino_txt, "normalizado": norm_d, "validado_oficial": end_of_d,
+            "coordenada": f"{lat_d}, {lon_d}", "fonte_geocodificacao": fonte_geo_d, "score_confianca": score_d,
+        },
+        "google_maps": {
+            "origem_enviada": google_param_o, "destino_enviada": google_param_d,
+            "url": google_link, "distancia_km": km_google, "tipo_entrada": "Nome oficial validado",
+        },
+        "osrm": osrm_bloco,
+        "validacao_espacial": validacao_espacial,
+        "consenso": {"vencedor": vencedor, "divergencia_km": div_abs, "divergencia_pct": div_pct},
+    }
+
+
 def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     start_total = time.time()
     origem_clean, destino_clean = str(origem).strip(), str(destino).strip()
@@ -3680,7 +3790,45 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     res_osrm = None
     if lat_o != 0.0 and lat_d != 0.0:
         res_osrm = API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d)
-        
+
+    # [OSRM-SNAP + VALID-ESPACIAL - 40ª geração] Extrai o snap do OSRM (coordenada projetada na
+    # via + distância do snap) e faz a VALIDAÇÃO ESPACIAL: confere se os pontos snapados continuam
+    # dentro dos limites (bounding box) da UF esperada e se o snap não foi grosseiro. É a evidência
+    # da causa raiz E o mecanismo de "só aceitar rota com confiança mínima": se o snap jogou a
+    # origem/destino para FORA da UF pedida (erro real, não snap normal), o OSRM não pode vencer.
+    _osrm_snap = res_osrm[5] if (res_osrm and len(res_osrm) > 5) else None
+    validacao_espacial = None
+    osrm_invalido_uf = False
+    if _osrm_snap:
+        _LIMIAR_SNAP_M = 3000.0
+
+        def _dentro_uf(_uf, _lat, _lon):
+            _box = BOUNDING_BOXES_UF.get(_uf) if _uf else None
+            if not _box or _lat is None or _lon is None:
+                return None  # sem UF/box → não valida (evita falso alerta)
+            return (_box["lat_min"] <= _lat <= _box["lat_max"] and _box["lon_min"] <= _lon <= _box["lon_max"])
+
+        _o_dentro = _dentro_uf(_uf_o, _osrm_snap.get("orig_snap_lat"), _osrm_snap.get("orig_snap_lon"))
+        _d_dentro = _dentro_uf(_uf_d, _osrm_snap.get("dest_snap_lat"), _osrm_snap.get("dest_snap_lon"))
+        _o_snap_m = _osrm_snap.get("orig_snap_dist_m", 0.0)
+        _d_snap_m = _osrm_snap.get("dest_snap_dist_m", 0.0)
+        _alertas = []
+        if _o_snap_m > _LIMIAR_SNAP_M:
+            _alertas.append(f"Origem: snap de {_o_snap_m:.0f} m até a via mais próxima (malha OSM esparsa na região).")
+        if _d_snap_m > _LIMIAR_SNAP_M:
+            _alertas.append(f"Destino: snap de {_d_snap_m:.0f} m até a via mais próxima (malha OSM esparsa na região).")
+        if _o_dentro is False:
+            _alertas.append(f"Origem snapada FORA dos limites de {_uf_o} — ponto viário deslocado para outra área.")
+            osrm_invalido_uf = True
+        if _d_dentro is False:
+            _alertas.append(f"Destino snapado FORA dos limites de {_uf_d} — ponto viário deslocado para outra área.")
+            osrm_invalido_uf = True
+        validacao_espacial = {
+            "origem_dentro_uf": _o_dentro, "destino_dentro_uf": _d_dentro,
+            "origem_snap_m": _o_snap_m, "destino_snap_m": _d_snap_m,
+            "limiar_snap_m": _LIMIAR_SNAP_M, "alertas": _alertas,
+        }
+
     if res_google or res_osrm:
         # ======================================================================
         # [ARQ-HIBRIDO - 26ª geração] ARQUITETURA HÍBRIDA REESTRUTURADA: GOOGLE + OSRM
@@ -3716,9 +3864,14 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         n_alt_osrm = (res_osrm[3] if res_osrm and len(res_osrm) > 3 else 1)
         
         # Decide o vencedor pela MENOR distância (com tolerância de 2% a favor do Google).
+        # [VALID-ESPACIAL] Guard: se a validação espacial reprovou o OSRM (snap jogou origem/
+        # destino para FORA da UF pedida — erro objetivo), ele NÃO vence o Google. Isso NÃO altera
+        # a regra "menor distância": apenas rejeita um resultado do OSRM comprovadamente inválido,
+        # atendendo ao pedido de "só aceitar a rota com nível mínimo de confiança". Quando o Google
+        # está indisponível, o OSRM ainda é usado (melhor que nada), porém com o alerta registrado.
         osrm_vence = False
         if res_google and res_osrm:
-            osrm_vence = km_o < km_g * 0.98
+            osrm_vence = (km_o < km_g * 0.98) and not osrm_invalido_uf
             _tempo_osrm_str = f"{res_osrm[1]} min" if res_osrm[1] < 60 else f"{res_osrm[1] // 60} h {res_osrm[1] % 60} min"
             comparativo_prov = _montar_comparativo_provedores(
                 km_g, res_google[1], km_o, _tempo_osrm_str, "OSRM" if osrm_vence else "Google")
@@ -3730,7 +3883,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
             _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
             balsa_rota = res_osrm[2]
-            score_rota = res_osrm[5] if len(res_osrm) > 5 else 88
+            score_rota = 88  # OSRM não fornece score próprio; valor fixo (idx 5 agora é snap_info)
             # [VIS-NAMES] Mapa EMBARCADO desenha a geometria EXATA do OSRM com rótulos por
             # NOME oficial (origem/destino), não coordenadas — conforme o pedido.
             link_embed = _gerar_mapa_rota_osrm(_geo_osrm, lat_o, lon_o, lat_d, lon_d,
@@ -3814,6 +3967,12 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             
         tempo_roteamento = round(time.time() - start_rot, 2)
         tempo_total = round(time.time() - start_total, 2)
+        # [AUDIT-MOTORES] Rastro das consultas aos motores (mesma geocodificação validada p/ todos)
+        auditoria_motores = _montar_auditoria_motores(
+            origem_clean, destino_clean, end_oficial_o, end_oficial_d,
+            lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
+            orig_param_fb, dest_param_fb, link_rota, km_g, km_o, fonte_rota,
+            osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial)
         # [M11] RotaPipeline NamedTuple — acesso por nome elimina bugs de índice
         retorno = RotaPipeline(
             distancia=km_rota, tempo=tempo_rota, link_rota=link_rota, balsas=balsa_rota,
@@ -3829,7 +3988,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             comparativo_provedores=comparativo_prov,
             link_osrm_viewer=link_osrm_viewer,
             link_embed_comparativo=link_embed_comparativo,
-            link_rota_comparativo=link_rota_comparativo
+            link_rota_comparativo=link_rota_comparativo,
+            auditoria_motores=auditoria_motores
         )
         CACHE_L1_ROTAS[chave_rota_cache] = retorno
         _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
@@ -3852,6 +4012,12 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                                                         provedor="Projeção Geodésica (estimativa)", cor="#ea8600")
     else:
         link_embed_geodesico = link_embed_fallback
+    # [AUDIT-MOTORES] Rastro também no fallback geodésico (motores de rota indisponíveis nesta execução)
+    auditoria_motores = _montar_auditoria_motores(
+        origem_clean, destino_clean, end_oficial_o, end_oficial_d,
+        lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
+        orig_param_fb, dest_param_fb, link_fallback, None, None, "Geodésico Adaptativo",
+        osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial)
     retorno = RotaPipeline(
         distancia=km_terrestre, tempo=tempo_geo_str, link_rota=link_fallback, balsas="Não",
         dist_linha_reta=dist_linha_reta, fonte_rota="Geodésico Adaptativo", score_rota=50,
@@ -3862,7 +4028,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         lat_origem=lat_o, lon_origem=lon_o, lat_destino=lat_d, lon_destino=lon_d,
         tempo_geocoding=tempo_geocoding, tempo_roteamento=tempo_roteamento, tempo_total=tempo_total,
         xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_fallback,
-        link_embed=link_embed_geodesico, status_linha_reta=status_linha_reta
+        link_embed=link_embed_geodesico, status_linha_reta=status_linha_reta,
+        auditoria_motores=auditoria_motores
     )
     CACHE_L1_ROTAS[chave_rota_cache] = retorno
     _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
@@ -4528,7 +4695,87 @@ with tab_individual:
                         st.write("**Justificativa Espacial:**")
                         for just in res_ind[27]: 
                             st.caption(f"• {just}")
-                            
+
+                # [AUDIT-MOTORES - 39ª geração] Painel de auditoria das consultas aos motores de rota.
+                # Mostra o rastro completo: texto original → normalizado → validado → coordenada →
+                # parâmetros/URLs enviados a Google e OSRM → consenso. Evidencia que ambos os motores
+                # partem da MESMA geocodificação validada (camada única de identificação).
+                _aud = res_ind[39] if len(res_ind) > 39 else None
+                if isinstance(_aud, dict) and _aud:
+                    with st.expander("🔎 Auditoria das Consultas aos Motores de Rota", expanded=False):
+                        st.caption("Rastreabilidade total: do texto informado até os parâmetros efetivamente enviados a cada motor. "
+                                   "Todos os motores partem da **mesma** origem/destino validados (camada única de identificação).")
+                        _o = _aud.get("origem", {}); _d = _aud.get("destino", {})
+                        st.markdown("##### 1️⃣ Identificação unificada (normalização → validação)")
+                        _ca, _cb = st.columns(2)
+                        with _ca:
+                            st.markdown("**📍 Origem**")
+                            st.write(f"**Texto original:** {_o.get('texto_original','—')}")
+                            st.write(f"**Normalizado:** {_o.get('normalizado','—')}")
+                            st.write(f"**Validado (oficial):** {_o.get('validado_oficial','—')}")
+                            st.write(f"**Coordenada validada:** {_o.get('coordenada','—')}")
+                            st.caption(f"Fonte: {_o.get('fonte_geocodificacao','—')} · Score: {_o.get('score_confianca','—')}/100")
+                        with _cb:
+                            st.markdown("**🏁 Destino**")
+                            st.write(f"**Texto original:** {_d.get('texto_original','—')}")
+                            st.write(f"**Normalizado:** {_d.get('normalizado','—')}")
+                            st.write(f"**Validado (oficial):** {_d.get('validado_oficial','—')}")
+                            st.write(f"**Coordenada validada:** {_d.get('coordenada','—')}")
+                            st.caption(f"Fonte: {_d.get('fonte_geocodificacao','—')} · Score: {_d.get('score_confianca','—')}/100")
+                        st.divider()
+                        _g = _aud.get("google_maps", {}); _os = _aud.get("osrm", {})
+                        st.markdown("##### 2️⃣ Consulta enviada ao **Google Maps**")
+                        st.write(f"**Origem enviada:** {_g.get('origem_enviada','—')}  ·  **Destino enviado:** {_g.get('destino_enviada','—')}")
+                        st.caption(f"Tipo de entrada: {_g.get('tipo_entrada','—')} · Distância retornada: {_g.get('distancia_km','—')} km")
+                        if _g.get("url"):
+                            st.code(_g["url"], language="text")
+                        st.markdown("##### 3️⃣ Consulta enviada ao **OSRM**")
+                        st.write(f"**Origem enviada (coord):** {_os.get('origem_enviada','—')}  ·  **Destino enviado (coord):** {_os.get('destino_enviada','—')}")
+                        st.caption(f"Tipo de entrada: {_os.get('tipo_entrada','—')} · Distância retornada: {_os.get('distancia_km','—')} km")
+                        if _os.get("url"):
+                            st.code(_os["url"], language="text")
+                        # [OSRM-SNAP] Coordenada ENVIADA × coordenada USADA (após snap à malha viária)
+                        if _os.get("origem_usada_pos_snap") is not None:
+                            st.markdown("**📌 Snap do OSRM (projeção na malha viária OSM)**")
+                            _sc1, _sc2 = st.columns(2)
+                            with _sc1:
+                                st.write(f"**Origem — enviada:** {_os.get('origem_enviada','—')}")
+                                st.write(f"**Origem — usada (pós-snap):** {_os.get('origem_usada_pos_snap','—')}")
+                                _od = _os.get('origem_snap_dist_m')
+                                st.caption(f"Deslocamento do snap: **{_od:.0f} m**" if isinstance(_od, (int, float)) else "Deslocamento: —")
+                            with _sc2:
+                                st.write(f"**Destino — enviada:** {_os.get('destino_enviada','—')}")
+                                st.write(f"**Destino — usada (pós-snap):** {_os.get('destino_usada_pos_snap','—')}")
+                                _dd = _os.get('destino_snap_dist_m')
+                                st.caption(f"Deslocamento do snap: **{_dd:.0f} m**" if isinstance(_dd, (int, float)) else "Deslocamento: —")
+                            st.caption("ℹ️ O OSRM **projeta** a coordenada enviada na via mais próxima da malha OpenStreetMap. "
+                                       "Um deslocamento grande indica malha esparsa na região — é a **causa raiz** de origem/destino "
+                                       "aparecerem alguns km afastados no OSRM (o Google re-resolve o nome na própria malha).")
+                        # [VALID-ESPACIAL] Resultado da validação espacial da rota
+                        _val = _aud.get("validacao_espacial")
+                        if isinstance(_val, dict):
+                            st.markdown("**🛡️ Validação espacial da rota**")
+                            def _fmt_dentro(v):
+                                return "✅ dentro da UF" if v is True else ("❌ FORA da UF" if v is False else "— (sem UF p/ validar)")
+                            st.caption(f"Origem: {_fmt_dentro(_val.get('origem_dentro_uf'))} · "
+                                       f"Destino: {_fmt_dentro(_val.get('destino_dentro_uf'))} · "
+                                       f"limiar de snap: {_val.get('limiar_snap_m',0):.0f} m")
+                            if _val.get("alertas"):
+                                for _al in _val["alertas"]:
+                                    st.warning(f"⚠️ {_al}")
+                            else:
+                                st.success("✅ Sem inconsistências: origem e destino dentro dos limites esperados e snap dentro do limiar.")
+                        st.divider()
+                        _cons = _aud.get("consenso", {})
+                        st.markdown("##### 4️⃣ Consenso e divergência entre motores")
+                        _cc1, _cc2, _cc3 = st.columns(3)
+                        _cc1.metric("Motor vencedor", _cons.get("vencedor", "—"))
+                        _cc2.metric("Divergência (km)", f"{_cons.get('divergencia_km')}" if _cons.get('divergencia_km') is not None else "—")
+                        _cc3.metric("Divergência (%)", f"{_cons.get('divergencia_pct')}%" if _cons.get('divergencia_pct') is not None else "—")
+                        st.caption("💡 As coordenadas enviadas ao OSRM são **idênticas** às coordenadas validadas acima; o Google recebe o "
+                                   "**nome oficial** correspondente à mesma geocodificação. Ambos operam sobre a mesma localidade validada — "
+                                   "a diferença remanescente vem do **snap** do OSRM à malha viária, agora medido e validado acima.")
+
                 url_iframe = res_ind[29]
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _link_osrm_viewer = res_ind[36] if len(res_ind) > 36 else ""
@@ -5122,7 +5369,9 @@ with tab_alocacao:
             if st.button("⏹️ Cancelar Alocação", key="cancel_alo"):
                 for _k in ['alo_em_andamento', 'alo_fase', 'alo_tarefas', 'alo_resultados', 'alo_chunk_idx',
                            'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map',
-                           'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas']:
+                           'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
+                           'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
+                           'alo_dest_geo_acc', 'alo_dest_geo_idx']:
                     st.session_state.pop(_k, None)
                 st.warning("Alocação cancelada pelo usuário.")
                 st.rerun()
@@ -5155,74 +5404,116 @@ with tab_alocacao:
                     st.error("CRÍTICO: Nenhuma Base/Hub pôde ser geocodificada no mapa.")
                     _prep_status.empty(); _prep_bar.empty()
                 else:
-                    # [FIX-ALOC] Geocodificação PARALELA de destinos (era loop serial)
-                    _prep_status.text(f"🛰️ Fase 2/3: Geocodificando {len(dests_unicos)} Endereços de Origem em paralelo...")
-                    _prep_bar.progress(0.45)
-                    dest_geo = geocodificar_endpoints_paralelo(dests_unicos)
-                    dest_coords = {d: (v[0], v[1], v[2]) for d, v in dest_geo.items()}
-                    for d, v in dest_geo.items():
-                        st.session_state['logs_auditoria_alocacao'].append({
-                            "Categoria": "Endereço (Origem)", "Nome Original": d,
-                            "Coordenada": f"{v[0]}, {v[1]}", "Endereço Oficializado": v[2],
-                            "Score": v[3], "Validação XAI": " | ".join(v[4]) if isinstance(v[4], list) else "N/A"})
-                    
-                    # [FIX-ALOC] Matriz competitiva VETORIZADA (era loop aninhado O(N×M))
-                    _prep_status.text("⚡ Fase 3/3: Calculando Matriz Competitiva (vetorizada)...")
-                    _prep_bar.progress(0.75)
-                    dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map = \
-                        calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos)
-                    
-                    df_pares = df_dest.copy()
-                    df_pares['Origem'] = df_pares[dest_col_name].astype(str).str.strip()
-                    df_pares['Destino'] = df_pares['Origem'].map(dest_to_hub).fillna("FALHA_GEO_ORIGEM")
-                    
-                    novas_colunas = NOVAS_COLUNAS_ALOCACAO
-                    colunas_numericas = COLUNAS_NUMERICAS_ALOCACAO
-                    for col in novas_colunas:
-                        if col in colunas_numericas:
-                            if col not in df_pares.columns:
-                                df_pares[col] = 0.0
-                            df_pares[col] = pd.to_numeric(df_pares[col], errors='coerce').fillna(0.0).astype(float)
-                        else:
-                            if col not in df_pares.columns:
-                                df_pares[col] = "Não Informado"
-                            df_pares[col] = df_pares[col].astype(object)
-                    
-                    # [P30] Extração vetorizada de pares únicos (era iterrows)
-                    _o_alo = df_pares['Origem'].fillna('').astype(str).str.strip()
-                    _d_alo = df_pares['Destino'].fillna('').astype(str).str.strip()
-                    _mask_alo = (
-                        (_o_alo != '') & (_d_alo != '') &
-                        (_o_alo != 'FALHA_GEO_ORIGEM') & (_d_alo != 'NENHUM_HUB_VALIDO') &
-                        (_o_alo.str.lower() != 'nan') & (_d_alo.str.lower() != 'nan')
-                    )
-                    pares_unicos_alo = set(zip(_o_alo[_mask_alo], _d_alo[_mask_alo]))
-                    MAPA_PRIORIDADE = MAPA_PRIORIDADE_GLOBAL
-                    tarefas_priorizadas_alo = []
-                    for (o, d) in pares_unicos_alo:
-                        tipo_o = semantica.classificar_entrada(semantica.normalizar(o))
-                        tarefas_priorizadas_alo.append((MAPA_PRIORIDADE.get(tipo_o, 99), (o, d)))
-                    tarefas_priorizadas_alo.sort(key=lambda x: x[0])
-                    
+                    # [FLUXO-CONTINUO - 39ª geração] A geocodificação dos destinos (que pode ser
+                    # MUITO grande) deixa de ser síncrona aqui — era o PONTO DE ESTOL RESTANTE da
+                    # Alocação (uma pré-carga longa numa única execução estourava o WebSocket antes
+                    # do st.rerun()). Passa a ser uma FASE time-boxed própria ('geo_destinos'), com
+                    # mini-lotes de ~8s + rerun. Os hubs (geralmente poucos) já foram geocodificados.
                     _prep_bar.empty(); _prep_status.empty()
-                    
-                    # Persiste estado e inicia o motor de chunks de roteamento
                     st.session_state['alo_em_andamento'] = True
-                    st.session_state['alo_tarefas'] = tarefas_priorizadas_alo
-                    st.session_state['alo_resultados'] = {}
-                    st.session_state['alo_chunk_idx'] = 0
-                    st.session_state['alo_df_pares'] = df_pares
-                    st.session_state['alo_start_clock'] = time.time()
-                    st.session_state['alo_total'] = len(pares_unicos_alo)
-                    st.session_state['alo_runner_map'] = runner_up_map
-                    st.session_state['alo_dest_linha_reta'] = dest_to_linha_reta
-                    st.session_state['alo_dest_status_lr'] = dest_to_status_lr
+                    st.session_state['alo_fase'] = 'geo_destinos'
+                    st.session_state['alo_dests_unicos'] = dests_unicos
+                    st.session_state['alo_hubs_validos'] = hubs_validos
+                    st.session_state['alo_dest_col_name'] = dest_col_name
+                    st.session_state['alo_df_dest'] = df_dest
+                    st.session_state['alo_novas_colunas'] = NOVAS_COLUNAS_ALOCACAO
+                    st.session_state['alo_dest_geo_acc'] = {}
+                    st.session_state['alo_dest_geo_idx'] = 0
                     st.session_state['alo_df_dest_cols'] = list(df_dest.columns)
-                    st.session_state['alo_novas_colunas'] = novas_colunas
+                    st.session_state['alo_start_clock'] = time.time()
                     st.rerun()
+
+        # ---- FASE GEO-DESTINOS (time-boxed): geocodifica os destinos e monta a matriz ----
+        # Mesma filosofia do lote: execuções curtas (~8s) que continuam sozinhas até terminar.
+        if st.session_state.get('alo_em_andamento', False) and st.session_state.get('alo_fase') == 'geo_destinos':
+            _dests = st.session_state['alo_dests_unicos']
+            _dgidx = st.session_state['alo_dest_geo_idx']
+            _dgtotal = len(_dests)
+            _dgacc = st.session_state['alo_dest_geo_acc']
+            _dgpct = (_dgidx / _dgtotal) if _dgtotal else 1.0
+            st.markdown("#### 🛰️ Geocodificando Endereços de Origem (etapa 1 de 2)")
+            st.progress(min(1.0, _dgpct))
+            st.caption(f"Validando **{_dgtotal:,}** endereços — {_dgidx:,}/{_dgtotal:,} concluídos. "
+                       f"**O processo continua automaticamente; não clique novamente.**")
+            _BUDGET_DG = 8.0
+            _MINI_DG = max(8, WORKERS_DISPONIVEIS)
+            _t_dg = time.time()
+            _dgidx_local = _dgidx
+            while _dgidx_local < _dgtotal:
+                _lote_d = _dests[_dgidx_local:_dgidx_local + _MINI_DG]
+                if not _lote_d:
+                    break
+                try:
+                    _res_d = geocodificar_endpoints_paralelo(_lote_d)
+                    _dgacc.update(_res_d)
+                except Exception as e:
+                    logger.error(f"[FLUXO-CONTINUO] Erro em mini-lote de geocodificação de destinos (idx {_dgidx_local}), isolado: {e}")
+                _dgidx_local += _MINI_DG
+                if (time.time() - _t_dg) >= _BUDGET_DG:
+                    break
+            st.session_state['alo_dest_geo_acc'] = _dgacc
+            st.session_state['alo_dest_geo_idx'] = min(_dgidx_local, _dgtotal)
+
+            if st.session_state['alo_dest_geo_idx'] >= _dgtotal:
+                # Geocodificação concluída → matriz competitiva + tarefas (rápido/vetorizado)
+                _hubs_validos = st.session_state['alo_hubs_validos']
+                _dest_col_name = st.session_state['alo_dest_col_name']
+                _df_dest = st.session_state['alo_df_dest']
+                _novas_colunas = st.session_state['alo_novas_colunas']
+                dest_coords = {d: (v[0], v[1], v[2]) for d, v in _dgacc.items()}
+                _logs = st.session_state.get('logs_auditoria_alocacao', [])
+                for d, v in _dgacc.items():
+                    _logs.append({
+                        "Categoria": "Endereço (Origem)", "Nome Original": d,
+                        "Coordenada": f"{v[0]}, {v[1]}", "Endereço Oficializado": v[2],
+                        "Score": v[3], "Validação XAI": " | ".join(v[4]) if isinstance(v[4], list) else "N/A"})
+                st.session_state['logs_auditoria_alocacao'] = _logs
+                dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map = \
+                    calcular_matriz_competitiva_vetorizada(dest_coords, _hubs_validos)
+                df_pares = _df_dest.copy()
+                df_pares['Origem'] = df_pares[_dest_col_name].astype(str).str.strip()
+                df_pares['Destino'] = df_pares['Origem'].map(dest_to_hub).fillna("FALHA_GEO_ORIGEM")
+                _colunas_numericas = COLUNAS_NUMERICAS_ALOCACAO
+                for col in _novas_colunas:
+                    if col in _colunas_numericas:
+                        if col not in df_pares.columns:
+                            df_pares[col] = 0.0
+                        df_pares[col] = pd.to_numeric(df_pares[col], errors='coerce').fillna(0.0).astype(float)
+                    else:
+                        if col not in df_pares.columns:
+                            df_pares[col] = "Não Informado"
+                        df_pares[col] = df_pares[col].astype(object)
+                _o_alo = df_pares['Origem'].fillna('').astype(str).str.strip()
+                _d_alo = df_pares['Destino'].fillna('').astype(str).str.strip()
+                _mask_alo = (
+                    (_o_alo != '') & (_d_alo != '') &
+                    (_o_alo != 'FALHA_GEO_ORIGEM') & (_d_alo != 'NENHUM_HUB_VALIDO') &
+                    (_o_alo.str.lower() != 'nan') & (_d_alo.str.lower() != 'nan')
+                )
+                pares_unicos_alo = set(zip(_o_alo[_mask_alo], _d_alo[_mask_alo]))
+                tarefas_priorizadas_alo = []
+                for (o, d) in pares_unicos_alo:
+                    tipo_o = semantica.classificar_entrada(semantica.normalizar(o))
+                    tarefas_priorizadas_alo.append((MAPA_PRIORIDADE_GLOBAL.get(tipo_o, 99), (o, d)))
+                tarefas_priorizadas_alo.sort(key=lambda x: x[0])
+                st.session_state['alo_tarefas'] = tarefas_priorizadas_alo
+                st.session_state['alo_resultados'] = {}
+                st.session_state['alo_chunk_idx'] = 0
+                st.session_state['alo_df_pares'] = df_pares
+                st.session_state['alo_total'] = len(pares_unicos_alo)
+                st.session_state['alo_runner_map'] = runner_up_map
+                st.session_state['alo_dest_linha_reta'] = dest_to_linha_reta
+                st.session_state['alo_dest_status_lr'] = dest_to_status_lr
+                st.session_state['alo_df_dest_cols'] = list(_df_dest.columns)
+                st.session_state['alo_fase'] = 'processar'
+                for _tk in ['alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name',
+                            'alo_df_dest', 'alo_dest_geo_acc', 'alo_dest_geo_idx']:
+                    st.session_state.pop(_tk, None)
+            time.sleep(0.05)
+            st.rerun()
         
         # ---- FASE 2: ROTEAMENTO EM CHUNKS (auto-continuação) ----
-        if st.session_state.get('alo_em_andamento', False):
+        if st.session_state.get('alo_em_andamento', False) and st.session_state.get('alo_fase') == 'processar':
             _tarefas = st.session_state['alo_tarefas']
             _total = st.session_state['alo_total']
             _idx = st.session_state['alo_chunk_idx']
@@ -5339,7 +5630,9 @@ with tab_alocacao:
                 
                 for _k in ['alo_em_andamento', 'alo_tarefas', 'alo_resultados', 'alo_chunk_idx',
                            'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map',
-                           'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas']:
+                           'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
+                           'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
+                           'alo_dest_geo_acc', 'alo_dest_geo_idx']:
                     st.session_state.pop(_k, None)
                 st.rerun()
         
@@ -6392,6 +6685,61 @@ with tab_enciclopedia:
         continua curta**. Como o progresso é salvo a cada passo, o lote **retoma exatamente de onde parou**
         se houver qualquer interrupção — e, na prática, **avança sozinho até o fim, sem novo clique**.
         Isso se aplica tanto à aba **Processamento em Lote** quanto à aba **Alocação**.
+        """)
+
+    with st.expander("15. Camada Única de Identificação e Auditoria das Consultas aos Motores"):
+        st.markdown("""
+        **Uma só verdade para todos os motores.** Origem e destino passam por uma **única camada** de
+        identificação antes de qualquer roteamento:
+
+        ```text
+        Texto do usuário → Normalização (acentos, caixa, abreviações)
+                         → Validação na base nacional IBGE (município, UF, código)
+                         → Desambiguação (homônimos pela UF)
+                         → Representação ÚNICA: nome oficial + coordenada validada
+        ```
+
+        Dessa representação única, **todos os motores partem do mesmo ponto**:
+        - **Google Maps** recebe o **nome oficial** (para desenhar a rota pelos nomes, sem cair em coordenadas);
+        - **OSRM** recebe a **coordenada validada** (a mesma do geocode) — não reinterpreta o texto por conta própria;
+        - qualquer motor futuro (GraphHopper, Valhalla) usaria exatamente a mesma origem/destino validados.
+
+        Antes, o OSRM podia partir de um ponto genérico; agora ele usa a **mesma coordenada validada** (com a
+        blindagem anti-alucinação já aplicada), eliminando divergências de interpretação.
+
+        **Auditoria total (novo painel).** Na aba de rota individual, o expander **🔎 Auditoria das Consultas aos
+        Motores de Rota** mostra, campo a campo: o texto original, o normalizado, o validado, a coordenada, o que
+        foi enviado a cada motor (nome para o Google, coordenada para o OSRM), as **URLs completas** e o consenso
+        (vencedor + divergência em km e %). É a rastreabilidade completa, do que você digitou ao que cada motor recebeu.
+        """)
+
+    with st.expander("16. Por que o OSRM às vezes diverge do Google (snap à malha viária) e como validamos"):
+        st.markdown("""
+        **A causa raiz — comprovada.** Google e OSRM recebem a **mesma** origem/destino validados. A diferença
+        que às vezes aparece **não** vem de interpretações distintas do texto, e sim de como cada motor trata a
+        coordenada:
+
+        | | Google Maps | OSRM |
+        |---|---|---|
+        | Entrada | **nome oficial** | **coordenada validada** |
+        | O que faz com ela | re-resolve o nome na **própria** malha | **projeta (snap)** a coordenada na via mais próxima do **OpenStreetMap** |
+        | Efeito em área rural | usa seu ponto/rede (cobertura ampla) | se a malha OSM é esparsa, o snap pode deslocar a origem/destino em **quilômetros** |
+
+        Ou seja: o OSRM **não usa a coordenada enviada diretamente** — ele a "gruda" no nó viário mais próximo.
+        Em regiões com poucas vias mapeadas no OSM, esse *snap* afasta o ponto do local pedido. **É a causa raiz.**
+
+        **Como tornamos isso auditável e seguro:**
+        - O painel **🔎 Auditoria das Consultas aos Motores** mostra, para o OSRM, a **coordenada enviada**, a
+          **coordenada usada após o snap** e o **deslocamento em metros** — a evidência direta.
+        - Uma **validação espacial** confere se os pontos (após o snap) continuam **dentro dos limites da UF**
+          pedida e se o snap ficou dentro do limiar. Alertas são exibidos quando algo foge do esperado.
+        - **Guard de confiança:** se o snap do OSRM jogar a origem ou o destino para **fora da UF** solicitada
+          (um erro objetivo), o OSRM **não é aceito como vencedor** — prevalece o Google. A regra de "menor
+          distância" permanece; apenas rejeitamos um resultado do OSRM comprovadamente inválido. Quando o Google
+          está indisponível, o OSRM ainda é usado (melhor que nada), mas com o alerta registrado.
+
+        Assim, garantimos que a rota escolhida representa **fielmente** a origem e o destino solicitados, com total
+        rastreabilidade dos ajustes.
         """)
 
 with tab_manual:
