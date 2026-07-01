@@ -62,6 +62,20 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (37ª geração) → COMPARAÇÃO DUPLA DE ROTAS + RANKING MULTI-INDICADOR + DOCS
+#     [VIS-DUAL + CLASS-MULTI]. (1) A tela individual passa a exibir SEMPRE os dois mapas e os
+#     dois links (vencedor + comparativo), não importa quem vença: Google vence → mapa Google
+#     (principal) + mapa OSRM (comparativo, geometria exata); OSRM vence → mapa OSRM (principal)
+#     + mapa Google (comparativo). Dois campos novos no RotaPipeline (37/38, com default: 39
+#     campos no total; índices 0-36 preservados). Bloco de UI estritamente aditivo — não altera
+#     o bloco do vencedor. (2) Nova seção "Ranking Multi-Indicador por Rota" na aba Classificação:
+#     ordena/filtra rota a rota por indicadores derivados (sinuosidade = viária÷reta, tempo/km,
+#     km/min, velocidade média, diferença viária−reta, scores), com critério de desempate,
+#     filtros (motor/UF/top N) e download CSV+XLSX. Divisões por zero tratadas (sem crash).
+#     (3) Docs atualizadas: guia da aba, Enciclopédia Core (seções 12 e 13, IBGE código/centróide,
+#     mapas duais) e Manual (seção 6). AUDITADO o cálculo da linha reta: já é padrão-ouro
+#     (GeographicLib/Karney WGS-84 <1mm → Geopy → Haversine IUGG 6371.0088) — nada a alterar.
+#     Sem regressão, sem perda de exatidão/desempenho.
 #   v3.8 (36ª geração) → BASE NACIONAL IBGE: CÓDIGO OFICIAL + CENTRÓIDE MUNICIPAL REARMADO
 #     [BASE-IBGE-COD + BASE-IBGE-CENTROIDE]. A base do IBGE já era a fonte nacional integrada
 #     (carregar_dados_ibge: municípios/estados/distritos, pickle 30 dias) e o reconhecimento por
@@ -317,6 +331,14 @@ class RotaPipeline(NamedTuple):
     # que abre o próprio app num visualizador que reproduz EXATAMENTE o mapa embarcado
     # (mesma geometria, mesmos nomes). Vazio quando o Google vence ou no fallback geodésico.
     link_osrm_viewer: str = ""
+    # [VIS-DUAL - 37ª geração] Mapa + link do provedor COMPARATIVO (o NÃO-vencedor), para que
+    # AMBAS as rotas (Google e OSRM) sejam sempre visualizáveis — auditabilidade máxima.
+    # Índices 37/38, default "" (preserva 0-36 e toda a compatibilidade).
+    #   link_embed_comparativo: Google vence → mapa Leaflet do OSRM (geometria exata);
+    #     OSRM vence → embed do Google (URL). Vazio se o outro provedor não respondeu / geodésico.
+    #   link_rota_comparativo: link do provedor comparativo (viewer OSRM ou link Google navegável).
+    link_embed_comparativo: str = ""
+    link_rota_comparativo: str = ""
 
 def _montar_comparativo_provedores(km_g, tempo_g, km_o, tempo_o, fonte_vencedora):
     """[COMP-PROV - 21ª geração] Codifica os dados de comparação entre Google e OSRM
@@ -680,15 +702,15 @@ _GUIA_ABAS = {
         "dicas": "Use 'Contagem Distinta' para descobrir quantos municípios/clientes únicos existem em cada grupo. Exporte a 'Multi-Abas' para entregar à chefia.",
     },
     "classificacao": {
-        "o_que_faz": "Agrupa municípios em **faixas personalizadas** (ex: 'Cidades Críticas', 'Cidades Normais') com base em distância ou volume de rotas, gerando uma tabela mestre de segmentação para tabelas de frete.",
-        "quando_usar": "Quando você precisa criar regras de negócio por faixa — por exemplo, definir preços de frete diferentes por distância, ou priorizar cidades por volume.",
-        "dados": "Usa o último lote processado. Você define as faixas (limites e rótulos) num editor visual.",
-        "preenchimento": "1. Escolha a base da classificação (Distância ou Volume de Rotas).\n        2. Edite a tabela de faixas: adicione/remova linhas, defina limites e cores.\n        3. O mapa de calor e a tabela mestre se atualizam automaticamente.",
-        "apos_executar": "O sistema enquadra cada município na faixa correspondente e gera um mapa temático colorido + uma tabela de segmentação pronta para download.",
-        "interpretar": "Cada cor representa uma faixa. A tabela mestre lista cada município com sua faixa e rótulo — use-a como base para regras de frete.",
-        "exemplos": "Faixa 1 a 500 km = Verde (Normal); 501 km+ = Vermelho (Crítico/Frete majorado).",
-        "erros_comuns": "Deixar faixas sobrepostas ou com lacunas; não processar um lote antes; limites em ordem ilógica.",
-        "dicas": "Comece com poucas faixas e refine. Use rótulos claros que seu time de operações entenda direto.",
+        "o_que_faz": "Tem **duas ferramentas**: (1) agrupa municípios em **faixas personalizadas** (ex: 'Cidades Críticas', 'Normais') por distância ou volume, gerando uma tabela mestre de segmentação; e (2) um **Ranking Multi-Indicador por Rota** que ordena e filtra rota a rota por dezenas de indicadores logísticos derivados (sinuosidade, tempo/km, velocidade média, diferença viária−reta, scores...).",
+        "quando_usar": "Use as **faixas** para criar regras de frete por distância/volume. Use o **Ranking Multi-Indicador** para achar gargalos, rotas anômalas (muito sinuosas, muito lentas) e comparar desempenho entre motores.",
+        "dados": "Usa o último lote processado. Nas faixas você define os limites; no ranking você escolhe o indicador de ordenação, o critério de desempate e os filtros.",
+        "preenchimento": "1. Escolha a base da classificação (Distância ou Volume) e edite as faixas (limites, rótulos, cores).\n        2. Role até o **Ranking Multi-Indicador por Rota**: escolha o critério principal (ex: Índice de Sinuosidade), um desempate opcional, a ordem (crescente/decrescente) e filtre por motor vencedor / UF / top N.",
+        "apos_executar": "As faixas geram mapa temático + tabela de segmentação. O ranking gera uma tabela ordenável com todos os indicadores derivados e **botões de download (CSV e XLSX)** dos dados que originaram o ranking.",
+        "interpretar": "Nas faixas, cada cor é um nível. No ranking: *Índice de Sinuosidade* = viária ÷ linha reta (1,0 = rota reta; quanto maior, mais serpenteia); *Tempo por km* e *Velocidade Média* revelam gargalos; *Diferença Viária−Reta* destaca grandes desvios geográficos.",
+        "exemplos": "Faixa 1–500 km = Verde (Normal); 501 km+ = Vermelho (Frete majorado). No ranking: ordene por *Índice de Sinuosidade* (decrescente) para ver as rotas que mais desviam da linha reta — candidatas a revisão de trajeto ou de geocodificação.",
+        "erros_comuns": "Faixas sobrepostas ou com lacunas; não processar um lote antes; no ranking, esquecer que rotas com distância viária 0 (pontos coincidentes) aparecem com alguns indicadores em branco (divisão indefinida).",
+        "dicas": "Combine critério principal + desempate no ranking para segmentações compostas (ex: sinuosidade desc, depois score global desc). Baixe o CSV/XLSX para auditar externamente.",
     },
     "enciclopedia": {
         "o_que_faz": "É o **repositório mestre de conhecimento** da plataforma. Explica, do zero e sem pressa, toda a jornada técnica de um dado dentro do sistema — da limpeza do texto à validação geométrica anti-colisão.",
@@ -3670,6 +3692,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         # ======================================================================
         comparativo_prov = ""
         link_osrm_viewer = ""  # [VIS-DINAMICA] default; preenchido só quando o OSRM vence
+        link_embed_comparativo = ""  # [VIS-DUAL] mapa do provedor comparativo (não-vencedor)
+        link_rota_comparativo = ""   # [VIS-DUAL] link do provedor comparativo
         km_g = res_google[0] if res_google else None
         km_o = res_osrm[0] if res_osrm else None
         n_alt_osrm = (res_osrm[3] if res_osrm and len(res_osrm) > 3 else 1)
@@ -3703,6 +3727,14 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             # [VIS-DINAMICA] LINK 1 (Google): referência comparativa — sempre traça a rota.
             link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
             fonte_rota = "OSRM (Menor Distância)"
+            # [VIS-DUAL - 37ª geração] Mapa + link do GOOGLE como COMPARATIVO (o Google já foi
+            # medido nesta execução). Usa os MESMOS parâmetros por NOME do link de navegação →
+            # o mapa comparativo e o link comparativo representam a mesma rota do Google.
+            if res_google:
+                _param_o_gc = _montar_param_municipio_google(origem_clean, mun_o, _uf_o, end_oficial_o, lat_o, lon_o)
+                _param_d_gc = _montar_param_municipio_google(destino_clean, mun_d, _uf_d, end_oficial_d, lat_d, lon_d)
+                link_embed_comparativo = _montar_embed_google(_param_o_gc, _param_d_gc)
+                link_rota_comparativo = link_rota  # link Google navegável (comparativo)
             if res_google:
                 _delta = km_g - km_o
                 motivo_roteamento = (f"OSRM venceu com a MENOR distância: {km_o}km contra {km_g}km do Google "
@@ -3740,7 +3772,18 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             _param_d_g = _montar_param_municipio_google(destino_clean, mun_d, _uf_d, end_oficial_d, lat_d, lon_d)
             link_rota = f"https://www.google.com/maps/dir/?api=1&origin={_param_o_g}&destination={_param_d_g}&travelmode=driving"
             link_embed = _montar_embed_google(_param_o_g, _param_d_g)  # mapa do PRÓPRIO Google (http)
-            link_osrm_viewer = ""  # Google vence → não há link OSRM (apenas 1 link, do Google)
+            # [VIS-DUAL - 37ª geração] Mapa + link do OSRM como COMPARATIVO (o OSRM já foi medido;
+            # aproveitamos sua GEOMETRIA EXATA). Também popula link_osrm_viewer (agora comparativo).
+            if res_osrm:
+                _geo_osrm_c = res_osrm[4] if len(res_osrm) > 4 else ""
+                _tempo_osrm_c = f"{res_osrm[1]} min" if res_osrm[1] < 60 else f"{res_osrm[1] // 60} h {res_osrm[1] % 60} min"
+                link_embed_comparativo = _gerar_mapa_rota_osrm(_geo_osrm_c, lat_o, lon_o, lat_d, lon_d,
+                                                               f"{km_o} km", _tempo_osrm_c,
+                                                               nome_origem=end_oficial_o, nome_destino=end_oficial_d)
+                link_rota_comparativo = _montar_link_osrm_viewer(_geo_osrm_c, end_oficial_o, end_oficial_d, f"{km_o} km", _tempo_osrm_c)
+                link_osrm_viewer = link_rota_comparativo
+            else:
+                link_osrm_viewer = ""  # Google vence e OSRM indisponível → sem comparativo
             fonte_rota = "Google Maps"
             if res_osrm:
                 motivo_roteamento = (f"Google Maps venceu com a menor distância (ou empate técnico ≤2%): {km_g}km "
@@ -3767,7 +3810,9 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_roteamento,
             link_embed=link_embed, status_linha_reta=status_linha_reta,
             comparativo_provedores=comparativo_prov,
-            link_osrm_viewer=link_osrm_viewer
+            link_osrm_viewer=link_osrm_viewer,
+            link_embed_comparativo=link_embed_comparativo,
+            link_rota_comparativo=link_rota_comparativo
         )
         CACHE_L1_ROTAS[chave_rota_cache] = retorno
         _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
@@ -4564,6 +4609,64 @@ with tab_individual:
                     except Exception:
                         st.warning("Renderização de mapa localmente bloqueada pelas políticas de segurança do navegador.")
                     st.markdown(f"🗺️ [Abrir rota no Google Maps]({res_ind[2]})")
+
+                # [VIS-DUAL - 37ª geração] BLOCO COMPARATIVO — sempre exibe o MAPA + LINK do
+                # OUTRO provedor, para que as DUAS rotas (Google e OSRM) sejam sempre visíveis.
+                # Atende ao pedido: "independentemente de quem vencer, sempre visualizar as duas
+                # rotas". Aditivo (não altera o bloco do vencedor acima). Não aparece no fallback
+                # geodésico (só há uma estimativa, sem segundo motor para comparar).
+                _mapa_comp = res_ind[37] if len(res_ind) > 37 else ""
+                _link_comp = res_ind[38] if len(res_ind) > 38 else ""
+                if _mapa_comp and not _eh_geodesico_ui:
+                    _comp_prov = "OSRM" if _eh_google_ui else "Google Maps"
+                    _win_prov = "Google Maps" if _eh_google_ui else "OSRM"
+                    st.write("")
+                    with st.container(border=True):
+                        st.markdown(f"##### 🔀 Rota comparativa — **{_comp_prov}** _(motor não vencedor)_")
+                        st.caption(f"O mapa principal acima é do vencedor (**{_win_prov}**). Abaixo, a MESMA origem e destino "
+                                   f"traçados pelo **{_comp_prov}**, para comparação lado a lado — assim você audita as **duas** rotas.")
+                        _comp_eh_leaflet = isinstance(_mapa_comp, str) and _mapa_comp.startswith("data:text/html;base64,")
+                        if _comp_eh_leaflet:
+                            # Comparativo = OSRM (Leaflet autocontido, geometria exata)
+                            try:
+                                import base64 as _b64c
+                                components.html(_b64c.b64decode(_mapa_comp.split(",", 1)[1]).decode("utf-8"),
+                                                height=420, scrolling=False)
+                            except Exception:
+                                st.warning("Renderização do mapa comparativo bloqueada pelo navegador.")
+                            st.caption("🗺️ Mapa comparativo: **OSRM** — geometria exata da rota, origem/destino pelo nome.")
+                            _cbc1, _cbc2 = st.columns(2)
+                            with _cbc1:
+                                if _link_comp:
+                                    st.markdown(f'<a href="{_link_comp}" target="_blank" rel="noopener" '
+                                                f'style="text-decoration:none">🛰️ <b>Visualizador OSRM</b> (rota comparativa)</a>',
+                                                unsafe_allow_html=True)
+                                else:
+                                    st.caption("🛰️ Rota longa p/ link — use o **download** ao lado.")
+                            with _cbc2:
+                                try:
+                                    import base64 as _b64cd
+                                    st.download_button("⬇️ Baixar mapa comparativo (OSRM) — HTML",
+                                                       data=_b64cd.b64decode(_mapa_comp.split(",", 1)[1]).decode("utf-8"),
+                                                       file_name="rota_osrm_comparativa.html", mime="text/html",
+                                                       use_container_width=True,
+                                                       help="Mapa autocontido com o traçado exato do OSRM. Abre offline em qualquer navegador.")
+                                except Exception:
+                                    pass
+                        else:
+                            # Comparativo = Google (embed URL, rota traçada pelos nomes)
+                            try:
+                                _src_c = str(_mapa_comp).replace("&", "&amp;")
+                                components.html(f'<iframe src="{_src_c}" width="100%" height="420" '
+                                                f'style="border:0;display:block" allowfullscreen loading="lazy" '
+                                                f'referrerpolicy="strict-origin-when-cross-origin"></iframe>', height=426)
+                            except Exception:
+                                st.warning("Renderização do mapa comparativo bloqueada pelo navegador.")
+                            st.caption("🗺️ Mapa comparativo: **Google Maps** — rota traçada, origem/destino pelo nome.")
+                            if _link_comp:
+                                st.markdown(f"🧭 [Abrir rota comparativa no Google Maps]({_link_comp})")
+                        st.caption(f"⚖️ Consulte o painel **Comparativo entre Provedores** (acima) para as métricas de "
+                                   f"distância, tempo e divergência entre **{_win_prov}** (vencedor) e **{_comp_prov}** (comparativo).")
             else:
                 st.error("Falha na validação de consistência geodésica unificada.")
         else:
@@ -5847,6 +5950,101 @@ with tab_classificacao:
             with pd.ExcelWriter(out_class, engine='xlsxwriter') as writer:
                 df_agg_class.drop(columns=['Lat_Media', 'Lon_Media', 'Cor Hex']).to_excel(writer, sheet_name='Ocorrencias e Classificacao', index=False)
             st.download_button("📥 Baixar Tabela de Classificação (.xlsx)", data=out_class.getvalue(), file_name="classificacao_territorial_ocorrencias.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            # ─────────────────────────────────────────────────────────────────────
+            # [CLASS-MULTI - 37ª geração] RANKING MULTI-INDICADOR POR ROTA
+            # Além da classificação territorial por município (acima), permite classificar e
+            # ordenar ROTA A ROTA por dezenas de indicadores logísticos/espaciais derivados
+            # (sinuosidade, tempo/km, velocidade média, diferença viária−reta, scores...), com
+            # ordenação crescente/decrescente, critério de desempate e filtros avançados.
+            # Estritamente aditivo (não altera a classificação municipal). Exporta CSV + XLSX.
+            # ─────────────────────────────────────────────────────────────────────
+            st.divider()
+            st.markdown("### 📊 Ranking Multi-Indicador por Rota (classificação avançada)")
+            st.caption("Classifique e ordene **rota a rota** por indicadores logísticos e espaciais derivados. "
+                       "Combine critérios, inverta a ordem e aplique filtros — ideal para achar gargalos e anomalias.")
+
+            def _tempo_para_min(txt):
+                try:
+                    s = str(txt).lower()
+                    _h = re.search(r'(\d+)\s*h', s); _m = re.search(r'(\d+)\s*min', s)
+                    return float((int(_h.group(1)) * 60 if _h else 0) + (int(_m.group(1)) if _m else 0))
+                except Exception:
+                    return 0.0
+
+            df_rota_ind = df_base_class.copy()
+            _via = pd.to_numeric(df_rota_ind['Distancia'], errors='coerce').fillna(0.0) if 'Distancia' in df_rota_ind.columns else pd.Series([0.0] * len(df_rota_ind), index=df_rota_ind.index)
+            _reta = pd.to_numeric(df_rota_ind['Linha Reta'], errors='coerce').fillna(0.0) if 'Linha Reta' in df_rota_ind.columns else pd.Series([0.0] * len(df_rota_ind), index=df_rota_ind.index)
+            _tempo_col = df_rota_ind['Tempo'] if 'Tempo' in df_rota_ind.columns else pd.Series(["0 min"] * len(df_rota_ind), index=df_rota_ind.index)
+            _tmin = _tempo_col.apply(_tempo_para_min)
+            _via_safe, _reta_safe, _tmin_safe = _via.replace(0, np.nan), _reta.replace(0, np.nan), _tmin.replace(0, np.nan)
+            df_ind = pd.DataFrame({
+                "Origem": df_rota_ind.get('Origem', ''),
+                "Destino": df_rota_ind.get('Destino', ''),
+                "Município Origem": df_rota_ind.get('Municipio Origem', ''),
+                "UF Origem": df_rota_ind.get('UF_Sintetica_Origem', ''),
+                "Motor Vencedor": df_rota_ind.get('Fonte da Rota', ''),
+                "Distância Viária (km)": _via.round(2),
+                "Linha Reta (km)": _reta.round(2),
+                "Diferença Viária−Reta (km)": (_via - _reta).round(2),
+                "Índice de Sinuosidade": (_via / _reta_safe).round(3),
+                "Tempo (min)": _tmin.round(0),
+                "Tempo por km (min/km)": (_tmin / _via_safe).round(3),
+                "km por minuto": (_via / _tmin_safe).round(3),
+                "Velocidade Média (km/h)": (_via / (_tmin_safe / 60.0)).round(1),
+                "Score Global": pd.to_numeric(df_rota_ind.get('Score Final Global', 0), errors='coerce').fillna(0.0).round(1),
+                "Score da Rota": pd.to_numeric(df_rota_ind.get('Score da Rota', 0), errors='coerce').fillna(0.0).round(1),
+            })
+            _fcol1, _fcol2, _fcol3 = st.columns(3)
+            with _fcol1:
+                _motores = sorted([m for m in df_ind["Motor Vencedor"].dropna().unique().tolist() if str(m).strip()])
+                _sel_mot = st.multiselect("Filtrar por motor vencedor", _motores, default=_motores, key="cls_mot")
+            with _fcol2:
+                _ufs = sorted([u for u in df_ind["UF Origem"].dropna().unique().tolist() if str(u).strip()])
+                _sel_uf = st.multiselect("Filtrar por UF de origem", _ufs, default=_ufs, key="cls_uf")
+            with _fcol3:
+                _topn = st.number_input("Exibir top N", min_value=5, max_value=100000, value=100, step=25, key="cls_topn")
+            _indicadores = [c for c in df_ind.columns if c not in ("Origem", "Destino", "Município Origem", "UF Origem", "Motor Vencedor")]
+            _scol1, _scol2, _scol3 = st.columns([40, 30, 30])
+            with _scol1:
+                _sort1 = st.selectbox("Ordenar por (critério principal)", _indicadores,
+                                      index=_indicadores.index("Índice de Sinuosidade") if "Índice de Sinuosidade" in _indicadores else 0, key="cls_sort1")
+            with _scol2:
+                _sort2 = st.selectbox("Critério de desempate (opcional)", ["—"] + _indicadores, index=0, key="cls_sort2")
+            with _scol3:
+                _ordem = st.radio("Ordem", ["Decrescente", "Crescente"], horizontal=True, key="cls_ordem")
+            _asc = (_ordem == "Crescente")
+            _df_show = df_ind.copy()
+            if _sel_mot:
+                _df_show = _df_show[_df_show["Motor Vencedor"].isin(_sel_mot)]
+            if _sel_uf:
+                _df_show = _df_show[_df_show["UF Origem"].isin(_sel_uf)]
+            _sort_cols = [_sort1] + ([_sort2] if _sort2 != "—" else [])
+            _df_show = _df_show.sort_values(by=_sort_cols, ascending=_asc, na_position="last").head(int(_topn)).reset_index(drop=True)
+            _sin_series = df_ind['Índice de Sinuosidade'].replace([np.inf, -np.inf], np.nan).dropna()
+            _vel_series = df_ind['Velocidade Média (km/h)'].replace([np.inf, -np.inf], np.nan).dropna()
+            _tpk_series = df_ind['Tempo por km (min/km)'].replace([np.inf, -np.inf], np.nan).dropna()
+            _ik1, _ik2, _ik3, _ik4 = st.columns(4)
+            _ik1.metric("Rotas no ranking", _df_show.shape[0])
+            _ik2.metric("Sinuosidade média", f"{_sin_series.mean():.3f}" if not _sin_series.empty else "—", help="Distância viária ÷ linha reta (1,0 = rota perfeitamente reta; maior = mais sinuosa).")
+            _ik3.metric("Velocidade média (km/h)", f"{_vel_series.mean():.1f}" if not _vel_series.empty else "—")
+            _ik4.metric("Tempo médio por km", f"{_tpk_series.mean():.2f} min" if not _tpk_series.empty else "—")
+            st.dataframe(_df_show, use_container_width=True, hide_index=True)
+            _exp1, _exp2 = st.columns(2)
+            with _exp1:
+                st.download_button("📥 Baixar ranking (.csv)", data=_df_show.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="ranking_multi_indicador_rotas.csv", mime="text/csv", use_container_width=True,
+                                   help="Dados completos que originaram este ranking (todos os indicadores derivados).")
+            with _exp2:
+                _out_ind = io.BytesIO()
+                with pd.ExcelWriter(_out_ind, engine='xlsxwriter') as _w:
+                    _df_show.to_excel(_w, sheet_name='Ranking Multi-Indicador', index=False)
+                st.download_button("📥 Baixar ranking (.xlsx)", data=_out_ind.getvalue(),
+                                   file_name="ranking_multi_indicador_rotas.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.caption("💡 **Indicadores derivados:** *Sinuosidade* = viária ÷ linha reta (quanto maior, mais a rota serpenteia); "
+                       "*Tempo por km* e *Velocidade Média* revelam gargalos; *Diferença Viária−Reta* destaca grandes desvios "
+                       "geográficos. Combine o critério principal com o de desempate para rankings compostos.")
     else:
         st.warning("O conjunto de dados base global está vazio. Por favor, processe seu Lote para alimentar este módulo espacial.")
 
@@ -5896,7 +6094,7 @@ with tab_enciclopedia:
         
     with st.expander("3. Bases de Dados Utilizadas"):
         st.markdown("""
-        * **IBGE (Instituto Brasileiro de Geografia e Estatística):** Atua como malha central offline do motor. O sistema baixa e consome o centróide exato de todas as 5.570 cidades e distritos do Brasil. Permite o modo de sobrevivência offline caso a internet corporativa falhe.
+        * **IBGE (Instituto Brasileiro de Geografia e Estatística):** Atua como malha central offline e **base nacional de referência** do motor. O sistema baixa e consome as 5.570 cidades e distritos do Brasil pela API oficial de Localidades, armazenando para cada município seu **código IBGE oficial** (7 dígitos) e resolvendo o **centróide da cidade** (centro do município, nunca um estabelecimento). É a autoridade que padroniza nomes, recupera UF + código e desambigua homônimos (ex.: Corumbá/GO × Corumbá/MS) — reconhecendo o município mesmo com o nome sem acento, em forma curta ou com pequenos erros de digitação, **antes** de consultar qualquer API. Permite o modo de sobrevivência offline caso a internet corporativa falhe.
         * **OpenStreetMap (OSM):** O maior banco de dados aberto espacial do planeta. Fundamental para estradas de terra e interior do Brasil, servindo dados para a geocodificação via Nominatim e Photon.
         * **CNEFE / Base Local:** Dicionário estrutural acoplável (opcional) mantido no cache, permitindo obediência absoluta a regras locais de filiais.
         """)
@@ -5913,6 +6111,7 @@ with tab_enciclopedia:
         * **Google Directions Engine:** um dos dois motores. Fornece asfalto, tempo, distância, mapa e link 100% auditável. Vence quando tem a menor distância (ou empate técnico ≤2%).
         * **OSRM (Open Source Routing Machine):** o segundo motor, sobre a malha aberta OpenStreetMap, avaliando até 3 alternativas. Vence quando encontra um trajeto mais curto (>2%). Quando vence, o mapa desenha a geometria EXATA da rota e há download do traçado em HTML autocontido.
         * **Seleção automática:** os dois rodam sempre; a aplicação adota a **menor distância** e exibe um comparativo auditável (diferença abs/%/tempo, selo do vencedor).
+        * **Comparação dupla de rotas (novo):** independentemente de quem vença, a tela individual mostra **ambos os mapas e ambos os links** — o mapa do vencedor (principal) e o mapa do motor comparativo (não vencedor), lado a lado. Assim você audita visualmente as duas rotas de uma só vez.
         * **Projeção Geodésica Adaptativa (fallback):** se nenhum motor responder, a distância é estimada pela linha reta (WGS-84/Haversine) × fator de desvio rodoviário, de forma determinística e sinalizada — garantindo que a esteira não trave. Recomenda-se reprocessar.
         
         ** Auditoria e Cascatas**
@@ -6062,6 +6261,34 @@ with tab_enciclopedia:
         * O sistema foi arquitetado para nunca travar as execuções em lote, registrando os erros graciosamente nos Logs e marcando a linha do Excel afetada como "Erro Operacional", para prosseguir com os milhares de outros cálculos da fila sem paralisação.
         """)
 
+    with st.expander("12. Comparação Dupla de Rotas (Google × OSRM)"):
+        st.markdown("""
+        Para **máxima auditabilidade**, a tela de rota individual agora exibe **sempre as duas rotas**, não importa quem vença:
+
+        | Cenário | Mapa principal | Mapa comparativo | Links |
+        |---|---|---|---|
+        | 🟢 **Google vence** | Embed do Google (rota traçada, por nome) | 🔀 Mapa OSRM (geometria exata, Leaflet) | Link Google + Visualizador OSRM + download HTML |
+        | 🔵 **OSRM vence** | Mapa OSRM (geometria exata, Leaflet) | 🔀 Embed do Google (rota traçada, por nome) | Link Google + Visualizador OSRM + download HTML |
+        | 📐 **Geodésico** | Ligação direta estimada (Leaflet) | — (só há uma estimativa) | Link Google + download HTML |
+
+        **Por que isso importa?** Você vê, na mesma tela, como cada motor traçou a rota — útil para entender divergências (uma balsa, um pedágio, uma via não pavimentada) e para justificar a escolha a clientes ou auditores. O painel **Comparativo entre Provedores** complementa com as métricas: distância de cada um, diferença absoluta e percentual, tempo e o selo do vencedor.
+        """)
+
+    with st.expander("13. Indicadores Derivados e Índice de Sinuosidade"):
+        st.markdown("""
+        A aba **Classificação** traz um **Ranking Multi-Indicador por Rota** que deriva, a partir da distância viária, da linha reta e do tempo, uma família de indicadores logísticos e espaciais:
+
+        * **Índice de Sinuosidade** = distância viária ÷ distância em linha reta. É **1,0** para uma rota perfeitamente reta e cresce quanto mais a estrada serpenteia. Um valor muito alto pode indicar relevo/rios (desvio real) **ou** um erro de geocodificação — por isso é um ótimo detector de anomalias.
+        * **Diferença Viária−Reta (km)** — o desvio absoluto entre o asfalto e o voo de pássaro; destaca rotas com grandes contornos geográficos.
+        * **Tempo por km (min/km)** e **km por minuto** — medem a "densidade" de tempo da rota; valores fora do padrão sinalizam gargalos (trânsito, vias lentas).
+        * **Velocidade Média Implícita (km/h)** = distância viária ÷ tempo — leitura rápida da fluidez do trajeto.
+        * **Scores** (Global e da Rota) — confiabilidade da geocodificação/roteirização.
+
+        No ranking você **ordena** por qualquer indicador (crescente/decrescente), adiciona um **critério de desempate**, aplica **filtros** (motor vencedor, UF, top N) e **baixa os dados** (CSV e XLSX) que originaram a visualização — pronto para auditoria externa.
+
+        > **Nota técnica:** rotas com distância viária igual a zero (pontos coincidentes ou falha de geocodificação) aparecem com alguns indicadores em branco, pois a divisão por zero é matematicamente indefinida — o sistema trata isso sem travar.
+        """)
+
 with tab_manual:
     st.info("📖 **Bem-vindo ao Manual Operacional!** Este espaço é destinado a todos os usuários da plataforma, ensinando de forma prática o 'passo a passo' para executar as operações do dia a dia.")
     renderizar_guia_aba("manual")
@@ -6128,12 +6355,13 @@ with tab_manual:
         
     with st.expander("6. Classificação Territorial"):
         st.markdown("""
-        **Quando usar?** Você quer agrupar municípios em faixas de "Tabela de Frete" (Ex: Cidades Críticas, Cidades Normais).
+        **Quando usar?** Você quer agrupar municípios em faixas de "Tabela de Frete" (Ex: Cidades Críticas, Cidades Normais) **ou** classificar rotas por indicadores logísticos (sinuosidade, velocidade, tempo/km...).
         **Passo a passo:**
         1. Entre na aba ** Classificação Territorial**.
         2. Escolha se as faixas serão baseadas em "Distância" ou "Volume de Rotas".
         3. Você verá uma tabela editável na tela. Pode apagar, adicionar linhas e mudar as cores/rótulos (Ex: de `1` a `500` km = Verde, de `501` para frente = Vermelho).
         4. O sistema processará imediatamente o mapa de calor com as novas regras e te dará um botão para baixar a tabela mestre de segmentação.
+        5. **Ranking Multi-Indicador (novo):** role até o fim da aba. Escolha o **critério principal** (ex.: *Índice de Sinuosidade*), um **desempate** opcional, a **ordem** (crescente/decrescente) e **filtre** por motor vencedor, UF ou top N. Baixe o resultado em **CSV ou XLSX**. Use-o para achar rotas anômalas (muito sinuosas, muito lentas) e comparar o desempenho entre os motores.
         """)
         
     with st.expander("7. Enterprise Analytics (Dashboards)"):
