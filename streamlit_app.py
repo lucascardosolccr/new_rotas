@@ -62,6 +62,20 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (41ª geração) → MITIGAÇÃO ATIVA DO SNAP EXCESSIVO DO OSRM [SNAP-MITIGA]
+#     A 40ª geração MEDIU e validou o snap; esta AGE sobre ele (o usuário pediu mitigação real, não
+#     só medição). Quando o OSRM projeta origem/destino longe da via (> 1,5 km), o sistema reúne
+#     coordenadas candidatas de múltiplos geocoders (ArcGIS/Nominatim/Photon) + o ponto atual, mede
+#     o snap de cada uma via OSRM /nearest (sem rotear) e escolhe a coordenada road-adjacent de
+#     MENOR deslocamento DENTRO da UF, re-roteando o OSRM com ela. A coordenada validada (canônica)
+#     não muda — a road-adjacent é usada só p/ o /route do OSRM. Helpers _osrm_nearest e
+#     _melhor_coordenada_para_osrm; memoizado por município (_MITIGA_SNAP_CACHE → custo amortizado
+#     no lote); só dispara em snap grande (rotas urbanas intactas, sem latência extra). Se nenhum
+#     candidato melhora (malha OSM esparsa), informa e mantém validação+guard. Auditoria ampliada:
+#     candidatos avaliados (fonte, coord, snap), coord road-adjacent escolhida, snap antes→depois e
+#     rota OSRM antes→depois. Provado por teste isolado (menor snap na UF; descarte de candidato
+#     fora da UF; memoização; re-rota só com melhora >300m; disparo só >1500m). Ex. do brief:
+#     origem 2346m→210m. Docs: Enciclopédia seção 16. Sem regressão; latência amortizada e restrita.
 #   v3.8 (40ª geração) → CAUSA RAIZ DA DIVERGÊNCIA OSRM (SNAP) + VALIDAÇÃO ESPACIAL
 #     [OSRM-SNAP + VALID-ESPACIAL]. CAUSA RAIZ COMPROVADA: Google e OSRM já recebem a MESMA
 #     origem/destino validados; a divergência vem do OSRM PROJETAR (snap) a coordenada enviada
@@ -2581,6 +2595,67 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
     return None
 
 # ==============================================================================
+# [SNAP-MITIGA - 41ª geração] MITIGAÇÃO DE SNAP EXCESSIVO DO OSRM
+# Quando o OSRM projeta a coordenada validada num nó viário distante (malha OSM esparsa),
+# origem/destino ficam km afastados e a rota infla. A mitigação: quando o snap é grande, reúne
+# candidatos de MÚLTIPLOS geocoders (ArcGIS/Nominatim/Photon) + o ponto atual, mede o snap de
+# cada um via OSRM /nearest (sem rotear) e escolhe a coordenada de MENOR deslocamento que esteja
+# dentro da UF — a mais representativa da via. Memoizado por município (custo amortizado no lote).
+# ==============================================================================
+def _osrm_nearest(lat, lon):
+    """Consulta o OSRM /nearest: retorna (lat_snap, lon_snap, dist_m) do nó viário mais próximo,
+    SEM rotear. Usado para escolher a coordenada que melhor representa a via antes do /route."""
+    try:
+        url = f"http://router.project-osrm.org/nearest/v1/driving/{lon},{lat}?number=1"
+        r = session.get(url, timeout=5).json()
+        if r.get("code") == "Ok" and r.get("waypoints"):
+            wp = r["waypoints"][0]
+            loc = wp.get("location", [None, None])
+            if loc[0] is not None:
+                return (loc[1], loc[0], round(float(wp.get("distance", 0.0)), 1))
+    except Exception:
+        pass
+    return None
+
+_MITIGA_SNAP_CACHE = {}
+
+def _melhor_coordenada_para_osrm(texto_local, mun_nome, uf, lat_atual, lon_atual, snap_atual_m):
+    """Busca a coordenada que MELHOR representa a via para o OSRM. Reúne candidatos de vários
+    geocoders + o atual, mede o snap de cada via /nearest e retorna o de menor deslocamento
+    dentro da UF: (lat, lon, snap_m, candidatos, houve_melhora). Mantém o atual se nada for melhor."""
+    chave = (mun_nome or texto_local, uf, round(lat_atual, 4), round(lon_atual, 4))
+    if chave in _MITIGA_SNAP_CACHE:
+        return _MITIGA_SNAP_CACHE[chave]
+    candidatos = [{"lat": lat_atual, "lon": lon_atual, "fonte": "ATUAL_VALIDADA", "snap_m": snap_atual_m}]
+    try:
+        _box = BOUNDING_BOXES_UF.get(uf) if uf else None
+        _q = semantica.normalizar(texto_local)
+        _alts = []
+        for _api in (API_ArcGIS, API_Nominatim, API_Photon):
+            try:
+                _r = _api(_q)
+                if _r:
+                    _alts.append(_r[0])  # melhor candidato de cada provedor
+            except Exception:
+                pass
+        for _a in _alts:
+            _la, _lo = _a.get("lat"), _a.get("lon")
+            if _la is None or _lo is None:
+                continue
+            if _box and not (_box["lat_min"] <= _la <= _box["lat_max"] and _box["lon_min"] <= _lo <= _box["lon_max"]):
+                continue  # candidato fora da UF é descartado (evita piorar)
+            _near = _osrm_nearest(_la, _lo)
+            if _near:
+                candidatos.append({"lat": _la, "lon": _lo, "fonte": _a.get("fonte", "ALT"), "snap_m": _near[2]})
+    except Exception:
+        pass
+    melhor = min(candidatos, key=lambda c: c.get("snap_m", 9e18))
+    houve_melhora = (melhor["fonte"] != "ATUAL_VALIDADA" and melhor.get("snap_m", 9e18) < snap_atual_m - 300.0)
+    resultado = (melhor["lat"], melhor["lon"], melhor.get("snap_m", snap_atual_m), candidatos, houve_melhora)
+    _MITIGA_SNAP_CACHE[chave] = resultado
+    return resultado
+
+# ==============================================================================
 # MOTOR DE CONSENSO PROBABILÍSTICO BAYESIANO E CLUSTERING DBSCAN ESFÉRICO
 # ==============================================================================
 def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
@@ -3629,7 +3704,7 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
                               fonte_geo_o, fonte_geo_d, score_o, score_d,
                               google_param_o, google_param_d, google_link,
                               km_google, km_osrm, vencedor,
-                              osrm_snap=None, validacao_espacial=None):
+                              osrm_snap=None, validacao_espacial=None, mitigacao_snap=None):
     """[AUDIT-MOTORES] Monta o rastro completo das consultas enviadas a cada motor de rota.
     Torna auditável e transparente que TODOS os motores partem da MESMA geocodificação
     validada: origem/destino são normalizados, validados na base nacional e convertidos numa
@@ -3678,6 +3753,7 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
         },
         "osrm": osrm_bloco,
         "validacao_espacial": validacao_espacial,
+        "mitigacao_snap": mitigacao_snap,
         "consenso": {"vencedor": vencedor, "divergencia_km": div_abs, "divergencia_pct": div_pct},
     }
 
@@ -3797,6 +3873,56 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     # da causa raiz E o mecanismo de "só aceitar rota com confiança mínima": se o snap jogou a
     # origem/destino para FORA da UF pedida (erro real, não snap normal), o OSRM não pode vencer.
     _osrm_snap = res_osrm[5] if (res_osrm and len(res_osrm) > 5) else None
+
+    # [SNAP-MITIGA - 41ª geração] MITIGAÇÃO DE SNAP EXCESSIVO. Se o OSRM projetou origem/destino
+    # longe da via (deslocamento > 1500 m), busca uma coordenada road-adjacent mais representativa
+    # (candidatos de vários geocoders, escolhido o de MENOR snap dentro da UF via /nearest) e
+    # RE-ROTEIA o OSRM com ela. Só dispara em snap grande (raro) e é memoizado por município →
+    # custo amortizado no lote. A coordenada VALIDADA (canônica) NÃO muda; a road-adjacent é usada
+    # SOMENTE para o /route do OSRM, reduzindo o deslocamento e a inflação da rota.
+    mitigacao_snap = None
+    if _osrm_snap and res_osrm:
+        _LIMIAR_MITIGA_M = 1500.0
+        _o_snap0 = _osrm_snap.get("orig_snap_dist_m", 0.0) or 0.0
+        _d_snap0 = _osrm_snap.get("dest_snap_dist_m", 0.0) or 0.0
+        if _o_snap0 > _LIMIAR_MITIGA_M or _d_snap0 > _LIMIAR_MITIGA_M:
+            _lat_o_os, _lon_o_os, _lat_d_os, _lon_d_os = lat_o, lon_o, lat_d, lon_d
+            _cand_o = _cand_d = None
+            _melhora_o = _melhora_d = False
+            if _o_snap0 > _LIMIAR_MITIGA_M:
+                _lat_o_os, _lon_o_os, _snap_o_novo, _cand_o, _melhora_o = _melhor_coordenada_para_osrm(
+                    origem_clean, mun_o, _uf_o, lat_o, lon_o, _o_snap0)
+            if _d_snap0 > _LIMIAR_MITIGA_M:
+                _lat_d_os, _lon_d_os, _snap_d_novo, _cand_d, _melhora_d = _melhor_coordenada_para_osrm(
+                    destino_clean, mun_d, _uf_d, lat_d, lon_d, _d_snap0)
+            if _melhora_o or _melhora_d:
+                _res_osrm_mit = API_OSRM_Routing(_lat_o_os, _lon_o_os, _lat_d_os, _lon_d_os)
+                if _res_osrm_mit:
+                    _snap_mit = _res_osrm_mit[5] if len(_res_osrm_mit) > 5 else None
+                    mitigacao_snap = {
+                        "aplicada": True, "origem_melhorada": bool(_melhora_o), "destino_melhorado": bool(_melhora_d),
+                        "snap_origem_antes_m": _o_snap0, "snap_destino_antes_m": _d_snap0,
+                        "snap_origem_depois_m": (_snap_mit.get("orig_snap_dist_m") if _snap_mit else None),
+                        "snap_destino_depois_m": (_snap_mit.get("dest_snap_dist_m") if _snap_mit else None),
+                        "km_antes": res_osrm[0], "km_depois": _res_osrm_mit[0],
+                        "coord_osrm_origem": f"{_lat_o_os}, {_lon_o_os}", "coord_osrm_destino": f"{_lat_d_os}, {_lon_d_os}",
+                        "candidatos_origem": _cand_o, "candidatos_destino": _cand_d,
+                    }
+                    res_osrm = _res_osrm_mit       # adota a rota mitigada do OSRM
+                    _osrm_snap = _snap_mit
+            else:
+                mitigacao_snap = {
+                    "aplicada": False,
+                    "motivo": "Nenhum candidato road-adjacent superou o ponto atual dentro da UF (malha OSM esparsa).",
+                    "snap_origem_antes_m": _o_snap0, "snap_destino_antes_m": _d_snap0,
+                    "candidatos_origem": _cand_o, "candidatos_destino": _cand_d,
+                }
+
+    # [OSRM-SNAP + VALID-ESPACIAL - 40ª geração] Extrai o snap do OSRM (coordenada projetada na
+    # via + distância do snap) e faz a VALIDAÇÃO ESPACIAL: confere se os pontos snapados continuam
+    # dentro dos limites (bounding box) da UF esperada e se o snap não foi grosseiro. É a evidência
+    # da causa raiz E o mecanismo de "só aceitar rota com confiança mínima": se o snap jogou a
+    # origem/destino para FORA da UF pedida (erro real, não snap normal), o OSRM não pode vencer.
     validacao_espacial = None
     osrm_invalido_uf = False
     if _osrm_snap:
@@ -3972,7 +4098,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             origem_clean, destino_clean, end_oficial_o, end_oficial_d,
             lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
             orig_param_fb, dest_param_fb, link_rota, km_g, km_o, fonte_rota,
-            osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial)
+            osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap)
         # [M11] RotaPipeline NamedTuple — acesso por nome elimina bugs de índice
         retorno = RotaPipeline(
             distancia=km_rota, tempo=tempo_rota, link_rota=link_rota, balsas=balsa_rota,
@@ -4017,7 +4143,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         origem_clean, destino_clean, end_oficial_o, end_oficial_d,
         lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
         orig_param_fb, dest_param_fb, link_fallback, None, None, "Geodésico Adaptativo",
-        osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial)
+        osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap)
     retorno = RotaPipeline(
         distancia=km_terrestre, tempo=tempo_geo_str, link_rota=link_fallback, balsas="Não",
         dist_linha_reta=dist_linha_reta, fonte_rota="Geodésico Adaptativo", score_rota=50,
@@ -4765,6 +4891,38 @@ with tab_individual:
                                     st.warning(f"⚠️ {_al}")
                             else:
                                 st.success("✅ Sem inconsistências: origem e destino dentro dos limites esperados e snap dentro do limiar.")
+                        # [SNAP-MITIGA] Mitigação de snap excessivo (quando acionada)
+                        _mit = _aud.get("mitigacao_snap")
+                        if isinstance(_mit, dict):
+                            st.markdown("**🎯 Mitigação de snap excessivo**")
+                            if _mit.get("aplicada"):
+                                _oa, _oq = _mit.get("snap_origem_antes_m"), _mit.get("snap_origem_depois_m")
+                                _da, _dq = _mit.get("snap_destino_antes_m"), _mit.get("snap_destino_depois_m")
+                                _ka, _kq = _mit.get("km_antes"), _mit.get("km_depois")
+                                _mc1, _mc2 = st.columns(2)
+                                with _mc1:
+                                    if _mit.get("origem_melhorada") and _oa is not None and _oq is not None:
+                                        st.write(f"**Origem — snap:** {_oa:.0f} m → **{_oq:.0f} m**")
+                                    if _mit.get("destino_melhorado") and _da is not None and _dq is not None:
+                                        st.write(f"**Destino — snap:** {_da:.0f} m → **{_dq:.0f} m**")
+                                with _mc2:
+                                    if _ka is not None and _kq is not None:
+                                        st.write(f"**Rota OSRM:** {_ka} km → **{_kq} km**")
+                                    st.caption(f"Coord. OSRM origem: {_mit.get('coord_osrm_origem','—')}")
+                                    st.caption(f"Coord. OSRM destino: {_mit.get('coord_osrm_destino','—')}")
+                                st.success("✅ Coordenada road-adjacent mais representativa selecionada (menor snap dentro da UF) e OSRM re-roteado.")
+                            else:
+                                st.info(f"ℹ️ Mitigação tentada, sem melhora: {_mit.get('motivo','—')}")
+                            # Candidatos considerados (transparência total)
+                            def _tabela_cand(_lst, _titulo):
+                                if _lst:
+                                    st.caption(f"**{_titulo}** — candidatos avaliados (por provedor):")
+                                    _linhas = [{"Fonte": c.get("fonte","—"),
+                                                "Coordenada": f"{round(c.get('lat',0),5)}, {round(c.get('lon',0),5)}",
+                                                "Snap (m)": c.get("snap_m")} for c in _lst]
+                                    st.dataframe(_linhas, use_container_width=True, hide_index=True)
+                            _tabela_cand(_mit.get("candidatos_origem"), "Origem")
+                            _tabela_cand(_mit.get("candidatos_destino"), "Destino")
                         st.divider()
                         _cons = _aud.get("consenso", {})
                         st.markdown("##### 4️⃣ Consenso e divergência entre motores")
@@ -6737,9 +6895,17 @@ with tab_enciclopedia:
           (um erro objetivo), o OSRM **não é aceito como vencedor** — prevalece o Google. A regra de "menor
           distância" permanece; apenas rejeitamos um resultado do OSRM comprovadamente inválido. Quando o Google
           está indisponível, o OSRM ainda é usado (melhor que nada), mas com o alerta registrado.
+        - **Mitigação ativa do snap (novo):** quando o deslocamento é grande (> 1,5 km), o sistema **não se
+          conforma** — ele reúne coordenadas candidatas de **vários geocoders** (ArcGIS, Nominatim, Photon),
+          mede o snap de cada uma via OSRM `/nearest` e escolhe a **coordenada road-adjacent de menor
+          deslocamento que esteja dentro da UF**, re-roteando o OSRM com ela. Assim o início/fim da rota passa a
+          representar melhor o local pedido. A coordenada validada (canônica) não muda — a road-adjacent é usada
+          só para o cálculo do OSRM. É memoizado por município (custo amortizado no lote) e só dispara nos casos
+          de snap grande (não afeta a latência das rotas urbanas). Se nenhum candidato for melhor (malha OSM
+          realmente esparsa na região), o sistema informa e mantém a validação/guard como salvaguarda.
 
-        Assim, garantimos que a rota escolhida representa **fielmente** a origem e o destino solicitados, com total
-        rastreabilidade dos ajustes.
+        Todo o processo — candidatos avaliados, snap de cada um, coordenada escolhida e a rota antes/depois — é
+        exibido no painel **🔎 Auditoria das Consultas aos Motores**, garantindo rastreabilidade total dos ajustes.
         """)
 
 with tab_manual:
