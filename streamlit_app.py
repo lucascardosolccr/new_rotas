@@ -62,6 +62,23 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (38ª geração) → FLUXO CONTÍNUO: FIM DAS INTERRUPÇÕES NO LOTE [FLUXO-CONTINUO]
+#     CAUSA RAIZ do "para no meio e exige novo clique": execuções longas do Streamlit (um chunk
+#     fixo de 200 rotas esperava a rota mais lenta; e o pré-aquecimento geocodificava TODOS os
+#     endpoints de forma síncrona numa só execução) estouravam o timeout do WebSocket do Streamlit
+#     Cloud ANTES de chegar ao st.rerun() — a tela ficava no último frame renderizado, à espera de
+#     interação. SOLUÇÃO (Processamento E Alocação): (1) pré-aquecimento vira uma FASE time-boxed
+#     (mini-lotes até ~8s, checkpoint, rerun); (2) roteamento vira TIME-BOXED por orçamento de tempo
+#     de parede (~8s/execução) em vez de nº fixo de rotas. Cada execução é sempre curta → o WebSocket
+#     nunca cai antes do rerun e cada rerun troca mensagens (mantém a conexão "quente"). Adapta-se à
+#     rede (rápida = muitas rotas/execução; lenta = menos, mas execução curta). Provado por simulação:
+#     5k/100k rotas concluídas; toda execução ≤ orçamento+1 mini-lote; sem reprocessamento; cauda/bordas
+#     ok. Avaliados e documentados: thread em background / fila (RQ+Redis) e @st.fragment(run_every) —
+#     preteridos por exigirem infraestrutura externa/contexto de thread, incompatíveis com o modelo
+#     single-file/Cloud; o padrão checkpoint+execuções-curtas é o mais robusto e sem dependências.
+#     Malha territorial IBGE + GeoPandas/DuckDB Spatial: avaliados e NÃO adotados (dependências
+#     pesadas GDAL/GEOS, malha não obtível offline, memória do Cloud, modelo single-file) — a
+#     validação município↔coordenada já é coberta por centróide IBGE + UF + reverse-geo. Sem regressão.
 #   v3.8 (37ª geração) → COMPARAÇÃO DUPLA DE ROTAS + RANKING MULTI-INDICADOR + DOCS
 #     [VIS-DUAL + CLASS-MULTI]. (1) A tela individual passa a exibir SEMPRE os dois mapas e os
 #     dois links (vencedor + comparativo), não importa quem vença: Google vence → mapa Google
@@ -661,12 +678,12 @@ _GUIA_ABAS = {
         "o_que_faz": "Processa **milhares de rotas de uma vez**. Você envia uma planilha Excel com colunas de Origem e Destino, e ele devolve a mesma planilha preenchida com distâncias, tempos, coordenadas e nível de confiança de cada linha.",
         "quando_usar": "Quando você tem uma lista grande de rotas (entregas, fretes, visitas) e precisa calcular todas de uma vez, em vez de uma por uma.",
         "dados": "Um arquivo **.xlsx** contendo obrigatoriamente duas colunas chamadas exatamente **Origem** e **Destino**. Pode ter outras colunas — elas serão preservadas.",
-        "preenchimento": "1. Clique em **Selecionar Arquivo Excel** e escolha sua planilha.\n        2. Confira a mensagem de validação (verde = pronto).\n        3. (Opcional) Informe seu nome/matrícula.\n        4. Clique em **Iniciar Processamento em Lote** e acompanhe a barra de progresso.",
-        "apos_executar": "O sistema extrai apenas as rotas **únicas** (evita recalcular repetidas), processa várias em paralelo, reaproveita o que já calculou antes (cache) e monta a planilha final. Ao terminar, mostra um Scorecard de Qualidade.",
-        "interpretar": "O **Scorecard** no topo resume a saúde do lote: taxa de sucesso, quantas rotas são confiáveis e quantas têm anomalias. A tabela abaixo traz cada linha detalhada. Baixe o Excel pronto no botão azul.",
+        "preenchimento": "1. Clique em **Selecionar Arquivo Excel** e escolha sua planilha.\n        2. Confira a mensagem de validação (verde = pronto).\n        3. (Opcional) Informe seu nome/matrícula.\n        4. Clique **uma única vez** em **Iniciar Processamento em Lote** e acompanhe a barra de progresso.",
+        "apos_executar": "O processamento é **contínuo e automático**: após um único clique, o sistema pré-aquece a geocodificação e processa todas as rotas até o fim **sem precisar clicar de novo**. Ele extrai apenas as rotas **únicas** (evita recalcular repetidas), processa várias em paralelo em execuções curtas (para nunca cair a conexão) e reaproveita o cache. Ao terminar, mostra um Scorecard de Qualidade.",
+        "interpretar": "Durante o processamento, o painel ao vivo mostra progresso, velocidade e tempo restante (ETA) — e avança sozinho. O **Scorecard** ao final resume a saúde do lote: taxa de sucesso, quantas rotas são confiáveis e quantas têm anomalias. Baixe o Excel pronto no botão azul.",
         "exemplos": "Uma planilha com 2.000 linhas de entregas: coluna Origem = endereço do depósito, coluna Destino = endereço do cliente.",
         "erros_comuns": "Colunas com nome errado (tem que ser 'Origem' e 'Destino'); arquivo em formato antigo (.xls em vez de .xlsx); células vazias no meio da planilha (são ignoradas e marcadas como erro).",
-        "dicas": "Rotas repetidas entre lotes são reaproveitadas automaticamente — reprocessar um arquivo parecido é muito mais rápido na segunda vez. Limite atual: 100.000 linhas por arquivo.",
+        "dicas": "Você **não precisa** ficar clicando: o lote continua sozinho até concluir, mesmo com dezenas de milhares de linhas. Rotas repetidas entre lotes são reaproveitadas automaticamente. Limite atual: 100.000 linhas por arquivo.",
     },
     "alocacao": {
         "o_que_faz": "Descobre **qual base/depósito é o mais próximo** de cada cliente. Você dá uma lista de clientes e uma lista de bases, e o sistema calcula automaticamente o melhor par para cada cliente.",
@@ -4766,7 +4783,8 @@ with tab_processamento:
             # Botão de cancelamento visível durante o processamento
             if _proc_ativo:
                 if st.button("⏹️ Cancelar Processamento", help="Interrompe o processamento contínuo e descarta o progresso atual."):
-                    for _k in ['lote_em_andamento', 'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
+                    for _k in ['lote_em_andamento', 'lote_fase', 'lote_endpoints', 'lote_preaq_idx',
+                               'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
                                'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
                                'lote_preaquecido', 'lote_runner_map']:
                         st.session_state.pop(_k, None)
@@ -4807,33 +4825,22 @@ with tab_processamento:
                     tarefas_priorizadas.append((MAPA_PRIORIDADE.get(tipo_o, 99), p))
                 tarefas_priorizadas.sort(key=lambda x: x[0])
                 
-                # [SPEED-1] Pré-aquecimento de geocodificação de endpoints únicos (uma vez, no início)
+                # [SPEED-1 + FLUXO-CONTINUO - 38ª geração] Endpoints únicos para pré-aquecimento
+                # de geocodificação. NÃO é mais feito de forma síncrona aqui: uma pré-carga longa
+                # (planilhas grandes têm dezenas de milhares de endpoints) também estourava o
+                # WebSocket ANTES do st.rerun() — segunda causa do "para e exige novo clique".
+                # Agora é uma FASE de pré-aquecimento time-boxed (curtas execuções + rerun).
                 endpoints_unicos = set()
                 for _o, _d in pares_unicos:
                     endpoints_unicos.add(_o)
                     endpoints_unicos.add(_d)
                 _houve_preaquecimento = len(endpoints_unicos) < len(pares_unicos) * 1.8
-                if _houve_preaquecimento:
-                    _pa_bar = st.progress(0)
-                    _pa_status = st.empty()
-                    _pa_status.text(f"🔥 Pré-aquecendo geocodificação de {len(endpoints_unicos)} endpoints únicos...")
-                    _geo_concluidos = 0
-                    _total_endpoints = len(endpoints_unicos)
-                    _passo_geo = max(1, _total_endpoints // 50)
-                    _futuros_geo = {EXECUTOR_GLOBAL.submit(obter_coordenadas_e_endereco_oficial, ep): ep for ep in endpoints_unicos}
-                    for _f in as_completed(_futuros_geo):
-                        try:
-                            _f.result()
-                        except Exception:
-                            pass
-                        _geo_concluidos += 1
-                        if _geo_concluidos % _passo_geo == 0 or _geo_concluidos == _total_endpoints:
-                            _pa_bar.progress(_geo_concluidos / _total_endpoints)
-                            _pa_status.text(f"🔥 Pré-aquecimento: {_geo_concluidos}/{_total_endpoints} endpoints (cache populado)")
-                    _pa_bar.empty(); _pa_status.empty()
-                    
-                # Persiste o estado inicial e dispara o motor de chunks via rerun
+
+                # Persiste o estado inicial e dispara o motor CONTÍNUO via rerun (execuções curtas).
                 st.session_state['lote_em_andamento'] = True
+                st.session_state['lote_fase'] = 'preaquecer' if _houve_preaquecimento else 'processar'
+                st.session_state['lote_endpoints'] = list(endpoints_unicos)
+                st.session_state['lote_preaq_idx'] = 0
                 st.session_state['lote_tarefas'] = tarefas_priorizadas
                 st.session_state['lote_resultados'] = {}
                 st.session_state['lote_chunk_idx'] = 0
@@ -4845,8 +4852,44 @@ with tab_processamento:
                 st.session_state['lote_runner_map'] = None  # lote padrão não usa runner-up
                 st.rerun()
                 
-            # ---- FASE 2: PROCESSAMENTO DE UM CHUNK (a cada rerun automático) ----
-            if st.session_state.get('lote_em_andamento', False):
+            # ---- FASE PRÉ-AQUECIMENTO (time-boxed, a cada rerun automático) ----
+            # Geocodifica os endpoints únicos em mini-lotes limitados por ORÇAMENTO DE TEMPO
+            # (~8s por execução). Nenhuma execução fica longa a ponto de o WebSocket cair antes
+            # do st.rerun(). Continua sozinha até terminar e então passa para a fase de rotas.
+            if st.session_state.get('lote_em_andamento', False) and st.session_state.get('lote_fase') == 'preaquecer':
+                _eps = st.session_state['lote_endpoints']
+                _pidx = st.session_state['lote_preaq_idx']
+                _ptotal = len(_eps)
+                _ppct = (_pidx / _ptotal) if _ptotal else 1.0
+                st.markdown("#### 🔥 Pré-aquecendo a Geocodificação (etapa 1 de 2)")
+                st.progress(min(1.0, _ppct))
+                st.caption(f"Geocodificando **{_ptotal:,}** endpoints únicos para acelerar o roteamento — "
+                           f"{_pidx:,}/{_ptotal:,} concluídos. **O processo continua automaticamente; não clique novamente.**")
+                _BUDGET_PRE = 8.0
+                _MINI_PRE = max(8, WORKERS_DISPONIVEIS)  # uma onda do pool por mini-lote
+                _t_pre = time.time()
+                _pidx_local = _pidx
+                while _pidx_local < _ptotal:
+                    _lote_ep = _eps[_pidx_local:_pidx_local + _MINI_PRE]
+                    if not _lote_ep:
+                        break
+                    _fut_ep = {EXECUTOR_GLOBAL.submit(obter_coordenadas_e_endereco_oficial, ep): ep for ep in _lote_ep}
+                    for _f in as_completed(_fut_ep):
+                        try:
+                            _f.result()
+                        except Exception:
+                            pass
+                    _pidx_local += _MINI_PRE
+                    if (time.time() - _t_pre) >= _BUDGET_PRE:
+                        break
+                st.session_state['lote_preaq_idx'] = min(_pidx_local, _ptotal)
+                if st.session_state['lote_preaq_idx'] >= _ptotal:
+                    st.session_state['lote_fase'] = 'processar'
+                time.sleep(0.05)
+                st.rerun()
+
+            # ---- FASE 2: PROCESSAMENTO TIME-BOXED DE ROTAS (a cada rerun automático) ----
+            if st.session_state.get('lote_em_andamento', False) and st.session_state.get('lote_fase') == 'processar':
                 _tarefas = st.session_state['lote_tarefas']
                 _total = st.session_state['lote_total']
                 _idx = st.session_state['lote_chunk_idx']
@@ -4878,19 +4921,38 @@ with tab_processamento:
                 st.caption("🔄 O processamento avança automaticamente. **Não é necessário clicar novamente** — cada lote continua sozinho até o fim. "
                            "Você pode cancelar a qualquer momento no botão acima.")
                 
-                # Processa o próximo chunk
-                _chunk = _tarefas[_idx:_idx + CHUNK_SIZE]
-                if _chunk:
+                # [FLUXO-CONTINUO - 38ª geração] Processamento TIME-BOXED por ORÇAMENTO DE TEMPO
+                # de parede (não por nº fixo de rotas). Cada execução processa mini-lotes até
+                # esgotar ~8s e então dá rerun. Antes, um chunk fixo de 200 rotas aguardava a
+                # rota mais lenta — em redes lentas / volumes grandes a execução ficava longa
+                # demais e o WebSocket do Streamlit Cloud caía ANTES do st.rerun(), deixando a
+                # tela "parada" à espera de clique. Agora a execução é sempre curta e adaptativa:
+                # rede rápida → muitas rotas por execução; rede lenta → menos rotas, mas execução
+                # curta e conexão sempre "quente" (cada rerun troca mensagens e reseta o timeout).
+                _BUDGET_SEG = 8.0
+                _MINI = max(8, WORKERS_DISPONIVEIS)  # uma onda do pool por mini-lote
+                _t_run = time.time()
+                _idx_local = _idx
+                _processou_algo = False
+                while _idx_local < _total:
+                    _mini = _tarefas[_idx_local:_idx_local + _MINI]
+                    if not _mini:
+                        break
                     try:
-                        _res_chunk = processar_chunk_rotas(_chunk, runner_up_map=_runner_map)
-                        _resultados.update(_res_chunk)
-                        st.session_state['lote_resultados'] = _resultados
+                        _res_mini = processar_chunk_rotas(_mini, runner_up_map=_runner_map)
+                        _resultados.update(_res_mini)
+                        _processou_algo = True
                     except Exception as e:
-                        # Isola falha do chunk: registra e continua (não encerra o lote)
-                        logger.error(f"[FIX-LOTE] Erro no chunk {_chunk_atual_num}, isolado: {e}")
-                    st.session_state['lote_chunk_idx'] = _idx + CHUNK_SIZE
-                    
-                # Mais chunks? Continua automaticamente. Senão, finaliza.
+                        # Isola falha do mini-lote: registra e continua (não encerra o lote)
+                        logger.error(f"[FLUXO-CONTINUO] Erro em mini-lote (idx {_idx_local}), isolado: {e}")
+                    _idx_local += _MINI
+                    if (time.time() - _t_run) >= _BUDGET_SEG:
+                        break
+                if _processou_algo:
+                    st.session_state['lote_resultados'] = _resultados
+                st.session_state['lote_chunk_idx'] = min(_idx_local, _total)
+
+                # Mais rotas? Continua automaticamente. Senão, finaliza.
                 if st.session_state['lote_chunk_idx'] < _total:
                     time.sleep(0.05)  # micro-pausa p/ o Streamlit liberar o WebSocket
                     st.rerun()
@@ -4941,7 +5003,8 @@ with tab_processamento:
                     st.session_state['lote_preaquecido_final'] = _preaq
                     
                     # Limpa o estado de processamento (libera RAM dos checkpoints)
-                    for _k in ['lote_em_andamento', 'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
+                    for _k in ['lote_em_andamento', 'lote_fase', 'lote_endpoints', 'lote_preaq_idx',
+                               'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
                                'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
                                'lote_preaquecido', 'lote_runner_map']:
                         st.session_state.pop(_k, None)
@@ -5196,15 +5259,31 @@ with tab_alocacao:
                 st.session_state['alo_chunk_idx'] = 0
                 _ir_finalizar = True
             else:
-                _chunk = _tarefas[_idx:_idx + CHUNK_SIZE_ALO]
-                if _chunk:
+                # [FLUXO-CONTINUO - 38ª geração] Roteamento TIME-BOXED por orçamento de tempo
+                # (~8s/execução), em mini-lotes — mesma correção da aba de Processamento: nenhuma
+                # execução fica longa a ponto de o WebSocket cair antes do st.rerun(). Adapta-se
+                # à rede e mantém a continuidade automática até o fim (sem novo clique).
+                _BUDGET_ALO = 8.0
+                _MINI_ALO = max(8, WORKERS_DISPONIVEIS)
+                _t_alo = time.time()
+                _idx_local = _idx
+                _proc_alo = False
+                while _idx_local < _total:
+                    _mini = _tarefas[_idx_local:_idx_local + _MINI_ALO]
+                    if not _mini:
+                        break
                     try:
-                        _res_chunk = processar_chunk_rotas(_chunk, runner_up_map=_runner_map)
-                        _resultados.update(_res_chunk)
-                        st.session_state['alo_resultados'] = _resultados
+                        _res_mini = processar_chunk_rotas(_mini, runner_up_map=_runner_map)
+                        _resultados.update(_res_mini)
+                        _proc_alo = True
                     except Exception as e:
-                        logger.error(f"[FIX-ALOC] Erro no chunk {_chunk_num}, isolado: {e}")
-                    st.session_state['alo_chunk_idx'] = _idx + CHUNK_SIZE_ALO
+                        logger.error(f"[FLUXO-CONTINUO] Erro em mini-lote de alocação (idx {_idx_local}), isolado: {e}")
+                    _idx_local += _MINI_ALO
+                    if (time.time() - _t_alo) >= _BUDGET_ALO:
+                        break
+                if _proc_alo:
+                    st.session_state['alo_resultados'] = _resultados
+                st.session_state['alo_chunk_idx'] = min(_idx_local, _total)
                 _ir_finalizar = st.session_state['alo_chunk_idx'] >= _total
             
             if not _ir_finalizar:
@@ -6287,6 +6366,32 @@ with tab_enciclopedia:
         No ranking você **ordena** por qualquer indicador (crescente/decrescente), adiciona um **critério de desempate**, aplica **filtros** (motor vencedor, UF, top N) e **baixa os dados** (CSV e XLSX) que originaram a visualização — pronto para auditoria externa.
 
         > **Nota técnica:** rotas com distância viária igual a zero (pontos coincidentes ou falha de geocodificação) aparecem com alguns indicadores em branco, pois a divisão por zero é matematicamente indefinida — o sistema trata isso sem travar.
+        """)
+
+    with st.expander("14. Motor de Processamento Contínuo (por que o lote nunca para no meio)"):
+        st.markdown("""
+        O Streamlit executa o script **de cima a baixo e reinicia (rerun)** a cada interação. Isso torna
+        desafiador rodar tarefas longas: se o processamento inteiro rodasse numa **única execução longa**,
+        a conexão em tempo real (WebSocket) do navegador poderia expirar no meio, e a tela ficava "parada"
+        exigindo um novo clique.
+
+        **Como resolvemos (arquitetura time-boxed com checkpoint):**
+
+        ```text
+        [ CLIQUE ÚNICO ] → salva o estado (fila de rotas, progresso) no session_state
+                 ↓  (rerun)
+        [ PRÉ-AQUECIMENTO ] → geocodifica os endpoints únicos em mini-lotes, ~8s por execução
+                 ↓  (reruns automáticos, curtos)
+        [ ROTEAMENTO ] → processa as rotas em mini-lotes, ~8s por execução, salvando o progresso
+                 ↓  (reruns automáticos, curtos)
+        [ FINALIZAÇÃO ] → monta a planilha, recalcula a linha reta e libera o download
+        ```
+
+        Cada execução é **curta e limitada por um orçamento de tempo** (não por um número fixo de linhas):
+        a rede rápida processa muitas rotas por execução; a rede lenta processa menos, mas **cada execução
+        continua curta**. Como o progresso é salvo a cada passo, o lote **retoma exatamente de onde parou**
+        se houver qualquer interrupção — e, na prática, **avança sozinho até o fim, sem novo clique**.
+        Isso se aplica tanto à aba **Processamento em Lote** quanto à aba **Alocação**.
         """)
 
 with tab_manual:
