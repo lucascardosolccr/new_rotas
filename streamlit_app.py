@@ -62,6 +62,18 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (48ª geração) → INDICADORES TERRITORIAIS NO VALIDADOR RÁPIDO [BARREIRA-SINGLE]
+#     Trouxe a análise territorial (antes só na planilha em lote) para o Validador Rápido (Single-Shot),
+#     com EXPLICAÇÕES: novo painel "🌍 Análise Territorial e Barreiras Físicas" mostrando fator de
+#     sinuosidade (viária÷reta) + interpretação, barreira física provável (inferida) + origem do
+#     cálculo/justificativa/grau de confiança, e consistência física (viária≥reta). Helper central
+#     _montar_indicadores_territoriais (mesma lógica do lote, sem duplicar cálculo). Provado por teste
+#     isolado (inclui o caso impossível 36 vs 1852 → INCONSISTENTE). Itens já entregues em rodadas
+#     anteriores e reconfirmados no relatório: ArcGIS prioritário (43ª), Karney/WGS-84 na linha reta
+#     (40ª/43ª), mitigação de snap do OSRM (41ª), auditoria de rotas suspeitas (45ª), correção do bug
+#     AL→ALAMEDA (46ª). Discrepância residual do OSRM (~44km) e camadas GIS pesadas (hidrografia/DEM/
+#     malha) documentadas: inerentes à malha OSM / incompatíveis com single-file. Sem regressão; 10
+#     abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (47ª geração) → INFERÊNCIA DE BARREIRA FÍSICA + AVALIAÇÃO DE FERRAMENTAS SIG [ANALISE-BARREIRA]
 #     Rumo a SIG profissional. Implementado (zero dependência, alta explicabilidade): coluna "Barreira
 #     Fisica Provavel" na planilha, inferida do fator de sinuosidade (viária÷reta — indicador clássico
@@ -3858,6 +3870,59 @@ def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, geometria_polyline="", distan
     link_embed_osm = _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d, distancia_km, tempo_str)
     return None, link_embed_osm
 
+def _montar_indicadores_territoriais(dist_viaria, linha_reta, balsa):
+    """[BARREIRA-SINGLE - 48ª geração] Calcula os indicadores territoriais de uma rota (fator de
+    sinuosidade, barreira física provável, consistência física) COM interpretações, para exibição
+    no Validador Rápido. Mesma lógica da planilha em lote — centralizada aqui para explicabilidade.
+    Retorna dict com valores + textos didáticos + grau de confiança da inferência."""
+    try:
+        dv = float(dist_viaria) if dist_viaria else 0.0
+        lr = float(linha_reta) if linha_reta else 0.0
+    except Exception:
+        dv, lr = 0.0, 0.0
+    fs = round(dv / lr, 3) if lr > 0 else 0.0
+    _balsa = str(balsa or "").strip().upper()
+    # Consistência física (lei: viária >= reta)
+    if 0 < fs < 0.98:
+        consistencia = ("❌ INCONSISTENTE", "A distância viária é MENOR que a linha reta — fisicamente "
+                        "impossível (a estrada nunca é mais curta que a geodésica). Indica erro de "
+                        "geocodificação ou de captura da rota.")
+    elif fs > 0:
+        consistencia = ("✅ Consistente", "A distância viária é maior ou igual à linha reta, como esperado fisicamente.")
+    else:
+        consistencia = ("—", "Sem dados suficientes para avaliar.")
+    # Barreira física provável (inferência a partir da sinuosidade + balsa)
+    if _balsa == "SIM":
+        barreira = ("Travessia por balsa / corpo d'água", "A própria rota do motor indica uso de balsa (ferry).", "Alta")
+    elif fs >= 2.2:
+        barreira = ("Muito provável (rio/represa/serra/sem ponte)",
+                    "A rota viária é mais que o dobro da linha reta — forte indício de obstáculo natural forçando um grande contorno.", "Alta")
+    elif fs >= 1.6:
+        barreira = ("Provável (obstáculo natural / baixa conectividade)",
+                    "A rota viária é bem mais longa que a linha reta — indício de desvio por obstáculo ou malha viária esparsa.", "Média")
+    elif 0 < fs < 0.98:
+        barreira = ("N/A (resultado inconsistente)", "Ver a consistência física acima.", "—")
+    else:
+        barreira = ("Nenhuma aparente", "A rota viária é compatível com a linha reta (desvio típico de estradas).", "Alta")
+    # Interpretação do fator de sinuosidade
+    if fs <= 0:
+        interp_fs = "Sem dados."
+    elif fs < 1.2:
+        interp_fs = "Rota bastante direta (típico de bom traçado viário)."
+    elif fs < 1.6:
+        interp_fs = "Desvio moderado — normal em muitas regiões."
+    elif fs < 2.2:
+        interp_fs = "Desvio elevado — vale conferir a geografia local."
+    else:
+        interp_fs = "Desvio muito elevado — rota bem mais longa que a reta."
+    return {
+        "fator_sinuosidade": fs, "interp_sinuosidade": interp_fs,
+        "barreira": barreira[0], "barreira_explicacao": barreira[1], "barreira_confianca": barreira[2],
+        "consistencia_status": consistencia[0], "consistencia_explicacao": consistencia[1],
+        "distancia_viaria": dv, "linha_reta": lr,
+    }
+
+
 def _classificar_snap(dist_m):
     """[AUDIT-CLASSIF - 42ª geração] Classifica o nível do deslocamento (snap) do OSRM em faixas
     nomeadas (item #9: 'classificar o nível de deslocamento'). Ajuda a ler a auditoria de relance."""
@@ -5104,6 +5169,34 @@ with tab_individual:
                         st.write("**Justificativa Espacial:**")
                         for just in res_ind[27]: 
                             st.caption(f"• {just}")
+
+                # [BARREIRA-SINGLE - 48ª geração] Painel de indicadores territoriais no Validador Rápido
+                # (antes só na planilha em lote): fator de sinuosidade, barreira física provável e
+                # consistência física — COM interpretações, origem do cálculo, justificativa e confiança.
+                try:
+                    _ind = _montar_indicadores_territoriais(res_ind[0], res_ind[4], res_ind[3])
+                    with st.expander("🌍 Análise Territorial e Barreiras Físicas", expanded=False):
+                        st.caption("Indicadores derivados da relação entre a **distância viária** e a **linha reta** "
+                                   "(geodésica de Karney). Servem para explicar por que uma rota é mais longa e sinalizar inconsistências.")
+                        _ic1, _ic2, _ic3 = st.columns(3)
+                        _ic1.metric("Fator de Sinuosidade", f"{_ind['fator_sinuosidade']}×",
+                                    help="Distância viária ÷ linha reta. Quanto maior, mais a estrada 'contorna'.")
+                        _ic2.metric("Consistência Física", _ind['consistencia_status'].split(' ', 1)[-1] if ' ' in _ind['consistencia_status'] else _ind['consistencia_status'])
+                        _ic3.metric("Confiança da Inferência", _ind['barreira_confianca'])
+                        st.markdown(f"**Origem do cálculo:** viária = **{_ind['distancia_viaria']} km**, "
+                                    f"linha reta (Karney/WGS-84) = **{_ind['linha_reta']} km** → sinuosidade = "
+                                    f"viária ÷ reta = **{_ind['fator_sinuosidade']}×**.")
+                        st.markdown(f"**Interpretação da sinuosidade:** {_ind['interp_sinuosidade']}")
+                        if _ind['consistencia_status'].startswith("❌"):
+                            st.error(f"**Consistência física:** {_ind['consistencia_explicacao']}")
+                        else:
+                            st.success(f"**Consistência física:** {_ind['consistencia_explicacao']}")
+                        st.markdown(f"**🚧 Barreira física provável:** {_ind['barreira']}")
+                        st.caption(f"↳ {_ind['barreira_explicacao']} (grau de confiança: {_ind['barreira_confianca']}).")
+                        st.caption("ℹ️ A barreira é uma **inferência** a partir do desvio da rota (não usa mapa de "
+                                   "rios/relevo). É transparente e serve de guia para auditoria; para confirmação, consulte o mapa da rota.")
+                except Exception as _e_ind:
+                    logger.error(f"[BARREIRA-SINGLE] Falha ao montar indicadores territoriais (isolada): {_e_ind}")
 
                 # [AUDIT-MOTORES - 39ª geração] Painel de auditoria das consultas aos motores de rota.
                 # Mostra o rastro completo: texto original → normalizado → validado → coordenada →
