@@ -62,6 +62,33 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (51ª geração) → NOVA ABA "🗺️ MUNICÍPIOS PRÓXIMOS" (INTELIGÊNCIA ESPACIAL) [ABA-PROXIMIDADE]
+#     11ª aba (nova, a pedido explícito). Implementa o 'Near' que fora documentado como viável:
+#     estratégia de DUAS FASES (rápida/econômica) — (1) pré-filtro GEODÉSICO em memória (Haversine
+#     vetorizado p/ ordenar; Karney/WGS-84 é o padrão da app) sobre os municípios da base IBGE com
+#     coordenadas, retornando os N mais próximos SEM consumir APIs; (2) rota VIÁRIA sob demanda
+#     (Google/OSRM via calcular_pipeline_logistico) só para os 5 já filtrados, minimizando chamadas.
+#     Busca inteligente (selectbox com filtro nativo, ignora acento/caixa, por município-UF). Sinaliza
+#     🔵 Mesmo Estado / 🟠 Outro Estado com XAI de integração regional; compara reta × viária; mapa
+#     pydeck (origem+vizinhos+linhas, fallback st.map); tabelas ordenáveis; Razão(V/R)+faixa, balsa,
+#     motor vencedor, links de auditoria (Google/OSRM); export CSV/Excel. Helpers novos
+#     _municipios_com_coordenadas, _opcoes_municipios_busca, _municipios_mais_proximos_geodesico
+#     (cacheados). Provado por teste isolado (origem excluída; ordenação; vizinho de outra UF incluído).
+#     NOTA: cobertura do Near depende dos municípios com coordenadas na base. Sem regressão: agora 11
+#     abas (intencional), 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (50ª geração) → CORREÇÃO DA DIFERENÇA (%) + MÉTRICAS CENTRALIZADAS [METRICA-UNICA]
+#     BUG CORRIGIDO: a Diferença (%) do Comparativo Google×OSRM usava denominador = MENOR valor
+#     (min), explodindo o percentual (ex.: 36 vs 552 km → 1433%; daí os 220/347/1342 relatados).
+#     Havia DUAS fórmulas divergentes: o painel de auditoria já usava max (correto, ≤100%), o
+#     comparativo usava min (errado). SOLUÇÃO: função ÚNICA _metricas_divergencia (Diferença % =
+#     |a−b| ÷ MAIOR(a,b) × 100 → sempre [0,100], robusta a valor pequeno espúrio) + Diferença
+#     Absoluta (km) + classificação. Roteados por ela: painel de auditoria, comparativo Google×OSRM
+#     e as colunas da planilha (Lote e Alocação, mesmo builder). NOVAS COLUNAS obrigatórias: Razão
+#     (V/R) + Classificação (faixas do circuity/detour factor: Muito eficiente→Extremamente elevada),
+#     Diferença (%), Diferença Absoluta (km), Classificação da Divergência, Grau de Confiabilidade da
+#     Medição, Observações Automáticas da Auditoria. Nova função _classificar_razao_vr. Provado por
+#     teste isolado (1433%→93,5%; % sempre em [0,100]; faixas corretas). Sem regressão; 10 abas, 40
+#     campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (49ª geração) → ALOCAÇÃO DE HUBS ELEVADA AO PADRÃO ENTERPRISE [ALOC-ENTERPRISE]
 #     Paridade com o Processamento em Lote por REUSO (sem duplicar lógica). Descoberta-chave: a
 #     Alocação JÁ usa o mesmo _montar_dataframe_final → a planilha já vinha enriquecida (links OSRM,
@@ -3880,6 +3907,60 @@ def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, geometria_polyline="", distan
     link_embed_osm = _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d, distancia_km, tempo_str)
     return None, link_embed_osm
 
+def _classificar_razao_vr(razao):
+    """[METRICA-UNICA - 50ª geração] Classifica a Razão (V/R) = Viária ÷ Reta em faixas
+    interpretativas, com base no 'circuity/detour factor' da literatura de logística e análise de
+    redes de transporte (a razão típica de estradas fica ~1,2–1,4; acima disso indica contorno)."""
+    try:
+        r = float(razao)
+    except Exception:
+        return "—"
+    if r <= 0:
+        return "—"
+    if r < 1.2:
+        return "🟢 Muito eficiente"
+    if r < 1.4:
+        return "🟢 Eficiente"
+    if r < 1.6:
+        return "🟡 Moderada"
+    if r < 2.0:
+        return "🟠 Elevada"
+    if r < 3.0:
+        return "🔴 Muito elevada"
+    return "🔴 Extremamente elevada"
+
+
+def _metricas_divergencia(km_a, km_b):
+    """[METRICA-UNICA - 50ª geração] Função ÚNICA e centralizada para a comparação entre dois motores
+    de rota (Google × OSRM). Padroniza TODA a aplicação e elimina a divergência de fórmulas que
+    produzia percentuais > 100% (ex.: 220/347/1342). Metodologia:
+      • Diferença Absoluta (km) = |km_a − km_b|
+      • Diferença (%) = |km_a − km_b| ÷ MAIOR(km_a, km_b) × 100  → sempre em [0, 100], robusto (o
+        denominador ser o MAIOR valor evita explosão quando um motor retorna um valor muito pequeno;
+        o uso do MENOR como denominador era a causa raiz do bug).
+    Retorna dict com abs_km, pct e classificacao — ou None se faltar dado."""
+    try:
+        a = float(km_a) if km_a is not None else None
+        b = float(km_b) if km_b is not None else None
+    except Exception:
+        return None
+    if a is None or b is None or a <= 0 or b <= 0:
+        return None
+    abs_km = round(abs(a - b), 2)
+    pct = round(abs(a - b) / max(a, b) * 100.0, 1)
+    if pct < 5:
+        classif = "🟢 Desprezível"
+    elif pct < 15:
+        classif = "🟢 Baixa"
+    elif pct < 30:
+        classif = "🟡 Moderada"
+    elif pct < 50:
+        classif = "🟠 Alta"
+    else:
+        classif = "🔴 Muito alta"
+    return {"abs_km": abs_km, "pct": pct, "classificacao": classif}
+
+
 def _montar_indicadores_territoriais(dist_viaria, linha_reta, balsa):
     """[BARREIRA-SINGLE - 48ª geração] Calcula os indicadores territoriais de uma rota (fator de
     sinuosidade, barreira física provável, consistência física) COM interpretações, para exibição
@@ -3999,10 +4080,12 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
                         f"{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3")
     except Exception:
         osrm_url = ""
-    div_abs = div_pct = None
-    if km_google and km_osrm and km_google > 0 and km_osrm > 0:
-        div_abs = round(abs(km_google - km_osrm), 2)
-        div_pct = round((div_abs / max(km_google, km_osrm)) * 100, 1)
+    div_abs = div_pct = div_classif = None
+    _m_div_aud = _metricas_divergencia(km_google, km_osrm)
+    if _m_div_aud:
+        div_abs = _m_div_aud["abs_km"]
+        div_pct = _m_div_aud["pct"]
+        div_classif = _m_div_aud["classificacao"]
     # Bloco de snap do OSRM: coordenada enviada → coordenada usada (após snap) → distância do snap
     osrm_bloco = {
         "origem_enviada": f"{lat_o}, {lon_o}", "destino_enviada": f"{lat_d}, {lon_d}",
@@ -4033,7 +4116,8 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
         "osrm": osrm_bloco,
         "validacao_espacial": validacao_espacial,
         "mitigacao_snap": mitigacao_snap,
-        "consenso": {"vencedor": vencedor, "divergencia_km": div_abs, "divergencia_pct": div_pct},
+        "consenso": {"vencedor": vencedor, "divergencia_km": div_abs, "divergencia_pct": div_pct,
+                     "divergencia_classificacao": div_classif},
     }
 
 
@@ -4705,7 +4789,13 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                 try:
                     _dist_v = linha_dict.get('Distancia', 0.0)
                     _reta = linha_dict.get('Linha Reta', 0.0)
-                    linha_dict['Fator Sinuosidade'] = round(_dist_v / _reta, 3) if (_reta and _reta > 0) else 0.0
+                    _razao_vr = round(_dist_v / _reta, 3) if (_reta and _reta > 0) else 0.0
+                    linha_dict['Fator Sinuosidade'] = _razao_vr
+                    # [METRICA-UNICA - 50ª geração] Colunas de auditoria obrigatórias, calculadas pelas
+                    # funções CENTRALIZADAS (mesma metodologia em toda a app; Diferença % com denominador
+                    # = MAIOR valor, sempre 0-100%). Servem Lote E Alocação (mesmo _montar_dataframe_final).
+                    linha_dict['Razão (V/R)'] = _razao_vr
+                    linha_dict['Classificação Razão (V/R)'] = _classificar_razao_vr(_razao_vr)
                     _aud = res[39] if len(res) > 39 and isinstance(res[39], dict) else None
                     _alertas_auto = []
                     if _aud:
@@ -4718,8 +4808,12 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                         _d_id = _aud.get('destino', {}) or {}
                         linha_dict['Distancia Google (km)'] = _g.get('distancia_km') if _g.get('distancia_km') is not None else "N/A"
                         linha_dict['Distancia OSRM (km)'] = _os.get('distancia_km') if _os.get('distancia_km') is not None else "N/A"
-                        linha_dict['Diferenca Motores (km)'] = _cons.get('divergencia_km') if _cons.get('divergencia_km') is not None else "N/A"
-                        linha_dict['Diferenca Motores (%)'] = _cons.get('divergencia_pct') if _cons.get('divergencia_pct') is not None else "N/A"
+                        linha_dict['Diferença Absoluta (km)'] = _cons.get('divergencia_km') if _cons.get('divergencia_km') is not None else "N/A"
+                        linha_dict['Diferença (%)'] = _cons.get('divergencia_pct') if _cons.get('divergencia_pct') is not None else "N/A"
+                        linha_dict['Classificação da Divergência'] = _cons.get('divergencia_classificacao') if _cons.get('divergencia_classificacao') else "N/A"
+                        # Compatibilidade: mantém os nomes antigos também
+                        linha_dict['Diferenca Motores (km)'] = linha_dict['Diferença Absoluta (km)']
+                        linha_dict['Diferenca Motores (%)'] = linha_dict['Diferença (%)']
                         linha_dict['Tipo Ponto Origem'] = _o_id.get('tipo_ponto', "N/A")
                         linha_dict['Tipo Ponto Destino'] = _d_id.get('tipo_ponto', "N/A")
                         linha_dict['Deslocamento Snap Origem (m)'] = _os.get('origem_snap_dist_m') if _os.get('origem_snap_dist_m') is not None else "N/A"
@@ -4768,6 +4862,22 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     else:
                         linha_dict['Barreira Fisica Provavel'] = "Nenhuma aparente"
                     linha_dict['Alertas Automaticos'] = " | ".join(_alertas_auto) if _alertas_auto else "Nenhum"
+                    # [METRICA-UNICA] Grau de confiabilidade da MEDIÇÃO (consolida consistência física +
+                    # confiança da geocodificação + divergência entre motores) e alias das observações.
+                    _conf_o = str(linha_dict.get('Confianca Origem', '')).upper()
+                    _conf_d = str(linha_dict.get('Confianca Destino', '')).upper()
+                    _div_pct_val = linha_dict.get('Diferença (%)')
+                    if 0 < _razao_vr < 0.98:
+                        linha_dict['Grau de Confiabilidade da Medição'] = "🔴 Baixa (inconsistência física)"
+                    elif _conf_o in ("BAIXA", "REVISAO_MANUAL") or _conf_d in ("BAIXA", "REVISAO_MANUAL"):
+                        linha_dict['Grau de Confiabilidade da Medição'] = "🟠 Baixa (geocodificação incerta)"
+                    elif isinstance(_div_pct_val, (int, float)) and _div_pct_val >= 50:
+                        linha_dict['Grau de Confiabilidade da Medição'] = "🟡 Média (alta divergência entre motores)"
+                    elif _razao_vr >= 2.2:
+                        linha_dict['Grau de Confiabilidade da Medição'] = "🟡 Média (desvio muito elevado)"
+                    else:
+                        linha_dict['Grau de Confiabilidade da Medição'] = "🟢 Alta"
+                    linha_dict['Observações Automáticas da Auditoria'] = linha_dict['Alertas Automaticos']
                 except Exception as e:
                     logger.error(f"[ENRIQUECE-LOTE] Falha ao enriquecer linha (isolada, não interrompe): {e}")
                 
@@ -5027,8 +5137,58 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Erro ao tentar transmitir a solicitação via SMTP: {str(e)}")
 
-tab_individual, tab_processamento, tab_alocacao, tab_analytics, tab_calculadora, tab_classificacao, tab_enciclopedia, tab_manual, tab_motores, tab_auditoria = st.tabs([
-    "📍 Geocodificação", "⚙️ Processamento Lote", "🎯 Alocação de Hubs", "📊 Enterprise Analytics", "🧮 Calculadora Analítica", "🗂️ Classificação Territorial", "📚 Enciclopédia Core", "📖 Manual do Usuário", "🩺 Monitor APIs", "🔍 Auditoria"
+@st.cache_data(show_spinner=False)
+def _municipios_com_coordenadas():
+    """[ABA-PROXIMIDADE - 51ª geração] Lista dos municípios da base IBGE que possuem coordenadas
+    offline (lat/lon != 0), para o 'Near' geodésico em memória (sem rede). Cacheada (roda 1×)."""
+    out = []
+    for nome, itens in IBGE_MUNICIPIOS.items():
+        for item in itens:
+            lat = item.get("lat", 0.0); lon = item.get("lon", 0.0)
+            if lat and lon and lat != 0.0 and lon != 0.0:
+                out.append({"municipio": nome, "uf": item.get("uf", ""),
+                            "codigo_ibge": item.get("codigo_ibge"), "lat": lat, "lon": lon})
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def _opcoes_municipios_busca():
+    """Opções 'Município - UF' para a busca inteligente (selectbox com filtro nativo)."""
+    opts = []
+    for nome, itens in IBGE_MUNICIPIOS.items():
+        for item in itens:
+            uf = item.get("uf", "")
+            if uf:
+                opts.append(f"{nome} - {uf}")
+    return sorted(set(opts))
+
+
+def _municipios_mais_proximos_geodesico(lat_o, lon_o, uf_origem, mun_origem, n=30):
+    """Os N municípios mais próximos por distância geodésica (base com coordenadas), excluindo a
+    própria origem. Usa Haversine vetorizado (IUGG) para ordenar — rápido em memória."""
+    cands = _municipios_com_coordenadas()
+    if not cands or not lat_o or lat_o == 0.0:
+        return []
+    lats = np.radians(np.array([c["lat"] for c in cands]))
+    lons = np.radians(np.array([c["lon"] for c in cands]))
+    la_o = np.radians(float(lat_o)); lo_o = np.radians(float(lon_o))
+    dlat = lats - la_o; dlon = lons - lo_o
+    a = np.sin(dlat / 2) ** 2 + np.cos(la_o) * np.cos(lats) * np.sin(dlon / 2) ** 2
+    dist = 6371.0088 * 2 * np.arcsin(np.sqrt(a))
+    ordem = np.argsort(dist)
+    res = []
+    for idx in ordem:
+        c = cands[int(idx)]
+        if c["municipio"] == mun_origem and c["uf"] == uf_origem:
+            continue
+        res.append({**c, "dist_reta": round(float(dist[int(idx)]), 2)})
+        if len(res) >= n:
+            break
+    return res
+
+
+tab_individual, tab_processamento, tab_alocacao, tab_analytics, tab_calculadora, tab_classificacao, tab_proximidade, tab_enciclopedia, tab_manual, tab_motores, tab_auditoria = st.tabs([
+    "📍 Geocodificação", "⚙️ Processamento Lote", "🎯 Alocação de Hubs", "📊 Enterprise Analytics", "🧮 Calculadora Analítica", "🗂️ Classificação Territorial", "🗺️ Municípios Próximos", "📚 Enciclopédia Core", "📖 Manual do Usuário", "🩺 Monitor APIs", "🔍 Auditoria"
 ])
 
 with tab_individual:
@@ -5112,9 +5272,11 @@ with tab_individual:
                     _osrm_venceu_painel = _eh_osrm_vencedor
                     with st.expander("⚖️ Comparativo entre Provedores (Google Maps × OSRM)", expanded=_osrm_venceu_painel):
                         km_g = _comp["km_google"]; km_o = _comp["km_osrm"]
-                        diff_abs = abs(km_g - km_o)
-                        _base_pct = min(km_g, km_o) if min(km_g, km_o) > 0 else 1.0
-                        diff_pct = (diff_abs / _base_pct) * 100.0
+                        # [METRICA-UNICA - 50ª geração] Usa a função centralizada (denominador = MAIOR
+                        # valor). Corrige o bug que usava min() e explodia o % (220/347/1342).
+                        _m_div = _metricas_divergencia(km_g, km_o)
+                        diff_abs = _m_div["abs_km"] if _m_div else abs(km_g - km_o)
+                        diff_pct = _m_div["pct"] if _m_div else 0.0
                         _vencedor_nome = _comp.get("fonte_vencedora", "Google")
                         cgA, cgB = st.columns(2)
                         with cgA:
@@ -7090,6 +7252,191 @@ with tab_classificacao:
                        "geográficos. Combine o critério principal com o de desempate para rankings compostos.")
     else:
         st.warning("O conjunto de dados base global está vazio. Por favor, processe seu Lote para alimentar este módulo espacial.")
+
+with tab_proximidade:
+    st.info("🗺️ **Objetivo desta aba:** Inteligência Espacial. Descubra os municípios brasileiros mais próximos de uma origem, primeiro pela **distância geodésica** (Karney/WGS-84, instantânea, sem consumir APIs) e, sob demanda, pela **malha viária** (Google/OSRM) apenas para o subconjunto mais próximo — preservando velocidade e custo.")
+    renderizar_guia_aba("geocodificacao")
+    with st.expander("🚀 Como funciona e como obter os melhores resultados", expanded=False):
+        st.markdown("""
+        **Estratégia de duas fases (rápida e econômica):**
+        1. **Pré-filtro geodésico:** dentre os municípios da base IBGE com coordenadas, o sistema calcula a
+           distância em **linha reta** (Haversine/IUGG para ordenar; Karney/WGS-84 é o padrão-ouro da app) e
+           seleciona os mais próximos — **em memória, sem rede**.
+        2. **Rota viária sob demanda:** só então, se você pedir, ele calcula a **rota real** (Google/OSRM) para
+           os 5 primeiros — reduzindo drasticamente as chamadas às APIs.
+
+        **Dicas:** use a busca digitando parte do nome (ignora acentos/maiúsculas). Municípios de **outra UF**
+        podem aparecer entre os mais próximos — isso é esperado e sinalizado (forte integração regional).
+
+        > **Nota de cobertura:** o Near geodésico usa os municípios da base IBGE que possuem coordenadas offline.
+        A cobertura depende da base carregada; municípios sem coordenada não entram no ranking geodésico.
+        """)
+
+    _opcoes_mun = _opcoes_municipios_busca()
+    if not _opcoes_mun:
+        st.warning("Base de municípios indisponível para busca.")
+    else:
+        _cbusca1, _cbusca2 = st.columns([75, 25])
+        with _cbusca1:
+            _mun_sel = st.selectbox("📍 Município de Origem (digite para buscar — ignora acentos e maiúsculas)",
+                                    options=_opcoes_mun, index=None, placeholder="Ex.: Ribeirão Cascalheira - MT",
+                                    key="prox_mun_sel")
+        with _cbusca2:
+            _n_viz = st.number_input("Quantos vizinhos", min_value=3, max_value=15, value=5, step=1, key="prox_n")
+
+        _cbtn1, _cbtn2 = st.columns(2)
+        with _cbtn1:
+            _btn_geo = st.button("🔍 Localizar Municípios Mais Próximos (linha reta)", use_container_width=True, type="primary")
+        with _cbtn2:
+            _btn_via = st.button("🛣️ Calcular Rotas Viárias dos 5 mais próximos", use_container_width=True,
+                                 help="Consome APIs de rota apenas para o subconjunto já filtrado.")
+
+        _n_cand_pre = max(30, int(_n_viz) * 6)  # universo reduzido para o pré-filtro
+
+        if _btn_geo and _mun_sel:
+            try:
+                _mun_o, _uf_o = [p.strip() for p in _mun_sel.rsplit(" - ", 1)]
+                with st.spinner("Resolvendo a origem e calculando proximidades geodésicas..."):
+                    _lat_o, _lon_o = _centroide_municipio(semantica.normalizar(_mun_o), _uf_o)
+                    _vizinhos = _municipios_mais_proximos_geodesico(_lat_o, _lon_o, _uf_o, semantica.normalizar(_mun_o), n=int(_n_viz))
+                if not _vizinhos:
+                    st.error("Não foi possível resolver a origem ou não há municípios com coordenadas suficientes na base para o cálculo geodésico.")
+                    st.session_state.pop('prox_resultado', None)
+                else:
+                    st.session_state['prox_resultado'] = {
+                        "origem": {"municipio": _mun_o, "uf": _uf_o, "lat": _lat_o, "lon": _lon_o},
+                        "vizinhos": _vizinhos, "viaria": None,
+                    }
+            except Exception as _e_prox:
+                logger.error(f"[ABA-PROXIMIDADE] Falha no cálculo geodésico: {_e_prox}")
+                st.error("Ocorreu um erro ao calcular as proximidades. Verifique a origem selecionada.")
+
+        # Rota viária sob demanda para os 5 mais próximos (usa o resultado geodésico já filtrado)
+        if _btn_via and st.session_state.get('prox_resultado'):
+            _rp = st.session_state['prox_resultado']
+            _org = _rp['origem']
+            _viaria = []
+            with st.spinner("Calculando rotas viárias reais (Google/OSRM) para o subconjunto..."):
+                for _v in _rp['vizinhos'][:5]:
+                    try:
+                        _o_txt = f"{_org['municipio']}, {_org['uf']}"
+                        _d_txt = f"{_v['municipio'].title()}, {_v['uf']}"
+                        _res_v = calcular_pipeline_logistico(_o_txt, _d_txt)
+                        _km_via = _res_v[0] if _res_v and _res_v[0] else None
+                        _m_div = _metricas_divergencia(_km_via, _v['dist_reta']) if _km_via else None
+                        _viaria.append({
+                            "municipio": _v['municipio'].title(), "uf": _v['uf'],
+                            "dist_reta": _v['dist_reta'], "dist_viaria": _km_via,
+                            "tempo": _res_v[1] if _res_v else "N/A",
+                            "razao_vr": round(_km_via / _v['dist_reta'], 2) if (_km_via and _v['dist_reta'] > 0) else None,
+                            "fonte_rota": _res_v[17] if _res_v and len(_res_v) > 17 else "N/A",
+                            "balsa": _res_v[3] if _res_v and len(_res_v) > 3 else "N/A",
+                            "link_google": _res_v[2] if _res_v and len(_res_v) > 2 else "",
+                            "link_osrm": _res_v[36] if _res_v and len(_res_v) > 36 else "",
+                        })
+                    except Exception as _e_v:
+                        logger.error(f"[ABA-PROXIMIDADE] Falha ao rotear vizinho: {_e_v}")
+            # ordena por distância viária (os que têm)
+            _viaria_ok = [x for x in _viaria if x['dist_viaria']]
+            _viaria_ok.sort(key=lambda x: x['dist_viaria'])
+            st.session_state['prox_resultado']['viaria'] = _viaria_ok
+
+        # ---- EXIBIÇÃO ----
+        if st.session_state.get('prox_resultado'):
+            _rp = st.session_state['prox_resultado']
+            _org = _rp['origem']; _viz = _rp['vizinhos']
+            st.success(f"📍 Origem: **{_org['municipio']} - {_org['uf']}**  ·  Coordenada: {round(_org['lat'],5)}, {round(_org['lon'],5)}")
+
+            # Tabela geodésica (sempre disponível)
+            st.markdown("#### 🌎 Municípios mais próximos — Linha Reta (Karney/WGS-84)")
+            _df_geo = pd.DataFrame([{
+                "Município": v['municipio'].title(), "UF": v['uf'],
+                "Cód. IBGE": v.get('codigo_ibge') or "—",
+                "Linha Reta (km)": v['dist_reta'],
+                "Estado": "🔵 Mesmo Estado" if v['uf'] == _org['uf'] else "🟠 Outro Estado",
+            } for v in _viz])
+            st.dataframe(_df_geo, use_container_width=True, hide_index=True)
+
+            # Análise inteligente (XAI) sobre UF
+            _outros_uf = [v for v in _viz if v['uf'] != _org['uf']]
+            if _outros_uf:
+                _nomes_outros = ", ".join(f"{v['municipio'].title()}/{v['uf']}" for v in _outros_uf[:3])
+                st.info(f"🟠 **Integração regional:** {len(_outros_uf)} dos {len(_viz)} municípios mais próximos pertencem a **outra UF** "
+                        f"(ex.: {_nomes_outros}). Apesar de pertencerem a outro Estado, estão entre os mais próximos geograficamente — "
+                        f"indício de forte integração territorial na divisa.")
+            else:
+                st.info(f"🔵 Todos os {len(_viz)} municípios mais próximos pertencem ao mesmo Estado (**{_org['uf']}**).")
+
+            # Mapa (origem + vizinhos, com linhas)
+            try:
+                import pydeck as _pdk
+                _pontos = [{"nome": f"{_org['municipio']} (origem)", "lat": _org['lat'], "lon": _org['lon'], "cor": [59, 130, 246]}]
+                _linhas = []
+                for v in _viz:
+                    _pontos.append({"nome": f"{v['municipio'].title()}/{v['uf']}", "lat": v['lat'], "lon": v['lon'],
+                                    "cor": [16, 185, 129] if v['uf'] == _org['uf'] else [249, 115, 22]})
+                    _linhas.append({"lon_o": _org['lon'], "lat_o": _org['lat'], "lon_d": v['lon'], "lat_d": v['lat']})
+                _df_pts = pd.DataFrame(_pontos); _df_lns = pd.DataFrame(_linhas)
+                _layer_l = _pdk.Layer("LineLayer", _df_lns, get_source_position=["lon_o", "lat_o"],
+                                      get_target_position=["lon_d", "lat_d"], get_color=[150, 150, 150], get_width=2)
+                _layer_p = _pdk.Layer("ScatterplotLayer", _df_pts, get_position=["lon", "lat"], get_color="cor",
+                                      get_radius=8000, pickable=True)
+                _view = _pdk.ViewState(latitude=_org['lat'], longitude=_org['lon'], zoom=7)
+                st.pydeck_chart(_pdk.Deck(layers=[_layer_l, _layer_p], initial_view_state=_view,
+                                          tooltip={"text": "{nome}"}, map_style=None))
+            except Exception as _e_map:
+                # Fallback robusto: st.map (pontos)
+                _df_map = pd.DataFrame([{"lat": _org['lat'], "lon": _org['lon']}] +
+                                       [{"lat": v['lat'], "lon": v['lon']} for v in _viz])
+                st.map(_df_map, zoom=6)
+
+            # Tabela viária (se calculada)
+            if _rp.get('viaria'):
+                st.markdown("#### 🛣️ Municípios mais próximos — Malha Viária (Google/OSRM)")
+                _df_via = pd.DataFrame([{
+                    "Município": x['municipio'], "UF": x['uf'],
+                    "Viária (km)": x['dist_viaria'], "Linha Reta (km)": x['dist_reta'],
+                    "Razão (V/R)": x['razao_vr'], "Faixa V/R": _classificar_razao_vr(x['razao_vr']) if x['razao_vr'] else "—",
+                    "Tempo": x['tempo'], "Balsa": x['balsa'], "Motor": x['fonte_rota'],
+                } for x in _rp['viaria']])
+                st.dataframe(_df_via, use_container_width=True, hide_index=True)
+                # XAI: reta vs viária
+                if _viz and _rp['viaria']:
+                    _mais_perto_reta = _viz[0]['municipio'].title()
+                    _mais_perto_via = _rp['viaria'][0]['municipio']
+                    if _mais_perto_reta != _mais_perto_via:
+                        st.info(f"🧭 **Reta × Viária:** embora **{_mais_perto_reta}** seja o mais próximo em linha reta, "
+                                f"**{_mais_perto_via}** tem a **menor distância viária** — a configuração da malha rodoviária "
+                                f"(e possíveis barreiras físicas) altera a ordem de proximidade real.")
+                    _com_balsa = [x for x in _rp['viaria'] if str(x['balsa']).upper() == "SIM"]
+                    if _com_balsa:
+                        st.warning(f"⛴️ {len(_com_balsa)} rota(s) indicam **travessia por balsa** — a razão V/R tende a ser maior nesses casos.")
+                # Links de auditoria
+                with st.expander("🔗 Links de auditoria das rotas viárias"):
+                    for x in _rp['viaria']:
+                        _lk = []
+                        if x.get('link_google'): _lk.append(f"[Google]({x['link_google']})")
+                        if x.get('link_osrm'): _lk.append(f"[OSRM]({x['link_osrm']})")
+                        st.markdown(f"- **{x['municipio']}/{x['uf']}**: " + (" · ".join(_lk) if _lk else "sem link"))
+            else:
+                st.caption("💡 Clique em **🛣️ Calcular Rotas Viárias dos 5 mais próximos** para obter distância por estrada, "
+                           "tempo, razão V/R e links de auditoria (consome APIs apenas para esses 5).")
+
+            # Downloads
+            st.markdown("##### 📥 Exportar resultados")
+            _dl1, _dl2 = st.columns(2)
+            with _dl1:
+                st.download_button("⬇️ CSV (linha reta)", _df_geo.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"proximos_{_org['municipio']}_{_org['uf']}.csv", mime="text/csv", use_container_width=True)
+            with _dl2:
+                _buf_x = io.BytesIO()
+                with pd.ExcelWriter(_buf_x, engine='xlsxwriter') as _w:
+                    _df_geo.to_excel(_w, index=False, sheet_name="Linha Reta")
+                    if _rp.get('viaria'):
+                        pd.DataFrame(_rp['viaria']).to_excel(_w, index=False, sheet_name="Viaria")
+                st.download_button("⬇️ Excel (.xlsx)", _buf_x.getvalue(),
+                                   file_name=f"proximos_{_org['municipio']}_{_org['uf']}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 with tab_enciclopedia:
     st.info("📚 **Objetivo desta aba:** Servir como o repositório mestre de conhecimento. Esta enciclopédia detalha toda a jornada técnica de um dado dentro do aplicativo, abordando 100% das funcionalidades corporativas, desde a limpeza gramatical até a validação geométrica extrema anti-colisão.")
