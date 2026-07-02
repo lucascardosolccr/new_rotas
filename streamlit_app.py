@@ -62,6 +62,33 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (43ª geração) → ARCGIS PRIORITÁRIO + AUDITORIA DE SUSPEITAS + LINKS OSRM NO LOTE
+#     [ARCGIS-PRIORITARIO + AUDIT-SUSPEITAS + OSRM-LINK-LOTE]. (#2) ArcGIS vira a FONTE GEODÉSICA
+#     PRIORITÁRIA: no consenso, um candidato ArcGIS com confiança aceitável (score ≥60) é tentado
+#     ANTES dos demais; a validação espacial (reverse-geo + UF/município) segue como filtro
+#     obrigatório, então só caímos para fallback se o ArcGIS estiver ausente, com score baixo ou
+#     reprovado na validação — hierarquia pedida SEM reduzir exatidão. Ordem de fallback pelos pesos
+#     já existentes (ArcGIS>TomTom>Overpass>Nominatim>Photon). (#3) Distância em linha reta AUDITADA:
+#     já usa GeographicLib/Karney WGS-84 (erro <1mm) → Geopy → Haversine IUGG, com guardas anti-zero
+#     e de bounding box — é o algoritmo de máxima precisão (Karney > Vincenty); nada a trocar. (#4)
+#     Links do OSRM agora também no Lote e na Alocação (colunas 'Link Mapa OSRM' e 'Link Rota
+#     Comparativo') — custo ZERO (URLs derivadas das coordenadas já calculadas). (#6) Auditoria
+#     automática pós-lote de ROTAS SUSPEITAS: sinaliza razão viária/reta anômala por limiar técnico
+#     (≥1,8×) e estatístico (Q3+1,5·IQR), com painel dedicado. Provado por testes isolados (ArcGIS
+#     priorizado/fallback; razão+IQR; classificações). (#7) Auto-preenchimento do Validador a partir
+#     da planilha: DOCUMENTADO como pendente — o st.tabs não permite troca programática de aba sem
+#     reestruturar a navegação das 10 abas (risco alto vs. regra inegociável); design proposto no
+#     relatório. Sem regressão; 10 abas, 40 campos, balões 1×, score 0.35/0.35/0.30 intactos.
+#   v3.8 (42ª geração) → AUDITORIA APROFUNDADA: NÍVEL DE SNAP + TIPO DE PONTO [AUDIT-CLASSIF]
+#     Brief idêntico ao da 41ª (mitigação de snap, já implementada e intacta). Revisão crítica
+#     achou 2 itens do próprio brief ainda não atendidos: item #9 "classificar o nível de
+#     deslocamento" e item #8 "tipo de ponto retornado (município/centroide/endereço/POI/bairro)".
+#     Adicionados 2 classificadores de AUDITORIA (não alteram cálculo): _classificar_snap (faixas
+#     Excelente/Ótimo/Bom/Moderado/Alto/Crítico) e _classificar_tipo_ponto (infere o tipo a partir
+#     da fonte + endereço oficial). Exibidos no painel de auditoria (tipo de ponto na identificação
+#     origem/destino; nível do snap ao lado do deslocamento em metros). Provado por teste isolado
+#     (2346m→Alto, 782m→Bom; centróide IBGE, endereço, logradouro, POI, bairro, município). Aditivo,
+#     sem regressão, sem custo (classificação local sobre dados já capturados).
 #   v3.8 (41ª geração) → MITIGAÇÃO ATIVA DO SNAP EXCESSIVO DO OSRM [SNAP-MITIGA]
 #     A 40ª geração MEDIU e validou o snap; esta AGE sobre ele (o usuário pediu mitigação real, não
 #     só medição). Quando o OSRM projeta origem/destino longe da via (> 1,5 km), o sistema reúne
@@ -942,6 +969,39 @@ def _contar_rotas_unicas_preview(file_id, n_linhas, _origens, _destinos):
         if o_s and d_s and o_s.lower() != 'nan' and d_s.lower() != 'nan':
             pares.add((o_s, d_s))
     return len(pares)
+
+def _auditar_rotas_suspeitas(df):
+    """[AUDIT-SUSPEITAS - 43ª geração] Análise automática pós-lote: sinaliza rotas cuja razão
+    distância viária ÷ linha reta é técnica OU estatisticamente anômala (possível erro de
+    geocodificação, snap distante ou rota genuinamente sinuosa). Retorna (df_suspeitas, resumo).
+    Read-only e sem rede — usa apenas dados JÁ calculados (custo desprezível)."""
+    try:
+        if df is None or 'Distancia' not in df.columns or 'Linha Reta' not in df.columns:
+            return None, {}
+        _d = df.copy()
+        _dist = pd.to_numeric(_d['Distancia'], errors='coerce')
+        _reta = pd.to_numeric(_d['Linha Reta'], errors='coerce')
+        _valid = (_dist > 0) & (_reta > 0.5)  # ignora reta ~0 (pontos coincidentes) e falhas
+        _d = _d[_valid].copy()
+        if _d.empty:
+            return None, {"total": 0, "suspeitas": 0}
+        _d['_ratio'] = pd.to_numeric(_d['Distancia'], errors='coerce') / pd.to_numeric(_d['Linha Reta'], errors='coerce')
+        _d['_pct'] = (_d['_ratio'] - 1.0) * 100.0
+        # Limiar técnico: fator de desvio rodoviário típico ~1,2–1,4; ≥1,8 é suspeito.
+        _LIMIAR_TEC = 1.8
+        # Limiar estatístico: outlier superior de IQR (Tukey).
+        _q1, _q3 = _d['_ratio'].quantile(0.25), _d['_ratio'].quantile(0.75)
+        _iqr = _q3 - _q1
+        _lim_est = _q3 + 1.5 * _iqr if _iqr > 0 else _LIMIAR_TEC
+        _limiar = max(_LIMIAR_TEC, _lim_est)
+        _susp = _d[_d['_ratio'] >= _limiar].copy().sort_values('_ratio', ascending=False)
+        resumo = {"total": int(len(_d)), "suspeitas": int(len(_susp)), "limiar": round(float(_limiar), 2),
+                  "ratio_mediano": round(float(_d['_ratio'].median()), 2)}
+        return _susp, resumo
+    except Exception as e:
+        logger.error(f"[AUDIT-SUSPEITAS] Falha na auditoria automática (isolada): {e}")
+        return None, {}
+
 
 def renderizar_scorecard_qualidade(df_resultado):
     """[F-NEW1 - 3ª geração] Painel de Qualidade dos Dados Geográficos.
@@ -2651,6 +2711,21 @@ def _melhor_coordenada_para_osrm(texto_local, mun_nome, uf, lat_atual, lon_atual
         pass
     melhor = min(candidatos, key=lambda c: c.get("snap_m", 9e18))
     houve_melhora = (melhor["fonte"] != "ATUAL_VALIDADA" and melhor.get("snap_m", 9e18) < snap_atual_m - 300.0)
+    # [AUDIT-CLASSIF - item #8] Distância (m) de cada alternativa até a coordenada validada atual —
+    # "distância entre as alternativas". Haversine leve (sem logging/rede), só para a auditoria.
+    def _haversine_m(la1, lo1, la2, lo2):
+        try:
+            import math as _m
+            _r = 6371008.8
+            _p1, _p2 = _m.radians(la1), _m.radians(la2)
+            _dp = _m.radians(la2 - la1)
+            _dl = _m.radians(lo2 - lo1)
+            _a = _m.sin(_dp / 2) ** 2 + _m.cos(_p1) * _m.cos(_p2) * _m.sin(_dl / 2) ** 2
+            return round(_r * 2 * _m.atan2(_m.sqrt(_a), _m.sqrt(1 - _a)), 1)
+        except Exception:
+            return None
+    for _c in candidatos:
+        _c["dist_da_validada_m"] = _haversine_m(lat_atual, lon_atual, _c["lat"], _c["lon"])
     resultado = (melhor["lat"], melhor["lon"], melhor.get("snap_m", snap_atual_m), candidatos, houve_melhora)
     _MITIGA_SNAP_CACHE[chave] = resultado
     return resultado
@@ -2810,8 +2885,19 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
         c1["xai_data"] = {"mun": bool(feat_mun), "uf": bool(feat_uf), "cep": bool(feat_cep), "num": bool(feat_numero), "fuzz": round(fuzz_rua * 100, 1), "apis": list(apis_concordantes)}
         
     candidatos_validos.sort(key=lambda x: x["score_final"], reverse=True)
+    # [ARCGIS-PRIORITARIO - 43ª geração] O ArcGIS é a FONTE GEODÉSICA PRIORITÁRIA. Reordena os
+    # candidatos para tentar PRIMEIRO um candidato do ArcGIS — mas SOMENTE se ele tiver confiança
+    # aceitável; a validação espacial (reverse-geo + UF/município) do laço abaixo continua sendo o
+    # filtro obrigatório. Assim, o ArcGIS vence quando disponível e consistente, e só caímos para os
+    # demais provedores quando ele está ausente, tem score baixo OU falha na validação espacial —
+    # exatamente a hierarquia pedida, sem reduzir exatidão (o filtro de qualidade é preservado).
+    _LIMIAR_ARCGIS = 60.0
+    _arcgis_ok = [c for c in candidatos_validos
+                  if "ARCGIS" in (c.get("fonte", "") or "").upper() and c.get("score_final", 0) >= _LIMIAR_ARCGIS]
+    _demais = [c for c in candidatos_validos if c not in _arcgis_ok]
+    ordem_prioritaria = _arcgis_ok + _demais
     vencedor = None
-    top3_candidatos = candidatos_validos[:3]
+    top3_candidatos = ordem_prioritaria[:3]
     
     for cand in top3_candidatos:
         m = executar_reverse_geocoding_multimotor(cand["lat"], cand["lon"])
@@ -3699,6 +3785,47 @@ def _montar_links_osrm(lat_o, lon_o, lat_d, lon_d, geometria_polyline="", distan
     link_embed_osm = _gerar_mapa_rota_osrm(geometria_polyline, lat_o, lon_o, lat_d, lon_d, distancia_km, tempo_str)
     return None, link_embed_osm
 
+def _classificar_snap(dist_m):
+    """[AUDIT-CLASSIF - 42ª geração] Classifica o nível do deslocamento (snap) do OSRM em faixas
+    nomeadas (item #9: 'classificar o nível de deslocamento'). Ajuda a ler a auditoria de relance."""
+    if dist_m is None:
+        return "—"
+    try:
+        d = float(dist_m)
+    except Exception:
+        return "—"
+    if d < 50:
+        return "Excelente (sobre a via)"
+    if d < 250:
+        return "Ótimo"
+    if d < 800:
+        return "Bom"
+    if d < 1500:
+        return "Moderado"
+    if d < 5000:
+        return "Alto (representatividade reduzida)"
+    return "Crítico (ponto não representativo)"
+
+
+def _classificar_tipo_ponto(fonte, end_oficial):
+    """[AUDIT-CLASSIF - 42ª geração] Infere o TIPO do ponto geocodificado (item #8: 'tipo de ponto
+    retornado — município, centroide, endereço, POI, bairro'), a partir da fonte da geocodificação
+    e do endereço oficial. É uma classificação de auditoria (não altera nenhum cálculo)."""
+    f = (fonte or "").upper()
+    e = (end_oficial or "").upper()
+    if any(k in f for k in ("ANTI_ALUCINACAO", "CENTROIDE", "IBGE")):
+        return "Centróide municipal (base IBGE / anti-alucinação)"
+    if any(k in e for k in ("HOTEL", "POUSADA", "RESTAURANTE", "SHOPPING", "POSTO ", "CHALE", "CHALÉ", "MOTEL", "RESORT")):
+        return "Ponto de interesse (POI)"
+    if re.search(r'\d{1,6}', e) and any(k in e for k in ("RUA", "R.", "AV", "AVENIDA", "TRAVESSA", "ROD", "ESTRADA", "ALAMEDA", "PRAÇA", "PRACA")):
+        return "Endereço (logradouro com número)"
+    if any(k in e for k in ("RUA ", "R. ", "AVENIDA", "AV. ", "TRAVESSA", "RODOVIA", "ESTRADA ", "ALAMEDA", "PRAÇA", "PRACA")):
+        return "Logradouro (sem número)"
+    if any(k in e for k in ("BAIRRO", "DISTRITO", "VILA ", "POVOADO", "COMUNIDADE", "ASSENTAMENTO")):
+        return "Bairro / Distrito / Localidade"
+    return "Município / Localidade (centro)"
+
+
 def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
                               lat_o, lon_o, lat_d, lon_d,
                               fonte_geo_o, fonte_geo_d, score_o, score_d,
@@ -3738,14 +3865,18 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
         osrm_bloco["destino_usada_pos_snap"] = f"{osrm_snap.get('dest_snap_lat')}, {osrm_snap.get('dest_snap_lon')}"
         osrm_bloco["origem_snap_dist_m"] = osrm_snap.get("orig_snap_dist_m")
         osrm_bloco["destino_snap_dist_m"] = osrm_snap.get("dest_snap_dist_m")
+        osrm_bloco["origem_snap_nivel"] = _classificar_snap(osrm_snap.get("orig_snap_dist_m"))
+        osrm_bloco["destino_snap_nivel"] = _classificar_snap(osrm_snap.get("dest_snap_dist_m"))
     return {
         "origem": {
             "texto_original": origem_txt, "normalizado": norm_o, "validado_oficial": end_of_o,
             "coordenada": f"{lat_o}, {lon_o}", "fonte_geocodificacao": fonte_geo_o, "score_confianca": score_o,
+            "tipo_ponto": _classificar_tipo_ponto(fonte_geo_o, end_of_o),
         },
         "destino": {
             "texto_original": destino_txt, "normalizado": norm_d, "validado_oficial": end_of_d,
             "coordenada": f"{lat_d}, {lon_d}", "fonte_geocodificacao": fonte_geo_d, "score_confianca": score_d,
+            "tipo_ponto": _classificar_tipo_ponto(fonte_geo_d, end_of_d),
         },
         "google_maps": {
             "origem_enviada": google_param_o, "destino_enviada": google_param_d,
@@ -4397,6 +4528,12 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     'Tempo Total (s)': float(res[25]) if res[25] is not None else 0.0,
                     'Tempo': res[1] if res[1] is not None else "0 min",
                     'Link da Rota': res[2] if res[2] is not None else "Link Indisponível",
+                    # [OSRM-LINK-LOTE - 43ª geração] Links do OSRM disponíveis também no Lote/Alocação
+                    # (antes só no Validador Rápido). Custo ZERO: são URLs derivadas das coordenadas já
+                    # calculadas — nenhuma chamada de rede adicional. 'Link Mapa OSRM' abre a rota do OSRM;
+                    # 'Link Rota (Comparativo)' abre a rota do motor concorrente para comparação visual.
+                    'Link Mapa OSRM': res[36] if len(res) > 36 and res[36] else "N/A",
+                    'Link Rota (Comparativo)': res[38] if len(res) > 38 and res[38] else "N/A",
                     'Balsas': res[3] if res[3] is not None else "Não Informado",
                     'Fonte da Rota': res[5] if res[5] is not None else "Desconhecida",
                     'Confianca Origem': res[7] if res[7] is not None else "BAIXA",
@@ -4841,6 +4978,7 @@ with tab_individual:
                             st.write(f"**Validado (oficial):** {_o.get('validado_oficial','—')}")
                             st.write(f"**Coordenada validada:** {_o.get('coordenada','—')}")
                             st.caption(f"Fonte: {_o.get('fonte_geocodificacao','—')} · Score: {_o.get('score_confianca','—')}/100")
+                            st.caption(f"🏷️ Tipo de ponto: **{_o.get('tipo_ponto','—')}**")
                         with _cb:
                             st.markdown("**🏁 Destino**")
                             st.write(f"**Texto original:** {_d.get('texto_original','—')}")
@@ -4848,6 +4986,7 @@ with tab_individual:
                             st.write(f"**Validado (oficial):** {_d.get('validado_oficial','—')}")
                             st.write(f"**Coordenada validada:** {_d.get('coordenada','—')}")
                             st.caption(f"Fonte: {_d.get('fonte_geocodificacao','—')} · Score: {_d.get('score_confianca','—')}/100")
+                            st.caption(f"🏷️ Tipo de ponto: **{_d.get('tipo_ponto','—')}**")
                         st.divider()
                         _g = _aud.get("google_maps", {}); _os = _aud.get("osrm", {})
                         st.markdown("##### 2️⃣ Consulta enviada ao **Google Maps**")
@@ -4868,12 +5007,12 @@ with tab_individual:
                                 st.write(f"**Origem — enviada:** {_os.get('origem_enviada','—')}")
                                 st.write(f"**Origem — usada (pós-snap):** {_os.get('origem_usada_pos_snap','—')}")
                                 _od = _os.get('origem_snap_dist_m')
-                                st.caption(f"Deslocamento do snap: **{_od:.0f} m**" if isinstance(_od, (int, float)) else "Deslocamento: —")
+                                st.caption(f"Deslocamento do snap: **{_od:.0f} m** — {_os.get('origem_snap_nivel','—')}" if isinstance(_od, (int, float)) else "Deslocamento: —")
                             with _sc2:
                                 st.write(f"**Destino — enviada:** {_os.get('destino_enviada','—')}")
                                 st.write(f"**Destino — usada (pós-snap):** {_os.get('destino_usada_pos_snap','—')}")
                                 _dd = _os.get('destino_snap_dist_m')
-                                st.caption(f"Deslocamento do snap: **{_dd:.0f} m**" if isinstance(_dd, (int, float)) else "Deslocamento: —")
+                                st.caption(f"Deslocamento do snap: **{_dd:.0f} m** — {_os.get('destino_snap_nivel','—')}" if isinstance(_dd, (int, float)) else "Deslocamento: —")
                             st.caption("ℹ️ O OSRM **projeta** a coordenada enviada na via mais próxima da malha OpenStreetMap. "
                                        "Um deslocamento grande indica malha esparsa na região — é a **causa raiz** de origem/destino "
                                        "aparecerem alguns km afastados no OSRM (o Google re-resolve o nome na própria malha).")
@@ -4919,7 +5058,8 @@ with tab_individual:
                                     st.caption(f"**{_titulo}** — candidatos avaliados (por provedor):")
                                     _linhas = [{"Fonte": c.get("fonte","—"),
                                                 "Coordenada": f"{round(c.get('lat',0),5)}, {round(c.get('lon',0),5)}",
-                                                "Snap (m)": c.get("snap_m")} for c in _lst]
+                                                "Snap (m)": c.get("snap_m"),
+                                                "Dist. da validada (m)": c.get("dist_da_validada_m")} for c in _lst]
                                     st.dataframe(_linhas, use_container_width=True, hide_index=True)
                             _tabela_cand(_mit.get("candidatos_origem"), "Origem")
                             _tabela_cand(_mit.get("candidatos_destino"), "Destino")
@@ -5445,6 +5585,27 @@ with tab_processamento:
             st.write("---")
             # [F-NEW1] Scorecard de qualidade — indicadores agregados antes da prévia bruta
             renderizar_scorecard_qualidade(st.session_state['df_processado'])
+            # [AUDIT-SUSPEITAS - 43ª geração] Auditoria automática de rotas suspeitas (razão V/R anômala)
+            _susp_df, _susp_resumo = _auditar_rotas_suspeitas(st.session_state['df_processado'])
+            if _susp_resumo:
+                _n_susp = _susp_resumo.get("suspeitas", 0)
+                with st.expander(f"🔍 Auditoria Automática de Rotas Suspeitas ({_n_susp} sinalizada(s))", expanded=(_n_susp > 0)):
+                    st.caption(f"Análise pós-processamento da razão **distância viária ÷ linha reta**. Limiar adotado: "
+                               f"**{_susp_resumo.get('limiar','—')}×** (o maior entre o técnico 1,8× e o estatístico Q3+1,5·IQR). "
+                               f"Razão mediana do lote: {_susp_resumo.get('ratio_mediano','—')}× em {_susp_resumo.get('total',0)} rotas válidas.")
+                    if _n_susp == 0:
+                        st.success("✅ Nenhuma rota com razão viária/reta anômala — consistência espacial adequada em todo o lote.")
+                    else:
+                        st.warning(f"⚠️ {_n_susp} rota(s) com razão elevada. Possíveis causas: erro de geocodificação, "
+                                   "snap distante do OSRM, barreira geográfica (rio/serra) ou rota genuinamente sinuosa. "
+                                   "Recomenda-se **auditoria manual** dessas linhas.")
+                        _cols_show = [c for c in ['Origem', 'Destino', 'Distancia', 'Linha Reta', 'Fonte da Rota', 'Score Final Global'] if c in _susp_df.columns]
+                        _tab = _susp_df[_cols_show].copy()
+                        _tab['Razão (V/R)'] = _susp_df['_ratio'].round(2)
+                        _tab['Diferença %'] = _susp_df['_pct'].round(0)
+                        st.dataframe(_tab, use_container_width=True, hide_index=True, height=240)
+                        st.caption("💡 Razão = distância viária ÷ linha reta. Valores muito acima do típico (~1,2–1,4×) merecem "
+                                   "revisão. Use o **link de auditoria** na planilha (coluna dedicada) para reproduzir a rota no Validador Rápido.")
             st.write("---")
             st.markdown("### 📋 Prévia Interativa da Planilha Final")
             st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
