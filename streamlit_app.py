@@ -62,6 +62,18 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (47ª geração) → INFERÊNCIA DE BARREIRA FÍSICA + AVALIAÇÃO DE FERRAMENTAS SIG [ANALISE-BARREIRA]
+#     Rumo a SIG profissional. Implementado (zero dependência, alta explicabilidade): coluna "Barreira
+#     Fisica Provavel" na planilha, inferida do fator de sinuosidade (viária÷reta — indicador clássico
+#     de desvio por obstáculo) + detecção de balsa: Sim→travessia; ≥2,2×→muito provável (rio/represa/
+#     serra); ≥1,6×→provável; <0,98→inconsistente. Complementa a defesa física (viária≥reta) da 46ª e a
+#     auditoria de suspeitas da 45ª. AVALIADO e DOCUMENTADO como NÃO viável in-process (custo-benefício
+#     no relatório): Spatial Join, Calculate Travel Cost, camadas de hidrografia/relevo/DEM/malha
+#     rodoviária/IBGE — exigem GeoPandas/GDAL/GEOS + dados offline (dezenas a centenas de MB) que o
+#     runtime restrito de rede e o modelo single-file não comportam. 'Near' (município mais próximo por
+#     geodésica) é viável com os centróides IBGE já em memória — documentado como próximo passo natural.
+#     A identificação por Código IBGE + Nome+UF e a validação espacial (bbox UF + reverse-geo, re-armada
+#     na 46ª) já cobrem o núcleo do item #3/#4. Sem regressão; 10 abas, 40 campos, balões 1×.
 #   v3.8 (46ª geração) → RCA: BUG "AL→ALAMEDA" NA NORMALIZAÇÃO + DEFESAS [FIX-UF-NORMALIZA + DEFESA-FISICA]
 #     CAUSA RAIZ de erro grave (Águas Belas/PE → Santana do Ipanema/AL virou Santana/AP, reta 1852km,
 #     viária 36km): a expansão de abreviações mapeava r'\bAL\b'→'ALAMEDA'; como a normalização troca a
@@ -4664,6 +4676,22 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                         _alertas_auto.append(f"Sinuosidade elevada ({_fs}× a linha reta) — revisar.")
                     if linha_dict.get('Confianca Origem') in ("BAIXA", "REVISAO_MANUAL") or linha_dict.get('Confianca Destino') in ("BAIXA", "REVISAO_MANUAL"):
                         _alertas_auto.append("Confiança de geocodificação baixa em origem e/ou destino.")
+                    # [ANALISE-BARREIRA - 47ª geração] Inferência de BARREIRA FÍSICA PROVÁVEL a partir
+                    # de sinais já disponíveis (sem dados externos): o fator de sinuosidade (viária÷reta)
+                    # é o indicador clássico de desvio por obstáculo; combinado à detecção de balsa,
+                    # explica por que uma rota é muito mais longa que a geodésica. É uma INFERÊNCIA
+                    # (rotulada "provável"), não afirmação — zero custo, alta explicabilidade (item #1/#5).
+                    _balsa = str(linha_dict.get('Balsas', '')).strip().upper()
+                    if _balsa == "SIM":
+                        linha_dict['Barreira Fisica Provavel'] = "Travessia por balsa / corpo d'água (detectada na rota)"
+                    elif _fs >= 2.2:
+                        linha_dict['Barreira Fisica Provavel'] = "Muito provável (rio/represa/serra/sem ponte) — desvio > 2,2× a reta"
+                    elif _fs >= 1.6:
+                        linha_dict['Barreira Fisica Provavel'] = "Provável (obstáculo natural/baixa conectividade) — desvio elevado"
+                    elif 0 < _fs < 0.98:
+                        linha_dict['Barreira Fisica Provavel'] = "N/A (resultado fisicamente inconsistente — ver alerta)"
+                    else:
+                        linha_dict['Barreira Fisica Provavel'] = "Nenhuma aparente"
                     linha_dict['Alertas Automaticos'] = " | ".join(_alertas_auto) if _alertas_auto else "Nenhum"
                 except Exception as e:
                     logger.error(f"[ENRIQUECE-LOTE] Falha ao enriquecer linha (isolada, não interrompe): {e}")
