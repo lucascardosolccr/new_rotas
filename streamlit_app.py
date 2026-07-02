@@ -62,6 +62,19 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (52ª geração) → CORREÇÃO DE COBERTURA DO "MUNICÍPIOS PRÓXIMOS" (NACIONAL) [FIX-COBERTURA]
+#     BUG (aba nova da 51ª): resultados incompletos e incoerentes entre UFs. CAUSA RAIZ: a API de
+#     municípios do IBGE NÃO retorna lat/lon → a base tinha coordenadas só para um SUBCONJUNTO, então
+#     o ranking geodésico cobria poucos municípios (e cruzava UFs de forma incoerente por falta de
+#     candidatos). SOLUÇÃO: enriquecimento com os centróides de TODOS os ~5.570 municípios —
+#     _carregar_centroides_municipais baixa o dataset nacional UMA vez, persiste em DiskCache
+#     (cache_base_local, 30 dias) e _municipios_com_coordenadas passa a mesclar: coordenada offline
+#     da base quando houver, senão enriquece por CÓDIGO IBGE (prioritário/confiável) ou nome+UF.
+#     Degradação graciosa: se o download falhar, mantém o subconjunto (sem crash) e a UI mostra a
+#     COBERTURA (✅ nacional ≥5000 / ⚠️ parcial). Provado por teste isolado (enriquecimento por código
+#     e nome; fallback gracioso; prioridade do código). NOTA: o download roda no runtime de produção
+#     (que alcança a internet); meu ambiente de teste é restrito, então validei a LÓGICA de mesclagem
+#     isoladamente. Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (51ª geração) → NOVA ABA "🗺️ MUNICÍPIOS PRÓXIMOS" (INTELIGÊNCIA ESPACIAL) [ABA-PROXIMIDADE]
 #     11ª aba (nova, a pedido explícito). Implementa o 'Near' que fora documentado como viável:
 #     estratégia de DUAS FASES (rápida/econômica) — (1) pré-filtro GEODÉSICO em memória (Haversine
@@ -5138,16 +5151,85 @@ with st.sidebar:
                     st.error(f"Erro ao tentar transmitir a solicitação via SMTP: {str(e)}")
 
 @st.cache_data(show_spinner=False)
+def _carregar_centroides_municipais():
+    """[FIX-COBERTURA - 52ª geração] Baixa (UMA vez) os centróides de TODOS os ~5.570 municípios
+    brasileiros e persiste em DiskCache. Necessário porque a API de municípios do IBGE NÃO retorna
+    lat/lon — a base ficava com coordenadas apenas para um subconjunto, deixando o 'Municípios
+    Próximos' incompleto e incoerente entre UFs. Retorna {'por_codigo': {cod: (lat,lon)},
+    'por_nome': {(nome_norm, uf): (lat,lon)}}. Falha graciosa → dicts vazios (mantém o subconjunto)."""
+    chave = "centroides_municipais_v1"
+    try:
+        cached = cache_base_local.get(chave)
+        if cached and cached.get("por_codigo"):
+            return cached
+    except Exception:
+        pass
+    _mapa_uf_cod = {11: "RO", 12: "AC", 13: "AM", 14: "RR", 15: "PA", 16: "AP", 17: "TO", 21: "MA",
+                    22: "PI", 23: "CE", 24: "RN", 25: "PB", 26: "PE", 27: "AL", 28: "SE", 29: "BA",
+                    31: "MG", 32: "ES", 33: "RJ", 35: "SP", 41: "PR", 42: "SC", 43: "RS", 50: "MS",
+                    51: "MT", 52: "GO", 53: "DF"}
+    por_nome, por_codigo = {}, {}
+    _urls = [
+        "https://raw.githubusercontent.com/kelvins/municipios-brasileiros/main/csv/municipios.csv",
+        "https://raw.githubusercontent.com/kelvins/municipios-brasileiros/master/csv/municipios.csv",
+    ]
+    for _url in _urls:
+        try:
+            r = session.get(_url, timeout=15)
+            if r.status_code != 200 or not r.text:
+                continue
+            import csv as _csv
+            leitor = _csv.DictReader(io.StringIO(r.text))
+            for row in leitor:
+                try:
+                    nome = (row.get("nome") or "").strip()
+                    lat = float(row.get("latitude") or 0)
+                    lon = float(row.get("longitude") or 0)
+                    cod = str(row.get("codigo_ibge") or "").strip()
+                    uf = _mapa_uf_cod.get(int(row.get("codigo_uf") or 0), "")
+                    if lat and lon and nome and uf:
+                        por_nome[(semantica.normalizar(nome), uf)] = (lat, lon)
+                        if cod:
+                            por_codigo[cod] = (lat, lon)
+                except Exception:
+                    continue
+            if por_codigo:
+                break
+        except Exception:
+            continue
+    resultado = {"por_nome": por_nome, "por_codigo": por_codigo}
+    if por_codigo:
+        try:
+            cache_base_local.set(chave, resultado, expire=60 * 60 * 24 * 30)
+        except Exception:
+            pass
+    return resultado
+
+
+@st.cache_data(show_spinner=False)
 def _municipios_com_coordenadas():
-    """[ABA-PROXIMIDADE - 51ª geração] Lista dos municípios da base IBGE que possuem coordenadas
-    offline (lat/lon != 0), para o 'Near' geodésico em memória (sem rede). Cacheada (roda 1×)."""
+    """[ABA-PROXIMIDADE / FIX-COBERTURA] Municípios da base IBGE com coordenadas para o 'Near'
+    geodésico. Usa a coordenada offline da base quando existir; caso contrário, ENRIQUECE com o
+    dataset nacional de centróides (por código IBGE — mais confiável — ou nome+UF). Assim o ranking
+    passa a cobrir TODO o país. Cacheada (roda 1×)."""
+    centroides = _carregar_centroides_municipais()
+    por_nome = centroides.get("por_nome", {})
+    por_codigo = centroides.get("por_codigo", {})
     out = []
     for nome, itens in IBGE_MUNICIPIOS.items():
         for item in itens:
-            lat = item.get("lat", 0.0); lon = item.get("lon", 0.0)
+            uf = item.get("uf", "")
+            lat = item.get("lat", 0.0) or 0.0
+            lon = item.get("lon", 0.0) or 0.0
+            if not (lat and lon and lat != 0.0 and lon != 0.0):
+                cod = str(item.get("codigo_ibge") or "").strip()
+                if cod and cod in por_codigo:
+                    lat, lon = por_codigo[cod]
+                elif (nome, uf) in por_nome:
+                    lat, lon = por_nome[(nome, uf)]
             if lat and lon and lat != 0.0 and lon != 0.0:
-                out.append({"municipio": nome, "uf": item.get("uf", ""),
-                            "codigo_ibge": item.get("codigo_ibge"), "lat": lat, "lon": lon})
+                out.append({"municipio": nome, "uf": uf, "codigo_ibge": item.get("codigo_ibge"),
+                            "lat": lat, "lon": lon})
     return out
 
 
@@ -7273,6 +7355,18 @@ with tab_proximidade:
         """)
 
     _opcoes_mun = _opcoes_municipios_busca()
+    # [FIX-COBERTURA - 52ª geração] Indicador de cobertura do Near geodésico (municípios com coordenada).
+    try:
+        _cobertura = len(_municipios_com_coordenadas())
+        if _cobertura >= 5000:
+            st.caption(f"✅ Cobertura nacional: **{_cobertura:,}** municípios com coordenadas no ranking geodésico.")
+        elif _cobertura > 0:
+            st.caption(f"⚠️ Cobertura parcial: **{_cobertura:,}** municípios com coordenadas. O enriquecimento "
+                       f"nacional de centróides pode não ter sido baixado — o ranking usa o que está disponível.")
+        else:
+            st.warning("Nenhum município com coordenadas disponível para o ranking geodésico no momento.")
+    except Exception:
+        _cobertura = 0
     if not _opcoes_mun:
         st.warning("Base de municípios indisponível para busca.")
     else:
