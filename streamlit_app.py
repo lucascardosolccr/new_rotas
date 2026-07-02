@@ -62,6 +62,20 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (46ª geração) → RCA: BUG "AL→ALAMEDA" NA NORMALIZAÇÃO + DEFESAS [FIX-UF-NORMALIZA + DEFESA-FISICA]
+#     CAUSA RAIZ de erro grave (Águas Belas/PE → Santana do Ipanema/AL virou Santana/AP, reta 1852km,
+#     viária 36km): a expansão de abreviações mapeava r'\bAL\b'→'ALAMEDA'; como a normalização troca a
+#     vírgula por espaço ANTES de expandir, "SANTANA DO IPANEMA, AL" (AL=Alagoas) virava "...ALAMEDA",
+#     DESTRUINDO a UF. Sem UF, a geocodificação caiu em "SANTANA, AP" (Amapá) — e a linha reta de
+#     1852km estava correta PARA as coordenadas erradas (o cálculo geodésico Karney está certo; o erro
+#     foi a montante). Ponto exato: MotorEnderecoCanônico._normalizar_impl, dicionário abreviacoes_raw.
+#     CORREÇÃO ESTRUTURAL: (1) removido AL→ALAMEDA (única abreviação que colide com UF); (2) BLINDAGEM
+#     de UF — as 27 siglas viram sentinela (bytes nulos) antes das expansões e são restauradas depois,
+#     rodando após a padronização de rodovia (AL-220 intacto). Isso RE-ARMA as validações espaciais
+#     existentes (bbox UF + reverse-geo), que antes eram burladas pela UF corrompida. DEFESA FÍSICA
+#     nova: viária ≥ linha reta é lei física; se viária < reta (impossível, como 36<1852), alerta
+#     automático de inconsistência. Provado por teste isolado (AL preservado; AP/SP/PA/AC ok; rodovias
+#     e abreviações legítimas intactas; sinuosidade<0.98 sinalizada). Sem regressão; 10 abas, 40 campos.
 #   v3.8 (45ª geração) → LOTE/ALOCAÇÃO: PLANILHA ENRIQUECIDA + ETA DINÂMICA + GUIA DE DESEMPENHO
 #     Foco em Processamento em Lote e Alocação. (#1/#2) Planilha processada ENRIQUECIDA com colunas
 #     de auditoria extraídas do rastro já calculado (custo ZERO): Distância Google/OSRM, Diferença
@@ -1878,12 +1892,23 @@ class MotorEnderecoCanônico:
         abreviacoes_raw = {
             r'\bAV\b': 'AVENIDA', r'\bR\b': 'RUA', r'\bQD\b': 'QUADRA', r'\bLT\b': 'LOTE',
             r'\bCJ\b': 'CONJUNTO', r'\bCONJ\b': 'CONJUNTO', r'\bBL\b': 'BLOCO', r'\bAPT\b': 'APARTAMENTO',
-            r'\bST\b': 'SETOR', r'\bCH\b': 'CHACARA', r'\bROD\b': 'RODOVIA', r'\bKM\b': 'QUILOMETRO', 
-            r'\bAL\b': 'ALAMEDA', r'\bTR\b': 'TRAVESSA', r'\bTV\b': 'TRAVESSA', 
+            r'\bST\b': 'SETOR', r'\bCH\b': 'CHACARA', r'\bROD\b': 'RODOVIA', r'\bKM\b': 'QUILOMETRO',
+            # [FIX-UF-NORMALIZA - 46ª geração] REMOVIDO r'\bAL\b': 'ALAMEDA'. Causa raiz de bug grave:
+            # "SANTANA DO IPANEMA, AL" (AL = Alagoas) virava "...ALAMEDA", destruindo a UF e levando
+            # a geocodificar como "SANTANA, AP". "AL" é a ÚNICA abreviação que colide com uma sigla de
+            # UF; "Alameda" é raro e quase sempre escrito por extenso. Além disso, siglas de UF são
+            # agora BLINDADAS contra qualquer expansão (ver _normalizar_impl).
+            r'\bTR\b': 'TRAVESSA', r'\bTV\b': 'TRAVESSA',
             r'\bPCA\b': 'PRACA', r'\bPQ\b': 'PARQUE', r'\bSQN\b': 'SUPERQUADRA NORTE', 
             r'\bSQS\b': 'SUPERQUADRA SUL', r'\bCLN\b': 'COMERCIO LOCAL NORTE', r'\bCLS\b': 'COMERCIO LOCAL SUL'
         }
         self.abreviacoes = {re.compile(k): v for k, v in abreviacoes_raw.items()}
+        # [FIX-UF-NORMALIZA - 46ª geração] Conjunto das 27 UFs para BLINDAGEM: um token que é sigla
+        # de UF nunca pode ser expandido como abreviação de logradouro (evita a classe de bug AL→ALAMEDA).
+        self.ufs_validas = {"AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
+                            "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
+                            "SP", "SE", "TO"}
+        self._re_uf_token = re.compile(r'\b(' + '|'.join(sorted(self.ufs_validas)) + r')\b')
         self.padrao_rodovia = re.compile(r'\b(BR|AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\s*[-]?\s*(\d+)(?:\s*(?:KM|QUILOMETRO)\s*(\d+))?\b')
         self.sinonimos = {re.compile(r'\b' + k + r'\b'): v for k, v in SINONIMOS_SEMANTICOS.items()}
         self.zeros_regex = re.compile(r'\b0+(\d{1,4})\b')
@@ -1939,10 +1964,21 @@ class MotorEnderecoCanônico:
             return f"{sigla}-{numero}{km_str}"
             
         t = self.padrao_rodovia.sub(padronizar_rodovia, t)
+        # [FIX-UF-NORMALIZA] Blinda siglas de UF (AL, AP, ...) contra as expansões abaixo: substitui
+        # por um sentinela (bytes nulos, inertes a regex) antes de abreviações/sinônimos e restaura
+        # depois. Roda APÓS a padronização de rodovias (que usa UF+número) para não afetar "AL-220".
+        _uf_sentinelas = {}
+        def _proteger_uf(_m):
+            _sent = f"\x00U{len(_uf_sentinelas)}\x00"
+            _uf_sentinelas[_sent] = _m.group(0)
+            return _sent
+        t = self._re_uf_token.sub(_proteger_uf, t)
         for padrao, expansao in self.abreviacoes.items(): 
             t = padrao.sub(expansao, t)
         for padrao, expansao in self.sinonimos.items(): 
             t = padrao.sub(expansao, t)
+        for _sent, _tok in _uf_sentinelas.items():
+            t = t.replace(_sent, _tok)
         return re.sub(r'\s+', ' ', t).strip()
 
     def classificar_entrada(self, texto_norm):
@@ -4613,9 +4649,19 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                         # Alertas automáticos consolidados
                         if isinstance(_val.get('alertas'), list):
                             _alertas_auto.extend(_val['alertas'])
+                    # [DEFESA-FISICA - 46ª geração] Lei física: distância VIÁRIA ≥ LINHA RETA sempre
+                    # (a estrada nunca é menor que a geodésica). Se viária < reta, o resultado é
+                    # IMPOSSÍVEL → sinaliza erro de geocodificação/captura (teria pego o caso real
+                    # "36km viária vs 1852km reta"). Tolerância de 2% para arredondamentos de borda.
+                    _fs = linha_dict.get('Fator Sinuosidade', 0.0)
+                    if 0 < _fs < 0.98:
+                        _alertas_auto.append(
+                            f"INCONSISTÊNCIA FÍSICA: viária ({linha_dict.get('Distancia')} km) MENOR que a "
+                            f"linha reta ({linha_dict.get('Linha Reta')} km) — impossível. Provável erro de "
+                            f"geocodificação ou de captura da rota; auditar manualmente.")
                     # Alerta de sinuosidade elevada (mesmo critério técnico da auditoria de suspeitas)
-                    if linha_dict.get('Fator Sinuosidade', 0.0) >= 1.8:
-                        _alertas_auto.append(f"Sinuosidade elevada ({linha_dict['Fator Sinuosidade']}× a linha reta) — revisar.")
+                    if _fs >= 1.8:
+                        _alertas_auto.append(f"Sinuosidade elevada ({_fs}× a linha reta) — revisar.")
                     if linha_dict.get('Confianca Origem') in ("BAIXA", "REVISAO_MANUAL") or linha_dict.get('Confianca Destino') in ("BAIXA", "REVISAO_MANUAL"):
                         _alertas_auto.append("Confiança de geocodificação baixa em origem e/ou destino.")
                     linha_dict['Alertas Automaticos'] = " | ".join(_alertas_auto) if _alertas_auto else "Nenhum"
