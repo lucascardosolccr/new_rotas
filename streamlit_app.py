@@ -62,6 +62,16 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (49ª geração) → ALOCAÇÃO DE HUBS ELEVADA AO PADRÃO ENTERPRISE [ALOC-ENTERPRISE]
+#     Paridade com o Processamento em Lote por REUSO (sem duplicar lógica). Descoberta-chave: a
+#     Alocação JÁ usa o mesmo _montar_dataframe_final → a planilha já vinha enriquecida (links OSRM,
+#     distância Google/OSRM, diferença motores, sinuosidade, barreira física, alertas — rodadas
+#     43ª–47ª). O que faltava e foi somado à Alocação: (1) o mesmo SCORECARD de qualidade; (2) a mesma
+#     AUDITORIA AUTOMÁTICA DE ROTAS SUSPEITAS (razão viária/reta, limiar técnico 1,8× + IQR); (3) a
+#     seção "🚀 Como obter o MÁXIMO desempenho e precisão" adaptada à Alocação (2 planilhas, hubs).
+#     Tudo reaproveitando renderizar_scorecard_qualidade e _auditar_rotas_suspeitas já existentes.
+#     Processamento contínuo/time-boxed e enriquecimento já eram compartilhados. Sem regressão; 10
+#     abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (48ª geração) → INDICADORES TERRITORIAIS NO VALIDADOR RÁPIDO [BARREIRA-SINGLE]
 #     Trouxe a análise territorial (antes só na planilha em lote) para o Validador Rápido (Single-Shot),
 #     com EXPLICAÇÕES: novo painel "🌍 Análise Territorial e Barreiras Físicas" mostrando fator de
@@ -5939,6 +5949,37 @@ with tab_processamento:
 with tab_alocacao:
     st.info("🎯 **Objetivo desta aba:** Inteligência Logística de Hubs. Envie uma lista de clientes (Origens) e uma lista de Centros de Distribuição/Bases (Destinos). O sistema calculará todas as combinações espaciais e descobrirá automaticamente qual é a Base Logística mais próxima de cada cliente individualmente.")
     renderizar_guia_aba("alocacao")
+    # [ALOC-ENTERPRISE - 49ª geração] Seção de boas práticas, no mesmo padrão do Processamento em Lote.
+    with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (Alocação de Hubs)", expanded=False):
+        st.markdown("""
+        A Alocação usa o **mesmo motor** do Processamento em Lote (mesma geocodificação, validação, auditoria e
+        enriquecimento). Estas práticas aumentam a precisão da escolha do hub e aceleram o processamento:
+
+        **1. Prepare as DUAS planilhas com cuidado**
+        - **Clientes (Origens)** e **Bases/Hubs (Destinos)**: cada endereço no formato **`Município, UF`** (ex.: `Goiânia, GO`);
+          para endereços, inclua **logradouro, número, município e UF**.
+        - Garanta a coluna correta de endereço em cada arquivo (o seletor indica qual coluna usar).
+
+        **2. Campos que produzem melhores resultados**
+        - **UF sempre presente** — evita confundir cidades homônimas (ex.: várias "Santana" no Brasil).
+        - **CEP** quando disponível — acelera e desambigua.
+        - Coordenadas corretas: se a planilha já tiver lat/lon confiáveis, melhor ainda.
+
+        **3. Evite erros comuns**
+        - Remova **linhas vazias** e **duplicadas**; tire **espaços extras**.
+        - Bases sem UF ou com nome ambíguo podem ser geocodificadas no lugar errado — confira as bases primeiro.
+
+        **4. Como interpretar os resultados (mesma auditoria do Lote)**
+        - **Provedor vencedor** e **diferença entre motores**: mostram qual rota foi escolhida e o quanto diverge.
+        - **Fator de sinuosidade** e **Barreira Física Provável**: explicam rotas muito mais longas que a linha reta
+          (rio/serra/balsa). **Alertas Automáticos** apontam inconsistências (ex.: viária menor que a reta = erro).
+        - **Auditoria de Rotas Suspeitas** (painel ao final): lista automaticamente as linhas que merecem revisão manual.
+
+        **5. Grandes volumes e desempenho**
+        - O processamento é **contínuo** (não precisa reclicar) e **time-boxed** (nunca trava a conexão).
+        - Rotas repetidas são **reaproveitadas do cache** — reexecuções ficam bem mais rápidas.
+        - Para auditar uma linha, use os **links de rota** (Google/OSRM) na planilha exportada.
+        """)
     col_a1, col_a2 = st.columns(2)
     with col_a1: 
         file_dest = st.file_uploader("1. Planilha de Endereços / Entregas (Origens)", type=["xlsx"], key="up_dests_v19")
@@ -6250,6 +6291,27 @@ with tab_alocacao:
             if 'alo_tempo_total' in st.session_state:
                 st.success(f"✨ Alocação concluída automaticamente! {st.session_state.get('alo_linhas', 0)} linhas processadas em {_formatar_duracao(st.session_state['alo_tempo_total'])}.")
                 st.session_state.pop('alo_tempo_total', None)
+            # [ALOC-ENTERPRISE - 49ª geração] Paridade com o Processamento em Lote: o mesmo Scorecard de
+            # qualidade e a mesma Auditoria Automática de Rotas Suspeitas (REUSO das funções existentes,
+            # sem duplicar lógica). A planilha da Alocação já é enriquecida (mesmo _montar_dataframe_final).
+            renderizar_scorecard_qualidade(st.session_state['df_processado'])
+            _susp_df_alo, _susp_resumo_alo = _auditar_rotas_suspeitas(st.session_state['df_processado'])
+            if _susp_resumo_alo:
+                _n_susp_alo = _susp_resumo_alo.get("suspeitas", 0)
+                with st.expander(f"🔍 Auditoria Automática de Rotas Suspeitas ({_n_susp_alo} sinalizada(s))", expanded=(_n_susp_alo > 0)):
+                    st.caption(f"Razão **distância viária ÷ linha reta**. Limiar: **{_susp_resumo_alo.get('limiar','—')}×** "
+                               f"(maior entre técnico 1,8× e estatístico Q3+1,5·IQR). Mediana: {_susp_resumo_alo.get('ratio_mediano','—')}× "
+                               f"em {_susp_resumo_alo.get('total',0)} rotas.")
+                    if _n_susp_alo == 0:
+                        st.success("✅ Nenhuma rota com razão viária/reta anômala — consistência espacial adequada.")
+                    else:
+                        st.warning(f"⚠️ {_n_susp_alo} rota(s) com razão elevada — possível erro de geocodificação, snap distante, "
+                                   "barreira física ou rota sinuosa. Recomenda-se auditoria manual.")
+                        _cols_a = [c for c in ['Origem', 'Destino', 'Distancia', 'Linha Reta', 'Fonte da Rota', 'Score Final Global'] if c in _susp_df_alo.columns]
+                        _tab_a = _susp_df_alo[_cols_a].copy()
+                        _tab_a['Razão (V/R)'] = _susp_df_alo['_ratio'].round(2)
+                        _tab_a['Diferença %'] = _susp_df_alo['_pct'].round(0)
+                        st.dataframe(_tab_a, use_container_width=True, hide_index=True, height=240)
             st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
             st.download_button(
                 label="📥 Baixar Planilha de Alocação Competitiva (.xlsx)",
