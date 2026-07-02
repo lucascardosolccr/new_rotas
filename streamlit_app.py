@@ -62,6 +62,31 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (45ª geração) → LOTE/ALOCAÇÃO: PLANILHA ENRIQUECIDA + ETA DINÂMICA + GUIA DE DESEMPENHO
+#     Foco em Processamento em Lote e Alocação. (#1/#2) Planilha processada ENRIQUECIDA com colunas
+#     de auditoria extraídas do rastro já calculado (custo ZERO): Distância Google/OSRM, Diferença
+#     Motores (km e %), Fator Sinuosidade, Tipo de Ponto origem/destino, Deslocamento Snap
+#     origem/destino + Nível, Coord Usada OSRM (pós-snap), Validação Espacial origem/destino,
+#     Mitigação de Snap, Alertas Automáticos — além do 'Link Mapa OSRM'/'Link Rota Comparativo' da
+#     43ª. Serve Lote E Alocação (mesmo _montar_dataframe_final). (#6) Processamento contínuo já
+#     resolvido (FLUXO-CONTINUO, 38ª/39ª) — verificado intacto. (#7) ETA DINÂMICA: combina taxa média
+#     (estável) com taxa recente (reativa) via EMA, peso migrando p/ a recente conforme progride —
+#     converge ao ritmo real (não mais enviesada pela partida lenta). (#8) Nova seção "🚀 Como obter
+#     o MÁXIMO desempenho e precisão" na aba de Processamento (boas práticas de preenchimento,
+#     padronização, limpeza, formato). Provado por testes isolados (enriquecimento, ETA, sinuosidade,
+#     alertas). Sem regressão; 10 abas, 40 campos, balões 1×, score 0.35/0.35/0.30 intactos.
+#   v3.8 (44ª geração) → AUDITORIA FINAL DE PRODUÇÃO + HARDENING DE CONFIABILIDADE
+#     Rodada de VALIDAÇÃO (não de features): reavaliadas criticamente todas as decisões (arquitetura,
+#     motores, APIs, cálculos, performance, UX). Veredito documentado no relatório: a arquitetura já
+#     reflete o estado da arte após 43 gerações (Karney/WGS-84 na linha reta; consenso Bayesiano +
+#     DBSCAN + validação espacial na geocodificação; ArcGIS prioritário com portões de qualidade;
+#     OSRM com mitigação de snap + validação + guard; fluxo contínuo time-boxed; auditoria total).
+#     ÚNICO ganho seguro aplicado: 4 cláusulas `except:` nuas → `except Exception:` (evita engolir
+#     KeyboardInterrupt/SystemExit; boa prática de resiliência, risco nulo). Estudos comparativos de
+#     motores (Google/OSRM/GraphHopper/Valhalla) e APIs (ArcGIS/Nominatim/Photon/TomTom/Pelias/etc.)
+#     no relatório, justificando as escolhas atuais. Itens NÃO implementados por risco desproporcional
+#     documentados (troca de motor, GeoPandas in-process, Redis/distribuído, circuit breaker formal,
+#     migração de st.tabs). Sem regressão: 10 abas, 40 campos, balões 1×, score 0.35/0.35/0.30 intactos.
 #   v3.8 (43ª geração) → ARCGIS PRIORITÁRIO + AUDITORIA DE SUSPEITAS + LINKS OSRM NO LOTE
 #     [ARCGIS-PRIORITARIO + AUDIT-SUSPEITAS + OSRM-LINK-LOTE]. (#2) ArcGIS vira a FONTE GEODÉSICA
 #     PRIORITÁRIA: no consenso, um candidato ArcGIS com confiança aceitável (score ≥60) é tentado
@@ -2358,7 +2383,7 @@ def obter_coordenada_centroide_supremo(mun_nome, uf_nome):
             lat_c, lon_c = float(cand['location']['y']), float(cand['location']['x'])
             if validar_coordenada_brasil(lat_c, lon_c)[0]: 
                 return lat_c, lon_c, "ARCGIS_CENTROIDE_SUPREMO"
-    except: 
+    except Exception:
         pass
         
     url_nom = f"https://nominatim.openstreetmap.org/search?city={requests.utils.quote(mun_nome)}&state={requests.utils.quote(uf_nome)}&country=Brazil&format=json&limit=1"
@@ -2368,7 +2393,7 @@ def obter_coordenada_centroide_supremo(mun_nome, uf_nome):
             lat_c, lon_c = float(r[0]['lat']), float(r[0]['lon'])
             if validar_coordenada_brasil(lat_c, lon_c)[0]: 
                 return lat_c, lon_c, "NOMINATIM_CENTROIDE_SUPREMO"
-    except: 
+    except Exception:
         pass
         
     return 0.0, 0.0, None
@@ -4549,6 +4574,53 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     'Motivo Roteamento': res[28] if len(res) > 28 and res[28] is not None else "Sem Justificativa",
                     'Status Linha Reta': res[30] if len(res) > 30 and res[30] is not None else "Não Mapeado"
                 })
+
+                # [ENRIQUECE-LOTE - 45ª geração] Enriquecimento da planilha com colunas de AUDITORIA
+                # já calculadas (custo ZERO — extraídas do rastro res[39] e de campos existentes;
+                # nenhuma chamada de rede/CPU extra). Aumenta a rastreabilidade por linha (motores,
+                # divergência, snap, validação espacial, tipo de ponto, sinuosidade, alertas).
+                try:
+                    _dist_v = linha_dict.get('Distancia', 0.0)
+                    _reta = linha_dict.get('Linha Reta', 0.0)
+                    linha_dict['Fator Sinuosidade'] = round(_dist_v / _reta, 3) if (_reta and _reta > 0) else 0.0
+                    _aud = res[39] if len(res) > 39 and isinstance(res[39], dict) else None
+                    _alertas_auto = []
+                    if _aud:
+                        _g = _aud.get('google_maps', {}) or {}
+                        _os = _aud.get('osrm', {}) or {}
+                        _cons = _aud.get('consenso', {}) or {}
+                        _val = _aud.get('validacao_espacial', {}) or {}
+                        _mit = _aud.get('mitigacao_snap', {}) or {}
+                        _o_id = _aud.get('origem', {}) or {}
+                        _d_id = _aud.get('destino', {}) or {}
+                        linha_dict['Distancia Google (km)'] = _g.get('distancia_km') if _g.get('distancia_km') is not None else "N/A"
+                        linha_dict['Distancia OSRM (km)'] = _os.get('distancia_km') if _os.get('distancia_km') is not None else "N/A"
+                        linha_dict['Diferenca Motores (km)'] = _cons.get('divergencia_km') if _cons.get('divergencia_km') is not None else "N/A"
+                        linha_dict['Diferenca Motores (%)'] = _cons.get('divergencia_pct') if _cons.get('divergencia_pct') is not None else "N/A"
+                        linha_dict['Tipo Ponto Origem'] = _o_id.get('tipo_ponto', "N/A")
+                        linha_dict['Tipo Ponto Destino'] = _d_id.get('tipo_ponto', "N/A")
+                        linha_dict['Deslocamento Snap Origem (m)'] = _os.get('origem_snap_dist_m') if _os.get('origem_snap_dist_m') is not None else "N/A"
+                        linha_dict['Deslocamento Snap Destino (m)'] = _os.get('destino_snap_dist_m') if _os.get('destino_snap_dist_m') is not None else "N/A"
+                        linha_dict['Nivel Snap Origem'] = _os.get('origem_snap_nivel', "N/A")
+                        linha_dict['Coord Origem Usada OSRM'] = _os.get('origem_usada_pos_snap', linha_dict.get('Lat Origem'))
+                        linha_dict['Coord Destino Usada OSRM'] = _os.get('destino_usada_pos_snap', linha_dict.get('Lat Destino'))
+                        # Validação espacial resumida
+                        def _fmt_uf(v):
+                            return "OK" if v is True else ("FORA DA UF" if v is False else "N/D")
+                        linha_dict['Validacao Espacial Origem'] = _fmt_uf(_val.get('origem_dentro_uf'))
+                        linha_dict['Validacao Espacial Destino'] = _fmt_uf(_val.get('destino_dentro_uf'))
+                        linha_dict['Mitigacao Snap Aplicada'] = "Sim" if _mit.get('aplicada') else ("Tentada" if _mit else "Não")
+                        # Alertas automáticos consolidados
+                        if isinstance(_val.get('alertas'), list):
+                            _alertas_auto.extend(_val['alertas'])
+                    # Alerta de sinuosidade elevada (mesmo critério técnico da auditoria de suspeitas)
+                    if linha_dict.get('Fator Sinuosidade', 0.0) >= 1.8:
+                        _alertas_auto.append(f"Sinuosidade elevada ({linha_dict['Fator Sinuosidade']}× a linha reta) — revisar.")
+                    if linha_dict.get('Confianca Origem') in ("BAIXA", "REVISAO_MANUAL") or linha_dict.get('Confianca Destino') in ("BAIXA", "REVISAO_MANUAL"):
+                        _alertas_auto.append("Confiança de geocodificação baixa em origem e/ou destino.")
+                    linha_dict['Alertas Automaticos'] = " | ".join(_alertas_auto) if _alertas_auto else "Nenhum"
+                except Exception as e:
+                    logger.error(f"[ENRIQUECE-LOTE] Falha ao enriquecer linha (isolada, não interrompe): {e}")
                 
                 if runner_up_map:
                     linha_dict.update({
@@ -5237,6 +5309,37 @@ with tab_individual:
 with tab_processamento:
     st.info("⚙️ **Objetivo desta aba:** Processamento em massa O(U). Envie uma planilha Excel com milhares de origens e destinos. O sistema extrairá rotas únicas, calculará os desvios de todas simultaneamente e devolverá a planilha rigorosamente preenchida.")
     renderizar_guia_aba("processamento")
+    # [GUIA-DESEMPENHO - 45ª geração] Recomendações práticas para máxima velocidade e acerto.
+    with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (recomendações)", expanded=False):
+        st.markdown("""
+        Seguir estas boas práticas **reduz ambiguidades, aumenta a taxa de acerto e acelera** o processamento
+        (menos re-tentativas e menos consultas às APIs):
+
+        **1. Preencha Origem e Destino de forma completa e padronizada**
+        - Use o formato **`Município, UF`** (ex.: `Ribeirão Cascalheira, MT`). A UF elimina a maior fonte de ambiguidade (cidades homônimas).
+        - Para endereços, inclua **logradouro, número, município e UF** (ex.: `Av. Paulista, 1000, São Paulo, SP`).
+        - Acrescente **`, Brasil`** quando houver risco de homônimo internacional.
+
+        **2. Padronize o texto**
+        - Remova **espaços extras** no início/fim e duplos espaços.
+        - Acentuação pode ser mantida — o sistema normaliza —, mas **evite abreviações incomuns** e caracteres estranhos.
+        - Use **CEP** quando disponível: acelera e desambigua (o CEP entra na cascata de validação).
+
+        **3. Limpe a planilha antes de enviar**
+        - **Elimine linhas duplicadas** (o sistema já deduplica rotas idênticas, mas menos linhas = menos leitura).
+        - **Remova linhas vazias** ou incompletas (elas viram erro e poluem o resultado).
+        - Garanta que as colunas se chamem exatamente **`Origem`** e **`Destino`**.
+
+        **4. Tamanho e formato**
+        - Formato **`.xlsx`** (Excel moderno). Evite `.xls` antigo.
+        - Até **10.000 linhas**: sem avisos. Até **100.000**: suportado (o processamento é contínuo e time-boxed).
+        - Rotas repetidas entre lotes são **reaproveitadas do cache** — reprocessar arquivos parecidos é bem mais rápido.
+
+        **5. Durante o processamento**
+        - **Não é preciso clicar de novo:** o lote continua sozinho até o fim (arquitetura contínua).
+        - A **estimativa de tempo (ETA)** fica progressivamente mais precisa conforme mede o ritmo real.
+        - Ao final, confira o **Scorecard**, a **Auditoria de Rotas Suspeitas** e as colunas de auditoria na planilha.
+        """)
     arquivo_carregado = st.file_uploader("Selecionar Arquivo Excel", type=["xlsx"], key="lote_std", help="A planilha deve conter as colunas 'Origem' e 'Destino'.")
     if arquivo_carregado is not None:
         df = pd.read_excel(arquivo_carregado, engine='calamine')
@@ -5331,7 +5434,7 @@ with tab_processamento:
                     for _k in ['lote_em_andamento', 'lote_fase', 'lote_endpoints', 'lote_preaq_idx',
                                'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
                                'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
-                               'lote_preaquecido', 'lote_runner_map']:
+                               'lote_preaquecido', 'lote_runner_map', 'lote_eta_ultimo', 'lote_taxa_ema']:
                         st.session_state.pop(_k, None)
                     st.warning("Processamento cancelado pelo usuário.")
                     st.rerun()
@@ -5448,7 +5551,27 @@ with tab_processamento:
                 _restantes = _total - _feitos
                 _pct = (_feitos / _total) if _total else 1.0
                 _elapsed = time.time() - st.session_state['lote_start_clock']
-                _taxa = (_feitos / _elapsed) if _elapsed > 0 and _feitos > 0 else 0.0
+                _taxa_media = (_feitos / _elapsed) if _elapsed > 0 and _feitos > 0 else 0.0
+                # [ETA-DINAMICA - 45ª geração] Estimativa progressivamente mais precisa. A taxa MÉDIA
+                # (feitos/elapsed) é estável mas enviesada pela partida lenta (pré-aquecimento); a taxa
+                # RECENTE reflete o ritmo atual. Combinamos as duas via média móvel exponencial (EMA),
+                # migrando o peso para a recente conforme o lote avança → ETA converge ao tempo real.
+                _agora = time.time()
+                _ult_t, _ult_n = st.session_state.get('lote_eta_ultimo', (st.session_state['lote_start_clock'], 0))
+                _dt = _agora - _ult_t
+                _dn = _feitos - _ult_n
+                _taxa_recente = (_dn / _dt) if (_dt >= 0.5 and _dn > 0) else 0.0
+                _ema_ant = st.session_state.get('lote_taxa_ema', _taxa_media)
+                if _taxa_recente > 0:
+                    _ema = 0.4 * _taxa_recente + 0.6 * _ema_ant  # alpha=0.4
+                    st.session_state['lote_taxa_ema'] = _ema
+                    st.session_state['lote_eta_ultimo'] = (_agora, _feitos)
+                else:
+                    _ema = _ema_ant
+                _w = 0.3 + 0.55 * min(1.0, _pct)  # peso migra p/ a taxa recente (0.30 → 0.85)
+                _taxa = (_w * _ema + (1 - _w) * _taxa_media) if _ema > 0 else _taxa_media
+                if _taxa <= 0:
+                    _taxa = _taxa_media
                 _eta_seg = (_restantes / _taxa) if _taxa > 0 else 0.0
                 
                 st.markdown("#### ⚙️ Processamento Contínuo em Andamento")
@@ -5551,7 +5674,7 @@ with tab_processamento:
                     for _k in ['lote_em_andamento', 'lote_fase', 'lote_endpoints', 'lote_preaq_idx',
                                'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
                                'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
-                               'lote_preaquecido', 'lote_runner_map']:
+                               'lote_preaquecido', 'lote_runner_map', 'lote_eta_ultimo', 'lote_taxa_ema']:
                         st.session_state.pop(_k, None)
                     st.rerun()
                     
@@ -6557,7 +6680,7 @@ with tab_classificacao:
                             divisor = float(row['Divisor']) if row['Divisor'] > 0 else 1
                             pct = round((valor / divisor) * 100, 2)
                             return row['Rótulo'], pct, row['Cor']
-                    except: 
+                    except Exception:
                         pass
                 return "⚪ Não Classificado", 0.0, "#95A5A6"
                 
@@ -6579,7 +6702,7 @@ with tab_classificacao:
                         if not b.empty:
                             d = float(b.iloc[0]["Divisor"]) if float(b.iloc[0]["Divisor"]) > 0 else 1
                             return round((row[col_metrica] / d) * 100, 2)
-                    except: 
+                    except Exception:
                         pass
                     return 0.0
                     
