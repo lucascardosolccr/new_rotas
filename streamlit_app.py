@@ -62,6 +62,21 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (56ª geração) → AZIMUTE/RUMO GEODÉSICO EM MUNICÍPIOS PRÓXIMOS [BEARING-AZIMUTE] (item #3, parte 1)
+#     Nova coluna "Azimute" nas DUAS tabelas da aba Municípios Próximos (Linha Reta e Malha Viária):
+#     o rumo inicial de círculo máximo da origem até cada município (Norte=0°, sentido horário) mais a
+#     abreviação da rosa dos ventos em pt-BR (N, NE, L=Leste, SE, S, SO=Sudoeste, O=Oeste, NO). Cálculo
+#     100% determinístico e VETORIZADO (numpy) sobre as MESMAS coordenadas já usadas na ordenação por
+#     distância — custo O(n) desprezível, SEM rede, SEM nova dependência e SEM chamada de API. Helper
+#     _rumo_cardeal (setores de 45°) + azimutes injetados em _municipios_mais_proximos_geodesico como
+#     campos aditivos ('azimute','rumo') nos dicts de vizinho; leitura defensiva (.get) tolera sessão
+#     antiga. Exportações CSV/Excel herdam a coluna automaticamente. Provado por teste isolado
+#     (cardeais exatos 0/90/180/270°, 18 limites de setor, pares reais BR: Manaus→NO, Recife→NE,
+#     Porto Alegre→S, Salvador→L, e reciprocidade ida/volta ≈180°). PRÓXIMOS (item #3, resto):
+#     dados administrativos (Região/Meso/Microrregião via mapeamento IBGE, cacheável) e grau de
+#     ambiguidade — DOCUMENTADO como próximo passo por exigir download/enriquecimento (risco de rede/
+#     latência a mitigar com DiskCache). Sem regressão; 11 abas, 40 campos, balões 1×, score
+#     0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (55ª geração) → MÉTODO EXPLÍCITO NA PLANILHA [METODO-EXPLICITO] (item #8, parte 1)
 #     Coluna 'Metodo Utilizado' na planilha (Lote e Alocação, mesmo builder): deixa explícito o motor
 #     da distância viária vencedora — "Viária (Google Maps)" (prioritário) ou "Viária (OSRM - fallback)",
@@ -5314,9 +5329,23 @@ def _opcoes_municipios_busca():
     return sorted(set(opts))
 
 
+def _rumo_cardeal(azimute_graus):
+    """[BEARING-AZIMUTE - 56ª geração] Converte um azimute (0-360°, Norte=0, sentido horário) na
+    abreviação da rosa dos ventos em pt-BR: N, NE, L (Leste), SE, S, SO (Sudoeste), O (Oeste), NO.
+    Setores de 45° centrados em cada direção. Determinístico, sem rede/dependência externa."""
+    try:
+        a = float(azimute_graus) % 360.0
+    except (TypeError, ValueError):
+        return "—"
+    rumos = ["N", "NE", "L", "SE", "S", "SO", "O", "NO"]
+    return rumos[int((a + 22.5) // 45) % 8]
+
+
 def _municipios_mais_proximos_geodesico(lat_o, lon_o, uf_origem, mun_origem, n=30):
     """Os N municípios mais próximos por distância geodésica (base com coordenadas), excluindo a
-    própria origem. Usa Haversine vetorizado (IUGG) para ordenar — rápido em memória."""
+    própria origem. Usa Haversine vetorizado (IUGG) para ordenar — rápido em memória.
+    [BEARING-AZIMUTE - 56ª geração] Devolve também, por vizinho, o 'azimute' inicial (rumo de
+    círculo máximo, 0-360°, Norte=0) da origem até ele e o 'rumo' cardeal (pt-BR) correspondente."""
     cands = _municipios_com_coordenadas()
     if not cands or not lat_o or lat_o == 0.0:
         return []
@@ -5326,13 +5355,20 @@ def _municipios_mais_proximos_geodesico(lat_o, lon_o, uf_origem, mun_origem, n=3
     dlat = lats - la_o; dlon = lons - lo_o
     a = np.sin(dlat / 2) ** 2 + np.cos(la_o) * np.cos(lats) * np.sin(dlon / 2) ** 2
     dist = 6371.0088 * 2 * np.arcsin(np.sqrt(a))
+    # [BEARING-AZIMUTE - 56ª geração] Azimute inicial (rumo de círculo máximo) da origem p/ cada
+    # candidato, reaproveitando as MESMAS coordenadas já em radianos. Vetorizado O(n), sem rede.
+    y_brng = np.sin(dlon) * np.cos(lats)
+    x_brng = np.cos(la_o) * np.sin(lats) - np.sin(la_o) * np.cos(lats) * np.cos(dlon)
+    brng = (np.degrees(np.arctan2(y_brng, x_brng)) + 360.0) % 360.0
     ordem = np.argsort(dist)
     res = []
     for idx in ordem:
         c = cands[int(idx)]
         if c["municipio"] == mun_origem and c["uf"] == uf_origem:
             continue
-        res.append({**c, "dist_reta": round(float(dist[int(idx)]), 2)})
+        _az = round(float(brng[int(idx)]), 1)
+        res.append({**c, "dist_reta": round(float(dist[int(idx)]), 2),
+                    "azimute": _az, "rumo": _rumo_cardeal(_az)})
         if len(res) >= n:
             break
     return res
@@ -7573,6 +7609,8 @@ with tab_proximidade:
                         _viaria.append({
                             "municipio": _v['municipio'].title(), "uf": _v['uf'],
                             "dist_reta": _v['dist_reta'], "dist_viaria": _km_via,
+                            # [BEARING-AZIMUTE - 56ª geração] mesmo rumo geodésico do vizinho.
+                            "azimute": _v.get('azimute'), "rumo": _v.get('rumo'),
                             "tempo": _res_v[1] if _res_v else "N/A",
                             "razao_vr": round(_km_via / _v['dist_reta'], 2) if (_km_via and _v['dist_reta'] > 0) else None,
                             "fonte_rota": _res_v[17] if _res_v and len(_res_v) > 17 else "N/A",
@@ -7599,9 +7637,16 @@ with tab_proximidade:
                 "Município": v['municipio'].title(), "UF": v['uf'],
                 "Cód. IBGE": v.get('codigo_ibge') or "—",
                 "Linha Reta (km)": v['dist_reta'],
+                # [BEARING-AZIMUTE - 56ª geração] Rumo geodésico da origem até o município.
+                "Azimute": (f"{v.get('rumo', '—')} ({int(round(v['azimute']))}°)"
+                            if v.get('azimute') is not None else "—"),
                 "Estado": "🔵 Mesmo Estado" if v['uf'] == _org['uf'] else "🟠 Outro Estado",
             } for v in _viz])
             st.dataframe(_df_geo, use_container_width=True, hide_index=True)
+            st.caption("🧭 **Azimute** = rumo geodésico inicial (círculo máximo) da origem até o município, "
+                       "com Norte = 0° e sentido horário. Rosa dos ventos (pt-BR): "
+                       "**N** Norte · **NE** Nordeste · **L** Leste · **SE** Sudeste · "
+                       "**S** Sul · **SO** Sudoeste · **O** Oeste · **NO** Noroeste.")
 
             # Análise inteligente (XAI) sobre UF
             _outros_uf = [v for v in _viz if v['uf'] != _org['uf']]
@@ -7642,6 +7687,9 @@ with tab_proximidade:
                 _df_via = pd.DataFrame([{
                     "Município": x['municipio'], "UF": x['uf'],
                     "Viária (km)": x['dist_viaria'], "Linha Reta (km)": x['dist_reta'],
+                    # [BEARING-AZIMUTE - 56ª geração] Rumo geodésico (mesmo da tabela de linha reta).
+                    "Azimute": (f"{x.get('rumo', '—')} ({int(round(x['azimute']))}°)"
+                                if x.get('azimute') is not None else "—"),
                     "Razão (V/R)": x['razao_vr'], "Faixa V/R": _classificar_razao_vr(x['razao_vr']) if x['razao_vr'] else "—",
                     "Tempo": x['tempo'], "Balsa": x['balsa'], "Motor": x['fonte_rota'],
                 } for x in _rp['viaria']])
