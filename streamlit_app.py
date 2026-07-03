@@ -62,6 +62,89 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (63ª geração) → GRAU DE AMBIGUIDADE DE HOMÔNIMOS [AMBIGUIDADE-HOMONIMOS] (item #3 — fecha)
+#     Fecha o item #3. Novo helper _grau_ambiguidade_homonimos(municipio): conta em quantas UFs
+#     DISTINTAS o mesmo nome de município aparece na base IBGE em memória (ex.: "Bom Jesus" existe em
+#     várias UFs). PURO e OFFLINE (sem rede, sem dependência nova); usa a MESMA normalização da base
+#     (semantica.normalizar) — coerente com _info_municipio_ibge. O painel de identidade do Validador
+#     Rápido ganhou "⚖️ Grau de ambiguidade (homônimos)" para origem e destino: nome exclusivo (1 UF)
+#     vs homônimo em N UFs (lista as siglas), reforçando por que informar a UF desambigua. Provado por
+#     teste isolado (código real com base IBGE stub: nome em várias UFs → contagem/lista corretas e
+#     ordenadas; nome único → 1; desconhecido/vazio/"—"/"N/A" → 0 sem quebrar; UFs deduplicadas).
+#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (62ª geração) → HIERARQUIA TERRITORIAL OFICIAL DO IBGE [HIERARQUIA-IBGE] (item #3)
+#     Enriquece a identidade territorial no Validador Rápido (origem E destino) com a divisão oficial
+#     do IBGE: Região (derivada da UF, instantânea) + Mesorregião + Microrregião + Região Imediata +
+#     Região Intermediária. Três funções novas e ISOLADAS: _parse_hierarquia_payload (puro: payload
+#     /localidades/municipios → {codigo: {regiao,meso,micro,imediata,intermediaria}}, defensivo),
+#     _carregar_hierarquia_ibge (baixa UMA vez a base nacional e persiste em DiskCache 30d; NÃO toca
+#     carregar_dados_ibge nem o pickle — não pode regredir a base; falha graciosa → dict vazio) e
+#     _hierarquia_territorial (resolve por código, defensivo → "—"). RESSALVA/latência: meso/micro/
+#     imediata/intermediária NÃO são deriváveis da UF — exigem a base do IBGE; o download único é a
+#     latência MITIGADA por DiskCache + spinner rotulado; sem rede, os campos ficam "—" e voltam a
+#     preencher quando a base responder. Provado por teste isolado (parser real com payload sintético
+#     completo/parcial; resolver com stub: código conhecido, ausente, "—"/"N/A"/None → "—"). Sem
+#     regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (61ª geração) → IDENTIDADE IBGE NOS LOGS DE AUDITORIA [IBGE-LOGS] (item #2 — fecha logs)
+#     Leva a identificação municipal oficial para os DOIS logs de auditoria (aba 🔍 Auditoria): Lote e
+#     Alocação. Log do LOTE (montado em _montar_dataframe_final) ganha Município + UF + Cód IBGE (já
+#     presentes em linha_dict desde a 54ª; já exibia Fonte/'Vencedor' e Confiança/'Score'). Log da
+#     ALOCAÇÃO (hubs e origens) ganha Município + UF + Cód IBGE + Fonte da Geocodificação: para isso,
+#     geocodificar_endpoints_paralelo passou a PRESERVAR município (v[5]) e fonte (v[6]) — que já
+#     recebia e descartava —, mudança ADITIVA (índices 0–4 intactos; ambos os callers consomem por
+#     índice ≤4). Identidade resolvida pelo helper único _resolver_identidade_ibge (base IBGE em
+#     memória, sem rede). Provado por teste isolado (construção real das entradas de log: campos
+#     preenchidos no caminho feliz; tupla curta/erro → '—'/'N/A' sem quebrar; retorno de 7 elementos).
+#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (60ª geração) → CÓD IBGE NA TABELA VIÁRIA DE MUNICÍPIOS PRÓXIMOS [IBGE-PROXIMIDADE] (item #2)
+#     Fecha o item #2 na aba "Municípios Próximos". A tabela de LINHA RETA já exibia "Cód. IBGE"
+#     (pré-existente); a de MALHA VIÁRIA (Google/OSRM) NÃO — agora exibe também. Duas mudanças
+#     aditivas: (1) cada vizinho roteado passa a levar 'codigo_ibge' (já presente na base de
+#     coordenadas) para o dict viário; (2) coluna "Cód. IBGE" no _df_via, mesma posição/rótulo da
+#     tabela de linha reta. Bônus: como a aba "Viaria" do Excel exporta a lista bruta, o código passa a
+#     sair também na exportação. Custo ZERO, sem rede, sem dependência nova, sem tocar geocodificação/
+#     roteamento. Provado por teste isolado (código real de _municipios_mais_proximos_geodesico com base
+#     stub: todo vizinho carrega codigo_ibge; propagação p/ o dict viário e fallback "—" quando ausente).
+#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (59ª geração) → CÓD IBGE NO VALIDADOR RÁPIDO [IBGE-SINGLESHOT] (item #2, parte 2)
+#     Propaga a identificação municipal oficial para a TELA do Validador Rápido (Single-Shot), origem
+#     E destino: painel "🗺️ Identificação Municipal Oficial (IBGE)" com Município + UF + Cód IBGE +
+#     Fonte da identificação (geocoder vencedor) + Nível de confiança (rótulo + score/100). Reaproveita
+#     a MESMA resolução da planilha (54ª) via novo helper único _resolver_identidade_ibge (UF de
+#     extrair_uf_precisa + código de _info_municipio_ibge sobre a base IBGE em memória) — ADITIVO, sem
+#     rede, sem nova dependência, sem tocar o pipeline de rota. Leitura defensiva por índice (res_ind).
+#     Provado por teste isolado (município+UF conhecidos → código correto; UF Indefinido/vazio → '—';
+#     município fora da base → '—'; entrada None → '—' sem exceção). PRÓXIMOS (item #2, resto): mesmos
+#     campos em KPIs/logs/comparativos onde ainda faltarem. Sem regressão; 11 abas, 40 campos,
+#     balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (58ª geração) → RANKING N-HUBS (TOP-5) NA DISPUTA [RANK-NHUBS] (itens #7/#9 e #9 — fundação)
+#     Fundação segura para a "2ª opção de seleção por rota viária" (itens #7/#9), entregando já o
+#     "ranking completo / quais quase entraram" do item #9. calcular_matriz_competitiva_vetorizada
+#     passa a retornar também topk_map: por cliente, os N hubs mais próximos por LINHA RETA (teto
+#     TOP-5) como lista (dist_reta_km, hub) já ordenada — ADITIVO (dest_to_hub/runner_up_map
+#     inalterados), reaproveitando o MESMO argsort já feito (custo desprezível, ZERO rede). O painel
+#     "🏆 Auditoria da Disputa de Hubs" ganha a tabela "Ranking dos hubs candidatos (linha reta ·
+#     top-5)", marcando o escolhido (rota viária) e o concorrente roteado. Único caller atualizado
+#     (5-tupla); topk_map guardado em session_state (limpo no cancelar). Provado por teste isolado
+#     (top-5 ordenado correto; retornos existentes byte-a-byte iguais; 1 hub; sem hubs). RESSALVA/
+#     PRÓXIMO: a SELEÇÃO por rota viária propriamente dita (rotear os top-K por cliente e escolher o
+#     de MENOR distância viária) NÃO foi implementada — é cirurgia na máquina de estados em chunks e
+#     AUMENTA latência (K× roteamento, opt-in); DOCUMENTADA como próxima rodada por exigir teste no
+#     ambiente real (não executável aqui). Sem regressão; 11 abas, 40 campos, balões 1×,
+#     score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (57ª geração) → MÉTODO UTILIZADO NA TELA [METODO-TELA] (item #8, parte 2 — conclui o item #8)
+#     Torna EXPLÍCITO na interface o método da distância, complementando a coluna já existente na
+#     planilha (55ª). (1) Validador Rápido (Single-Shot): linha "Método utilizado: ✓ Distância viária
+#     (Google Maps)" / "(OSRM - fallback)" / "✓ Linha reta (GeographicLib)" — derivada da 'Fonte da
+#     Rota' (res_ind[5]) já calculada, custo ZERO; o caso geodésico é sinalizado como estimativa.
+#     (2) Alocação de Hubs: rótulo "Método de seleção dos hubs: ✓ Linha reta (GeographicLib · WGS-84)"
+#     nos resultados, com nota honesta (valor via GeographicLib/Karney <1mm; ranking por Haversine/IUGG
+#     de ordem idêntica) e ponteiro para a coluna 'Método Utilizado' da planilha. Novo helper único
+#     _rotulo_metodo_rota reaproveitado pelas duas telas. Puramente aditivo e offline (só exibição de
+#     dados já calculados) — sem nova chamada de API, sem tocar em _montar_dataframe_final. Provado por
+#     teste isolado (Google→viária Google; OSRM→viária fallback; Geodésico→Linha reta GeographicLib;
+#     vazio→N/A). PRÓXIMOS (item #7/#9): 2ª opção de seleção de hubs "por rota viária" na Alocação.
+#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (56ª geração) → AZIMUTE/RUMO GEODÉSICO EM MUNICÍPIOS PRÓXIMOS [BEARING-AZIMUTE] (item #3, parte 1)
 #     Nova coluna "Azimute" nas DUAS tabelas da aba Municípios Próximos (Linha Reta e Malha Viária):
 #     o rumo inicial de círculo máximo da origem até cada município (Norte=0°, sentido horário) mais a
@@ -625,6 +708,24 @@ def _parsear_comparativo_provedores(s):
         }
     except (ValueError, IndexError):
         return None
+
+
+def _rotulo_metodo_rota(fonte_rota):
+    """[METODO-TELA - 57ª geração / item #8] Rótulo legível do MÉTODO da distância, derivado de
+    'Fonte da Rota' já calculada (custo ZERO, sem chamada nova). Google prioritário → OSRM fallback;
+    quando nenhum motor viário respondeu, a distância exibida é a linha reta geodésica (GeographicLib).
+    Padroniza o texto mostrado na TELA do Validador Rápido e da Alocação (spec do item #8)."""
+    _fr = str(fonte_rota or "").upper()
+    if "GOOGLE" in _fr:
+        return "Distância viária (Google Maps)"
+    if "OSRM" in _fr:
+        return "Distância viária (OSRM - fallback)"
+    if "GEOD" in _fr:
+        return "Linha reta (GeographicLib)"
+    if _fr and _fr not in ("DESCONHECIDA", "N/A", "NAO INFORMADA"):
+        return f"Distância viária ({fonte_rota})"
+    return "N/A"
+
 
 METRICAS_DISTANCIA = {
     "total_calculos": 0,
@@ -2576,6 +2677,39 @@ def _info_municipio_ibge(mun_nome, uf_nome):
             if item.get("uf") == uf_nome:
                 return item, item.get("codigo_ibge")
     return None, None
+
+
+def _grau_ambiguidade_homonimos(municipio):
+    """[AMBIGUIDADE-HOMONIMOS - 63ª geração / item #3] Grau de ambiguidade de homônimos: em quantas
+    UFs DISTINTAS o mesmo nome de município aparece na base IBGE (em memória). Puro e OFFLINE (sem
+    rede). A chave da base é normalizada como semantica.normalizar (unidecode+MAIÚSCULAS), então a
+    consulta usa a MESMA normalização — coerente com _info_municipio_ibge. Retorna
+    {'n_ufs': int, 'ufs': [siglas ordenadas]}. Nome vazio/desconhecido → {'n_ufs': 0, 'ufs': []}."""
+    try:
+        _mun = semantica.normalizar(municipio) if municipio else ""
+    except Exception:
+        _mun = ""
+    if not _mun or _mun in ("—", "N/A"):
+        return {"n_ufs": 0, "ufs": []}
+    itens = IBGE_MUNICIPIOS.get(_mun, [])
+    ufs = sorted({str(it.get("uf")).upper() for it in itens if it.get("uf")})
+    return {"n_ufs": len(ufs), "ufs": ufs}
+
+
+def _resolver_identidade_ibge(municipio, endereco_oficial):
+    """[IBGE-SINGLESHOT - 59ª geração / item #2] Resolve a identidade municipal oficial para a TELA:
+    dict {municipio, uf, cod_ibge} a partir do município já geocodificado + UF extraída do endereço
+    oficial — MESMA lógica da planilha (54ª), agora reutilizável no Validador Rápido. Sem rede: só
+    consulta a base IBGE em memória. Defensivo: nunca levanta, devolve '—' quando não resolve."""
+    _mun = (municipio or "").strip()
+    try:
+        _uf = extrair_uf_precisa(endereco_oficial or "")
+        _uf = "" if _uf == "Indefinido" else _uf
+        _cod = _info_municipio_ibge(semantica.normalizar(_mun), _uf)[1] if _mun else None
+        return {"municipio": _mun or "—", "uf": _uf or "—", "cod_ibge": _cod or "—"}
+    except Exception:
+        return {"municipio": _mun or "—", "uf": "—", "cod_ibge": "—"}
+
 
 def _centroide_municipio(mun_nome, uf_nome):
     """Centróide oficial do município (lat, lon). Prioriza lat/lon do IBGE offline
@@ -4686,10 +4820,13 @@ def rodar_pipeline_lote(df, pares_unicos, tarefas_priorizadas, nome_operador, pr
 
 def geocodificar_endpoints_paralelo(lista_enderecos, max_itens=None):
     """[FIX-ALOC - 14ª geração] Geocodifica uma lista de endereços EM PARALELO via
-    EXECUTOR_GLOBAL, retornando {endereco: (lat, lon, end, score, xai)}. Substitui o
+    EXECUTOR_GLOBAL, retornando {endereco: (lat, lon, end, score, xai, mun, fonte)}. Substitui o
     loop SERIAL (um endereço por vez) da aba de Alocação, que era um gargalo grave.
     Resultados idênticos (mesma função de geocodificação); apenas paraleliza.
     Processa em fatias para permitir checkpoint incremental no chamador.
+    [IBGE-LOGS - 61ª geração / item #2] Passou a preservar também o município (v[5]) e a fonte da
+    geocodificação (v[6]) — que a função JÁ recebia e descartava — para os logs de auditoria
+    exibirem a identidade oficial (UF/Cód IBGE/Fonte). ADITIVO: índices 0–4 inalterados.
     """
     resultados = {}
     alvos = lista_enderecos if max_itens is None else lista_enderecos[:max_itens]
@@ -4698,10 +4835,10 @@ def geocodificar_endpoints_paralelo(lista_enderecos, max_itens=None):
         endereco = futuros[f]
         try:
             lat, lon, end, conf, score, dist, mun, fonte, xai = f.result()
-            resultados[endereco] = (lat, lon, end, score, xai)
+            resultados[endereco] = (lat, lon, end, score, xai, mun, fonte)
         except Exception as e:
             logger.error(f"[FIX-ALOC] Falha geocodificação de '{endereco}': {e}")
-            resultados[endereco] = (0.0, 0.0, "Falha", 0, [])
+            resultados[endereco] = (0.0, 0.0, "Falha", 0, [], "", "")
     return resultados
 
 
@@ -4714,18 +4851,26 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
     Usa o MESMO raio IUGG (6371.0088) e a MESMA métrica de proximidade em linha reta da
     função geodésica oficial. Para seleção do vizinho mais próximo (ranking relativo), o
     Haversine vetorizado é matematicamente adequado e idêntico em decisão ao cálculo
-    individual. Retorna: dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map.
+    individual. Retorna: dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map,
+    topk_map.
+
+    [RANK-NHUBS - 58ª geração / itens #7/#9] topk_map traz, por cliente, os N hubs mais
+    próximos por LINHA RETA (teto TOP-5) como lista de (dist_reta_km, hub_nome) já ordenada.
+    É ADITIVO (não altera dest_to_hub/runner_up_map): reaproveita o MESMO argsort já feito —
+    custo desprezível, zero rede. Alimenta o painel de ranking (ver "quais quase entraram") e
+    é o conjunto-candidato para a futura seleção por rota viária.
 
     Benefício líquido: mesmíssimo resultado de alocação, ordens de magnitude mais rápido.
     """
-    dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map = {}, {}, {}, {}
+    dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map = {}, {}, {}, {}, {}
+    _TETO_TOPK = 5  # teto de memória p/ lotes grandes (roadmap: "teto top-5")
 
     # Prepara arrays dos hubs válidos
     hub_nomes = list(hubs_validos.keys())
     if not hub_nomes:
         for o_nome in dest_coords:
             dest_to_hub[o_nome], dest_to_status_lr[o_nome] = "NENHUM_HUB_VALIDO", "Falha Estrutural de Hubs"
-        return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map
+        return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map
 
     hub_lats = np.radians(np.array([hubs_validos[h][0] for h in hub_nomes], dtype=float))
     hub_lons = np.radians(np.array([hubs_validos[h][1] for h in hub_nomes], dtype=float))
@@ -4749,6 +4894,8 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
             dest_to_hub[o_nome] = hub_nomes[0]
             dest_to_linha_reta[o_nome] = round(float(dists[0]), 3)
             dest_to_status_lr[o_nome] = "Calculada via Haversine Vetorizado (IUGG)"
+            # [RANK-NHUBS - 58ª geração] ranking trivial: só um hub disponível.
+            topk_map[o_nome] = [(round(float(dists[0]), 3), hub_nomes[0])]
         else:
             # argsort para achar o 1º e 2º mais próximos
             ordem = np.argsort(dists)
@@ -4761,8 +4908,14 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
                 round(float(dists[i2]), 3), hub_nomes[i2],
                 hubs_validos[hub_nomes[i2]][0], hubs_validos[hub_nomes[i2]][1]
             )
+            # [RANK-NHUBS - 58ª geração] top-K por linha reta (teto 5), reaproveitando o argsort.
+            _k = min(_TETO_TOPK, n_hubs)
+            topk_map[o_nome] = [
+                (round(float(dists[int(ordem[j])]), 3), hub_nomes[int(ordem[j])])
+                for j in range(_k)
+            ]
 
-    return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map
+    return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map
 
 
 def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
@@ -4996,6 +5149,10 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     
                 st.session_state['logs_auditoria'].append({
                     "Endereco Informado": origem, "Endereco Canonico": linha_dict.get('Endereco Oficial Origem', 'N/A'),
+                    # [IBGE-LOGS - 61ª geração / item #2] identidade oficial (já presente em linha_dict — 54ª).
+                    "Município": linha_dict.get('Municipio Origem', 'N/A'),
+                    "UF": linha_dict.get('UF Origem', 'N/A'),
+                    "Cód IBGE": linha_dict.get('Cod IBGE Origem', 'N/A'),
                     "Vencedor": linha_dict.get('Fonte Geocoding Origem', 'N/A'), "Score": linha_dict.get('Score Num Origem', 0.0), 
                     "XAI Explicabilidade": " | ".join(res[26]) if len(res) > 26 and isinstance(res[26], list) else "N/A"
                 })
@@ -5290,6 +5447,86 @@ def _carregar_centroides_municipais():
     return resultado
 
 
+def _parse_hierarquia_payload(municipios_json):
+    """[HIERARQUIA-IBGE - 62ª geração / item #3] PURO: transforma o payload
+    /localidades/municipios do IBGE em {codigo_ibge(str): {regiao, meso, micro, imediata,
+    intermediaria}}. Cada município do payload já traz a árvore microrregião→mesorregião→UF→região
+    e (quando disponível) região-imediata→região-intermediária. Defensivo a campos ausentes/parciais.
+    Sem rede/estado — testável isoladamente."""
+    por_codigo = {}
+    for mun in (municipios_json or []):
+        try:
+            cod = str(mun.get("id") or "").strip()
+            if not cod:
+                continue
+            _micro = mun.get("microrregiao") or {}
+            _meso = _micro.get("mesorregiao") or {}
+            _uf = _meso.get("UF") or {}
+            _reg = _uf.get("regiao") or {}
+            _imed = mun.get("regiao-imediata") or {}
+            _inter = _imed.get("regiao-intermediaria") or {}
+            por_codigo[cod] = {
+                "regiao": (_reg.get("nome") or "").strip(),
+                "meso": (_meso.get("nome") or "").strip(),
+                "micro": (_micro.get("nome") or "").strip(),
+                "imediata": (_imed.get("nome") or "").strip(),
+                "intermediaria": (_inter.get("nome") or "").strip(),
+            }
+        except Exception:
+            continue
+    return por_codigo
+
+
+@st.cache_data(show_spinner="Carregando divisão territorial oficial do IBGE (uma única vez)...")
+def _carregar_hierarquia_ibge():
+    """[HIERARQUIA-IBGE - 62ª geração / item #3] Baixa (UMA vez) a divisão territorial oficial de
+    TODOS os municípios do IBGE e persiste em DiskCache (30 dias). Fonte autoritativa: meso/micro/
+    imediata/intermediária NÃO são deriváveis da UF. Isolado da base principal (não toca
+    carregar_dados_ibge nem o pickle) — funciona já no deploy e não pode regredir a base. Falha
+    graciosa → dict vazio (a hierarquia some da tela, sem quebrar). Retorna {'por_codigo': {...}}.
+    [RESSALVA] O download único (payload nacional) é a latência mitigada pelo DiskCache; se a rede
+    estiver indisponível, os campos aparecem como '—' e voltam a preencher quando a base responder."""
+    chave = "hierarquia_ibge_v1"
+    try:
+        cached = cache_base_local.get(chave)
+        if cached and cached.get("por_codigo"):
+            return cached
+    except Exception:
+        pass
+    por_codigo = {}
+    try:
+        r = session.get("https://servicodados.ibge.gov.br/api/v1/localidades/municipios", timeout=15)
+        if r.status_code == 200:
+            por_codigo = _parse_hierarquia_payload(r.json())
+    except Exception:
+        pass
+    resultado = {"por_codigo": por_codigo}
+    if por_codigo:
+        try:
+            cache_base_local.set(chave, resultado, expire=60 * 60 * 24 * 30)
+        except Exception:
+            pass
+    return resultado
+
+
+def _hierarquia_territorial(codigo_ibge):
+    """[HIERARQUIA-IBGE - 62ª geração / item #3] Resolve a hierarquia territorial oficial por código
+    IBGE: dict {regiao, meso, micro, imediata, intermediaria}. Defensivo → '—' quando não encontrado
+    (código ausente, base ainda não baixada ou rede indisponível). NÃO levanta."""
+    _vazio = {"regiao": "—", "meso": "—", "micro": "—", "imediata": "—", "intermediaria": "—"}
+    cod = str(codigo_ibge or "").strip()
+    if not cod or cod in ("—", "N/A", "None", "0"):
+        return _vazio
+    try:
+        _mapa = _carregar_hierarquia_ibge().get("por_codigo", {})
+        _h = _mapa.get(cod)
+        if not _h:
+            return _vazio
+        return {k: (_h.get(k) or "—") for k in _vazio}
+    except Exception:
+        return _vazio
+
+
 @st.cache_data(show_spinner=False)
 def _municipios_com_coordenadas():
     """[ABA-PROXIMIDADE / FIX-COBERTURA] Municípios da base IBGE com coordenadas para o 'Near'
@@ -5410,7 +5647,101 @@ with tab_individual:
                 
                 st.info(f"🧭 **Estratégia de Roteamento (XAI):** {res_ind[28]}")
                 st.caption(f"📏 **Status da Linha Reta:** {res_ind[30] if len(res_ind) > 30 else 'Não Mapeado'}")
-                
+
+                # [METODO-TELA - 57ª geração / item #8] Método utilizado, EXPLÍCITO na tela (spec):
+                # ✓ Distância viária (Google Maps) / (OSRM - fallback) OU ✓ Linha reta (GeographicLib).
+                # Derivado da 'Fonte da Rota' (res_ind[5]) já calculada — custo zero, sem chamada nova.
+                _metodo_tela = _rotulo_metodo_rota(res_ind[5] if len(res_ind) > 5 else "")
+                if _metodo_tela.startswith("Linha reta"):
+                    st.info(f"📐 **Método utilizado:** ✓ {_metodo_tela} — estimativa (nenhum motor viário respondeu).")
+                elif _metodo_tela != "N/A":
+                    st.success(f"✅ **Método utilizado:** ✓ {_metodo_tela}")
+
+                # [IBGE-SINGLESHOT - 59ª geração / item #2] Identificação municipal oficial (IBGE) na
+                # TELA, origem E destino: Município + UF + Cód IBGE + Fonte da identificação + Confiança.
+                # Reaproveita a resolução da planilha (54ª) via _resolver_identidade_ibge — base IBGE em
+                # memória (sem rede). Índices: origem mun=10/fonte=11/end=12/conf=7/score=8;
+                # destino mun=16/fonte=17/end=18/conf=13/score=14. Leitura defensiva por tamanho.
+                _id_o = _resolver_identidade_ibge(res_ind[10] if len(res_ind) > 10 else "",
+                                                  res_ind[12] if len(res_ind) > 12 else "")
+                _id_d = _resolver_identidade_ibge(res_ind[16] if len(res_ind) > 16 else "",
+                                                  res_ind[18] if len(res_ind) > 18 else "")
+                with st.container(border=True):
+                    st.markdown("##### 🗺️ Identificação Municipal Oficial (IBGE)")
+                    st.caption("Código IBGE como **identificador oficial** da localidade, com a **fonte** da "
+                               "geocodificação vencedora e o **nível de confiança** — para origem e destino.")
+                    _ci_o, _ci_d = st.columns(2)
+                    with _ci_o:
+                        st.markdown(
+                            f"**📍 Origem**  \n"
+                            f"Município: **{_id_o['municipio'].title()}**  \n"
+                            f"UF: **{_id_o['uf']}**  \n"
+                            f"Cód. IBGE: `{_id_o['cod_ibge']}`  \n"
+                            f"Fonte da identificação: {res_ind[11] if len(res_ind) > 11 else '—'}  \n"
+                            f"Confiança: **{res_ind[7] if len(res_ind) > 7 else '—'}** "
+                            f"(score {res_ind[8] if len(res_ind) > 8 else '—'}/100)"
+                        )
+                    with _ci_d:
+                        st.markdown(
+                            f"**🎯 Destino**  \n"
+                            f"Município: **{_id_d['municipio'].title()}**  \n"
+                            f"UF: **{_id_d['uf']}**  \n"
+                            f"Cód. IBGE: `{_id_d['cod_ibge']}`  \n"
+                            f"Fonte da identificação: {res_ind[17] if len(res_ind) > 17 else '—'}  \n"
+                            f"Confiança: **{res_ind[13] if len(res_ind) > 13 else '—'}** "
+                            f"(score {res_ind[14] if len(res_ind) > 14 else '—'}/100)"
+                        )
+                    # [AMBIGUIDADE-HOMONIMOS - 63ª geração / item #3] Em quantas UFs o nome do município
+                    # se repete na base IBGE (offline, em memória) — mede o risco de homônimo.
+                    _amb_o = _grau_ambiguidade_homonimos(_id_o['municipio'])
+                    _amb_d = _grau_ambiguidade_homonimos(_id_d['municipio'])
+                    _frases_amb = []
+                    for _lbl, _amb, _iddict in (("Origem", _amb_o, _id_o), ("Destino", _amb_d, _id_d)):
+                        _nome = _iddict['municipio'].title() if _iddict['municipio'] != "—" else "—"
+                        if _amb['n_ufs'] > 1:
+                            _frases_amb.append(f"⚠️ **{_lbl}** (“{_nome}”): homônimo em **{_amb['n_ufs']} UFs** — {', '.join(_amb['ufs'])}")
+                        elif _amb['n_ufs'] == 1:
+                            _frases_amb.append(f"✓ **{_lbl}** (“{_nome}”): nome exclusivo (1 UF)")
+                        else:
+                            _frases_amb.append(f"• **{_lbl}** (“{_nome}”): não identificado na base IBGE")
+                    st.markdown("**⚖️ Grau de ambiguidade (homônimos)**")
+                    st.caption("  \n".join(_frases_amb) +
+                               "  \nQuanto mais UFs compartilham o nome, mais crítico é informar a UF para "
+                               "desambiguar — o motor faz isso automaticamente ao priorizar a sigla do estado.")
+
+                # [HIERARQUIA-IBGE - 62ª geração / item #3] Hierarquia territorial oficial (Região /
+                # Meso / Micro / Imediata / Intermediária) por código IBGE, origem E destino. Região
+                # deriva da UF (instantâneo); os níveis finos vêm do mapa oficial do IBGE, baixado uma
+                # única vez e cacheado em DiskCache — degradam para "—" se a base ainda não respondeu.
+                _reg_o = _UF_PARA_REGIAO.get(_id_o['uf'], "—") if _id_o['uf'] not in ("—", "") else "—"
+                _reg_d = _UF_PARA_REGIAO.get(_id_d['uf'], "—") if _id_d['uf'] not in ("—", "") else "—"
+                _hz_o = _hierarquia_territorial(_id_o['cod_ibge'])
+                _hz_d = _hierarquia_territorial(_id_d['cod_ibge'])
+                with st.container(border=True):
+                    st.markdown("##### 🌎 Hierarquia Territorial Oficial (IBGE)")
+                    st.caption("Divisão administrativa do IBGE pelo código do município. **Região** deriva da UF; "
+                               "**mesorregião/microrregião/imediata/intermediária** vêm da base oficial do IBGE "
+                               "(carregada uma única vez e cacheada). Campos aparecem como “—” se a base ainda não respondeu.")
+                    _ho, _hd = st.columns(2)
+                    with _ho:
+                        st.markdown(
+                            f"**📍 Origem**  \n"
+                            f"Região: **{_reg_o}**  \n"
+                            f"Mesorregião: {_hz_o['meso']}  \n"
+                            f"Microrregião: {_hz_o['micro']}  \n"
+                            f"Região Imediata: {_hz_o['imediata']}  \n"
+                            f"Região Intermediária: {_hz_o['intermediaria']}"
+                        )
+                    with _hd:
+                        st.markdown(
+                            f"**🎯 Destino**  \n"
+                            f"Região: **{_reg_d}**  \n"
+                            f"Mesorregião: {_hz_d['meso']}  \n"
+                            f"Microrregião: {_hz_d['micro']}  \n"
+                            f"Região Imediata: {_hz_d['imediata']}  \n"
+                            f"Região Intermediária: {_hz_d['intermediaria']}"
+                        )
+
                 # [ARQ-HIBRIDO - 26ª geração] Painel de consistência para os 3 cenários:
                 # Google vence (tudo do Google, auditável pelo link), OSRM vence (distância/
                 # tempo/mapa do OSRM com geometria exata + download do traçado), ou Projeção
@@ -6367,7 +6698,7 @@ with tab_alocacao:
         if _alo_ativo:
             if st.button("⏹️ Cancelar Alocação", key="cancel_alo"):
                 for _k in ['alo_em_andamento', 'alo_fase', 'alo_tarefas', 'alo_resultados', 'alo_chunk_idx',
-                           'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map',
+                           'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map', 'alo_topk_map',
                            'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
                            'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
                            'alo_dest_geo_acc', 'alo_dest_geo_idx']:
@@ -6393,9 +6724,13 @@ with tab_alocacao:
                 hub_geo = geocodificar_endpoints_paralelo(hubs_unicos)
                 hub_coords = {h: (v[0], v[1], v[2]) for h, v in hub_geo.items()}
                 for h, v in hub_geo.items():
+                    # [IBGE-LOGS - 61ª geração / item #2] identidade oficial no log de auditoria.
+                    _id_h = _resolver_identidade_ibge(v[5] if len(v) > 5 else "", v[2])
                     st.session_state['logs_auditoria_alocacao'].append({
                         "Categoria": "Base/Hub (Destino)", "Nome Original": h,
                         "Coordenada": f"{v[0]}, {v[1]}", "Endereço Oficializado": v[2],
+                        "Município": _id_h['municipio'], "UF": _id_h['uf'], "Cód IBGE": _id_h['cod_ibge'],
+                        "Fonte Geocodificação": v[6] if len(v) > 6 else "N/A",
                         "Score": v[3], "Validação XAI": " | ".join(v[4]) if isinstance(v[4], list) else "N/A"})
                 hubs_validos = {k: v for k, v in hub_coords.items() if v[0] != 0.0}
                 
@@ -6462,12 +6797,16 @@ with tab_alocacao:
                 dest_coords = {d: (v[0], v[1], v[2]) for d, v in _dgacc.items()}
                 _logs = st.session_state.get('logs_auditoria_alocacao', [])
                 for d, v in _dgacc.items():
+                    # [IBGE-LOGS - 61ª geração / item #2] identidade oficial no log de auditoria.
+                    _id_d = _resolver_identidade_ibge(v[5] if len(v) > 5 else "", v[2])
                     _logs.append({
                         "Categoria": "Endereço (Origem)", "Nome Original": d,
                         "Coordenada": f"{v[0]}, {v[1]}", "Endereço Oficializado": v[2],
+                        "Município": _id_d['municipio'], "UF": _id_d['uf'], "Cód IBGE": _id_d['cod_ibge'],
+                        "Fonte Geocodificação": v[6] if len(v) > 6 else "N/A",
                         "Score": v[3], "Validação XAI": " | ".join(v[4]) if isinstance(v[4], list) else "N/A"})
                 st.session_state['logs_auditoria_alocacao'] = _logs
-                dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map = \
+                dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map = \
                     calcular_matriz_competitiva_vetorizada(dest_coords, _hubs_validos)
                 df_pares = _df_dest.copy()
                 df_pares['Origem'] = df_pares[_dest_col_name].astype(str).str.strip()
@@ -6501,6 +6840,9 @@ with tab_alocacao:
                 st.session_state['alo_df_pares'] = df_pares
                 st.session_state['alo_total'] = len(pares_unicos_alo)
                 st.session_state['alo_runner_map'] = runner_up_map
+                # [RANK-NHUBS - 58ª geração / itens #7/#9] guarda o ranking top-5 (linha reta) por
+                # cliente para o painel de disputa (custo zero — já calculado na matriz vetorizada).
+                st.session_state['alo_topk_map'] = topk_map
                 st.session_state['alo_dest_linha_reta'] = dest_to_linha_reta
                 st.session_state['alo_dest_status_lr'] = dest_to_status_lr
                 st.session_state['alo_df_dest_cols'] = list(_df_dest.columns)
@@ -6640,6 +6982,16 @@ with tab_alocacao:
             if 'alo_tempo_total' in st.session_state:
                 st.success(f"✨ Alocação concluída automaticamente! {st.session_state.get('alo_linhas', 0)} linhas processadas em {_formatar_duracao(st.session_state['alo_tempo_total'])}.")
                 st.session_state.pop('alo_tempo_total', None)
+            # [METODO-TELA - 57ª geração / item #8] Método de SELEÇÃO dos hubs, EXPLÍCITO na tela.
+            # Hoje a seleção do hub mais próximo de cada cliente é por menor distância em LINHA RETA
+            # (geodésica WGS-84): o valor exibido usa GeographicLib/Karney (padrão-ouro, erro <1mm) e o
+            # ranking usa Haversine/IUGG (ordem idêntica). A 2ª opção "por rota viária" é item futuro (#7/#9).
+            st.success("✅ **Método de seleção dos hubs:** ✓ Linha reta (GeographicLib · WGS-84)")
+            st.caption("A base logística mais próxima de cada cliente foi escolhida pela **menor distância "
+                       "em linha reta** (geodésica WGS-84; valor via GeographicLib/Karney, erro <1mm; ranking "
+                       "por Haversine/IUGG, de ordem idêntica). As **distâncias viárias** por cliente "
+                       "(Google prioritário → OSRM fallback) constam na planilha exportada, na coluna "
+                       "**Método Utilizado**.")
             # [ALOC-ENTERPRISE - 49ª geração] Paridade com o Processamento em Lote: o mesmo Scorecard de
             # qualidade e a mesma Auditoria Automática de Rotas Suspeitas (REUSO das funções existentes,
             # sem duplicar lógica). A planilha da Alocação já é enriquecida (mesmo _montar_dataframe_final).
@@ -6727,6 +7079,29 @@ with tab_alocacao:
                                        f"**{_dif_km:.1f} km** (+{_dif_pct}%)" +
                                        (", mas a diferença é pequena o suficiente para caracterizar empate técnico." if _dif_km < 5
                                         else "." ))
+
+                        # [RANK-NHUBS - 58ª geração / itens #7/#9] Ranking completo dos hubs candidatos
+                        # (linha reta) — atende "ranking completo" e "quais quase entraram" (item #9).
+                        # Usa o top-5 já calculado na matriz vetorizada (custo ZERO, sem rede). O hub
+                        # escolhido é por ROTA VIÁRIA; os demais vêm ordenados por proximidade em linha reta.
+                        _topk = st.session_state.get('alo_topk_map', {}).get(_cli_sel)
+                        if _topk:
+                            st.markdown("**🏅 Ranking dos hubs candidatos mais próximos (linha reta · top-5)**")
+                            _linhas_rk = []
+                            for _pos, (_dkm, _hnome) in enumerate(_topk, start=1):
+                                if _hnome == _venc_nome:
+                                    _marca = "🥇 escolhido (rota viária)"
+                                elif str(_hnome) == str(_conc_nome):
+                                    _marca = "🥈 concorrente roteado"
+                                else:
+                                    _marca = "•"
+                                _linhas_rk.append({"Posição": _pos, "Hub": str(_hnome).title(),
+                                                   "Linha Reta (km)": _dkm, "Situação": _marca})
+                            st.dataframe(pd.DataFrame(_linhas_rk), use_container_width=True, hide_index=True)
+                            st.caption("Ordenado por **distância em linha reta** (Haversine/IUGG, valor exibido via GeographicLib "
+                                       "no restante da planilha). O **hub escolhido** é definido pela **rota viária** — por isso pode "
+                                       "não ser o 1º da linha reta. Os demais mostram **quais quase entraram**. A seleção que roteia "
+                                       "**todos** os candidatos por via e escolhe o de menor distância viária é o próximo passo (itens #7/#9).")
             _susp_df_alo, _susp_resumo_alo = _auditar_rotas_suspeitas(st.session_state['df_processado'])
             if _susp_resumo_alo:
                 _n_susp_alo = _susp_resumo_alo.get("suspeitas", 0)
@@ -7608,6 +7983,9 @@ with tab_proximidade:
                         _m_div = _metricas_divergencia(_km_via, _v['dist_reta']) if _km_via else None
                         _viaria.append({
                             "municipio": _v['municipio'].title(), "uf": _v['uf'],
+                            # [IBGE-PROXIMIDADE - 60ª geração / item #2] leva o código IBGE oficial do
+                            # vizinho (já presente na base) para a tabela viária — custo zero, sem rede.
+                            "codigo_ibge": _v.get('codigo_ibge'),
                             "dist_reta": _v['dist_reta'], "dist_viaria": _km_via,
                             # [BEARING-AZIMUTE - 56ª geração] mesmo rumo geodésico do vizinho.
                             "azimute": _v.get('azimute'), "rumo": _v.get('rumo'),
@@ -7686,6 +8064,8 @@ with tab_proximidade:
                 st.markdown("#### 🛣️ Municípios mais próximos — Malha Viária (Google/OSRM)")
                 _df_via = pd.DataFrame([{
                     "Município": x['municipio'], "UF": x['uf'],
+                    # [IBGE-PROXIMIDADE - 60ª geração / item #2] identificador oficial também na tabela viária.
+                    "Cód. IBGE": x.get('codigo_ibge') or "—",
                     "Viária (km)": x['dist_viaria'], "Linha Reta (km)": x['dist_reta'],
                     # [BEARING-AZIMUTE - 56ª geração] Rumo geodésico (mesmo da tabela de linha reta).
                     "Azimute": (f"{x.get('rumo', '—')} ({int(round(x['azimute']))}°)"
