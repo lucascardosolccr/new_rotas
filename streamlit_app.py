@@ -62,6 +62,20 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (53ª geração) → AUDITORIA DA DISPUTA DE HUBS NA INTERFACE [DISPUTA-HUB]
+#     Item central de um roteiro amplo (12 itens): trazer para a TELA a comparação vencedor × melhor
+#     concorrente da Alocação de Hub (antes só na planilha exportada). Novo painel "🏆 Auditoria da
+#     Disputa de Hubs" nos resultados da Alocação: seletor de cliente → hub escolhido × melhor
+#     concorrente (distância viária, linha reta, Razão V/R, tempo, score, motor), tabela comparativa,
+#     Diferença (km e %, pela função centralizada da 50ª), SENSIBILIDADE da escolha (empate técnico →
+#     robusta), ÍNDICE DE COMPETITIVIDADE (★★★★★) e JUSTIFICATIVA automática (por que venceu / por que
+#     o concorrente perdeu). Usa dados JÁ calculados (colunas Concorrente Analisado/Distancia
+#     Concorrente) — custo ZERO, sem novas chamadas de API. Provado por teste isolado (empate→★★★★★;
+#     folgada→★☆☆☆☆). Demais itens do roteiro (código IBGE como identificador em toda a app; dados
+#     administrativos meso/microrregião + bearing/azimute em Municípios Próximos; ranking N-hubs;
+#     Google prioritário nas rotas viárias; revisão de arquitetura) DOCUMENTADOS como próximos passos
+#     no relatório — escopo grande p/ rodadas dedicadas, sem inflar/arriscar numa só leva. Sem
+#     regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (52ª geração) → CORREÇÃO DE COBERTURA DO "MUNICÍPIOS PRÓXIMOS" (NACIONAL) [FIX-COBERTURA]
 #     BUG (aba nova da 51ª): resultados incompletos e incoerentes entre UFs. CAUSA RAIZ: a API de
 #     municípios do IBGE NÃO retorna lat/lon → a base tinha coordenadas só para um SUBCONJUNTO, então
@@ -6539,6 +6553,89 @@ with tab_alocacao:
             # qualidade e a mesma Auditoria Automática de Rotas Suspeitas (REUSO das funções existentes,
             # sem duplicar lógica). A planilha da Alocação já é enriquecida (mesmo _montar_dataframe_final).
             renderizar_scorecard_qualidade(st.session_state['df_processado'])
+            # [DISPUTA-HUB - 53ª geração] Painel de Auditoria da Disputa de Hubs: traz para a TELA a
+            # comparação vencedor × melhor concorrente (que antes só existia na planilha), com
+            # sensibilidade, índice de competitividade e explicação automática. Usa dados já
+            # calculados (colunas Concorrente Analisado/Distancia Concorrente) — custo ZERO.
+            _dfp_alo = st.session_state['df_processado']
+            if 'Concorrente Analisado' in _dfp_alo.columns and 'Origem' in _dfp_alo.columns:
+                with st.expander("🏆 Auditoria da Disputa de Hubs (vencedor × concorrente)", expanded=True):
+                    st.caption("Selecione um cliente para ver **por que** o hub vencedor foi escolhido e **quanto** o "
+                               "melhor concorrente perdeu — uma auditoria técnica da decisão de alocação.")
+                    _clientes = _dfp_alo['Origem'].dropna().astype(str).unique().tolist()
+                    _cli_sel = st.selectbox("Cliente (Origem)", options=_clientes, index=0 if _clientes else None, key="disputa_cli")
+                    if _cli_sel:
+                        _row = _dfp_alo[_dfp_alo['Origem'].astype(str) == _cli_sel].iloc[0]
+                        def _num(v):
+                            try: return float(v)
+                            except Exception: return 0.0
+                        _venc_nome = str(_row.get('Destino', 'N/A'))
+                        _venc_dist = _num(_row.get('Distancia'))
+                        _venc_reta = _num(_row.get('Linha Reta'))
+                        _conc_nome = str(_row.get('Concorrente Analisado', 'N/A'))
+                        _conc_dist = _num(_row.get('Distancia Concorrente'))
+                        _tempo_v = _row.get('Tempo', 'N/A')
+                        _fonte_v = _row.get('Fonte da Rota', 'N/A')
+                        _score_v = _row.get('Score Final Global', _row.get('Score da Rota', 'N/A'))
+                        _razao_v = round(_venc_dist / _venc_reta, 2) if _venc_reta > 0 else 0.0
+
+                        if _conc_nome in ("N/A", "nan", "") or _conc_dist <= 0:
+                            st.info(f"🏆 Hub vencedor: **{_venc_nome}** ({_venc_dist:.1f} km). "
+                                    "Não há concorrente válido registrado para este cliente (hub único ou sem 2ª opção viável).")
+                        else:
+                            _dif_km = round(_conc_dist - _venc_dist, 2)
+                            _m = _metricas_divergencia(_venc_dist, _conc_dist)
+                            _dif_pct = _m['pct'] if _m else 0.0
+                            _razao_c = round(_conc_dist / _venc_reta, 2) if _venc_reta > 0 else 0.0
+
+                            # Cabeçalho: vencedor × concorrente
+                            _cwin, _cconc = st.columns(2)
+                            with _cwin:
+                                st.markdown(f"##### 🥇 Hub Escolhido\n**{_venc_nome}**")
+                                st.metric("Distância viária", f"{_venc_dist:.1f} km")
+                                st.caption(f"Linha reta: {_venc_reta:.1f} km · Tempo: {_tempo_v} · Razão V/R: {_razao_v}× · Score: {_score_v} · Motor: {_fonte_v}")
+                            with _cconc:
+                                st.markdown(f"##### 🥈 Melhor Concorrente\n**{_conc_nome}**")
+                                st.metric("Distância viária", f"{_conc_dist:.1f} km", delta=f"+{_dif_km:.1f} km", delta_color="inverse")
+                                st.caption(f"Razão V/R: {_razao_c}× · Perde por {_dif_km:.1f} km ({_dif_pct}%)")
+
+                            # Tabela comparativa
+                            st.markdown("**📊 Comparativo detalhado**")
+                            _tab_cmp = pd.DataFrame({
+                                "Indicador": ["Distância viária (km)", "Distância linha reta (km)", "Razão V/R", "Diferença p/ vencedor"],
+                                "🥇 Vencedor": [f"{_venc_dist:.1f}", f"{_venc_reta:.1f}", f"{_razao_v}×", "—"],
+                                "🥈 Concorrente": [f"{_conc_dist:.1f}", f"{_venc_reta:.1f}", f"{_razao_c}×", f"+{_dif_km:.1f} km / +{_dif_pct}%"],
+                            })
+                            st.dataframe(_tab_cmp, use_container_width=True, hide_index=True)
+
+                            # Sensibilidade da escolha
+                            if _dif_km < 5:
+                                _sens = ("🔴 Muito sensível", f"Apenas **{_dif_km:.1f} km** separam os hubs — pequenas mudanças na malha viária podem **inverter** o resultado. Empate técnico.")
+                            elif _dif_km < 20:
+                                _sens = ("🟡 Moderadamente sensível", f"Diferença de **{_dif_km:.1f} km** — a escolha é consistente, mas não folgada.")
+                            else:
+                                _sens = ("🟢 Escolha robusta", f"Diferença de **{_dif_km:.1f} km** — baixíssima probabilidade de inversão.")
+                            st.markdown(f"**🎯 Sensibilidade da Escolha:** {_sens[0]}")
+                            st.caption(_sens[1])
+
+                            # Índice de competitividade (quanto MAIS perto o concorrente, MAIOR a disputa)
+                            if _dif_pct < 5: _stars, _lbl = "★★★★★", "Muito Alta"
+                            elif _dif_pct < 15: _stars, _lbl = "★★★★☆", "Alta"
+                            elif _dif_pct < 30: _stars, _lbl = "★★★☆☆", "Média"
+                            elif _dif_pct < 50: _stars, _lbl = "★★☆☆☆", "Baixa"
+                            else: _stars, _lbl = "★☆☆☆☆", "Muito Baixa"
+                            st.markdown(f"**⚔️ Competitividade da Disputa:** {_stars} — {_lbl}")
+
+                            # Explicação automática
+                            st.markdown("**🧾 Justificativa automática da escolha**")
+                            _motivos = [f"menor distância viária ({_venc_dist:.1f} km vs {_conc_dist:.1f} km)"]
+                            if _razao_v <= _razao_c:
+                                _motivos.append(f"menor Razão V/R ({_razao_v}× vs {_razao_c}×)")
+                            st.success(f"O hub **{_venc_nome}** foi escolhido por apresentar " + "; ".join(_motivos) +
+                                       f". O concorrente **{_conc_nome}** perdeu principalmente por uma distância superior em "
+                                       f"**{_dif_km:.1f} km** (+{_dif_pct}%)" +
+                                       (", mas a diferença é pequena o suficiente para caracterizar empate técnico." if _dif_km < 5
+                                        else "." ))
             _susp_df_alo, _susp_resumo_alo = _auditar_rotas_suspeitas(st.session_state['df_processado'])
             if _susp_resumo_alo:
                 _n_susp_alo = _susp_resumo_alo.get("suspeitas", 0)
