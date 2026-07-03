@@ -62,6 +62,27 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (55ª geração) → MÉTODO EXPLÍCITO NA PLANILHA [METODO-EXPLICITO] (item #8, parte 1)
+#     Coluna 'Metodo Utilizado' na planilha (Lote e Alocação, mesmo builder): deixa explícito o motor
+#     da distância viária vencedora — "Viária (Google Maps)" (prioritário) ou "Viária (OSRM - fallback)",
+#     derivado de 'Fonte da Rota' já calculada (custo ZERO, sem chamada nova). Fallback "N/A" seguro.
+#     Provado por teste isolado (Google prioritário, OSRM fallback). Complementa o Código IBGE na
+#     planilha (54ª). PRÓXIMOS: método na TELA do Validador/Alocação; "Linha reta (GeographicLib)" na
+#     seleção de hubs por linha reta; e os demais itens do roteiro (Cód IBGE no painel Single-Shot;
+#     ranking N-hubs; meso/microrregião + bearing/azimute; Google prioritário explícito nas rotas
+#     viárias de Municípios Próximos). Sem regressão; 11 abas, 40 campos, balões 1×, score
+#     0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (54ª geração) → CÓDIGO IBGE NA PLANILHA (LOTE E ALOCAÇÃO) [IBGE-EVERYWHERE] (item #2, parte 1)
+#     Início da propagação do Código IBGE como identificador oficial da localidade em toda a app.
+#     Nesta rodada: colunas 'Cod IBGE Origem', 'UF Origem', 'Cod IBGE Destino', 'UF Destino' na planilha
+#     processada — servem Lote E Alocação (mesmo _montar_dataframe_final). Busca defensiva na base
+#     nacional IBGE (_info_municipio_ibge) pelo município já resolvido + UF extraída do endereço oficial;
+#     try/except com fallback "N/A" (nunca quebra). Custo desprezível (lookup em dict em memória).
+#     PRÓXIMOS INCREMENTOS do item #2 (documentados): exibir Cód IBGE + Fonte + Confiança no painel do
+#     Validador Rápido, nos KPIs, logs e comparativos. Demais itens do roteiro (ranking N-hubs;
+#     meso/microrregião + bearing/azimute em Municípios Próximos; Google prioritário explícito; método
+#     na tela/planilha) seguem para rodadas dedicadas. Sem regressão; 11 abas, 40 campos, balões 1×,
+#     score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (53ª geração) → AUDITORIA DA DISPUTA DE HUBS NA INTERFACE [DISPUTA-HUB]
 #     Item central de um roteiro amplo (12 itens): trazer para a TELA a comparação vencedor × melhor
 #     concorrente da Alocação de Hub (antes só na planilha exportada). Novo painel "🏆 Auditoria da
@@ -4823,6 +4844,40 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     # = MAIOR valor, sempre 0-100%). Servem Lote E Alocação (mesmo _montar_dataframe_final).
                     linha_dict['Razão (V/R)'] = _razao_vr
                     linha_dict['Classificação Razão (V/R)'] = _classificar_razao_vr(_razao_vr)
+                    # [IBGE-EVERYWHERE - 54ª geração] Código IBGE como identificador oficial da
+                    # localidade também na planilha (Lote e Alocação). Busca defensiva na base nacional
+                    # pelo município (já resolvido) + UF (extraída do endereço oficial). Custo desprezível.
+                    try:
+                        _uf_o_col = extrair_uf_precisa(linha_dict.get('Endereco Oficial Origem', '') or '')
+                        _uf_d_col = extrair_uf_precisa(linha_dict.get('Endereco Oficial Destino', '') or '')
+                        _uf_o_col = "" if _uf_o_col == "Indefinido" else _uf_o_col
+                        _uf_d_col = "" if _uf_d_col == "Indefinido" else _uf_d_col
+                        _mun_o_col = linha_dict.get('Municipio Origem', '') or ''
+                        _mun_d_col = linha_dict.get('Municipio Destino', '') or ''
+                        _cod_o = _info_municipio_ibge(semantica.normalizar(_mun_o_col), _uf_o_col)[1] if _mun_o_col else None
+                        _cod_d = _info_municipio_ibge(semantica.normalizar(_mun_d_col), _uf_d_col)[1] if _mun_d_col else None
+                        linha_dict['Cod IBGE Origem'] = _cod_o if _cod_o else "N/A"
+                        linha_dict['UF Origem'] = _uf_o_col or "N/A"
+                        linha_dict['Cod IBGE Destino'] = _cod_d if _cod_d else "N/A"
+                        linha_dict['UF Destino'] = _uf_d_col or "N/A"
+                    except Exception as _e_ibge:
+                        linha_dict['Cod IBGE Origem'] = linha_dict.get('Cod IBGE Origem', "N/A")
+                        linha_dict['Cod IBGE Destino'] = linha_dict.get('Cod IBGE Destino', "N/A")
+                    # [METODO-EXPLICITO - 55ª geração / item #8] Deixa explícito o método/motor da
+                    # distância viária vencedora na planilha (Lote e Alocação): Google prioritário,
+                    # OSRM como fallback. Derivado de 'Fonte da Rota' já calculada (custo zero).
+                    try:
+                        _fr = str(linha_dict.get('Fonte da Rota', '') or '').upper()
+                        if 'GOOGLE' in _fr:
+                            linha_dict['Metodo Utilizado'] = "Viária (Google Maps)"
+                        elif 'OSRM' in _fr:
+                            linha_dict['Metodo Utilizado'] = "Viária (OSRM - fallback)"
+                        elif _fr and _fr not in ('DESCONHECIDA', 'N/A'):
+                            linha_dict['Metodo Utilizado'] = f"Viária ({linha_dict.get('Fonte da Rota')})"
+                        else:
+                            linha_dict['Metodo Utilizado'] = "N/A"
+                    except Exception:
+                        linha_dict['Metodo Utilizado'] = "N/A"
                     _aud = res[39] if len(res) > 39 and isinstance(res[39], dict) else None
                     _alertas_auto = []
                     if _aud:
