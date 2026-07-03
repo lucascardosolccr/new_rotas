@@ -62,6 +62,91 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (71ª geração) → REGIÃO E HOMÔNIMOS NA PLANILHA [TERRITORIO-PLANILHA] (item #3 no export)
+#     Estende o item #3 ao FLUXO PRINCIPAL: Região e grau de ambiguidade (homônimos) passam a sair na
+#     PLANILHA (Lote e Alocação), não só na tela do Validador Rápido. Colunas novas: "Regiao Origem",
+#     "Regiao Destino" (via UF → _UF_PARA_REGIAO) e "Homonimos Origem (UFs)"/"Homonimos Destino (UFs)"
+#     (nº de UFs distintas do nome na base IBGE, via _grau_ambiguidade_homonimos da 63ª). PURO e em
+#     memória — SEM rede, SEM dependência nova; aditivo no builder compartilhado _montar_dataframe_final;
+#     defensivo (Região "Indefinido" quando UF ausente). Provado por teste isolado (construção real das
+#     colunas: Região por UF; homônimos = contagem; UF "N/A"/vazia → "Indefinido"; sem quebrar). Sem
+#     regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (70ª geração) → RÓTULO DE MÉTODO UNIFICADO TELA×PLANILHA [METODO-UNIFICADO] (item #8 — fecha)
+#     Unifica o rótulo do "método" entre TELA e PLANILHA sob o helper único _rotulo_metodo_rota (57ª). A
+#     planilha (coluna "Metodo Utilizado", Lote e Alocação) deixa de ter lógica inline própria e passa a
+#     usar o MESMO helper da tela — eliminando a divergência e, sobretudo, CORRIGINDO o rótulo do caso
+#     geodésico: antes "Viária (Geodésico Adaptativo)" (impreciso — geodésico não é viário), agora
+#     "Linha reta (GeographicLib)". Google/OSRM viária idênticos à tela. MUDANÇA DE STRINGS na coluna
+#     "Metodo Utilizado": "Viária (Google Maps)"→"Distância viária (Google Maps)"; "Viária (OSRM -
+#     fallback)"→"Distância viária (OSRM - fallback)"; "Viária (Geodésico...)"→"Linha reta
+#     (GeographicLib)". Verificado que NENHUM código lê/filtra/agrupa por esse valor (só o usuário a
+#     jusante) — impacto interno zero; sinalizado para você ajustar consumidores externos se houver.
+#     Provado por teste (helper real: rótulos canônicos p/ Google/OSRM/geodésico/outros/vazio; planilha
+#     agora chama o helper; mislabel antigo ausente). Sem regressão; 11 abas, 40 campos, balões 1×,
+#     score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (69ª geração) → NÚCLEO DE SELEÇÃO POR ROTA VIÁRIA [SELECAO-VIARIA] (itens #7/#9 — núcleo testado)
+#     Entrega o CORE da 2ª opção de seleção de hubs ("por rota viária") como função PURA e testada,
+#     pronta para integração — SEM ligar o fluxo às cegas (a máquina de estados em chunks não é
+#     executável aqui; ativá-la sem teste no ambiente real violaria o zero-regressão). Novo
+#     _selecionar_hub_por_viaria(candidatos): dado os hubs candidatos de um cliente já roteados, elege o
+#     de MENOR distância viária e devolve ranking (ordenado por asfalto), runner-up, margem km/%,
+#     empate técnico (<5 km) e nº de candidatos válidos; descarta rotas inválidas (None/≤0). Complementa
+#     o topk_map da 58ª (candidatos por linha reta → roteados → vencedor por asfalto). Docstring traz o
+#     GUIA DE INTEGRAÇÃO em 5 passos (2 botões, modo opt-in, rotear top-K, eleger vencedor, painel #9),
+#     com o caminho de linha reta permanecendo byte-a-byte. Função ainda NÃO conectada à UI (aguarda
+#     rodada de integração com seu teste real). Provado por teste isolado (vencedor = menor viária;
+#     ranking/margem/empate; descarte de inválidos; 0/1/N candidatos). Sem regressão; 11 abas,
+#     40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (68ª geração) → ENCICLOPÉDIA/MANUAL ATUALIZADOS (57ª→67ª) [DOCS-UPDATE] (item #12)
+#     Item #12: documentação alinhada às entregas recentes, SEM tocar lógica (puro texto). Enciclopédia
+#     ganhou 4 seções novas (17–20): Método de cálculo explícito + Ranking de hubs; Identificação IBGE
+#     em toda a plataforma; Hierarquia territorial + Ambiguidade de homônimos; Explorador Global +
+#     filtros + gráficos + Parquet. Manual: seção 11 (Exportações) passou a citar Parquet e uma seção 13
+#     nova ("Municípios Próximos e Explorador Global") ensina o passo a passo. Seções 12–16 da
+#     Enciclopédia preservadas (invariante). Sem regressão; 11 abas, 40 campos, balões 1×,
+#     score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (67ª geração) → PARQUET NO FLUXO LOTE/ALOCAÇÃO [PARQUET-LOTE] (item #6 no Lote/Alocação)
+#     Leva o item #6 ao fluxo Lote/Alocação. A LEITURA mostrou que filtros (UF/Região) e gráficos JÁ
+#     existiam na aba Analytics (não re-implementados) — o gap real era o export Parquet dos resultados.
+#     Adiciona download **Parquet** nas telas de resultado do LOTE (aba Processamento) e da ALOCAÇÃO,
+#     via capability-check da 65ª (só aparece com pyarrow/fastparquet; sem a lib, aviso; nunca quebra).
+#     Novo helper _gerar_parquet_bytes com FALLBACK robusto: se a serialização direta falhar (colunas
+#     object de tipos mistos), coage object→string e refaz. Isolado em try/except. RESSALVA: requer
+#     pyarrow no requirements de produção (opt-in; degrada com elegância). Provado por teste com
+#     round-trip real + caminho de fallback (coluna mista → string, relê OK). Sem regressão; 11 abas,
+#     40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (66ª geração) → EXPLORADOR GLOBAL DE MUNICÍPIOS [EXPLORADOR-GLOBAL] (item #5)
+#     Explorador da base INTEIRA (~5.5k municípios) na aba "Municípios Próximos" (expander próprio, sem
+#     nova aba — invariante 11 abas preservado): busca por nome (lupa, ignora acento/caixa) e por código
+#     IBGE (substring), filtros por UF e Região (combináveis), paginação (50/página) e export CSV +
+#     Parquet (capability-check da 65ª) do conjunto FILTRADO inteiro. Núcleo em 3 helpers PUROS e
+#     testáveis (_flatten_base_municipios, _filtrar_base_explorador, _paginar_lista) + base cacheada
+#     (_base_municipios_explorador). Tudo em memória, sem rede; render isolado em try/except (não
+#     interfere na busca por proximidade). Provado por teste isolado (código real: flatten estrutura/
+#     ordena; filtro por nome/código/UF/Região e combinação; paginação com clamp e total_paginas
+#     corretos; vazio → sem erro). Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30.
+#   v3.8 (65ª geração) → EXPORTAÇÃO PARQUET COM CAPABILITY-CHECK [PARQUET-EXPORT] (item #6 — fecha #5/#6)
+#     Fecha os itens #5/#6. Adiciona o download **Parquet** (formato colunar) dos resultados de
+#     "Municípios Próximos" (tabela linha reta, respeitando o filtro territorial da 64ª). Robusto a
+#     ambiente: novo helper _parquet_engine_disponivel() detecta pyarrow/fastparquet e o botão só
+#     aparece quando há engine — sem a lib, exibe aviso para instalar (nunca quebra). Geração isolada em
+#     try/except. Downloads passam de 2 p/ 3 colunas (CSV | Excel | Parquet). RESSALVA: para habilitar em
+#     produção, adicionar `pyarrow` ao requirements — a dependência é opt-in e o app degrada com elegância
+#     sem ela. Provado por teste com round-trip real (pyarrow instalado no teste): to_parquet grava e
+#     read_parquet relê preservando colunas/valores; helper detecta engine presente e retorna None quando
+#     ausente. Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
+#   v3.8 (64ª geração) → FILTROS TERRITORIAIS + GRÁFICOS EM MUNICÍPIOS PRÓXIMOS [BUSCA-FILTROS] (itens #5/#6)
+#     Entrega os pilares SEM dependência nova dos itens #5/#6 na aba "Municípios Próximos": (1) filtros
+#     por UF e por Região sobre os vizinhos já calculados (helper puro _filtrar_vizinhos_por_territorio;
+#     seleção vazia = visão atual IDÊNTICA — identidade, zero regressão); aplicados à tabela geodésica,
+#     ao mapa, à tabela viária, aos gráficos e à exportação. (2) Gráfico de barras da distância em linha
+#     reta por município (Altair, colorido por mesmo/outro Estado) e comparativo Linha Reta × Viária
+#     (st.bar_chart) — ambos isolados em try/except (falha de render não afeta a aba). RESSALVA/PRÓXIMO:
+#     export Parquet do item #6 NÃO foi implementado — pyarrow/fastparquet indisponíveis no ambiente de
+#     teste e a dependência é decisão sua (adicionar ao requirements); DOCUMENTADO. Busca já cobre todos
+#     os municípios pelo seletor nativo. Provado por teste isolado (filtro real: vazio→identidade;
+#     UF/Região/combinado→subconjunto correto; preserva ordem; deduplicação de opções). Sem regressão;
+#     11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (63ª geração) → GRAU DE AMBIGUIDADE DE HOMÔNIMOS [AMBIGUIDADE-HOMONIMOS] (item #3 — fecha)
 #     Fecha o item #3. Novo helper _grau_ambiguidade_homonimos(municipio): conta em quantas UFs
 #     DISTINTAS o mesmo nome de município aparece na base IBGE em memória (ex.: "Bom Jesus" existe em
@@ -4918,6 +5003,81 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
     return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map
 
 
+def _selecionar_hub_por_viaria(candidatos):
+    """[SELECAO-VIARIA - 69ª geração / itens #7/#9] NÚCLEO da 2ª opção de seleção de hubs — "por rota
+    VIÁRIA". Dado os hubs candidatos de UM cliente, cada um já com sua distância viária medida, escolhe
+    o de MENOR distância viária como vencedor e devolve o ranking completo + métricas de disputa. PURO
+    e determinístico (sem rede/estado) — testável isoladamente e pronto para ser plugado no fluxo da
+    Alocação (ver GUIA DE INTEGRAÇÃO abaixo). Complementa o topk_map da 58ª: aquele fornece os
+    candidatos (top-K por linha reta); estes são roteados; esta função elege o vencedor por asfalto.
+
+    Entrada: lista de dicts, cada um com ao menos {'hub': str, 'dist_viaria': número}. 'dist_reta' é
+    opcional (enriquece o ranking). Candidatos com dist_viaria inválida (None/≤0/não numérica) são
+    descartados da escolha (rota que falhou não concorre).
+
+    Saída (dict):
+      - vencedor / dist_viaria_vencedor
+      - ranking: lista ordenada por viária asc, cada item {hub, dist_viaria, dist_reta, posicao}
+      - runner_up / dist_viaria_runner_up
+      - margem_km   : dist_viaria(2º) - dist_viaria(1º)
+      - margem_pct  : margem relativa ao vencedor (%)
+      - empate_tecnico : True se a margem < 5 km
+      - n_candidatos : nº de candidatos válidos considerados
+
+    ── GUIA DE INTEGRAÇÃO (fluxo da Alocação, rodada dedicada, testável no ambiente real) ────────────
+      1) UI: 2 botões independentes na aba Alocação — "📍 Linha reta (rápido)" (fluxo ATUAL, intacto)
+         e "🛣️ Rota viária (mais preciso, mais lento)". Guardar modo em session_state['alo_modo_sel'].
+      2) Tarefas (só no modo viária): para cada cliente, montar pares de rota para os top-K hubs de
+         topk_map (K≤3 recomendado) — em vez de só o vencedor de linha reta. Latência = K× roteamento,
+         OPT-IN e divulgada ao usuário. Todo esse bloco vive sob `if modo == 'viaria'`.
+      3) Após o roteamento dos K por cliente, chamar ESTA função com [{'hub', 'dist_viaria',
+         'dist_reta'}...] para eleger o vencedor por asfalto; reatribuir df_pares['Destino'] ao
+         vencedor; os demais viram concorrentes.
+      4) Painel de disputa: usar 'ranking'/'margem_km'/'empate_tecnico' para o item #9 (ranking por
+         viária, robustez, competitividade, motivo).
+      5) Zero-regressão: o caminho de linha reta (else) permanece BYTE-A-BYTE o atual; nada novo o toca.
+    """
+    _validos = []
+    for c in (candidatos or []):
+        try:
+            _dv = c.get('dist_viaria')
+            _dv = float(_dv) if _dv is not None else None
+        except (TypeError, ValueError):
+            _dv = None
+        if _dv is None or _dv <= 0:
+            continue
+        try:
+            _dr = round(float(c['dist_reta']), 3) if c.get('dist_reta') not in (None, "") else None
+        except (TypeError, ValueError):
+            _dr = None
+        _validos.append({'hub': c.get('hub'), 'dist_viaria': round(_dv, 3), 'dist_reta': _dr})
+
+    _validos.sort(key=lambda d: d['dist_viaria'])
+    _out = {
+        'vencedor': None, 'dist_viaria_vencedor': None, 'ranking': [],
+        'runner_up': None, 'dist_viaria_runner_up': None,
+        'margem_km': None, 'margem_pct': None, 'empate_tecnico': False,
+        'n_candidatos': len(_validos),
+    }
+    if not _validos:
+        return _out
+    for _i, _c in enumerate(_validos, start=1):
+        _c['posicao'] = _i
+    _venc = _validos[0]
+    _out['vencedor'] = _venc['hub']
+    _out['dist_viaria_vencedor'] = _venc['dist_viaria']
+    _out['ranking'] = _validos
+    if len(_validos) >= 2:
+        _ru = _validos[1]
+        _out['runner_up'] = _ru['hub']
+        _out['dist_viaria_runner_up'] = _ru['dist_viaria']
+        _margem = round(_ru['dist_viaria'] - _venc['dist_viaria'], 3)
+        _out['margem_km'] = _margem
+        _out['margem_pct'] = round(100.0 * _margem / _venc['dist_viaria'], 1) if _venc['dist_viaria'] > 0 else None
+        _out['empate_tecnico'] = _margem < 5.0
+    return _out
+
+
 def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
     """[FIX-LOTE - 13ª geração] Processa UM chunk de rotas e retorna o dict de
     resultados {par_id: res}. Usado pelo motor de processamento contínuo em chunks.
@@ -5031,19 +5191,26 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     except Exception as _e_ibge:
                         linha_dict['Cod IBGE Origem'] = linha_dict.get('Cod IBGE Origem', "N/A")
                         linha_dict['Cod IBGE Destino'] = linha_dict.get('Cod IBGE Destino', "N/A")
-                    # [METODO-EXPLICITO - 55ª geração / item #8] Deixa explícito o método/motor da
-                    # distância viária vencedora na planilha (Lote e Alocação): Google prioritário,
-                    # OSRM como fallback. Derivado de 'Fonte da Rota' já calculada (custo zero).
+                    # [TERRITORIO-PLANILHA - 71ª geração / item #3] Leva Região e grau de ambiguidade
+                    # (homônimos) à PLANILHA (Lote e Alocação) — antes só apareciam na TELA do Validador
+                    # Rápido. PURO e em memória: Região via UF (_UF_PARA_REGIAO); homônimos = nº de UFs
+                    # distintas do nome na base IBGE (_grau_ambiguidade_homonimos). Sem rede/dependência.
                     try:
-                        _fr = str(linha_dict.get('Fonte da Rota', '') or '').upper()
-                        if 'GOOGLE' in _fr:
-                            linha_dict['Metodo Utilizado'] = "Viária (Google Maps)"
-                        elif 'OSRM' in _fr:
-                            linha_dict['Metodo Utilizado'] = "Viária (OSRM - fallback)"
-                        elif _fr and _fr not in ('DESCONHECIDA', 'N/A'):
-                            linha_dict['Metodo Utilizado'] = f"Viária ({linha_dict.get('Fonte da Rota')})"
-                        else:
-                            linha_dict['Metodo Utilizado'] = "N/A"
+                        _ufo_r = linha_dict.get('UF Origem', '') or ''
+                        _ufd_r = linha_dict.get('UF Destino', '') or ''
+                        linha_dict['Regiao Origem'] = _UF_PARA_REGIAO.get(_ufo_r, "Indefinido") if _ufo_r and _ufo_r != "N/A" else "Indefinido"
+                        linha_dict['Regiao Destino'] = _UF_PARA_REGIAO.get(_ufd_r, "Indefinido") if _ufd_r and _ufd_r != "N/A" else "Indefinido"
+                        linha_dict['Homonimos Origem (UFs)'] = _grau_ambiguidade_homonimos(linha_dict.get('Municipio Origem', ''))['n_ufs']
+                        linha_dict['Homonimos Destino (UFs)'] = _grau_ambiguidade_homonimos(linha_dict.get('Municipio Destino', ''))['n_ufs']
+                    except Exception:
+                        linha_dict['Regiao Origem'] = linha_dict.get('Regiao Origem', "Indefinido")
+                        linha_dict['Regiao Destino'] = linha_dict.get('Regiao Destino', "Indefinido")
+                    # [METODO-UNIFICADO - 70ª geração / item #8] Unifica o rótulo do método na PLANILHA
+                    # com o da TELA, usando o helper único _rotulo_metodo_rota (57ª). Além de Google/OSRM
+                    # viária, corrige o caso GEODÉSICO: antes rotulado incorretamente como
+                    # "Viária (Geodésico...)", agora "Linha reta (GeographicLib)". Tela e planilha idênticas.
+                    try:
+                        linha_dict['Metodo Utilizado'] = _rotulo_metodo_rota(linha_dict.get('Fonte da Rota', ''))
                     except Exception:
                         linha_dict['Metodo Utilizado'] = "N/A"
                     _aud = res[39] if len(res) > 39 and isinstance(res[39], dict) else None
@@ -5576,6 +5743,123 @@ def _rumo_cardeal(azimute_graus):
         return "—"
     rumos = ["N", "NE", "L", "SE", "S", "SO", "O", "NO"]
     return rumos[int((a + 22.5) // 45) % 8]
+
+
+def _filtrar_vizinhos_por_territorio(vizinhos, ufs_sel, regioes_sel, uf_para_regiao):
+    """[BUSCA-FILTROS - 64ª geração / itens #5/#6] Filtra a lista de vizinhos por UF e/ou Região.
+    PURO e determinístico: seleção vazia em AMBOS → devolve a lista ORIGINAL (identidade, preservando
+    ordem e objetos). Com seleção, aplica interseção (UF ∈ ufs_sel E região ∈ regioes_sel). A região
+    de cada vizinho vem de uf_para_regiao (injetado para testabilidade)."""
+    if not ufs_sel and not regioes_sel:
+        return list(vizinhos)
+    _sel_uf = set(ufs_sel or [])
+    _sel_reg = set(regioes_sel or [])
+    out = []
+    for v in vizinhos:
+        _uf = v.get('uf')
+        if _sel_uf and _uf not in _sel_uf:
+            continue
+        if _sel_reg and uf_para_regiao.get(_uf, "Indefinido") not in _sel_reg:
+            continue
+        out.append(v)
+    return out
+
+
+def _flatten_base_municipios(ibge_municipios, uf_para_regiao):
+    """[EXPLORADOR-GLOBAL - 66ª geração / item #5] Achata a base IBGE numa lista para o explorador:
+    {municipio (Title), municipio_norm, uf, codigo_ibge, regiao}. PURO. Ordena por (nome, UF).
+    municipio_norm (a chave já normalizada — unidecode+MAIÚSCULAS) permite busca textual sem
+    acento/caixa. Região vem de uf_para_regiao (injetado para testabilidade)."""
+    out = []
+    for nome_norm, itens in (ibge_municipios or {}).items():
+        for item in itens:
+            _uf = item.get("uf", "")
+            if not _uf:
+                continue
+            out.append({
+                "municipio": str(nome_norm).title(),
+                "municipio_norm": str(nome_norm),
+                "uf": _uf,
+                "codigo_ibge": str(item.get("codigo_ibge") or ""),
+                "regiao": uf_para_regiao.get(_uf, "Indefinido"),
+            })
+    out.sort(key=lambda d: (d["municipio"], d["uf"]))
+    return out
+
+
+def _filtrar_base_explorador(base, texto, ufs_sel, regioes_sel, codigo, normalizar_txt):
+    """[EXPLORADOR-GLOBAL - 66ª geração / item #5] Filtra a base achatada por texto (substring no nome,
+    ignorando acento/caixa via normalizar_txt), UF(s), Região(ões) e código IBGE (substring). PURO.
+    Seleções e textos vazios → sem restrição (interseção só dos critérios preenchidos)."""
+    _txt = (normalizar_txt(texto) if texto else "").strip()
+    _cod = (codigo or "").strip()
+    _sel_uf = set(ufs_sel or [])
+    _sel_reg = set(regioes_sel or [])
+    out = []
+    for m in base:
+        if _sel_uf and m.get("uf") not in _sel_uf:
+            continue
+        if _sel_reg and m.get("regiao") not in _sel_reg:
+            continue
+        if _txt and _txt not in m.get("municipio_norm", ""):
+            continue
+        if _cod and _cod not in m.get("codigo_ibge", ""):
+            continue
+        out.append(m)
+    return out
+
+
+def _paginar_lista(lista, pagina, por_pagina):
+    """[EXPLORADOR-GLOBAL - 66ª geração / item #5] Paginação pura → (fatia, total_paginas,
+    total_itens). 'pagina' é 1-indexada e é limitada (clamp) ao intervalo válido."""
+    _total = len(lista)
+    _pp = max(1, int(por_pagina))
+    _tp = max(1, (_total + _pp - 1) // _pp)
+    _pg = min(max(1, int(pagina)), _tp)
+    _ini = (_pg - 1) * _pp
+    return lista[_ini:_ini + _pp], _tp, _total
+
+
+@st.cache_data(show_spinner=False)
+def _base_municipios_explorador():
+    """[EXPLORADOR-GLOBAL - 66ª geração / item #5] Base achatada p/ o explorador (cacheada 1×)."""
+    return _flatten_base_municipios(IBGE_MUNICIPIOS, _UF_PARA_REGIAO)
+
+
+def _parquet_engine_disponivel():
+    """[PARQUET-EXPORT - 65ª geração / item #6] Retorna o nome de um engine Parquet instalado
+    ('pyarrow' ou 'fastparquet') ou None se nenhum estiver disponível. Puro, sem efeitos colaterais —
+    apenas tenta importar. Permite oferecer o download Parquet SÓ quando o ambiente suporta, sem
+    quebrar onde a dependência não existe (capability-check)."""
+    try:
+        import pyarrow  # noqa: F401
+        return "pyarrow"
+    except Exception:
+        pass
+    try:
+        import fastparquet  # noqa: F401
+        return "fastparquet"
+    except Exception:
+        pass
+    return None
+
+
+def _gerar_parquet_bytes(df, engine):
+    """[PARQUET-LOTE - 67ª geração / item #6] Serializa um DataFrame em bytes Parquet com FALLBACK:
+    se a serialização direta falhar (colunas 'object' com tipos mistos, que o Parquet é estrito em
+    aceitar), coage as colunas object para string e tenta de novo. Recebe o 'engine' já detectado."""
+    try:
+        _b = io.BytesIO()
+        df.to_parquet(_b, index=False, engine=engine)
+        return _b.getvalue()
+    except Exception:
+        _b = io.BytesIO()
+        _d = df.copy()
+        for _c in _d.columns:
+            if _d[_c].dtype == object:
+                _d[_c] = _d[_c].astype(str)
+        _d.to_parquet(_b, index=False, engine=engine)
+        return _b.getvalue()
 
 
 def _municipios_mais_proximos_geodesico(lat_o, lon_o, uf_origem, mun_origem, n=30):
@@ -6594,6 +6878,21 @@ with tab_processamento:
                 st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             with col_down2:
                 st.markdown("""<a href="https://sheets.new/" target="_blank" style="display:inline-block; padding:0.5em 1em; background-color:#1E90FF; color:white; border-radius:5px; text-decoration:none; font-weight:bold; text-align:center; width:100%; transition: all 0.2s;">📊 Abrir Google Sheets Vazio</a>""", unsafe_allow_html=True)
+
+            # [PARQUET-LOTE - 67ª geração / item #6] Export Parquet do lote (colunar, ideal p/ Power BI/
+            # pandas). Capability-check da 65ª — só aparece com engine; nunca quebra. Isolado em try/except.
+            _peng_lote = _parquet_engine_disponivel()
+            if _peng_lote:
+                try:
+                    _pqb_lote = _gerar_parquet_bytes(st.session_state['df_processado'], _peng_lote)
+                    st.download_button("📦 Baixar Parquet (.parquet)", data=_pqb_lote,
+                                       file_name="planilha_rotas_calculada.parquet", mime="application/octet-stream",
+                                       use_container_width=True)
+                except Exception as _e_pql:
+                    logger.error(f"[PARQUET-LOTE] Falha ao gerar Parquet do lote: {_e_pql}")
+                    st.caption("⚠️ Parquet indisponível para este lote no momento.")
+            else:
+                st.caption("💡 **Parquet** (colunar, ideal p/ Power BI/pandas): instale `pyarrow` no requirements para habilitar.")
             
             # [EXPORT-GIS - 24ª geração] Exportações avançadas para sistemas GIS/geográficos.
             # Aproveita as coordenadas JÁ calculadas (zero custo de processamento). Permite
@@ -7126,6 +7425,20 @@ with tab_alocacao:
                 file_name="matriz_alocacao_competitiva.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
+
+            # [PARQUET-LOTE - 67ª geração / item #6] Export Parquet da alocação (mesmo capability-check).
+            _peng_alo = _parquet_engine_disponivel()
+            if _peng_alo:
+                try:
+                    _pqb_alo = _gerar_parquet_bytes(st.session_state['df_processado'], _peng_alo)
+                    st.download_button("📦 Baixar Parquet (.parquet)", data=_pqb_alo,
+                                       file_name="matriz_alocacao_competitiva.parquet", mime="application/octet-stream",
+                                       use_container_width=True)
+                except Exception as _e_pqa:
+                    logger.error(f"[PARQUET-LOTE] Falha ao gerar Parquet da alocação: {_e_pqa}")
+                    st.caption("⚠️ Parquet indisponível para esta alocação no momento.")
+            else:
+                st.caption("💡 **Parquet** (colunar, ideal p/ Power BI/pandas): instale `pyarrow` no requirements para habilitar.")
 
 with tab_analytics:
     st.info("📊 **Objetivo desta aba:** Sistema Analítico Global estilo Power BI. Clique nas fatias, barras ou arraste o mouse no Scatter Plot para filtrar dinamicamente TODOS os indicadores, mapas e tabelas abaixo.")
@@ -8006,8 +8319,25 @@ with tab_proximidade:
         # ---- EXIBIÇÃO ----
         if st.session_state.get('prox_resultado'):
             _rp = st.session_state['prox_resultado']
-            _org = _rp['origem']; _viz = _rp['vizinhos']
+            _org = _rp['origem']; _viz_total = _rp['vizinhos']
             st.success(f"📍 Origem: **{_org['municipio']} - {_org['uf']}**  ·  Coordenada: {round(_org['lat'],5)}, {round(_org['lon'],5)}")
+
+            # [BUSCA-FILTROS - 64ª geração / itens #5/#6] Filtros territoriais (UF / Região) sobre os
+            # vizinhos JÁ calculados — puros e em memória. Filtro vazio = visão atual (identidade).
+            _ufs_disp = sorted({v['uf'] for v in _viz_total if v.get('uf')})
+            _regs_disp = sorted({_UF_PARA_REGIAO.get(v['uf'], "Indefinido") for v in _viz_total if v.get('uf')})
+            _cf1, _cf2 = st.columns(2)
+            with _cf1:
+                _f_uf = st.multiselect("🔎 Filtrar por UF", _ufs_disp, default=[], key="prox_f_uf",
+                                       help="Mostra apenas municípios nas UFs escolhidas. Vazio = todas.")
+            with _cf2:
+                _f_reg = st.multiselect("🔎 Filtrar por Região", _regs_disp, default=[], key="prox_f_reg",
+                                        help="Mostra apenas municípios nas regiões escolhidas. Vazio = todas.")
+            _viz = _filtrar_vizinhos_por_territorio(_viz_total, _f_uf, _f_reg, _UF_PARA_REGIAO)
+            if _f_uf or _f_reg:
+                st.caption(f"🔎 Filtro ativo — mostrando **{len(_viz)}** de **{len(_viz_total)}** municípios mais próximos.")
+            if not _viz:
+                st.info("Nenhum município corresponde aos filtros selecionados. Ajuste UF/Região acima.")
 
             # Tabela geodésica (sempre disponível)
             st.markdown("#### 🌎 Municípios mais próximos — Linha Reta (Karney/WGS-84)")
@@ -8027,14 +8357,37 @@ with tab_proximidade:
                        "**S** Sul · **SO** Sudoeste · **O** Oeste · **NO** Noroeste.")
 
             # Análise inteligente (XAI) sobre UF
-            _outros_uf = [v for v in _viz if v['uf'] != _org['uf']]
-            if _outros_uf:
-                _nomes_outros = ", ".join(f"{v['municipio'].title()}/{v['uf']}" for v in _outros_uf[:3])
-                st.info(f"🟠 **Integração regional:** {len(_outros_uf)} dos {len(_viz)} municípios mais próximos pertencem a **outra UF** "
-                        f"(ex.: {_nomes_outros}). Apesar de pertencerem a outro Estado, estão entre os mais próximos geograficamente — "
-                        f"indício de forte integração territorial na divisa.")
-            else:
-                st.info(f"🔵 Todos os {len(_viz)} municípios mais próximos pertencem ao mesmo Estado (**{_org['uf']}**).")
+            if _viz:
+                _outros_uf = [v for v in _viz if v['uf'] != _org['uf']]
+                if _outros_uf:
+                    _nomes_outros = ", ".join(f"{v['municipio'].title()}/{v['uf']}" for v in _outros_uf[:3])
+                    st.info(f"🟠 **Integração regional:** {len(_outros_uf)} dos {len(_viz)} municípios mais próximos pertencem a **outra UF** "
+                            f"(ex.: {_nomes_outros}). Apesar de pertencerem a outro Estado, estão entre os mais próximos geograficamente — "
+                            f"indício de forte integração territorial na divisa.")
+                else:
+                    st.info(f"🔵 Todos os {len(_viz)} municípios mais próximos pertencem ao mesmo Estado (**{_org['uf']}**).")
+
+            # [BUSCA-FILTROS - 64ª geração / item #6] Gráfico de barras: distância em LINHA RETA por
+            # município (visão filtrada), ordenado, colorido por mesmo/outro Estado. Isolado em
+            # try/except — qualquer falha de render não afeta o resto da aba.
+            if _viz:
+                try:
+                    _df_bar = pd.DataFrame([{
+                        "Município": f"{v['municipio'].title()}/{v['uf']}",
+                        "Linha Reta (km)": v['dist_reta'],
+                        "Estado": "Mesmo Estado" if v['uf'] == _org['uf'] else "Outro Estado",
+                    } for v in _viz])
+                    _chart_reta = alt.Chart(_df_bar).mark_bar().encode(
+                        x=alt.X("Linha Reta (km):Q", title="Distância em linha reta (km)"),
+                        y=alt.Y("Município:N", sort="x", title=None),
+                        color=alt.Color("Estado:N", scale=alt.Scale(
+                            domain=["Mesmo Estado", "Outro Estado"], range=["#3b82f6", "#f97316"]),
+                            legend=alt.Legend(title="")),
+                        tooltip=["Município", "Linha Reta (km)", "Estado"],
+                    ).properties(height=max(180, 26 * len(_df_bar)))
+                    st.altair_chart(_chart_reta, use_container_width=True)
+                except Exception as _e_bar:
+                    logger.error(f"[BUSCA-FILTROS] Falha ao renderizar gráfico de barras (linha reta): {_e_bar}")
 
             # Mapa (origem + vizinhos, com linhas)
             try:
@@ -8061,6 +8414,8 @@ with tab_proximidade:
 
             # Tabela viária (se calculada)
             if _rp.get('viaria'):
+                # [BUSCA-FILTROS - 64ª geração / itens #5/#6] mesmo filtro territorial aplicado à viária.
+                _viaria_f = _filtrar_vizinhos_por_territorio(_rp['viaria'], _f_uf, _f_reg, _UF_PARA_REGIAO)
                 st.markdown("#### 🛣️ Municípios mais próximos — Malha Viária (Google/OSRM)")
                 _df_via = pd.DataFrame([{
                     "Município": x['municipio'], "UF": x['uf'],
@@ -8072,22 +8427,37 @@ with tab_proximidade:
                                 if x.get('azimute') is not None else "—"),
                     "Razão (V/R)": x['razao_vr'], "Faixa V/R": _classificar_razao_vr(x['razao_vr']) if x['razao_vr'] else "—",
                     "Tempo": x['tempo'], "Balsa": x['balsa'], "Motor": x['fonte_rota'],
-                } for x in _rp['viaria']])
+                } for x in _viaria_f])
                 st.dataframe(_df_via, use_container_width=True, hide_index=True)
+
+                # [BUSCA-FILTROS - 64ª geração / item #6] Gráfico comparativo Linha Reta × Viária por
+                # município (visão filtrada). st.bar_chart (robusto); isolado em try/except.
+                if _viaria_f:
+                    try:
+                        _df_cmp = pd.DataFrame({
+                            "Linha Reta (km)": [x['dist_reta'] for x in _viaria_f],
+                            "Viária (km)": [x['dist_viaria'] for x in _viaria_f],
+                        }, index=[f"{x['municipio']}/{x['uf']}" for x in _viaria_f])
+                        st.bar_chart(_df_cmp, horizontal=True)
+                        st.caption("📊 Comparativo **linha reta × viária** por município: a diferença entre as barras "
+                                   "revela o quanto a malha rodoviária (rios, serras, balsas) alonga o trajeto real.")
+                    except Exception as _e_cmp:
+                        logger.error(f"[BUSCA-FILTROS] Falha ao renderizar comparativo reta×viária: {_e_cmp}")
+
                 # XAI: reta vs viária
-                if _viz and _rp['viaria']:
+                if _viz and _viaria_f:
                     _mais_perto_reta = _viz[0]['municipio'].title()
-                    _mais_perto_via = _rp['viaria'][0]['municipio']
+                    _mais_perto_via = _viaria_f[0]['municipio']
                     if _mais_perto_reta != _mais_perto_via:
                         st.info(f"🧭 **Reta × Viária:** embora **{_mais_perto_reta}** seja o mais próximo em linha reta, "
                                 f"**{_mais_perto_via}** tem a **menor distância viária** — a configuração da malha rodoviária "
                                 f"(e possíveis barreiras físicas) altera a ordem de proximidade real.")
-                    _com_balsa = [x for x in _rp['viaria'] if str(x['balsa']).upper() == "SIM"]
+                    _com_balsa = [x for x in _viaria_f if str(x['balsa']).upper() == "SIM"]
                     if _com_balsa:
                         st.warning(f"⛴️ {len(_com_balsa)} rota(s) indicam **travessia por balsa** — a razão V/R tende a ser maior nesses casos.")
                 # Links de auditoria
                 with st.expander("🔗 Links de auditoria das rotas viárias"):
-                    for x in _rp['viaria']:
+                    for x in _viaria_f:
                         _lk = []
                         if x.get('link_google'): _lk.append(f"[Google]({x['link_google']})")
                         if x.get('link_osrm'): _lk.append(f"[OSRM]({x['link_osrm']})")
@@ -8098,7 +8468,7 @@ with tab_proximidade:
 
             # Downloads
             st.markdown("##### 📥 Exportar resultados")
-            _dl1, _dl2 = st.columns(2)
+            _dl1, _dl2, _dl3 = st.columns(3)
             with _dl1:
                 st.download_button("⬇️ CSV (linha reta)", _df_geo.to_csv(index=False).encode("utf-8"),
                                    file_name=f"proximos_{_org['municipio']}_{_org['uf']}.csv", mime="text/csv", use_container_width=True)
@@ -8107,10 +8477,84 @@ with tab_proximidade:
                 with pd.ExcelWriter(_buf_x, engine='xlsxwriter') as _w:
                     _df_geo.to_excel(_w, index=False, sheet_name="Linha Reta")
                     if _rp.get('viaria'):
-                        pd.DataFrame(_rp['viaria']).to_excel(_w, index=False, sheet_name="Viaria")
+                        pd.DataFrame(_viaria_f).to_excel(_w, index=False, sheet_name="Viaria")
                 st.download_button("⬇️ Excel (.xlsx)", _buf_x.getvalue(),
                                    file_name=f"proximos_{_org['municipio']}_{_org['uf']}.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            with _dl3:
+                # [PARQUET-EXPORT - 65ª geração / item #6] Parquet só quando há engine instalado
+                # (capability-check). Sem pyarrow/fastparquet, não quebra: apenas informa. Geração
+                # isolada em try/except — falha vira aviso, nunca derruba a aba.
+                _peng = _parquet_engine_disponivel()
+                if _peng:
+                    try:
+                        _buf_pq = io.BytesIO()
+                        _df_geo.to_parquet(_buf_pq, index=False, engine=_peng)
+                        st.download_button("⬇️ Parquet (linha reta)", _buf_pq.getvalue(),
+                                           file_name=f"proximos_{_org['municipio']}_{_org['uf']}.parquet",
+                                           mime="application/octet-stream", use_container_width=True)
+                    except Exception as _e_pq:
+                        logger.error(f"[PARQUET-EXPORT] Falha ao gerar Parquet: {_e_pq}")
+                        st.caption("⚠️ Parquet indisponível no momento.")
+                else:
+                    st.caption("💡 **Parquet**: instale `pyarrow` (adicione ao requirements) para habilitar a exportação colunar.")
+
+        # [EXPLORADOR-GLOBAL - 66ª geração / item #5] Navegar a base INTEIRA de municípios por nome,
+        # UF, Região ou código IBGE, com paginação e export. Independente da busca por proximidade;
+        # tudo em memória. Isolado em try/except — não interfere no resto da aba.
+        st.divider()
+        with st.expander("🔎 Explorador Global de Municípios — navegue toda a base por nome, UF, Região ou código", expanded=False):
+            try:
+                _base_exp = _base_municipios_explorador()
+                st.caption(f"Base IBGE: **{len(_base_exp):,}** municípios. Filtre por nome, código, UF ou Região — os filtros se combinam.")
+                _ce1, _ce2 = st.columns([60, 40])
+                with _ce1:
+                    _q_nome = st.text_input("🔎 Nome do município", key="exp_nome", placeholder="Ex.: Bom Jesus")
+                with _ce2:
+                    _q_cod = st.text_input("🔢 Código IBGE", key="exp_cod", placeholder="Ex.: 3550308")
+                _ce3, _ce4 = st.columns(2)
+                with _ce3:
+                    _q_uf = st.multiselect("UF", sorted({m['uf'] for m in _base_exp}), key="exp_uf")
+                with _ce4:
+                    _q_reg = st.multiselect("Região", sorted({m['regiao'] for m in _base_exp}), key="exp_reg")
+                _exp_filtrada = _filtrar_base_explorador(_base_exp, _q_nome, _q_uf, _q_reg, _q_cod, semantica.normalizar)
+                _POR_PAG = 50
+                _cp1, _cp2 = st.columns([28, 72])
+                with _cp1:
+                    _exp_pag = st.number_input("Página", min_value=1, value=1, step=1, key="exp_pag")
+                _exp_fatia, _exp_tp, _exp_total = _paginar_lista(_exp_filtrada, _exp_pag, _POR_PAG)
+                with _cp2:
+                    st.caption(f"**{_exp_total:,}** municípios encontrados · página **{min(int(_exp_pag), _exp_tp)}** de **{_exp_tp}** ({_POR_PAG}/página)")
+                if _exp_fatia:
+                    def _linha_exp(m):
+                        return {"Município": m['municipio'], "UF": m['uf'], "Região": m['regiao'],
+                                "Cód. IBGE": m['codigo_ibge'] or "—"}
+                    st.dataframe(pd.DataFrame([_linha_exp(m) for m in _exp_fatia]),
+                                 use_container_width=True, hide_index=True)
+                    # Export do conjunto FILTRADO inteiro (não apenas a página exibida)
+                    _df_exp_full = pd.DataFrame([_linha_exp(m) for m in _exp_filtrada])
+                    _cx1, _cx2 = st.columns(2)
+                    with _cx1:
+                        st.download_button("⬇️ CSV (resultado filtrado)", _df_exp_full.to_csv(index=False).encode("utf-8"),
+                                           file_name="municipios_explorador.csv", mime="text/csv", use_container_width=True)
+                    with _cx2:
+                        _peng2 = _parquet_engine_disponivel()
+                        if _peng2:
+                            try:
+                                _bx2 = io.BytesIO(); _df_exp_full.to_parquet(_bx2, index=False, engine=_peng2)
+                                st.download_button("⬇️ Parquet (resultado filtrado)", _bx2.getvalue(),
+                                                   file_name="municipios_explorador.parquet",
+                                                   mime="application/octet-stream", use_container_width=True)
+                            except Exception as _e_pqe:
+                                logger.error(f"[EXPLORADOR-GLOBAL] Parquet falhou: {_e_pqe}")
+                                st.caption("⚠️ Parquet indisponível no momento.")
+                        else:
+                            st.caption("💡 Parquet requer `pyarrow` no requirements.")
+                else:
+                    st.info("Nenhum município corresponde aos filtros. Ajuste nome, código, UF ou Região.")
+            except Exception as _e_exp:
+                logger.error(f"[EXPLORADOR-GLOBAL] Falha ao renderizar o explorador: {_e_exp}")
+                st.warning("Não foi possível carregar o explorador de municípios no momento.")
 
 with tab_enciclopedia:
     st.info("📚 **Objetivo desta aba:** Servir como o repositório mestre de conhecimento. Esta enciclopédia detalha toda a jornada técnica de um dado dentro do aplicativo, abordando 100% das funcionalidades corporativas, desde a limpeza gramatical até a validação geométrica extrema anti-colisão.")
@@ -8442,6 +8886,77 @@ with tab_enciclopedia:
         exibido no painel **🔎 Auditoria das Consultas aos Motores**, garantindo rastreabilidade total dos ajustes.
         """)
 
+    with st.expander("17. Método de Cálculo Explícito e Ranking de Hubs Candidatos"):
+        st.markdown("""
+        **Método utilizado, dito com todas as letras.** No **Validador Rápido** e na **Alocação de Hubs**, a
+        plataforma passou a exibir de forma explícita **qual método produziu a distância** apresentada:
+        - **Distância viária (Google Maps)** — rota pela malha do Google;
+        - **Distância viária (OSRM - fallback)** — rota pela malha OpenStreetMap quando o Google não responde;
+        - **Linha reta (GeographicLib)** — estimativa geodésica, sinalizada como tal quando nenhum motor viário responde.
+
+        A intenção é **eliminar ambiguidade**: o número que você vê vem sempre acompanhado da sua origem metodológica.
+
+        **Ranking dos hubs candidatos (disputa).** No painel **🏆 Auditoria da Disputa de Hubs** (Alocação), além do
+        hub vencedor e do concorrente roteado, é exibido o **ranking dos 5 hubs mais próximos por linha reta** de cada
+        cliente — mostrando **quais "quase entraram"**. O vencedor é decidido pela **rota viária**; por isso ele pode
+        não ser o 1º da linha reta. Esse ranking é a base para a futura **seleção por rota viária** (rotear os
+        candidatos e escolher o de menor distância por estrada).
+        """)
+
+    with st.expander("18. Identificação Municipal Oficial (IBGE) em Toda a Plataforma"):
+        st.markdown("""
+        **O código IBGE como identidade oficial da localidade.** O município deixou de ser apenas um nome: em vários
+        pontos da plataforma ele agora vem com o **Código IBGE**, a **UF**, a **fonte da geocodificação** vencedora e
+        o **nível de confiança**. Onde isso aparece:
+        - **Planilha (Lote e Alocação):** colunas de Cód IBGE e UF de origem e destino;
+        - **Validador Rápido:** painel *"🗺️ Identificação Municipal Oficial (IBGE)"* para origem e destino;
+        - **Municípios Próximos:** coluna *Cód. IBGE* nas tabelas de linha reta **e** de malha viária;
+        - **Logs de Auditoria (Lote e Alocação):** cada linha traz Município, UF, Cód IBGE e a fonte da geocodificação.
+
+        **Por que importa.** O código IBGE é um identificador **único e estável** — imune a variações de grafia,
+        acentuação e homônimos. Ele é resolvido a partir do município já geocodificado + UF, consultando a **base
+        oficial em memória** (sem custo de rede), sempre com degradação graciosa (mostra "—" quando não há como
+        resolver, nunca quebra).
+        """)
+
+    with st.expander("19. Hierarquia Territorial e Grau de Ambiguidade de Homônimos"):
+        st.markdown("""
+        **Divisão territorial oficial do IBGE.** No Validador Rápido, o painel *"🌎 Hierarquia Territorial Oficial
+        (IBGE)"* mostra, para origem e destino, a cadeia administrativa completa:
+        - **Região** (derivada da UF, instantânea);
+        - **Mesorregião**, **Microrregião**, **Região Imediata** e **Região Intermediária** (da base oficial do IBGE).
+
+        A base territorial fina é **baixada uma única vez** e **cacheada em disco (DiskCache, 30 dias)** — o custo de
+        rede é amortizado e, se a base ainda não respondeu, os campos aparecem como "—" e se preenchem depois, sem
+        travar a tela.
+
+        **Grau de ambiguidade de homônimos.** Muitos nomes de município se repetem pelo país (ex.: *"Bom Jesus"*
+        existe em várias UFs). O painel *"⚖️ Grau de ambiguidade (homônimos)"* informa, para origem e destino, se o
+        nome é **exclusivo (1 UF)** ou **homônimo em N UFs** — listando as siglas. É a explicação prática de **por que
+        informar a UF é decisivo**: quanto mais estados compartilham o nome, mais crítico é desambiguar — exatamente
+        o que o motor faz ao priorizar a sigla do estado. O cálculo é **puro e offline** (conta as UFs distintas do
+        nome na base IBGE em memória).
+        """)
+
+    with st.expander("20. Explorador Global, Filtros Territoriais, Gráficos e Exportação Parquet"):
+        st.markdown("""
+        **Explorador Global de Municípios.** Na aba *Municípios Próximos*, o expander *"🔎 Explorador Global de
+        Municípios"* permite navegar a **base inteira** (~5,5 mil municípios) por **nome** (lupa que ignora acento e
+        caixa), **código IBGE**, **UF** e **Região** — filtros que se **combinam** —, com **paginação** e **exportação**
+        do conjunto filtrado.
+
+        **Filtros e gráficos em Municípios Próximos.** Os resultados de proximidade podem ser **filtrados por UF e
+        Região** (aplicados às tabelas, ao mapa, aos gráficos e à exportação — filtro vazio = visão completa). Há dois
+        gráficos: **barras de distância em linha reta** (coloridas por mesmo/outro estado) e o **comparativo linha reta
+        × viária** por município, que evidencia o quanto a malha rodoviária (rios, serras, balsas) alonga o trajeto real.
+
+        **Exportação Parquet (formato colunar).** Além de CSV/Excel/GIS, a plataforma oferece **download em Parquet** —
+        formato colunar ideal para **Power BI, pandas e data lakes** — nos resultados de **Lote**, **Alocação**,
+        **Municípios Próximos** e no **Explorador**. O botão aparece **apenas quando a biblioteca de suporte está
+        instalada** (`pyarrow`); onde ela não existe, a plataforma exibe um aviso e **continua funcionando normalmente**
+        (degradação elegante). Para habilitar em produção, basta incluir `pyarrow` nas dependências.
+        """)
+
 with tab_manual:
     st.info("📖 **Bem-vindo ao Manual Operacional!** Este espaço é destinado a todos os usuários da plataforma, ensinando de forma prática o 'passo a passo' para executar as operações do dia a dia.")
     renderizar_guia_aba("manual")
@@ -8554,6 +9069,7 @@ with tab_manual:
         Todo o sistema foi criado para exportar fácil. 
         * Nas abas de Lote/Alocação, procure os botões retangulares azuis ou brancos como ` Baixar Planilha (.xlsx)`.
         * Na aba "Calculadora Analítica", existem opções de CSV e a "Exportação Multi-Abas" que embute o gráfico visual dentro da sua planilha de Excel corporativa pronta para a chefia.
+        * **Parquet (formato colunar):** nas telas de resultado de **Lote**, **Alocação**, **Municípios Próximos** e no **Explorador Global**, há um botão `📦 Baixar Parquet`. É o formato ideal para **Power BI, pandas e data lakes** (arquivos menores e leitura mais rápida que CSV). *Observação:* o botão só aparece se a biblioteca `pyarrow` estiver instalada no servidor; caso contrário, aparece um aviso e o restante continua funcionando normalmente.
         """)
         
     with st.expander("12. Perguntas Frequentes (FAQ Corporativo)"):
@@ -8568,6 +9084,32 @@ with tab_manual:
         A coluna `Balsas` no Excel exportado sairá marcada como `Sim` se os radares aquáticos do OSRM/Google detectarem travessia obrigatória.
         * **Meus gráficos sumiram na aba Analytics. O que fazer?**
         Provavelmente seus filtros deixaram a base vazia (Ex: Filtrar Nordeste, e depois cruzar pedindo estado SP). Vá no topo da página e clique em ** Limpar Todos os Filtros**.
+        """)
+
+    with st.expander("13. Municípios Próximos e Explorador Global"):
+        st.markdown("""
+        **Quando usar?** Você quer saber **quais municípios estão mais perto** de um ponto (para dividir carteira,
+        planejar rotas-tronco ou entender a divisa entre estados) — ou simplesmente **consultar a base inteira** de
+        municípios do Brasil.
+
+        **Encontrar municípios mais próximos:**
+        1. Na aba **Municípios Próximos**, comece a digitar o município de origem (a busca **ignora acento e
+           maiúsculas**) e selecione-o.
+        2. Escolha quantos vizinhos quer e clique em **🔍 Localizar Municípios Mais Próximos (linha reta)**.
+        3. Opcional: clique em **🛣️ Calcular Rotas Viárias dos 5 mais próximos** para ver a distância por estrada,
+           tempo, razão V/R e links de auditoria (consome APIs só para esses 5).
+        4. Use os **filtros por UF e Região** para focar o resultado — eles se aplicam às tabelas, ao mapa, aos
+           gráficos e à exportação. Filtro vazio = mostra tudo.
+        5. Confira os **gráficos**: barras de distância em linha reta (por estado) e o comparativo **linha reta ×
+           viária**, que mostra o quanto a estrada alonga o caminho real.
+
+        **Explorador Global de Municípios (dentro da mesma aba):** abra o expander **🔎 Explorador Global de
+        Municípios** para navegar a **base inteira** (~5,5 mil municípios). Busque por **nome** (lupa), **código
+        IBGE**, **UF** ou **Região** — os filtros combinam entre si — com **paginação** e **download** (CSV/Parquet)
+        do resultado filtrado. Cada linha traz Município, UF, Região e Código IBGE.
+
+        **Dica:** o **Código IBGE** exibido é o identificador **oficial e único** do município — use-o para cruzar
+        com outras bases (IBGE, TSE, RAIS, Correios) sem ambiguidade de nomes.
         """)
 
 with tab_motores:
