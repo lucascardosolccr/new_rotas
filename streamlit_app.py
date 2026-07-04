@@ -62,6 +62,41 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (78ª geração) → IDENTIDADE IBGE DO CONCORRENTE [CONC-IBGE] (opção A, parte 2 — sem novo núcleo)
+#     Estende a auditoria do concorrente com a IDENTIDADE MUNICIPAL OFICIAL — SEM nova mudança de núcleo
+#     (reaproveita as coordenadas capturadas na 77ª). Resolve o município do hub concorrente pelo
+#     CENTRÓIDE MAIS PRÓXIMO à sua coordenada (Haversine/IUGG vetorizado sobre a base nacional em
+#     memória) — IN-MEMORY, sem rede. Novos: _arrays_centroides_municipais (cacheado) +
+#     _identidade_por_coordenada (defensivo → None). No builder (thread principal, não no worker),
+#     grava 'Cod IBGE Concorrente', 'UF Concorrente', 'Municipio Concorrente'; painel exibe a identidade.
+#     Colunas registradas no export. Obs.: identificação por centróide é aproximação (não point-in-
+#     polygon); dist ao centróide fica disponível internamente. Provado por teste (código real com base
+#     stub: escolhe o município correto por proximidade; (0,0)/base vazia/coord None → None sem quebrar).
+#     Sem regressão; 12 abas, RotaPipeline 41 (inalterado nesta rodada), balões 1×, índices intactos.
+#   v3.8 (77ª geração) → AUDITORIA DO CONCORRENTE NO NÚCLEO: TEMPO+VELOCIDADE [CONC-AUDIT] (opção A)
+#     A pedido (opção A, "sempre", latência aceita), inicia a auditoria completa do concorrente no BATCH
+#     alterando o núcleo — da forma MAIS segura possível. RotaPipeline ganhou 1 campo aditivo NO FIM,
+#     'auditoria_concorrente' (dict extensível), lido SEMPRE por NOME (getattr) — não altera nenhum
+#     índice 0-39 (verificado: construção por keyword, nenhum res[40+], tuplas de falha padded ≥35). O
+#     ramo do runner-up passou a capturar o TEMPO do concorrente (res_g_runner[1], mesmo índice do
+#     vencedor — já computado, antes descartado) e derivar VELOCIDADE MÉDIA implícita (helpers puros
+#     _parse_tempo_min/_velocidade_media_kmh) + coordenadas, gravando tudo no dict via _replace. Planilha
+#     ganhou 'Tempo Concorrente' e 'Velocidade Media Concorrente'; painel exibe ambos. INVARIANTE: 40 →
+#     41 campos (mudança INTENCIONAL e aditiva). PRÓXIMO (mesma mecânica, o dict é extensível): OSRM +
+#     divergência, Cód IBGE/fonte/score, snap — cada um some 1 chamada e será rodada dedicada. RESSALVA:
+#     o fluxo (roteamento do runner-up) NÃO é executável aqui — helpers e leitura do dict testados; o
+#     end-to-end você valida no ambiente real. Sem regressão de índices; 12 abas, balões 1×, score imut.
+#   v3.8 (76ª geração) → COORDENADAS DO CONCORRENTE + LIMITE HONESTO DO AUDIT [CONC-COORD] (disputa)
+#     Passo seguro rumo à "auditoria completa do concorrente sempre": grava as COORDENADAS próprias do
+#     concorrente ('Lat Concorrente'/'Lon Concorrente'), já presentes em runner_up_map ([2]/[3]) — custo
+#     ZERO, sem rede, sem tocar o núcleo. Colunas na planilha + coordenadas exibidas no painel da disputa.
+#     LIMITE HONESTO (documentado): os demais dados do concorrente (Cód IBGE, fonte/score/confiança, tipo
+#     do ponto, snap, divergência Google×OSRM, tempo, velocidade média) exigem rotear/geocodificar o
+#     runner-up pelo PIPELINE INTEIRO + ADICIONAR CAMPOS ao RotaPipeline (NamedTuple de 40 campos, núcleo
+#     acessado por índice em todo o app). Isso NÃO é validável sem executar o Streamlit; mesmo com a
+#     latência aceita ("sempre"), fazê-lo às cegas violaria o zero-regressão. Fica como mudança dedicada,
+#     a validar no ambiente real. Provado por teste (leitura das coordenadas de runner_up_map: [2]=lat/
+#     [3]=lon; defensivo p/ tupla curta). Sem regressão; 12 abas, 40 campos, balões 1×, score 0.35/.35/.30.
 #   v3.8 (75ª geração) → RADAR + ÍNDICES DE DISPUTA NA PLANILHA [DISPUTA-INDICES] (expansão sem latência)
 #     Continua a expansão da Auditoria da Disputa SEM latência (derivado dos dados já gravados). PLANILHA
 #     da Alocação ganhou 3 colunas: 'Indice Competitividade' (0-100, quão acirrada — 100−dif%),
@@ -808,6 +843,12 @@ class RotaPipeline(NamedTuple):
     # Índice 40, default None (aditivo; não afeta índices 0-39). É um dicionário estruturado.
     auditoria_motores: dict = None
 
+    # [CONC-AUDIT - 77ª geração] Auditoria COMPLETA do concorrente (2º colocado), acumulada num único
+    # dicionário estruturado (tempo, velocidade média, e — em rodadas seguintes — OSRM/divergência/IBGE).
+    # ADITIVO no FIM do NamedTuple: não altera nenhum índice 0-39; lido SEMPRE por NOME (getattr),
+    # nunca por índice fixo. Default None (compatível com construção por keyword + tuplas de falha).
+    auditoria_concorrente: dict = None
+
 def _montar_comparativo_provedores(km_g, tempo_g, km_o, tempo_o, fonte_vencedora):
     """[COMP-PROV - 21ª geração] Codifica os dados de comparação entre Google e OSRM
     num formato compacto e à prova de parsing (sem JSON, sem caracteres problemáticos):
@@ -878,6 +919,35 @@ def _mailto_pesquisa(email_destino, assunto, corpo):
     subject e body são URL-encoded."""
     from urllib.parse import quote
     return f"mailto:{str(email_destino or '').strip()}?subject={quote(assunto)}&body={quote(corpo)}"
+
+
+def _parse_tempo_min(tempo_str):
+    """[CONC-AUDIT - 77ª geração] Converte um tempo formatado ('45 min', '1 h 20 min', '2 h') em
+    MINUTOS (float), ou None se não parsear. PURO — base para a velocidade média implícita."""
+    import re as _re
+    if not tempo_str:
+        return None
+    _s = str(tempo_str).lower()
+    _h = _re.search(r'(\d+)\s*h', _s)
+    _m = _re.search(r'(\d+)\s*min', _s)
+    if not _h and not _m:
+        _n = _re.search(r'(\d+)', _s)
+        return float(_n.group(1)) if _n else None
+    _total = (int(_h.group(1)) if _h else 0) * 60 + (int(_m.group(1)) if _m else 0)
+    return float(_total) if _total > 0 else None
+
+
+def _velocidade_media_kmh(dist_km, tempo_str):
+    """[CONC-AUDIT - 77ª geração] Velocidade média implícita (km/h) = distância / tempo. PURO.
+    Retorna 0.0 se o tempo não parsear ou for zero."""
+    _min = _parse_tempo_min(tempo_str)
+    try:
+        _d = float(dist_km)
+    except (TypeError, ValueError):
+        return 0.0
+    if not _min or _min <= 0 or _d <= 0:
+        return 0.0
+    return round(_d * 60.0 / _min, 1)
 
 
 METRICAS_DISTANCIA = {
@@ -1614,12 +1684,15 @@ COLUNAS_NUMERICAS_PADRAO = [
 
 NOVAS_COLUNAS_ALOCACAO = NOVAS_COLUNAS_PADRAO + [
     'Concorrente Analisado', 'Distancia Concorrente', 'Linha Reta Concorrente',
+    'Lat Concorrente', 'Lon Concorrente', 'Tempo Concorrente', 'Velocidade Media Concorrente',
+    'Cod IBGE Concorrente', 'UF Concorrente', 'Municipio Concorrente',
     'Link Rota Concorrente', 'Justificativa de Alocacao',
     'Indice Competitividade', 'Indice Robustez', 'Motivo Resumido Perda'
 ]
 
 COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + [
-    'Distancia Concorrente', 'Linha Reta Concorrente', 'Indice Competitividade', 'Indice Robustez'
+    'Distancia Concorrente', 'Linha Reta Concorrente', 'Indice Competitividade', 'Indice Robustez',
+    'Velocidade Media Concorrente'
 ]
 
 def _df_para_geojson(df):
@@ -4884,6 +4957,7 @@ def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None):
     dist_conc = 0.0
     link_conc = "N/A"
     justificativa = "N/A"
+    _audit_conc = None  # [CONC-AUDIT - 77ª geração] auditoria completa do concorrente (dict)
     
     if orig == "FALHA_GEO_ORIGEM" or dest == "NENHUM_HUB_VALIDO":
         return (0.0, "0 min", "Link Indisponível", "Não", 0.0, "Input Inválido", 0, "BAIXA", 0, "Não Informado", "Não Informado", "N/A", orig, "BAIXA", 0, "Não Informado", "Não Informado", "N/A", dest, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ["Falha Espacial Origem"], ["Falha Espacial Destino"], "Falha de Roteamento: Hub Base ou Endereço Destino foi incapaz de resolver latitude/longitude em nuvem.", "N/A", "Falha Operacional (Input Inválido)", concorrente, dist_conc, link_conc, justificativa)
@@ -4907,11 +4981,20 @@ def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None):
             if res_g_runner:
                 dist_conc = res_g_runner[0]
                 link_conc = res_g_runner[2]
+                # [CONC-AUDIT - 77ª geração] tempo do concorrente (res_g_runner[1], mesmo índice do
+                # vencedor) + velocidade média implícita + coordenadas → auditoria completa do 2º colocado.
+                _tempo_conc = res_g_runner[1] if len(res_g_runner) > 1 else "N/A"
+                _audit_conc = {
+                    'tempo': _tempo_conc,
+                    'velocidade_media': _velocidade_media_kmh(dist_conc, _tempo_conc),
+                    'lat': r_lat, 'lon': r_lon,
+                }
             else:
                 dist_conc = round(dist_v_real * obter_fator_desvio_rodoviario(dist_v_real), 2)
                 o_param = requests.utils.quote(origem_cru)
                 d_param = requests.utils.quote(r_nome)
                 link_conc = f"https://www.google.com/maps/dir/?api=1&origin={o_param}&destination={d_param}&travelmode=driving"
+                _audit_conc = {'tempo': "N/A", 'velocidade_media': 0.0, 'lat': r_lat, 'lon': r_lon}
             concorrente = r_nome
             
         if dist_conc > 0.0:
@@ -4920,7 +5003,8 @@ def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None):
             justificativa = f"Alocação matemática por vizinho mais próximo. Rota viária oficial via Google Maps: {dist_via_oficial} km."
         # [M11] _replace preenche campos de concorrência mantendo o tipo RotaPipeline
         if isinstance(res, RotaPipeline):
-            return res._replace(concorrente=concorrente, dist_concorrente=dist_conc, link_concorrente=link_conc, justificativa=justificativa)
+            return res._replace(concorrente=concorrente, dist_concorrente=dist_conc, link_concorrente=link_conc,
+                                justificativa=justificativa, auditoria_concorrente=_audit_conc)
         return (*res, concorrente, dist_conc, link_conc, justificativa)
         
     return res
@@ -5433,10 +5517,28 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     linha_dict.update({
                         'Distancia Concorrente': float(res[32]) if res[32] != "N/A" else 0.0,
                         'Linha Reta Concorrente': round(float(_ru_info[0]), 3) if _ru_info else 0.0,
+                        # [CONC-COORD - 76ª geração] Coordenadas PRÓPRIAS do concorrente (já em
+                        # runner_up_map: [2]=lat, [3]=lon) — custo zero, sem rede; permitem auditar/mapear
+                        # a 2ª opção. Demais dados de geocod./qualidade do concorrente exigem roteá-lo
+                        # pelo pipeline inteiro (documentado).
+                        'Lat Concorrente': round(float(_ru_info[2]), 6) if (_ru_info and len(_ru_info) > 2) else 0.0,
+                        'Lon Concorrente': round(float(_ru_info[3]), 6) if (_ru_info and len(_ru_info) > 3) else 0.0,
                         'Concorrente Analisado': res[31] if len(res) > 31 and res[31] is not None else "N/A",
                         'Link Rota Concorrente': res[33] if len(res) > 33 and res[33] is not None else "N/A",
                         'Justificativa de Alocacao': res[34] if len(res) > 34 and res[34] is not None else "N/A"
                     })
+                    # [CONC-AUDIT - 77ª geração] Auditoria completa do concorrente lida do dict dedicado
+                    # (SEMPRE por NOME — getattr; None p/ tuplas de falha). Tempo + velocidade média.
+                    _ac = getattr(res, 'auditoria_concorrente', None) if isinstance(res, RotaPipeline) else None
+                    _ac = _ac or {}
+                    linha_dict['Tempo Concorrente'] = _ac.get('tempo', 'N/A')
+                    linha_dict['Velocidade Media Concorrente'] = _ac.get('velocidade_media', 0.0)
+                    # [CONC-IBGE - 78ª geração] Identidade municipal oficial do concorrente pela sua
+                    # coordenada (município de centróide mais próximo, in-memory). Cód IBGE + UF + nome.
+                    _idc = _identidade_por_coordenada(linha_dict.get('Lat Concorrente'), linha_dict.get('Lon Concorrente')) or {}
+                    linha_dict['Cod IBGE Concorrente'] = _idc.get('cod_ibge', '—')
+                    linha_dict['UF Concorrente'] = _idc.get('uf', '—')
+                    linha_dict['Municipio Concorrente'] = _idc.get('municipio', '—')
                     # [DISPUTA-INDICES - 75ª geração] Índices da disputa na PLANILHA (derivados dos
                     # valores já gravados — custo zero, sem rede). Competitividade (quão acirrada),
                     # robustez (quão folgada a escolha) e o motivo resumido da perda do concorrente.
@@ -5878,6 +5980,40 @@ def _municipios_com_coordenadas():
                 out.append({"municipio": nome, "uf": uf, "codigo_ibge": item.get("codigo_ibge"),
                             "lat": lat, "lon": lon})
     return out
+
+
+@st.cache_data(show_spinner=False)
+def _arrays_centroides_municipais():
+    """[CONC-IBGE - 78ª geração] Arrays cacheados (lat/lon em rad, nome, uf, código) da base de
+    municípios com coordenadas — para busca VETORIZADA do município mais próximo a uma coordenada."""
+    base = _municipios_com_coordenadas()
+    lats = np.radians(np.array([m['lat'] for m in base], dtype=float)) if base else np.array([])
+    lons = np.radians(np.array([m['lon'] for m in base], dtype=float)) if base else np.array([])
+    return (lats, lons,
+            [str(m['municipio']).title() for m in base],
+            [m['uf'] for m in base],
+            [str(m.get('codigo_ibge') or '') for m in base])
+
+
+def _identidade_por_coordenada(lat, lon):
+    """[CONC-IBGE - 78ª geração] Identidade municipal do ponto (lat, lon) pelo município de centróide
+    MAIS PRÓXIMO (Haversine/IUGG vetorizado sobre a base nacional em memória). Retorna
+    {municipio, uf, cod_ibge, dist_km} ou None. In-memory (SEM rede), defensivo. Usado para identificar
+    o hub concorrente a partir de suas coordenadas. Obs.: é aproximação por centróide (não point-in-
+    polygon); dist_km indica a distância ao centróide do município identificado."""
+    try:
+        if not lat or not lon or (float(lat) == 0.0 and float(lon) == 0.0):
+            return None
+        lats, lons, nomes, ufs, cods = _arrays_centroides_municipais()
+        if len(nomes) == 0:
+            return None
+        _la, _lo = math.radians(float(lat)), math.radians(float(lon))
+        a = np.sin((lats - _la) / 2.0)**2 + np.cos(_la) * np.cos(lats) * np.sin((lons - _lo) / 2.0)**2
+        d = 6371.0088 * 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+        i = int(np.argmin(d))
+        return {'municipio': nomes[i], 'uf': ufs[i], 'cod_ibge': cods[i] or '—', 'dist_km': round(float(d[i]), 2)}
+    except Exception:
+        return None
 
 
 @st.cache_data(show_spinner=False)
@@ -7493,6 +7629,16 @@ with tab_alocacao:
                             _dif_reta = round(_conc_reta - _venc_reta, 2)
                             _razao_c = round(_conc_dist / _conc_reta, 2) if _conc_reta > 0 else 0.0
                             _dif_razao = round(_razao_c - _razao_v, 2)
+                            # [CONC-COORD - 76ª geração] coordenadas próprias do concorrente.
+                            _conc_lat = _num(_row.get('Lat Concorrente'))
+                            _conc_lon = _num(_row.get('Lon Concorrente'))
+                            _conc_coord_txt = (f" · Coord: {_conc_lat:.5f}, {_conc_lon:.5f}"
+                                               if (_conc_lat != 0.0 or _conc_lon != 0.0) else "")
+                            # [CONC-AUDIT - 77ª geração] tempo + velocidade média do concorrente.
+                            _conc_tempo = _row.get('Tempo Concorrente', 'N/A')
+                            _conc_vel = _num(_row.get('Velocidade Media Concorrente'))
+                            _conc_extra = (f" · Tempo: {_conc_tempo}"
+                                           + (f" · Vel. média: {_conc_vel:.0f} km/h" if _conc_vel > 0 else ""))
 
                             # Cabeçalho: vencedor × concorrente
                             _cwin, _cconc = st.columns(2)
@@ -7503,7 +7649,13 @@ with tab_alocacao:
                             with _cconc:
                                 st.markdown(f"##### 🥈 Melhor Concorrente\n**{_conc_nome}**")
                                 st.metric("Distância viária", f"{_conc_dist:.1f} km", delta=f"+{_dif_km:.1f} km", delta_color="inverse")
-                                st.caption(f"Linha reta: {_conc_reta:.1f} km · Razão V/R: {_razao_c}× · Perde por {_dif_km:.1f} km ({_dif_pct}%)")
+                                st.caption(f"Linha reta: {_conc_reta:.1f} km · Razão V/R: {_razao_c}× · Perde por {_dif_km:.1f} km ({_dif_pct}%){_conc_coord_txt}{_conc_extra}")
+                                # [CONC-IBGE - 78ª geração] identidade municipal oficial do concorrente.
+                                _conc_mun = _row.get('Municipio Concorrente', '—')
+                                _conc_uf = _row.get('UF Concorrente', '—')
+                                _conc_cod = _row.get('Cod IBGE Concorrente', '—')
+                                if _conc_cod not in ('—', 'N/A', '', None):
+                                    st.caption(f"🗺️ IBGE: **{_conc_mun}/{_conc_uf}** · Cód. `{_conc_cod}`")
 
                             # Tabela comparativa (com coluna de diferença Concorrente − Vencedor)
                             st.markdown("**📊 Comparativo detalhado**")
