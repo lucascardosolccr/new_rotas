@@ -62,6 +62,18 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (73ª geração) → ABA PESQUISA DE SATISFAÇÃO [PESQUISA] (item #5 do novo prompt)
+#     Nova aba "⭐ Pesquisa de Satisfação" (abas 11 → 12, mudança INTENCIONAL a pedido). Formulário
+#     (st.form) com gostou/resolveu/indicaria/erro (radios), quanto ajudou + nota geral (sliders) e
+#     campos livres (mais/menos gostou, melhorias, erro, comentários). Ao enviar: monta assunto+corpo
+#     (helper puro _montar_corpo_pesquisa), gera link mailto URL-encoded (_mailto_pesquisa) — entrega SEM
+#     backend/credenciais, robusta em qualquer ambiente — e salva backup local em DiskCache. E-mail do
+#     produtor via Secrets (EMAIL_PRODUTOR, acesso defensivo) ou campo editável. Expander documenta
+#     opções de envio automático em produção (FormSubmit/SMTP/Apps Script/Webhook). NOTA: Cód IBGE nas
+#     planilhas (item #1 do prompt) JÁ estava implementado (54ª/71ª: Cod IBGE + UF + Região origem/
+#     destino) — verificado, não reimplementado. Provado por teste isolado (helpers puros: corpo formata
+#     todas as respostas + assunto com nota; mailto URL-encoded correto e reversível). Sem regressão nas
+#     11 abas originais; 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
 #   v3.8 (72ª geração) → CORREÇÃO CAUSA RAIZ: LINHA RETA DO CONCORRENTE [DISPUTA-FIX] (bug crítico)
 #     CAUSA RAIZ do bug reportado na "🏆 Auditoria da Disputa de Hubs": a distância em LINHA RETA do
 #     concorrente aparecia IGUAL à do vencedor. Motivo: o runner_up_map já trazia a linha reta própria do
@@ -822,6 +834,27 @@ def _rotulo_metodo_rota(fonte_rota):
     if _fr and _fr not in ("DESCONHECIDA", "N/A", "NAO INFORMADA"):
         return f"Distância viária ({fonte_rota})"
     return "N/A"
+
+
+def _montar_corpo_pesquisa(respostas, nota):
+    """[PESQUISA - 73ª geração] Formata as respostas da Pesquisa de Satisfação num assunto + corpo de
+    e-mail legível. PURO e determinístico (sem data/estado) — testável. respostas: dict {rótulo: valor}
+    (ordem preservada). Retorna (assunto, corpo)."""
+    assunto = f"[Pesquisa de Satisfação] Nota {nota}/10 — Motor de Roteirização Inteligente"
+    _linhas = ["Nova avaliação da aplicação:", ""]
+    for _rot, _val in (respostas or {}).items():
+        _v = _val if (_val is not None and str(_val).strip() != "") else "—"
+        _linhas.append(f"- {_rot}: {_v}")
+    return assunto, "\n".join(_linhas)
+
+
+def _mailto_pesquisa(email_destino, assunto, corpo):
+    """[PESQUISA - 73ª geração] Monta um link mailto: para o e-mail do produtor, com assunto e corpo
+    já preenchidos. PURO. Funciona SEM backend (abre o cliente de e-mail do usuário) — a forma mais
+    robusta e sem dependências de entregar a avaliação. O endereço fica literal (padrão mailto); apenas
+    subject e body são URL-encoded."""
+    from urllib.parse import quote
+    return f"mailto:{str(email_destino or '').strip()}?subject={quote(assunto)}&body={quote(corpo)}"
 
 
 METRICAS_DISTANCIA = {
@@ -5913,8 +5946,8 @@ def _municipios_mais_proximos_geodesico(lat_o, lon_o, uf_origem, mun_origem, n=3
     return res
 
 
-tab_individual, tab_processamento, tab_alocacao, tab_analytics, tab_calculadora, tab_classificacao, tab_proximidade, tab_enciclopedia, tab_manual, tab_motores, tab_auditoria = st.tabs([
-    "📍 Geocodificação", "⚙️ Processamento Lote", "🎯 Alocação de Hubs", "📊 Enterprise Analytics", "🧮 Calculadora Analítica", "🗂️ Classificação Territorial", "🗺️ Municípios Próximos", "📚 Enciclopédia Core", "📖 Manual do Usuário", "🩺 Monitor APIs", "🔍 Auditoria"
+tab_individual, tab_processamento, tab_alocacao, tab_analytics, tab_calculadora, tab_classificacao, tab_proximidade, tab_enciclopedia, tab_manual, tab_motores, tab_auditoria, tab_pesquisa = st.tabs([
+    "📍 Geocodificação", "⚙️ Processamento Lote", "🎯 Alocação de Hubs", "📊 Enterprise Analytics", "🧮 Calculadora Analítica", "🗂️ Classificação Territorial", "🗺️ Municípios Próximos", "📚 Enciclopédia Core", "📖 Manual do Usuário", "🩺 Monitor APIs", "🔍 Auditoria", "⭐ Pesquisa de Satisfação"
 ])
 
 with tab_individual:
@@ -9245,3 +9278,80 @@ with tab_auditoria:
             st.dataframe(pd.DataFrame(st.session_state['logs_auditoria_alocacao']), use_container_width=True)
         else:
             st.info("Nenhuma árvore de decisão persistida. Processe o cálculo de matrizes matemáticas na aba de Alocação de Hubs () para carregar as justificativas competitivas.")
+
+with tab_pesquisa:
+    st.info("⭐ **Objetivo desta aba:** Ouvir você. Sua avaliação ajuda a evoluir a plataforma — "
+            "responda à pesquisa abaixo e envie. Leva menos de um minuto.")
+    st.markdown("### ⭐ Pesquisa de Satisfação")
+
+    # [PESQUISA - 73ª geração / item #5] E-mail do produtor: pré-configurável via Secrets
+    # (EMAIL_PRODUTOR); senão, campo editável. Acesso defensivo (Secrets pode não existir).
+    try:
+        _email_prod_default = st.secrets.get("EMAIL_PRODUTOR", "")
+    except Exception:
+        _email_prod_default = ""
+
+    with st.form("form_pesquisa_satisfacao", clear_on_submit=False):
+        _cp1, _cp2 = st.columns(2)
+        with _cp1:
+            _p_gostou = st.radio("Você gostou da aplicação?", ["Sim, muito", "Sim", "Mais ou menos", "Não"], index=1)
+            _p_resolveu = st.radio("Ela resolveu o seu problema?", ["Resolveu totalmente", "Resolveu em parte", "Não resolveu"], index=0)
+            _p_indicaria = st.radio("Você indicaria esta aplicação?", ["Com certeza", "Provavelmente", "Talvez", "Não"], index=0)
+            _p_erro = st.radio("Encontrou algum erro?", ["Não", "Sim"], index=0)
+        with _cp2:
+            _p_ajudou = st.slider("Quanto ela te ajudou? (0–10)", 0, 10, 8)
+            _p_nota = st.slider("Nota geral da aplicação (0–10)", 0, 10, 9)
+        _p_mais = st.text_input("O que você MAIS gostou?")
+        _p_menos = st.text_input("O que você MENOS gostou?")
+        _p_melhorias = st.text_area("Que melhorias gostaria de ver?", height=80)
+        _p_erro_desc = st.text_input("Se encontrou um erro, descreva-o (opcional):")
+        _p_coment = st.text_area("Comentários livres:", height=80)
+        _email_prod = st.text_input("E-mail de destino (produtor):", value=_email_prod_default,
+                                    help="Para onde a avaliação será enviada. Pode ser pré-configurado em Secrets (EMAIL_PRODUTOR).")
+        _enviar = st.form_submit_button("📧 Enviar avaliação", type="primary", use_container_width=True)
+
+    if _enviar:
+        _respostas = {
+            "Gostou da aplicação": _p_gostou,
+            "Resolveu o problema": _p_resolveu,
+            "Quanto ajudou (0-10)": _p_ajudou,
+            "Indicaria": _p_indicaria,
+            "Encontrou erro": _p_erro,
+            "Descrição do erro": _p_erro_desc,
+            "O que mais gostou": _p_mais,
+            "O que menos gostou": _p_menos,
+            "Melhorias desejadas": _p_melhorias,
+            "Nota geral (0-10)": _p_nota,
+            "Comentários": _p_coment,
+        }
+        _assunto, _corpo = _montar_corpo_pesquisa(_respostas, _p_nota)
+
+        # Backup local (DiskCache) — a avaliação não se perde mesmo se o e-mail não for enviado.
+        try:
+            _hist = cache_base_local.get("pesquisas_satisfacao") or []
+            _hist.append(_respostas)
+            cache_base_local.set("pesquisas_satisfacao", _hist)
+        except Exception:
+            pass
+
+        if not (_email_prod and "@" in _email_prod):
+            st.warning("Informe um e-mail de destino válido (ou configure EMAIL_PRODUTOR em Secrets) para gerar o envio.")
+        else:
+            _link_mail = _mailto_pesquisa(_email_prod, _assunto, _corpo)
+            st.success("✅ Avaliação registrada! Clique no link abaixo para enviá-la por e-mail.")
+            st.markdown(f"### [📨 Abrir e-mail com a avaliação preenchida]({_link_mail})")
+            with st.expander("📄 Ver / copiar o texto da avaliação"):
+                st.code(f"Para: {_email_prod}\nAssunto: {_assunto}\n\n{_corpo}", language="text")
+
+    with st.expander("⚙️ Envio automático (produção) — opções mais robustas"):
+        st.markdown("""
+        O botão acima usa **mailto** (abre o seu cliente de e-mail) — funciona em qualquer ambiente, sem
+        backend nem credenciais. Para **envio 100% automático** em produção, escolha uma opção:
+        - **FormSubmit** (sem backend): `POST https://formsubmit.co/{email}` com os campos do formulário
+          (ative o e-mail no primeiro envio).
+        - **SMTP** (via `st.secrets`): configure `EMAIL_PRODUTOR`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` e
+          use `smtplib` — recomendado para volume e controle.
+        - **Google Apps Script / Power Automate / Webhook**: úteis quando já existe um fluxo corporativo.
+
+        Toda avaliação também é **salva localmente** (cache) como backup, evitando perda de dados.
+        """)
