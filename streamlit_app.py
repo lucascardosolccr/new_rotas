@@ -62,6 +62,29 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (81ª geração) → CAUSA RAIZ 'CÓD IBGE: —' PARA NOMES ÚNICOS [IBGE-ROBUSTO] (item #1)
+#     Correção estrutural do bug reportado: campos IBGE/hierarquia vazios (—) para municípios conhecidos
+#     (ex.: Ribeirão Cascalheira-MT, São Miguel do Araguaia-GO). CAUSA RAIZ: _info_municipio_ibge exigia
+#     correspondência de UF SEMPRE; quando extrair_uf_precisa não achava a UF no endereço geocodificado
+#     (comum em municípios remotos), o Cód IBGE vinha vazio mesmo para nomes INEQUÍVOCOS — e como a
+#     hierarquia (meso/micro/imediata/intermediária) é resolvida POR CÓDIGO, tudo cascateava para —.
+#     FIX: (1) match por UF continua desambiguando homônimos; (2) se a UF não casar mas o nome for ÚNICO
+#     na base (1 município só), resolve por nome — independe da UF; (3) _resolver_identidade_ibge herda a
+#     UF OFICIAL do item quando a extração falha. Homônimos com UF ausente seguem retornando None (sem
+#     desambiguação insegura). Corrige Cód IBGE, UF E a hierarquia inteira de uma vez para nomes únicos.
+#     Provado por teste (código real: Ribeirão Cascalheira/São Miguel do Araguaia únicos resolvem sem UF;
+#     homônimo sem UF → None; homônimo com UF → resolve; UF errada em nome único → resolve pelo único).
+#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
+#   v3.8 (80ª geração) → GEOCODIFICAÇÃO+SNAP DO CONCORRENTE: AUDIT COMPLETO [CONC-QUALIDADE] (fecha A)
+#     Fecha a auditoria completa do concorrente. SNAP (distância do ponto ao eixo viário) vem de GRAÇA do
+#     snap_info da rota OSRM da 79ª (dest = hub concorrente). FONTE/SCORE/CONFIANÇA da geocodificação vêm
+#     do hub_qual_map — reaproveitando hub_geo (0 chamadas extras): geocodificar_endpoints_paralelo passou
+#     a preservar também 'conf' (índice 7, aditivo); a Alocação monta o mapa {hub: fonte/score/conf} e o
+#     passa ao builder (_montar_dataframe_final ganhou param hub_qual_map=None — Lote passa None). Builder
+#     lê a qualidade por NOME do concorrente → 'Fonte/Score/Confianca Geo Concorrente' e 'Snap Concorrente
+#     (m)'. Provado por teste (montagem do hub_qual_map a partir do formato real de geocodificar; leitura
+#     por nome + defaults; extração de snap do snap_info; conf preservada). Sem regressão de índices
+#     (geocodificar consumido por índice ≤6; res idem); 12 abas, RotaPipeline 41, balões 1×, score imut.
 #   v3.8 (79ª geração) → OSRM + DIVERGÊNCIA GOOGLE×OSRM DO CONCORRENTE [CONC-OSRM] (opção A, parte 3)
 #     Estende a auditoria do concorrente sem novo núcleo: roteia o runner-up TAMBÉM no OSRM
 #     (API_OSRM_Routing — 1 chamada, latência aceita) e calcula a divergência Google×OSRM com a MESMA
@@ -1698,6 +1721,7 @@ NOVAS_COLUNAS_ALOCACAO = NOVAS_COLUNAS_PADRAO + [
     'Cod IBGE Concorrente', 'UF Concorrente', 'Municipio Concorrente',
     'OSRM km Concorrente', 'Divergencia Motores Concorrente (km)',
     'Divergencia Motores Concorrente (%)', 'Motor Vencedor Concorrente',
+    'Fonte Geo Concorrente', 'Score Geo Concorrente', 'Confianca Geo Concorrente', 'Snap Concorrente (m)',
     'Link Rota Concorrente', 'Justificativa de Alocacao',
     'Indice Competitividade', 'Indice Robustez', 'Motivo Resumido Perda'
 ]
@@ -1705,7 +1729,8 @@ NOVAS_COLUNAS_ALOCACAO = NOVAS_COLUNAS_PADRAO + [
 COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + [
     'Distancia Concorrente', 'Linha Reta Concorrente', 'Indice Competitividade', 'Indice Robustez',
     'Velocidade Media Concorrente', 'OSRM km Concorrente',
-    'Divergencia Motores Concorrente (km)', 'Divergencia Motores Concorrente (%)'
+    'Divergencia Motores Concorrente (km)', 'Divergencia Motores Concorrente (%)',
+    'Score Geo Concorrente', 'Snap Concorrente (m)'
 ]
 
 def _df_para_geojson(df):
@@ -2913,11 +2938,23 @@ def obter_coordenada_centroide_supremo(mun_nome, uf_nome):
 _CENTROIDE_MUN_CACHE = {}
 
 def _info_municipio_ibge(mun_nome, uf_nome):
-    """Retorna (item_da_base | None, codigo_ibge | None) do município na UF informada."""
-    if mun_nome in IBGE_MUNICIPIOS:
-        for item in IBGE_MUNICIPIOS[mun_nome]:
+    """Retorna (item_da_base | None, codigo_ibge | None) do município.
+    [IBGE-ROBUSTO - 81ª geração / item #1] CORREÇÃO DA CAUSA RAIZ do 'Cód IBGE: —': antes exigia
+    correspondência de UF sempre — se a UF não fosse extraída do endereço (comum em municípios
+    remotos), o código vinha vazio mesmo para nomes INEQUÍVOCOS. Agora:
+      1) tenta o match exato por UF (desambigua homônimos);
+      2) se a UF não casar (ou vier vazia) MAS o nome for ÚNICO na base (1 só município com esse
+         nome), devolve esse único item — resolve municípios inequívocos independentemente da UF.
+    Homônimos com UF ausente/errada continuam retornando None (não há como desambiguar com segurança)."""
+    itens = IBGE_MUNICIPIOS.get(mun_nome)
+    if not itens:
+        return None, None
+    if uf_nome:
+        for item in itens:
             if item.get("uf") == uf_nome:
                 return item, item.get("codigo_ibge")
+    if len(itens) == 1:  # nome inequívoco → não depende da UF
+        return itens[0], itens[0].get("codigo_ibge")
     return None, None
 
 
@@ -2947,8 +2984,11 @@ def _resolver_identidade_ibge(municipio, endereco_oficial):
     try:
         _uf = extrair_uf_precisa(endereco_oficial or "")
         _uf = "" if _uf == "Indefinido" else _uf
-        _cod = _info_municipio_ibge(semantica.normalizar(_mun), _uf)[1] if _mun else None
-        return {"municipio": _mun or "—", "uf": _uf or "—", "cod_ibge": _cod or "—"}
+        _item, _cod = _info_municipio_ibge(semantica.normalizar(_mun), _uf) if _mun else (None, None)
+        # [IBGE-ROBUSTO - 81ª geração / item #1] se resolveu por nome único, herda a UF OFICIAL do
+        # item (mesmo que a extração do endereço tenha falhado) — evita 'UF: —' com Cód IBGE presente.
+        _uf_final = _uf or (_item.get("uf") if _item else "")
+        return {"municipio": _mun or "—", "uf": _uf_final or "—", "cod_ibge": _cod or "—"}
     except Exception:
         return {"municipio": _mun or "—", "uf": "—", "cod_ibge": "—"}
 
@@ -5011,12 +5051,16 @@ def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None):
                     if _res_osrm_conc:
                         _osrm_km_conc = round(float(_res_osrm_conc[0]), 2)
                         _div_conc = _metricas_divergencia(dist_conc, _osrm_km_conc)
+                        # [CONC-QUALIDADE - 80ª geração] snap do concorrente (distância do ponto ao
+                        # eixo viário) — já vem no snap_info da rota OSRM (dest = hub concorrente).
+                        _snap_c = _res_osrm_conc[5].get('dest_snap_dist_m') if isinstance(_res_osrm_conc[5], dict) else None
                         _audit_conc.update({
                             'osrm_km': _osrm_km_conc,
                             'motor_vencedor': "OSRM" if _osrm_km_conc < dist_conc else "Google",
                             'divergencia_km': _div_conc['abs_km'] if _div_conc else 0.0,
                             'divergencia_pct': _div_conc['pct'] if _div_conc else 0.0,
                             'divergencia_classe': _div_conc['classificacao'] if _div_conc else "N/A",
+                            'snap_m': round(float(_snap_c), 1) if _snap_c is not None else None,
                         })
                 except Exception as _e_osrm_conc:
                     logger.error(f"[CONC-OSRM] Falha ao rotear concorrente no OSRM: {_e_osrm_conc}")
@@ -5106,10 +5150,10 @@ def geocodificar_endpoints_paralelo(lista_enderecos, max_itens=None):
         endereco = futuros[f]
         try:
             lat, lon, end, conf, score, dist, mun, fonte, xai = f.result()
-            resultados[endereco] = (lat, lon, end, score, xai, mun, fonte)
+            resultados[endereco] = (lat, lon, end, score, xai, mun, fonte, conf)
         except Exception as e:
             logger.error(f"[FIX-ALOC] Falha geocodificação de '{endereco}': {e}")
-            resultados[endereco] = (0.0, 0.0, "Falha", 0, [], "", "")
+            resultados[endereco] = (0.0, 0.0, "Falha", 0, [], "", "", "N/A")
     return resultados
 
 
@@ -5341,7 +5385,7 @@ def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
     return resultados
 
 
-def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
+def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_map=None):
     """[FIX-LOTE] Monta o DataFrame final a partir do dict acumulado de resultados.
     Extraído de rodar_pipeline_lote para ser reutilizado pelo motor em chunks após
     todos os chunks concluírem. Lógica de montagem idêntica à original."""
@@ -5575,6 +5619,13 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     linha_dict['Divergencia Motores Concorrente (km)'] = _ac.get('divergencia_km', 0.0)
                     linha_dict['Divergencia Motores Concorrente (%)'] = _ac.get('divergencia_pct', 0.0)
                     linha_dict['Motor Vencedor Concorrente'] = _ac.get('motor_vencedor', 'N/A')
+                    # [CONC-QUALIDADE - 80ª geração] qualidade da geocodificação do hub concorrente
+                    # (do hub_qual_map, por nome — 0 chamadas extras) + snap (da rota OSRM).
+                    _hq = (hub_qual_map or {}).get(linha_dict.get('Concorrente Analisado'), {})
+                    linha_dict['Fonte Geo Concorrente'] = _hq.get('fonte', 'N/A')
+                    linha_dict['Score Geo Concorrente'] = _hq.get('score', 0.0)
+                    linha_dict['Confianca Geo Concorrente'] = _hq.get('conf', 'N/A')
+                    linha_dict['Snap Concorrente (m)'] = _ac.get('snap_m') if _ac.get('snap_m') is not None else 0.0
                     # [DISPUTA-INDICES - 75ª geração] Índices da disputa na PLANILHA (derivados dos
                     # valores já gravados — custo zero, sem rede). Competitividade (quão acirrada),
                     # robustez (quão folgada a escolha) e o motivo resumido da perda do concorrente.
@@ -7103,7 +7154,8 @@ with tab_processamento:
                     _preaq = st.session_state.get('lote_preaquecido', False)
                     _start_clock = st.session_state['lote_start_clock']
                     
-                    df_final = _montar_dataframe_final(_df_base, _resultados, runner_up_map=_runner_map)
+                    df_final = _montar_dataframe_final(_df_base, _resultados, runner_up_map=_runner_map,
+                                                       hub_qual_map=st.session_state.get('alo_hub_qual_map'))
                     
                     # Recalcula Linha Reta vetorizada (Haversine IUGG)
                     lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
@@ -7353,6 +7405,16 @@ with tab_alocacao:
                 _prep_bar.progress(0.15)
                 hub_geo = geocodificar_endpoints_paralelo(hubs_unicos)
                 hub_coords = {h: (v[0], v[1], v[2]) for h, v in hub_geo.items()}
+                # [CONC-QUALIDADE - 80ª geração] mapa de qualidade da geocodificação por hub (fonte/
+                # score/confiança), reaproveitando hub_geo (0 chamadas extras) — o concorrente é um hub,
+                # então sua identidade de geocodificação sai daqui. Guardado p/ o builder ler por nome.
+                _hub_qual_map = {
+                    h: {'fonte': (v[6] if len(v) > 6 else "N/A"),
+                        'score': (v[3] if len(v) > 3 else 0.0),
+                        'conf': (v[7] if len(v) > 7 else "N/A")}
+                    for h, v in hub_geo.items()
+                }
+                st.session_state['alo_hub_qual_map'] = _hub_qual_map
                 for h, v in hub_geo.items():
                     # [IBGE-LOGS - 61ª geração / item #2] identidade oficial no log de auditoria.
                     _id_h = _resolver_identidade_ibge(v[5] if len(v) > 5 else "", v[2])
