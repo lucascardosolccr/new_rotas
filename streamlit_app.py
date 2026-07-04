@@ -62,6 +62,16 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (79ª geração) → OSRM + DIVERGÊNCIA GOOGLE×OSRM DO CONCORRENTE [CONC-OSRM] (opção A, parte 3)
+#     Estende a auditoria do concorrente sem novo núcleo: roteia o runner-up TAMBÉM no OSRM
+#     (API_OSRM_Routing — 1 chamada, latência aceita) e calcula a divergência Google×OSRM com a MESMA
+#     métrica única do vencedor (_metricas_divergencia, sempre 0-100%). Grava no dict auditoria_concorrente:
+#     osrm_km, divergencia_km/pct/classe, motor de menor distância. Isolado em try/except (falha do OSRM →
+#     sem divergência, batch segue). Planilha ganhou 'OSRM km Concorrente', 'Divergencia Motores
+#     Concorrente (km)/(%)', 'Motor Vencedor Concorrente'; painel exibe a divergência. RESSALVA: a chamada
+#     OSRM depende de rede — NÃO executável aqui; validei a lógica de divergência (métrica única) e a
+#     leitura do dict; o end-to-end você confirma reprocessando no ambiente real. Sem regressão de índices;
+#     12 abas, RotaPipeline 41 (inalterado), balões 1×, score imutável.
 #   v3.8 (78ª geração) → IDENTIDADE IBGE DO CONCORRENTE [CONC-IBGE] (opção A, parte 2 — sem novo núcleo)
 #     Estende a auditoria do concorrente com a IDENTIDADE MUNICIPAL OFICIAL — SEM nova mudança de núcleo
 #     (reaproveita as coordenadas capturadas na 77ª). Resolve o município do hub concorrente pelo
@@ -1686,13 +1696,16 @@ NOVAS_COLUNAS_ALOCACAO = NOVAS_COLUNAS_PADRAO + [
     'Concorrente Analisado', 'Distancia Concorrente', 'Linha Reta Concorrente',
     'Lat Concorrente', 'Lon Concorrente', 'Tempo Concorrente', 'Velocidade Media Concorrente',
     'Cod IBGE Concorrente', 'UF Concorrente', 'Municipio Concorrente',
+    'OSRM km Concorrente', 'Divergencia Motores Concorrente (km)',
+    'Divergencia Motores Concorrente (%)', 'Motor Vencedor Concorrente',
     'Link Rota Concorrente', 'Justificativa de Alocacao',
     'Indice Competitividade', 'Indice Robustez', 'Motivo Resumido Perda'
 ]
 
 COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + [
     'Distancia Concorrente', 'Linha Reta Concorrente', 'Indice Competitividade', 'Indice Robustez',
-    'Velocidade Media Concorrente'
+    'Velocidade Media Concorrente', 'OSRM km Concorrente',
+    'Divergencia Motores Concorrente (km)', 'Divergencia Motores Concorrente (%)'
 ]
 
 def _df_para_geojson(df):
@@ -4989,6 +5002,24 @@ def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None):
                     'velocidade_media': _velocidade_media_kmh(dist_conc, _tempo_conc),
                     'lat': r_lat, 'lon': r_lon,
                 }
+                # [CONC-OSRM - 79ª geração] roteia o concorrente TAMBÉM no OSRM (1 chamada — latência
+                # aceita) e calcula a divergência Google×OSRM com a MESMA métrica única do vencedor
+                # (_metricas_divergencia, sempre 0-100%). Isolado em try/except (falha do OSRM → sem
+                # divergência, sem quebrar o batch).
+                try:
+                    _res_osrm_conc = API_OSRM_Routing(lat_o, lon_o, r_lat, r_lon)
+                    if _res_osrm_conc:
+                        _osrm_km_conc = round(float(_res_osrm_conc[0]), 2)
+                        _div_conc = _metricas_divergencia(dist_conc, _osrm_km_conc)
+                        _audit_conc.update({
+                            'osrm_km': _osrm_km_conc,
+                            'motor_vencedor': "OSRM" if _osrm_km_conc < dist_conc else "Google",
+                            'divergencia_km': _div_conc['abs_km'] if _div_conc else 0.0,
+                            'divergencia_pct': _div_conc['pct'] if _div_conc else 0.0,
+                            'divergencia_classe': _div_conc['classificacao'] if _div_conc else "N/A",
+                        })
+                except Exception as _e_osrm_conc:
+                    logger.error(f"[CONC-OSRM] Falha ao rotear concorrente no OSRM: {_e_osrm_conc}")
             else:
                 dist_conc = round(dist_v_real * obter_fator_desvio_rodoviario(dist_v_real), 2)
                 o_param = requests.utils.quote(origem_cru)
@@ -5539,6 +5570,11 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     linha_dict['Cod IBGE Concorrente'] = _idc.get('cod_ibge', '—')
                     linha_dict['UF Concorrente'] = _idc.get('uf', '—')
                     linha_dict['Municipio Concorrente'] = _idc.get('municipio', '—')
+                    # [CONC-OSRM - 79ª geração] OSRM + divergência Google×OSRM do concorrente (do dict).
+                    linha_dict['OSRM km Concorrente'] = _ac.get('osrm_km', 0.0)
+                    linha_dict['Divergencia Motores Concorrente (km)'] = _ac.get('divergencia_km', 0.0)
+                    linha_dict['Divergencia Motores Concorrente (%)'] = _ac.get('divergencia_pct', 0.0)
+                    linha_dict['Motor Vencedor Concorrente'] = _ac.get('motor_vencedor', 'N/A')
                     # [DISPUTA-INDICES - 75ª geração] Índices da disputa na PLANILHA (derivados dos
                     # valores já gravados — custo zero, sem rede). Competitividade (quão acirrada),
                     # robustez (quão folgada a escolha) e o motivo resumido da perda do concorrente.
@@ -7656,6 +7692,12 @@ with tab_alocacao:
                                 _conc_cod = _row.get('Cod IBGE Concorrente', '—')
                                 if _conc_cod not in ('—', 'N/A', '', None):
                                     st.caption(f"🗺️ IBGE: **{_conc_mun}/{_conc_uf}** · Cód. `{_conc_cod}`")
+                                # [CONC-OSRM - 79ª geração] divergência Google×OSRM do concorrente.
+                                _conc_osrm = _num(_row.get('OSRM km Concorrente'))
+                                _conc_div_pct = _num(_row.get('Divergencia Motores Concorrente (%)'))
+                                if _conc_osrm > 0:
+                                    st.caption(f"🛰️ OSRM: {_conc_osrm:.1f} km · Divergência Google×OSRM: **{_conc_div_pct:.1f}%** "
+                                               f"(motor menor: {_row.get('Motor Vencedor Concorrente', 'N/A')})")
 
                             # Tabela comparativa (com coluna de diferença Concorrente − Vencedor)
                             st.markdown("**📊 Comparativo detalhado**")
