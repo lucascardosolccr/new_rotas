@@ -62,6 +62,18 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (72ª geração) → CORREÇÃO CAUSA RAIZ: LINHA RETA DO CONCORRENTE [DISPUTA-FIX] (bug crítico)
+#     CAUSA RAIZ do bug reportado na "🏆 Auditoria da Disputa de Hubs": a distância em LINHA RETA do
+#     concorrente aparecia IGUAL à do vencedor. Motivo: o runner_up_map já trazia a linha reta própria do
+#     2º colocado (dists[i2]), mas ela NUNCA era armazenada — embrulhar_task_paralela recebia
+#     runner_up_info[0] e o descartava, e o painel então reusava _venc_reta (a reta do VENCEDOR) tanto na
+#     linha do concorrente quanto na Razão V/R do concorrente. CORREÇÃO: _montar_dataframe_final passou a
+#     gravar 'Linha Reta Concorrente' = runner_up_map[origem][0] (a reta PRÓPRIA do concorrente); o painel
+#     passou a usar essa coluna para a linha reta E para a Razão V/R do concorrente, e ganhou coluna Δ
+#     (Concorrente − Vencedor) em viária, linha reta e Razão V/R. Coluna também registrada nas listas de
+#     export da Alocação (sai na planilha, numérica). Verificado que nenhum outro campo do concorrente
+#     herdava valor do vencedor. Provado por teste (matriz real: reta do 2º ≠ reta do 1º; réplica da
+#     gravação + razão do painel usando a reta correta). Sem regressão; 11 abas, 40 campos, balões 1×.
 #   v3.8 (71ª geração) → REGIÃO E HOMÔNIMOS NA PLANILHA [TERRITORIO-PLANILHA] (item #3 no export)
 #     Estende o item #3 ao FLUXO PRINCIPAL: Região e grau de ambiguidade (homônimos) passam a sair na
 #     PLANILHA (Lote e Alocação), não só na tela do Validador Rápido. Colunas novas: "Regiao Origem",
@@ -1545,11 +1557,11 @@ COLUNAS_NUMERICAS_PADRAO = [
 ]
 
 NOVAS_COLUNAS_ALOCACAO = NOVAS_COLUNAS_PADRAO + [
-    'Concorrente Analisado', 'Distancia Concorrente',
+    'Concorrente Analisado', 'Distancia Concorrente', 'Linha Reta Concorrente',
     'Link Rota Concorrente', 'Justificativa de Alocacao'
 ]
 
-COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + ['Distancia Concorrente']
+COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + ['Distancia Concorrente', 'Linha Reta Concorrente']
 
 def _df_para_geojson(df):
     """[EXPORT-GIS - 24ª geração] Converte o DataFrame de rotas processadas em GeoJSON
@@ -5299,8 +5311,14 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                     logger.error(f"[ENRIQUECE-LOTE] Falha ao enriquecer linha (isolada, não interrompe): {e}")
                 
                 if runner_up_map:
+                    # [DISPUTA-FIX - 72ª geração] CAUSA RAIZ corrigida: a distância em LINHA RETA do
+                    # concorrente vinha do runner_up_map (dists[i2]) mas NUNCA era armazenada — o painel
+                    # acabava exibindo a linha reta do VENCEDOR para o concorrente. Aqui gravamos a linha
+                    # reta PRÓPRIA do concorrente (runner_up_map[origem][0]) numa coluna dedicada.
+                    _ru_info = runner_up_map.get(origem)
                     linha_dict.update({
                         'Distancia Concorrente': float(res[32]) if res[32] != "N/A" else 0.0,
+                        'Linha Reta Concorrente': round(float(_ru_info[0]), 3) if _ru_info else 0.0,
                         'Concorrente Analisado': res[31] if len(res) > 31 and res[31] is not None else "N/A",
                         'Link Rota Concorrente': res[33] if len(res) > 33 and res[33] is not None else "N/A",
                         'Justificativa de Alocacao': res[34] if len(res) > 34 and res[34] is not None else "N/A"
@@ -7328,7 +7346,12 @@ with tab_alocacao:
                             _dif_km = round(_conc_dist - _venc_dist, 2)
                             _m = _metricas_divergencia(_venc_dist, _conc_dist)
                             _dif_pct = _m['pct'] if _m else 0.0
-                            _razao_c = round(_conc_dist / _venc_reta, 2) if _venc_reta > 0 else 0.0
+                            # [DISPUTA-FIX - 72ª geração] Linha reta PRÓPRIA do concorrente (não a do
+                            # vencedor). Razão V/R e diferenças agora usam a reta correta do concorrente.
+                            _conc_reta = _num(_row.get('Linha Reta Concorrente'))
+                            _dif_reta = round(_conc_reta - _venc_reta, 2)
+                            _razao_c = round(_conc_dist / _conc_reta, 2) if _conc_reta > 0 else 0.0
+                            _dif_razao = round(_razao_c - _razao_v, 2)
 
                             # Cabeçalho: vencedor × concorrente
                             _cwin, _cconc = st.columns(2)
@@ -7339,14 +7362,17 @@ with tab_alocacao:
                             with _cconc:
                                 st.markdown(f"##### 🥈 Melhor Concorrente\n**{_conc_nome}**")
                                 st.metric("Distância viária", f"{_conc_dist:.1f} km", delta=f"+{_dif_km:.1f} km", delta_color="inverse")
-                                st.caption(f"Razão V/R: {_razao_c}× · Perde por {_dif_km:.1f} km ({_dif_pct}%)")
+                                st.caption(f"Linha reta: {_conc_reta:.1f} km · Razão V/R: {_razao_c}× · Perde por {_dif_km:.1f} km ({_dif_pct}%)")
 
-                            # Tabela comparativa
+                            # Tabela comparativa (com coluna de diferença Concorrente − Vencedor)
                             st.markdown("**📊 Comparativo detalhado**")
                             _tab_cmp = pd.DataFrame({
                                 "Indicador": ["Distância viária (km)", "Distância linha reta (km)", "Razão V/R", "Diferença p/ vencedor"],
                                 "🥇 Vencedor": [f"{_venc_dist:.1f}", f"{_venc_reta:.1f}", f"{_razao_v}×", "—"],
-                                "🥈 Concorrente": [f"{_conc_dist:.1f}", f"{_venc_reta:.1f}", f"{_razao_c}×", f"+{_dif_km:.1f} km / +{_dif_pct}%"],
+                                "🥈 Concorrente": [f"{_conc_dist:.1f}", f"{_conc_reta:.1f}", f"{_razao_c}×", f"+{_dif_km:.1f} km viária / +{_dif_pct}%"],
+                                "Δ (Conc − Venc)": [f"+{_dif_km:.1f} km",
+                                                     f"{'+' if _dif_reta >= 0 else ''}{_dif_reta:.1f} km",
+                                                     f"{'+' if _dif_razao >= 0 else ''}{_dif_razao}×", "—"],
                             })
                             st.dataframe(_tab_cmp, use_container_width=True, hide_index=True)
 
