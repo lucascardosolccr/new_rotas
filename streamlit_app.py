@@ -62,6 +62,29 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (75ª geração) → RADAR + ÍNDICES DE DISPUTA NA PLANILHA [DISPUTA-INDICES] (expansão sem latência)
+#     Continua a expansão da Auditoria da Disputa SEM latência (derivado dos dados já gravados). PLANILHA
+#     da Alocação ganhou 3 colunas: 'Indice Competitividade' (0-100, quão acirrada — 100−dif%),
+#     'Indice Robustez' (0-100, quão folgada a escolha — satura em 200 km) e 'Motivo Resumido Perda'
+#     (texto). Helpers puros _indice_competitividade/_indice_robustez/_motivo_resumido_perda; colunas
+#     registradas nas listas de export (numéricas onde cabe). PAINEL ganhou RADAR comparativo vencedor ×
+#     concorrente (plotly go.Scatterpolar — já é dependência do app; eixos normalizados 0-100:
+#     proximidade viária, proximidade linha reta, diretividade V/R) + os dois índices como métricas.
+#     Radar isolado em try/except. Provado por teste (índices: competitividade=100−dif%, robustez
+#     saturada/clamp, motivo pelo fator dominante, defensivos; e construção real da figura de radar com
+#     plotly instalado no teste). Sem regressão; 12 abas, 40 campos, balões 1×, score 0.35/0.35/0.30.
+#   v3.8 (74ª geração) → AUDITORIA DA DISPUTA: "POR QUE NÃO VENCEU?" + GRÁFICO [DISPUTA-XAI] (expansão)
+#     Expande a Auditoria da Disputa de Hubs com o que é DERIVÁVEL dos dados atuais (sem rerodar o
+#     pipeline do concorrente — evita latência). Novo helper puro _explicar_derrota_concorrente: monta
+#     os motivos estruturados de "🧠 Por que o concorrente não venceu?" a partir das diferenças já
+#     calculadas (viária, linha reta corrigida da 72ª, Razão V/R), só citando o que é desfavorável ao
+#     concorrente; se nada for, explica o desempate por menor viária. O painel ganhou essa seção + um
+#     gráfico de barras comparativo vencedor × concorrente (viária e linha reta), isolado em try/except.
+#     RESSALVA/PRÓXIMO: a auditoria COMPLETA do concorrente (Cód IBGE, coordenadas, fonte/score/
+#     confiança, snap, divergência Google×OSRM, tempo, velocidade média) exige rotear o runner-up no
+#     pipeline inteiro (dobra trabalho por cliente) — DOCUMENTADO como rodada dedicada opt-in. Provado
+#     por teste isolado (motivos corretos por combinação de diferenças; vazio quando concorrente não é
+#     pior em nada). Sem regressão; 12 abas (Pesquisa incl.), 40 campos, balões 1×, score 0.35/0.35/0.30.
 #   v3.8 (73ª geração) → ABA PESQUISA DE SATISFAÇÃO [PESQUISA] (item #5 do novo prompt)
 #     Nova aba "⭐ Pesquisa de Satisfação" (abas 11 → 12, mudança INTENCIONAL a pedido). Formulário
 #     (st.form) com gostou/resolveu/indicaria/erro (radios), quanto ajudou + nota geral (sliders) e
@@ -1591,10 +1614,13 @@ COLUNAS_NUMERICAS_PADRAO = [
 
 NOVAS_COLUNAS_ALOCACAO = NOVAS_COLUNAS_PADRAO + [
     'Concorrente Analisado', 'Distancia Concorrente', 'Linha Reta Concorrente',
-    'Link Rota Concorrente', 'Justificativa de Alocacao'
+    'Link Rota Concorrente', 'Justificativa de Alocacao',
+    'Indice Competitividade', 'Indice Robustez', 'Motivo Resumido Perda'
 ]
 
-COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + ['Distancia Concorrente', 'Linha Reta Concorrente']
+COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + [
+    'Distancia Concorrente', 'Linha Reta Concorrente', 'Indice Competitividade', 'Indice Robustez'
+]
 
 def _df_para_geojson(df):
     """[EXPORT-GIS - 24ª geração] Converte o DataFrame de rotas processadas em GeoJSON
@@ -5123,6 +5149,61 @@ def _selecionar_hub_por_viaria(candidatos):
     return _out
 
 
+def _explicar_derrota_concorrente(dif_km, dif_reta, dif_razao, dif_tempo=None, dif_score=None):
+    """[DISPUTA-XAI - 74ª geração] Gera, de forma estruturada, as razões pelas quais o CONCORRENTE não
+    venceu, a partir das diferenças (concorrente − vencedor). PURO e determinístico. Só inclui um motivo
+    quando a diferença é DESFAVORÁVEL ao concorrente (> 0). Retorna lista de strings (Markdown), da mais
+    para a menos determinante. Se nada for desfavorável (concorrente empata/supera em tudo mensurado),
+    retorna lista vazia — o vencedor ganhou por critério de menor distância viária (desempate)."""
+    _motivos = []
+    if dif_km is not None and dif_km > 0:
+        _motivos.append(f"apresentou **distância viária {dif_km:.1f} km maior**")
+    if dif_reta is not None and dif_reta > 0:
+        _motivos.append(f"está **{dif_reta:.1f} km mais distante em linha reta**")
+    if dif_tempo is not None and dif_tempo > 0:
+        _motivos.append(f"tem **tempo estimado {dif_tempo:.0f} min maior**")
+    if dif_razao is not None and dif_razao > 0:
+        _motivos.append(f"tem **Razão V/R {dif_razao:+.2f}× pior** (trajeto menos direto)")
+    if dif_score is not None and dif_score > 0:
+        _motivos.append(f"tem **score {dif_score:.0f} pontos menor**")
+    return _motivos
+
+
+def _indice_competitividade(dif_pct):
+    """[DISPUTA-INDICES - 75ª geração] Índice de competitividade da disputa (0-100): quanto MENOR a
+    diferença percentual vencedor×concorrente, MAIS acirrada foi a disputa. dif_pct∈[0,100] →
+    100 − dif_pct. PURO."""
+    try:
+        d = float(dif_pct)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(max(0.0, min(100.0, 100.0 - d)), 1)
+
+
+def _indice_robustez(dif_km, saturacao_km=200.0):
+    """[DISPUTA-INDICES - 75ª geração] Índice de robustez da escolha (0-100): quanto MAIOR a diferença
+    de distância viária (km) para o concorrente, MAIS robusta a escolha. Satura em saturacao_km. PURO."""
+    try:
+        d = float(dif_km)
+    except (TypeError, ValueError):
+        return 0.0
+    if d <= 0:
+        return 0.0
+    return round(min(100.0, (d / saturacao_km) * 100.0), 1)
+
+
+def _motivo_resumido_perda(dif_km, dif_reta, dif_razao):
+    """[DISPUTA-INDICES - 75ª geração] Motivo resumido (texto puro, para a planilha) da perda do
+    concorrente — o fator mais determinante. PURO."""
+    if dif_km is not None and dif_km > 0:
+        return f"Distancia viaria maior (+{dif_km:.1f} km)"
+    if dif_reta is not None and dif_reta > 0:
+        return f"Mais distante em linha reta (+{dif_reta:.1f} km)"
+    if dif_razao is not None and dif_razao > 0:
+        return f"Razao V/R pior (+{dif_razao:.2f})"
+    return "Desempate por menor distancia viaria"
+
+
 def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
     """[FIX-LOTE - 13ª geração] Processa UM chunk de rotas e retorna o dict de
     resultados {par_id: res}. Usado pelo motor de processamento contínuo em chunks.
@@ -5356,6 +5437,33 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None):
                         'Link Rota Concorrente': res[33] if len(res) > 33 and res[33] is not None else "N/A",
                         'Justificativa de Alocacao': res[34] if len(res) > 34 and res[34] is not None else "N/A"
                     })
+                    # [DISPUTA-INDICES - 75ª geração] Índices da disputa na PLANILHA (derivados dos
+                    # valores já gravados — custo zero, sem rede). Competitividade (quão acirrada),
+                    # robustez (quão folgada a escolha) e o motivo resumido da perda do concorrente.
+                    try:
+                        _cv = linha_dict.get('Distancia', 0.0) or 0.0           # viária vencedor
+                        _cc = linha_dict.get('Distancia Concorrente', 0.0) or 0.0  # viária concorrente
+                        _rv = linha_dict.get('Linha Reta', 0.0) or 0.0          # reta vencedor
+                        _rc = linha_dict.get('Linha Reta Concorrente', 0.0) or 0.0  # reta concorrente
+                        if _cc > 0:
+                            _d_km = round(_cc - _cv, 2)
+                            _d_reta = round(_rc - _rv, 2)
+                            _razv = (_cv / _rv) if _rv > 0 else 0.0
+                            _razc = (_cc / _rc) if _rc > 0 else 0.0
+                            _d_raz = round(_razc - _razv, 3)
+                            _mdiv = _metricas_divergencia(_cv, _cc)
+                            _d_pct = _mdiv['pct'] if _mdiv else 0.0
+                            linha_dict['Indice Competitividade'] = _indice_competitividade(_d_pct)
+                            linha_dict['Indice Robustez'] = _indice_robustez(_d_km)
+                            linha_dict['Motivo Resumido Perda'] = _motivo_resumido_perda(_d_km, _d_reta, _d_raz)
+                        else:
+                            linha_dict['Indice Competitividade'] = 0.0
+                            linha_dict['Indice Robustez'] = 0.0
+                            linha_dict['Motivo Resumido Perda'] = "Sem concorrente valido"
+                    except Exception:
+                        linha_dict['Indice Competitividade'] = linha_dict.get('Indice Competitividade', 0.0)
+                        linha_dict['Indice Robustez'] = linha_dict.get('Indice Robustez', 0.0)
+                        linha_dict['Motivo Resumido Perda'] = linha_dict.get('Motivo Resumido Perda', "N/A")
                     
                 if linha_dict.get('Lat Origem', 0.0) == 0.0 and linha_dict.get('Lat Destino', 0.0) == 0.0:
                     linha_dict['Score Final Global'] = 0.0
@@ -7427,7 +7535,7 @@ with tab_alocacao:
                             else: _stars, _lbl = "★☆☆☆☆", "Muito Baixa"
                             st.markdown(f"**⚔️ Competitividade da Disputa:** {_stars} — {_lbl}")
 
-                            # Explicação automática
+                            # Explicação automática (escolha do vencedor)
                             st.markdown("**🧾 Justificativa automática da escolha**")
                             _motivos = [f"menor distância viária ({_venc_dist:.1f} km vs {_conc_dist:.1f} km)"]
                             if _razao_v <= _razao_c:
@@ -7437,6 +7545,57 @@ with tab_alocacao:
                                        f"**{_dif_km:.1f} km** (+{_dif_pct}%)" +
                                        (", mas a diferença é pequena o suficiente para caracterizar empate técnico." if _dif_km < 5
                                         else "." ))
+
+                            # [DISPUTA-XAI - 74ª geração] "Por que o concorrente não venceu?" — motivos
+                            # estruturados a partir das diferenças já calculadas (viária, linha reta, razão).
+                            st.markdown(f"**🧠 Por que {_conc_nome} não venceu?**")
+                            _razoes = _explicar_derrota_concorrente(_dif_km, _dif_reta, _dif_razao)
+                            if _razoes:
+                                st.markdown("O concorrente ficou em 2º lugar porque:\n" +
+                                            "\n".join(f"- {r};" for r in _razoes))
+                            else:
+                                st.markdown("O concorrente empatou ou superou o vencedor nos indicadores medidos — "
+                                            "a escolha se deu pelo critério de **menor distância viária** (desempate mínimo).")
+
+                            # [DISPUTA-XAI - 74ª geração] Gráfico comparativo vencedor × concorrente
+                            # (distâncias). Isolado em try/except — falha de render não afeta a auditoria.
+                            try:
+                                _df_disp = pd.DataFrame(
+                                    {"Viária (km)": [_venc_dist, _conc_dist],
+                                     "Linha Reta (km)": [_venc_reta, _conc_reta]},
+                                    index=[f"🥇 {_venc_nome}", f"🥈 {_conc_nome}"])
+                                st.markdown("**📊 Comparação visual (distâncias)**")
+                                st.bar_chart(_df_disp)
+                            except Exception as _e_disp:
+                                logger.error(f"[DISPUTA-XAI] Falha no gráfico comparativo: {_e_disp}")
+
+                            # [DISPUTA-INDICES - 75ª geração] Radar comparativo vencedor × concorrente
+                            # (plotly já é dependência do app). Cada eixo é normalizado 0-100 (100 = melhor
+                            # no eixo). Isolado em try/except — falha de render não afeta a auditoria.
+                            try:
+                                _min_v = min(_venc_dist, _conc_dist)
+                                _min_r = min(_venc_reta, _conc_reta)
+                                _min_raz = min(_razao_v, _razao_c) if (_razao_v > 0 and _razao_c > 0) else 0.0
+                                def _norm_radar(_minv, _val):
+                                    return round(100.0 * _minv / _val, 1) if _val and _val > 0 else 0.0
+                                _eixos = ["Proximidade viária", "Proximidade linha reta", "Diretividade (V/R)"]
+                                _r_venc = [_norm_radar(_min_v, _venc_dist), _norm_radar(_min_r, _venc_reta), _norm_radar(_min_raz, _razao_v)]
+                                _r_conc = [_norm_radar(_min_v, _conc_dist), _norm_radar(_min_r, _conc_reta), _norm_radar(_min_raz, _razao_c)]
+                                _fig_radar = go.Figure()
+                                _fig_radar.add_trace(go.Scatterpolar(r=_r_venc + [_r_venc[0]], theta=_eixos + [_eixos[0]], fill='toself', name=f"🥇 {_venc_nome}"))
+                                _fig_radar.add_trace(go.Scatterpolar(r=_r_conc + [_r_conc[0]], theta=_eixos + [_eixos[0]], fill='toself', name=f"🥈 {_conc_nome}"))
+                                _fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                                                         showlegend=True, height=380, margin=dict(l=40, r=40, t=30, b=30))
+                                st.markdown("**🕸️ Radar comparativo (100 = melhor no eixo)**")
+                                st.plotly_chart(_fig_radar, use_container_width=True)
+                                # Índices numéricos (também vão na planilha)
+                                _ic = _indice_competitividade(_dif_pct)
+                                _ir = _indice_robustez(_dif_km)
+                                _mi1, _mi2 = st.columns(2)
+                                _mi1.metric("⚔️ Índice de Competitividade", f"{_ic}/100", help="100 = disputa acirradíssima (empate).")
+                                _mi2.metric("🛡️ Índice de Robustez", f"{_ir}/100", help="100 = escolha folgada (≥200 km de vantagem).")
+                            except Exception as _e_radar:
+                                logger.error(f"[DISPUTA-INDICES] Falha no radar/índices: {_e_radar}")
 
                         # [RANK-NHUBS - 58ª geração / itens #7/#9] Ranking completo dos hubs candidatos
                         # (linha reta) — atende "ranking completo" e "quais quase entraram" (item #9).
