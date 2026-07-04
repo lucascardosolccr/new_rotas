@@ -62,6 +62,19 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (82ª geração) → FALLBACK NACIONAL IBGE (INDEP. DA API) [IBGE-ROBUSTO] (itens #1/#8 — causa raiz²)
+#     'Veio vazio ainda' após a 81ª → investigação mais funda descartou UF e normalização (as regras de
+#     abreviação/sinônimo NÃO tocam 'São Miguel do Araguaia'/'Ribeirão Cascalheira'). Causa raiz real mais
+#     provável: a BASE não carrega quando a API do IBGE (servicodados) falha/timeouta no deploy — e aí
+#     TUDO (Cód IBGE, Região, Municípios Próximos) vira '—'. FIX estrutural: fonte de FALLBACK nacional
+#     confiável no GitHub (código IBGE oficial + nome + UF + lat/lon dos ~5.570 municípios), montada no
+#     MESMO formato/chave da base; usada automaticamente quando a API do IBGE volta incompleta; cacheada
+#     em DiskCache + pickle. Como os itens já trazem lat/lon, cascateia p/ centróides e cobertura nacional
+#     de Municípios Próximos. Helpers: _parse_municipios_github (PURO) + _carregar_municipios_fallback_
+#     github. Provado por teste (parsing do dataset REAL do GitHub: São Miguel do Araguaia→5220207,
+#     Ribeirão Cascalheira→5107180; >5500 municípios; defensivos). RESSALVA: a hierarquia FINA (meso/
+#     micro/imediata/intermediária) ainda vem da API do IBGE — se ela também falhar, é a próxima rodada.
+#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
 #   v3.8 (81ª geração) → CAUSA RAIZ 'CÓD IBGE: —' PARA NOMES ÚNICOS [IBGE-ROBUSTO] (item #1)
 #     Correção estrutural do bug reportado: campos IBGE/hierarquia vazios (—) para municípios conhecidos
 #     (ex.: Ribeirão Cascalheira-MT, São Miguel do Araguaia-GO). CAUSA RAIZ: _info_municipio_ibge exigia
@@ -2151,6 +2164,65 @@ def _flush_telemetria_forcado():
         _TELEMETRIA_BUFFER.clear()
         _TELEMETRIA_CONTADORES.clear()
 
+_CODIGO_UF_PARA_SIGLA_FB = {
+    11: "RO", 12: "AC", 13: "AM", 14: "RR", 15: "PA", 16: "AP", 17: "TO", 21: "MA", 22: "PI",
+    23: "CE", 24: "RN", 25: "PB", 26: "PE", 27: "AL", 28: "SE", 29: "BA", 31: "MG", 32: "ES",
+    33: "RJ", 35: "SP", 41: "PR", 42: "SC", 43: "RS", 50: "MS", 51: "MT", 52: "GO", 53: "DF",
+}
+_GITHUB_MUNICIPIOS_URL = "https://raw.githubusercontent.com/kelvins/municipios-brasileiros/main/json/municipios.json"
+
+
+def _parse_municipios_github(payload):
+    """[IBGE-ROBUSTO - 82ª geração] PURO: converte o payload JSON do dataset GitHub de municípios em
+    {nome_norm: [{uf, municipio, codigo_ibge, lat, lon}]} — MESMA chave/estrutura da base principal
+    (unidecode+MAIÚSCULAS). Defensivo a campos ausentes; ignora municípios sem código/nome/UF válidos.
+    Sem rede/estado — testável isoladamente."""
+    base = {}
+    for d in (payload or []):
+        try:
+            cod = d.get("codigo_ibge")
+            nome = d.get("nome")
+            uf = _CODIGO_UF_PARA_SIGLA_FB.get(d.get("codigo_uf"))
+            if not (cod and nome and uf):
+                continue
+            nome_norm = unidecode(str(nome)).upper().strip()
+            base.setdefault(nome_norm, []).append({
+                "uf": uf, "municipio": nome_norm, "codigo_ibge": cod,
+                "lat": d.get("latitude", 0.0) or 0.0, "lon": d.get("longitude", 0.0) or 0.0,
+            })
+        except Exception:
+            continue
+    return base
+
+
+def _carregar_municipios_fallback_github():
+    """[IBGE-ROBUSTO - 82ª geração / itens #1/#8] FALLBACK independente da API do IBGE. Quando a API
+    oficial (servicodados.ibge.gov.br) falha ou volta incompleta, baixa a lista NACIONAL de municípios
+    (código IBGE oficial + nome + UF + lat/lon) de uma base pública confiável no GitHub, no MESMO
+    formato da base principal. Garante que 'Cód IBGE', Região e o 'Municípios Próximos' NUNCA fiquem
+    vazios só por indisponibilidade da API do IBGE. Cacheado em DiskCache (30 dias). Defensivo → {} em
+    falha total. Cobre os ~5.570 municípios; a hierarquia fina (meso/micro) permanece na API do IBGE."""
+    try:
+        _cache = cache_base_local.get("municipios_fallback_github_v1")
+        if _cache and len(_cache) > 1000:
+            return _cache
+    except Exception:
+        pass
+    base = {}
+    try:
+        r = session.get(_GITHUB_MUNICIPIOS_URL, timeout=15)
+        if r.status_code == 200:
+            base = _parse_municipios_github(r.json())
+        if len(base) > 1000:
+            try:
+                cache_base_local.set("municipios_fallback_github_v1", base, expire=60 * 60 * 24 * 30)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return base
+
+
 @st.cache_data
 def carregar_dados_ibge():
     if os.path.exists(CACHE_IBGE_PATH):
@@ -2208,7 +2280,21 @@ def carregar_dados_ibge():
                 pickle.dump({"municipios": base_mun, "estados": base_est, "distritos": base_dist}, f)
     except Exception: 
         pass
-        
+
+    # [IBGE-ROBUSTO - 82ª geração / itens #1/#8] Se a API oficial do IBGE falhou/veio incompleta, a base
+    # ficava vazia e TUDO (Cód IBGE, Região, Municípios Próximos) aparecia como '—'. Agora recorre a uma
+    # fonte pública confiável no GitHub, garantindo a base nacional mesmo sem a API do IBGE. Persiste no
+    # pickle p/ próximas execuções.
+    if len(base_mun) <= 1000:
+        _fb_mun = _carregar_municipios_fallback_github()
+        if len(_fb_mun) > len(base_mun):
+            base_mun = _fb_mun
+            try:
+                with open(CACHE_IBGE_PATH, "wb") as f:
+                    pickle.dump({"municipios": base_mun, "estados": base_est, "distritos": base_dist}, f)
+            except Exception:
+                pass
+
     lista_completa = list(base_mun.keys()) + list(base_dist.keys())
     return base_mun, base_est, base_dist, lista_completa
 
