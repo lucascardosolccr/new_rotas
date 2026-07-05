@@ -62,6 +62,21 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (84ª geração) → PRESERVAÇÃO DE GRANULARIDADE (RAs do DF) [GRANULARIDADE] (efeito colateral do IBGE)
+#     Bug reportado: locais específicos (Samambaia Sul-DF, Taguatinga Sul-DF) passaram a ser
+#     "municipalizados" → rota calculada como se fosse Brasília (centróide), perdendo a granularidade.
+#     CAUSA RAIZ (rastreada): a blindagem anti-alucinação (_blindar_municipio) substitui o ponto
+#     geocodificado pelo CENTRÓIDE municipal quando _intencao_municipio() é True E o resultado é
+#     hiperespecífico. _intencao_municipio devolvia True DE IMEDIATO para tipo_entrada MUNICIPIO/DISTRITO
+#     — e RAs do DF (município oficial = Brasília) caíam nisso. Além disso, a blindagem só "morde" quando
+#     _centroide_municipio devolve lat/lon ≠ 0 — o que a BASE EMBUTIDA da 83ª passou a fornecer,
+#     ATIVANDO a substituição que antes era inerte. FIX: _intencao_municipio só afirma intenção municipal
+#     se o TERMO do usuário corresponde ao NOME do município (igual/prefixo/subconjunto de tokens); uma
+#     localidade sub-municipal com nome distinto (RA/bairro/distrito, ex.: 'Samambaia Sul' ≠ 'Brasília')
+#     NÃO é municipalizada → coordenadas/rota específicas preservadas. Município/Cód IBGE seguem no
+#     enriquecimento/auditoria (identidade administrativa), sem degradar a geografia. Provado por teste
+#     (Samambaia Sul/Taguatinga Sul preservados; município real 'Brasília' e forma curta ainda disparam;
+#     via/número/POI seguem preservados). Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imut.
 #   v3.8 (83ª geração) → BASE NACIONAL EMBUTIDA (OFFLINE, ZERO REDE) [IBGE-EMBUTIDA] (itens #1/#6/#8 — DEFINITIVO)
 #     Você continuava vendo '—' MESMO no 82ª (com fallback GitHub) → prova de que a base fica incompleta
 #     no deploy e o fallback é curto-circuitado pelo PICKLE (base cacheada >1000 mas incompleta retorna
@@ -4856,30 +4871,36 @@ def _resultado_hiperespecifico(end_f):
     return False
 
 def _intencao_municipio(texto_norm, tipo_entrada, ctx):
-    """True quando a intenção do usuário é claramente um MUNICÍPIO (ou distrito), de forma
-    INDEPENDENTE da classificação. Reproduz a tolerância à forma curta do FIX-MUN-CLASS e
-    exige ausência de sinais de especificidade (número, via, POI, bairro) na entrada."""
-    if tipo_entrada in ("MUNICIPIO", "DISTRITO"):
-        return True
+    """True quando a intenção do usuário é claramente o MUNICÍPIO em si (não uma localidade
+    sub-municipal). [GRANULARIDADE - 84ª geração] CORREÇÃO estrutural: antes, tipo_entrada
+    MUNICIPIO/DISTRITO devolvia True de imediato — o que fazia Regiões Administrativas do DF (ex.:
+    'Samambaia Sul', cujo município oficial é 'Brasília') serem tratadas como intenção municipal e
+    REDUZIDAS ao centróide de Brasília pela blindagem anti-alucinação, perdendo a granularidade
+    geográfica da rota. Agora, quando há contexto municipal resolvido, exige-se que o TERMO do usuário
+    corresponda ao NOME do município (igual/prefixo/subconjunto de tokens). Uma localidade sub-municipal
+    com nome distinto do município NÃO é intenção municipal → a blindagem não a municipaliza."""
     mun = ctx.get("municipio", "")
     uf = ctx.get("uf", "")
+    # Sem contexto municipal resolvido → confia na classificação apenas para MUNICÍPIO.
     if not (mun and uf):
-        return False
+        return tipo_entrada == "MUNICIPIO"
     # Texto sem a UF (sigla e nome por extenso) e sem "BRASIL"
     t = texto_norm
     for termo in [uf, IBGE_ESTADOS.get(uf, ""), "BRASIL", "BRAZIL"]:
         if termo:
             t = re.sub(rf'\b{re.escape(unidecode(termo).upper())}\b', ' ', t)
     t = re.sub(r'[^A-Z0-9]+', ' ', t).strip()
+    # Só UF/ruído (sem termo de localidade) → confia na classificação.
     if not t:
-        return False  # só UF/ruído, sem termo de município → não afirmar intenção municipal
+        return tipo_entrada in ("MUNICIPIO", "DISTRITO")
     # Sinais de especificidade na entrada → NÃO é intenção municipal (não dispara a guarda)
     if re.search(r'\d', t):
         return False
     if any(k in t for k in (semantica.via_keys + semantica.bairro_keys + POI_KEYWORDS)):
         return False
-    # 't' é o termo do usuário para o município. Intenção municipal se casa com o nome oficial:
-    # igual, prefixo (forma curta) ou todos os tokens ⊆ nome oficial (mesma regra do FIX-MUN-CLASS)
+    # Intenção municipal SOMENTE se o termo do usuário casa com o nome oficial do município:
+    # igual, prefixo (forma curta) ou todos os tokens ⊆ nome oficial. Assim, um termo sub-municipal
+    # com nome distinto do município (RA/bairro/distrito) é PRESERVADO (granularidade intacta).
     mun_tokens = set(mun.split())
     t_tokens = set(t.split())
     return bool(t == mun or mun.startswith(t + " ") or (t_tokens and t_tokens.issubset(mun_tokens)))
