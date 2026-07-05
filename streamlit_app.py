@@ -62,6 +62,19 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (85ª geração) → IDENTIDADE GEOGRÁFICA + INDICADOR DE GRANULARIDADE [GRANULARIDADE] (visibilidade)
+#     Você reportou que "ainda municipaliza", mas a tela só mostrava o MUNICÍPIO (identidade
+#     administrativa = Brasília, CORRETA p/ RAs do DF) — sem revelar as COORDENADAS efetivamente
+#     roteadas. Diagnóstico: a confiança exibida é REVISAO_MANUAL, não VALIDACAO_ANTI_ALUCINACAO → a
+#     blindagem NÃO disparou (o fix da 84ª segurou); o município 'Brasília' é o rótulo administrativo, e
+#     não dá p/ saber pela tela se a rota usa o ponto específico ou o centróide. FIX de visibilidade:
+#     painel "🌐 Identidade Geográfica" no Validador Rápido (SEPARADO do administrativo) mostrando
+#     endereço + coordenadas ROTEADAS (res_ind[19..22]) para origem/destino, com INDICADOR de
+#     granularidade automático — distância do ponto ao centróide do município (≈ 0 km ⇒ municipalizado;
+#     acima ⇒ ponto específico), via _identidade_por_coordenada (78ª, offline) + helper puro
+#     _rotulo_granularidade. Implementa a separação administrativa × geográfica que você pediu E revela
+#     objetivamente se a granularidade foi preservada. Provado por teste (_rotulo_granularidade: ≤2 km →
+#     municipal; >2 km → específico; defensivos). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
 #   v3.8 (84ª geração) → PRESERVAÇÃO DE GRANULARIDADE (RAs do DF) [GRANULARIDADE] (efeito colateral do IBGE)
 #     Bug reportado: locais específicos (Samambaia Sul-DF, Taguatinga Sul-DF) passaram a ser
 #     "municipalizados" → rota calculada como se fosse Brasília (centróide), perdendo a granularidade.
@@ -7292,6 +7305,20 @@ def _identidade_por_coordenada(lat, lon):
         return None
 
 
+def _rotulo_granularidade(dist_centroide_km, municipio, limiar_km=2.0):
+    """[GRANULARIDADE - 85ª geração] Classifica se o ponto ROTEADO preservou a granularidade, pela
+    distância ao centróide do município: ≤ limiar → o ponto ≈ centróide (foi MUNICIPALIZADO); acima →
+    ponto ESPECÍFICO (granularidade preservada). PURA. Retorna (preservado: bool, rótulo: str)."""
+    try:
+        _d = float(dist_centroide_km)
+    except (TypeError, ValueError):
+        return True, ""
+    _mun = str(municipio or "município").title()
+    if _d <= float(limiar_km):
+        return False, f"⚠️ ≈ centróide de {_mun} ({_d:.1f} km) — granularidade municipal"
+    return True, f"✅ ponto específico ({_d:.1f} km do centróide de {_mun})"
+
+
 @st.cache_data(show_spinner=False)
 def _opcoes_municipios_busca():
     """Opções 'Município - UF' para a busca inteligente (selectbox com filtro nativo)."""
@@ -7546,6 +7573,37 @@ with tab_individual:
                             f"Confiança: **{res_ind[13] if len(res_ind) > 13 else '—'}** "
                             f"(score {res_ind[14] if len(res_ind) > 14 else '—'}/100)"
                         )
+                    # [GRANULARIDADE - 85ª geração] IDENTIDADE GEOGRÁFICA (endereço + coordenadas
+                    # efetivamente ROTEADAS), SEPARADA da identidade administrativa (município/IBGE)
+                    # acima. Mede a granularidade pela distância do ponto roteado ao centróide do
+                    # município (≈ 0 km ⇒ foi reduzido ao município). Revela se a rota usa o ponto
+                    # específico (ex.: 'Samambaia Sul') ou o centróide municipal ('Brasília').
+                    try:
+                        _lat_o_g = float(res_ind[19]) if len(res_ind) > 19 else 0.0
+                        _lon_o_g = float(res_ind[20]) if len(res_ind) > 20 else 0.0
+                        _lat_d_g = float(res_ind[21]) if len(res_ind) > 21 else 0.0
+                        _lon_d_g = float(res_ind[22]) if len(res_ind) > 22 else 0.0
+                        _end_o_g = res_ind[12] if len(res_ind) > 12 else "—"
+                        _end_d_g = res_ind[18] if len(res_ind) > 18 else "—"
+                        def _linha_geo(_lat, _lon, _end):
+                            _idc = _identidade_por_coordenada(_lat, _lon)
+                            _gtxt = ""
+                            if _idc:
+                                _, _gtxt = _rotulo_granularidade(_idc.get('dist_km', 0.0), _idc.get('municipio', ''))
+                            return (f"Endereço: {_end}  \nCoord. da rota: `{_lat:.5f}, {_lon:.5f}`"
+                                    + (f"  \n{_gtxt}" if _gtxt else ""))
+                        st.divider()
+                        st.markdown("**🌐 Identidade Geográfica (ponto exato usado na ROTA)**")
+                        st.caption("Distinta da identidade administrativa acima: aqui está o **endereço** e as "
+                                   "**coordenadas** efetivamente roteadas. A granularidade é medida pela distância "
+                                   "ao centróide do município — **≈ 0 km** indica que o ponto foi reduzido ao município.")
+                        _cg_o, _cg_d = st.columns(2)
+                        with _cg_o:
+                            st.markdown(f"**📍 Origem**  \n{_linha_geo(_lat_o_g, _lon_o_g, _end_o_g)}")
+                        with _cg_d:
+                            st.markdown(f"**🎯 Destino**  \n{_linha_geo(_lat_d_g, _lon_d_g, _end_d_g)}")
+                    except Exception as _e_geo:
+                        logger.error(f"[GRANULARIDADE] Falha no painel de identidade geográfica: {_e_geo}")
                     # [AMBIGUIDADE-HOMONIMOS - 63ª geração / item #3] Em quantas UFs o nome do município
                     # se repete na base IBGE (offline, em memória) — mede o risco de homônimo.
                     _amb_o = _grau_ambiguidade_homonimos(_id_o['municipio'])
