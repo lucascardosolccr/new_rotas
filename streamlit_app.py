@@ -62,6 +62,15 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (87ª geração) → NÍVEL ESPACIAL NA AUDITORIA [GRANULARIDADE] (informativo, risco zero)
+#     Adiciona a classificação do NÍVEL ESPACIAL de cada ponto ao painel "Identidade Geográfica" do
+#     Validador Rápido: Coordenadas → Rua/Logradouro → POI → Região Administrativa (DF) → Distrito →
+#     Bairro/Localidade → Município. Helper puro _nivel_espacial (dependências injetáveis) + conjunto
+#     _DF_REGIOES_ADMINISTRATIVAS (reconhece Samambaia/Taguatinga/Ceilândia/… mesmo com município oficial
+#     Brasília, incl. variantes Sul/Norte). Puramente informativo — NÃO altera geocodificação, rota nem
+#     coordenadas. Provado por teste (código real: 'Samambaia Sul, DF'→RA; 'Rua 15, SP'→logradouro;
+#     'Shopping…'→POI; 'São Paulo'→município; coord GPS→Coordenadas; bairro genérico→Bairro/Localidade;
+#     defensivos). Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
 #   v3.8 (86ª geração) → PRESERVAÇÃO DA LOCALIDADE NO RÓTULO [GRANULARIDADE] (o problema REAL, não o suposto)
 #     O painel da 85ª PROVOU que a rota NÃO era municipalizada: origem (-15.8673,-48.0845) fica a 0.9 km
 #     da Samambaia real e 23 km do centro de Brasília; destino a 2.3 km da Taguatinga real e 18.7 km do
@@ -7376,6 +7385,72 @@ def _rotulo_granularidade(dist_centroide_km, municipio, limiar_km=2.0):
     return True, f"✅ ponto específico ({_d:.1f} km do centróide de {_mun})"
 
 
+# [GRANULARIDADE - 87ª geração] Regiões Administrativas do DF (nomes normalizados) — reconhecimento do
+# nível espacial "RA" mesmo com o município oficial sendo Brasília. Inclui variantes Sul/Norte.
+_DF_REGIOES_ADMINISTRATIVAS = frozenset({
+    "SAMAMBAIA", "TAGUATINGA", "CEILANDIA", "RECANTO DAS EMAS", "SOBRADINHO", "SOBRADINHO II", "GAMA",
+    "SANTA MARIA", "PLANALTINA", "BRAZLANDIA", "NUCLEO BANDEIRANTE", "CRUZEIRO", "LAGO SUL", "LAGO NORTE",
+    "PARK WAY", "GUARA", "AGUAS CLARAS", "VICENTE PIRES", "SIA", "SUDOESTE", "OCTOGONAL",
+    "SUDOESTE OCTOGONAL", "RIACHO FUNDO", "RIACHO FUNDO II", "ITAPOA", "FERCAL", "SOL NASCENTE",
+    "POR DO SOL", "SOL NASCENTE POR DO SOL", "ARNIQUEIRA", "ASA SUL", "ASA NORTE", "PARANOA",
+    "SAO SEBASTIAO", "CANDANGOLANDIA", "JARDIM BOTANICO", "VARJAO", "SCIA", "ESTRUTURAL", "PLANO PILOTO",
+})
+
+
+def _nivel_espacial(texto_original, tipo_entrada, municipio, uf, via_keys=None, bairro_keys=None,
+                    poi_keys=None, distritos=None):
+    """[GRANULARIDADE - 87ª geração] Classifica o NÍVEL ESPACIAL da localização informada pelo usuário,
+    do mais específico ao mais genérico: Coordenadas → Rua/Logradouro → POI → Região Administrativa (DF)
+    → Distrito → Bairro/Localidade → Município. PURA (dependências injetáveis p/ teste). Serve à
+    auditoria de granularidade: mostra o quão específico é o ponto reconhecido, sem alterar nada."""
+    import re as _re
+    _vk = via_keys if via_keys is not None else (semantica.via_keys if 'semantica' in globals() else [])
+    _bk = bairro_keys if bairro_keys is not None else (semantica.bairro_keys if 'semantica' in globals() else [])
+    _pk = poi_keys if poi_keys is not None else (POI_KEYWORDS if 'POI_KEYWORDS' in globals() else [])
+    _dist = distritos if distritos is not None else (IBGE_DISTRITOS if 'IBGE_DISTRITOS' in globals() else {})
+    _t = unidecode(str(texto_original or "")).upper().strip()
+    if not _t:
+        return "Indefinido"
+    # coordenadas GPS
+    if _re.search(r'-?\d{1,3}\.\d+\s*[,;]\s*-?\d{1,3}\.\d+', _t):
+        return "Coordenadas (GPS)"
+    _uf = unidecode(str(uf or "")).upper().strip()
+    _mun = unidecode(str(municipio or "")).upper().strip()
+    # termo sem "BRASIL" e sem a UF (sigla ao final)
+    _ts = _re.sub(r'\b(BRASIL|BRAZIL)\b', ' ', _t)
+    _ts = _re.sub(r'[^A-Z0-9 ]+', ' ', _ts)
+    _ts = _re.sub(r'\s+', ' ', _ts).strip()
+    _ts = _re.sub(r'\s+[A-Z]{2}$', '', _ts).strip()
+    if _ts == _uf:
+        _ts = ""
+    if not _ts:
+        return "Município"
+    # logradouro: via conhecida ou número
+    if any(_re.search(rf'\b{_re.escape(v)}\b', _ts) for v in _vk) or _re.search(r'\d', _ts):
+        return "Rua / Logradouro"
+    # ponto de interesse
+    if any(_re.search(rf'\b{_re.escape(p)}\b', _ts) for p in _pk):
+        return "Ponto de Interesse (POI)"
+    # termo é o próprio município (igual/subconjunto) → município
+    _mt = set(_mun.split())
+    _tt = set(_ts.split())
+    _e_municipio = bool(_ts == _mun or (_tt and _tt.issubset(_mt)))
+    # Região Administrativa do DF (nome distinto do município Brasília)
+    if not _e_municipio:
+        _base_ra = _re.sub(r'\s+(SUL|NORTE|LESTE|OESTE|CENTRO|[IVX]+)$', '', _ts).strip()
+        if _uf == "DF" and (_ts in _DF_REGIOES_ADMINISTRATIVAS or _base_ra in _DF_REGIOES_ADMINISTRATIVAS):
+            return "Região Administrativa (DF)"
+    if _e_municipio:
+        return "Município"
+    # distrito oficial (IBGE)
+    if tipo_entrada == "DISTRITO" or _ts in (_dist or {}):
+        return "Distrito"
+    # sub-municipal genérico (bairro/localidade)
+    if any(_re.search(rf'\b{_re.escape(b)}\b', _ts) for b in _bk):
+        return "Bairro / Localidade"
+    return "Bairro / Localidade"
+
+
 @st.cache_data(show_spinner=False)
 def _opcoes_municipios_busca():
     """Opções 'Município - UF' para a busca inteligente (selectbox com filtro nativo)."""
@@ -7642,23 +7717,31 @@ with tab_individual:
                         _lon_d_g = float(res_ind[22]) if len(res_ind) > 22 else 0.0
                         _end_o_g = res_ind[12] if len(res_ind) > 12 else "—"
                         _end_d_g = res_ind[18] if len(res_ind) > 18 else "—"
-                        def _linha_geo(_lat, _lon, _end):
+                        def _linha_geo(_lat, _lon, _end, _texto, _mun, _uf):
                             _idc = _identidade_por_coordenada(_lat, _lon)
                             _gtxt = ""
                             if _idc:
                                 _, _gtxt = _rotulo_granularidade(_idc.get('dist_km', 0.0), _idc.get('municipio', ''))
-                            return (f"Endereço: {_end}  \nCoord. da rota: `{_lat:.5f}, {_lon:.5f}`"
+                            # [GRANULARIDADE - 87ª geração] nível espacial reconhecido (Rua/Bairro/RA/…)
+                            _niv = _nivel_espacial(_texto, None, _mun, _uf)
+                            return (f"Nível espacial: **{_niv}**  \nEndereço: {_end}  \n"
+                                    f"Coord. da rota: `{_lat:.5f}, {_lon:.5f}`"
                                     + (f"  \n{_gtxt}" if _gtxt else ""))
+                        _mun_o_g = res_ind[10] if len(res_ind) > 10 else ""
+                        _mun_d_g = res_ind[16] if len(res_ind) > 16 else ""
+                        _uf_o_g = _id_o['uf'] if isinstance(_id_o, dict) else ""
+                        _uf_d_g = _id_d['uf'] if isinstance(_id_d, dict) else ""
                         st.divider()
                         st.markdown("**🌐 Identidade Geográfica (ponto exato usado na ROTA)**")
-                        st.caption("Distinta da identidade administrativa acima: aqui está o **endereço** e as "
-                                   "**coordenadas** efetivamente roteadas. A granularidade é medida pela distância "
-                                   "ao centróide do município — **≈ 0 km** indica que o ponto foi reduzido ao município.")
+                        st.caption("Distinta da identidade administrativa acima: aqui está o **nível espacial** "
+                                   "reconhecido, o **endereço** e as **coordenadas** efetivamente roteadas. A "
+                                   "granularidade é medida pela distância ao centróide do município — **≈ 0 km** "
+                                   "indica que o ponto foi reduzido ao município.")
                         _cg_o, _cg_d = st.columns(2)
                         with _cg_o:
-                            st.markdown(f"**📍 Origem**  \n{_linha_geo(_lat_o_g, _lon_o_g, _end_o_g)}")
+                            st.markdown(f"**📍 Origem**  \n{_linha_geo(_lat_o_g, _lon_o_g, _end_o_g, orig_ind, _mun_o_g, _uf_o_g)}")
                         with _cg_d:
-                            st.markdown(f"**🎯 Destino**  \n{_linha_geo(_lat_d_g, _lon_d_g, _end_d_g)}")
+                            st.markdown(f"**🎯 Destino**  \n{_linha_geo(_lat_d_g, _lon_d_g, _end_d_g, dest_ind, _mun_d_g, _uf_d_g)}")
                     except Exception as _e_geo:
                         logger.error(f"[GRANULARIDADE] Falha no painel de identidade geográfica: {_e_geo}")
                     # [AMBIGUIDADE-HOMONIMOS - 63ª geração / item #3] Em quantas UFs o nome do município
