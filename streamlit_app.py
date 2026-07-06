@@ -62,6 +62,20 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (88ª geração) → ANTI-ENDEREÇO-INDEVIDO: TETO DE GRANULARIDADE NO RÓTULO [GRANULARIDADE]
+#     Bug preciso: pedir uma localidade retorna endereço MAIS específico dentro dela — 'Ceilândia' →
+#     'Ceilândia QNN 3 Conjunto I'; 'Samambaia Sul' → 'Samambaia'; 'Vicente Pires' → 'Setor Habitacional
+#     Vicente Pires'. Verificação decisiva: as COORDENADAS já ficam dentro da RA (Samambaia 0.9 km,
+#     Taguatinga 2.3 km do centro) — o defeito é o RÓTULO. FIX (regra: o nível retornado nunca mais
+#     específico que o pedido): _rotulo_por_nivel_espacial reconstrói o rótulo na PRÓPRIA localidade para
+#     pedidos sub-municipais (RA/Bairro/Distrito), sem descer a QNN/Conjunto/Quadra/rua/número;
+#     orquestrado por _rotulo_granular_seguro (detecta nível → aplica teto → preserva localidade da 86ª),
+#     aplicado no pipeline logo após a geocodificação. NÃO altera coordenadas (rota intacta) nem a
+#     resolução IBGE (município vem à parte). Substitui a fiação da 86ª (que só preenchia) por uma que
+#     TAMBÉM limita a granularidade. Provado por teste (Ceilândia→'CEILÂNDIA, BRASÍLIA, DF, BRASIL';
+#     Samambaia Sul preservado; Lapa/Vicente Pires; Rua/POI/Município/GPS intactos; defensivos). Sem
+#     regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável. RESSALVA: reengenharia de consenso
+#     multi-fonte (Pelias/embeddings/R-tree/20 fontes) é projeto grande à parte — feito incrementalmente.
 #   v3.8 (87ª geração) → NÍVEL ESPACIAL NA AUDITORIA [GRANULARIDADE] (informativo, risco zero)
 #     Adiciona a classificação do NÍVEL ESPACIAL de cada ponto ao painel "Identidade Geográfica" do
 #     Validador Rápido: Coordenadas → Rua/Logradouro → POI → Região Administrativa (DF) → Distrito →
@@ -5920,11 +5934,11 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     start_geo = time.time()
     lat_o, lon_o, end_oficial_o, conf_o, score_num_o, dist_o, mun_o, fonte_geo_o, xai_o = obter_coordenadas_e_endereco_oficial(origem_clean)
     lat_d, lon_d, end_oficial_d, conf_d, score_num_d, dist_d, mun_d, fonte_geo_d, xai_d = obter_coordenadas_e_endereco_oficial(destino_clean)
-    # [GRANULARIDADE - 86ª geração] Preserva a localidade específica pedida (bairro/RA/distrito) no
-    # RÓTULO quando o geocoder o reduziu ao município — melhora tela e consulta ao Google, sem tocar
-    # nas coordenadas (a rota segue as coordenadas específicas já corretas). Ver _preservar_localidade.
-    end_oficial_o = _preservar_localidade(origem_clean, end_oficial_o, mun_o)
-    end_oficial_d = _preservar_localidade(destino_clean, end_oficial_d, mun_d)
+    # [GRANULARIDADE - 88ª geração] Proteção de granularidade do RÓTULO: pedidos sub-municipais
+    # (Ceilândia, Samambaia Sul, Lapa…) NÃO descem a QNN/Conjunto/rua, e a localidade é preservada
+    # quando o geocoder a reduz ao município. NÃO altera coordenadas (a rota já usa as corretas).
+    end_oficial_o = _rotulo_granular_seguro(origem_clean, end_oficial_o, mun_o)
+    end_oficial_d = _rotulo_granular_seguro(destino_clean, end_oficial_d, mun_d)
     
     # BARREIRA TOPOLÓGICA DE COLISÃO E DESAMBIGUAÇÃO ESTRITA
     if lat_o == lat_d and lon_o == lon_d and lat_o != 0.0:
@@ -7449,6 +7463,54 @@ def _nivel_espacial(texto_original, tipo_entrada, municipio, uf, via_keys=None, 
     if any(_re.search(rf'\b{_re.escape(b)}\b', _ts) for b in _bk):
         return "Bairro / Localidade"
     return "Bairro / Localidade"
+
+
+def _rotulo_por_nivel_espacial(texto_usuario, endereco_oficial, municipio, uf, nivel):
+    """[GRANULARIDADE - 88ª geração] ANTI-ENDEREÇO-INDEVIDO: para pedidos de nível SUB-MUNICIPAL
+    (Região Administrativa, Bairro, Distrito), garante que o RÓTULO seja a própria localidade pedida +
+    o administrativo — NUNCA descendo a QNN/QNM/Conjunto/Quadra/Rua/número que o geocoder porventura
+    devolveu. Ex.: 'Ceilândia' + 'QNN 3 CONJUNTO I, CEILÂNDIA, BRASÍLIA, DF' → 'CEILÂNDIA, BRASÍLIA, DF,
+    BRASIL'; 'Samambaia Sul' (mesmo que o geocoder rebaixe p/ 'Samambaia') → 'SAMAMBAIA SUL, BRASÍLIA,
+    DF, BRASIL'. NÃO altera coordenadas (ficam as do geocoder, dentro da localidade). Níveis
+    Município/Rua/POI/GPS → inalterado (Município é tratado pela blindagem anti-alucinação). PURA."""
+    import re as _re
+    if nivel not in ("Região Administrativa (DF)", "Bairro / Localidade", "Distrito"):
+        return endereco_oficial
+    _uf = unidecode(str(uf or "")).upper().strip()
+    _loc = unidecode(str(texto_usuario or "")).upper()
+    _loc = _re.sub(r'\b(BRASIL|BRAZIL)\b', ' ', _loc)
+    _loc = _re.sub(r'[^A-Z0-9 ]+', ' ', _loc)
+    _loc = _re.sub(r'\s+', ' ', _loc).strip()
+    if _uf:
+        _loc = _re.sub(rf'\s+{_re.escape(_uf)}$', '', _loc).strip()
+    _loc = _re.sub(r'\s+[A-Z]{2}$', '', _loc).strip()  # UF sigla residual
+    if not _loc:
+        return endereco_oficial
+    _mun_disp = str(municipio or "").strip().upper()   # preserva acento, em MAIÚSCULAS
+    partes = [_loc]
+    if _mun_disp and unidecode(_mun_disp) != _loc:
+        partes.append(_mun_disp)
+    if _uf:
+        partes.append(_uf)
+    partes.append("BRASIL")
+    return ", ".join(partes)
+
+
+def _rotulo_granular_seguro(texto_usuario, endereco_oficial, municipio):
+    """[GRANULARIDADE - 88ª geração] Orquestra a proteção de granularidade do RÓTULO em uma chamada:
+    detecta o NÍVEL ESPACIAL pedido e (a) para pedidos SUB-MUNICIPAIS reconstrói o rótulo na própria
+    localidade (anti-endereço-indevido, _rotulo_por_nivel_espacial); (b) preserva a localidade quando o
+    geocoder reduziu ao município (_preservar_localidade). NÃO altera coordenadas. Defensivo → devolve o
+    endereço original em qualquer erro."""
+    try:
+        _uf = extrair_uf_precisa(endereco_oficial or "")
+        _uf = "" if _uf == "Indefinido" else _uf
+        _niv = _nivel_espacial(texto_usuario, None, municipio, _uf)
+        _end = _rotulo_por_nivel_espacial(texto_usuario, endereco_oficial, municipio, _uf, _niv)
+        _end = _preservar_localidade(texto_usuario, _end, municipio)
+        return _end
+    except Exception:
+        return endereco_oficial
 
 
 @st.cache_data(show_spinner=False)
