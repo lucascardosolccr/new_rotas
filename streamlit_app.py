@@ -62,6 +62,20 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (89ª geração) → MÓDULO ISOLADO DE CONSENSO GEOGRÁFICO MULTI-FONTE (OPT-IN) [CONSENSO-MULTIFONTE]
+#     A pedido: ganhar a inteligência de consenso multi-fonte SEM arriscar o pipeline estável. Módulo
+#     NOVO e ISOLADO, atrás da flag CONSENSO_MULTIFONTE_ATIVO (OFF por padrão): reúne candidatos da base
+#     IBGE embutida (offline, autoritativa p/ município) e — só com a flag ON — dos geocoders JÁ
+#     existentes (Nominatim/Photon/ArcGIS, reutilizados, não reimplementados); vota por PROXIMIDADE
+#     espacial (cluster com mais fontes distintas vence) e só ASSUME via gate conservador
+#     (_consenso_melhor_que_atual: >= 2 fontes concordantes E score > atual + margem). Funções puras
+#     (_votar_consenso, _consenso_melhor_que_atual, _nivel_candidato_consenso, _fonte_consenso_ibge)
+#     testadas isoladamente. Diagnóstico opt-in no Validador Rápido (gated pela flag) para AVALIAR o
+#     resolvedor lado a lado — sem alterar rota/coordenadas. Enquanto a flag está OFF, o bloco é INERTE:
+#     nenhum caminho de produção o invoca. Provado por teste (fonte IBGE offline; votação por proximidade
+#     com contagem de fontes; gate conservador; defensivos). Sem regressão; 12 abas, RotaPipeline 41,
+#     balões 1×. PRÓXIMO: mais fontes offline (dicionário de RAs do DF c/ coordenadas) e, quando você
+#     validar, fiação atrás do gate no pipeline.
 #   v3.8 (88ª geração) → ANTI-ENDEREÇO-INDEVIDO: TETO DE GRANULARIDADE NO RÓTULO [GRANULARIDADE]
 #     Bug preciso: pedir uma localidade retorna endereço MAIS específico dentro dela — 'Ceilândia' →
 #     'Ceilândia QNN 3 Conjunto I'; 'Samambaia Sul' → 'Samambaia'; 'Vicente Pires' → 'Setor Habitacional
@@ -7513,6 +7527,127 @@ def _rotulo_granular_seguro(texto_usuario, endereco_oficial, municipio):
         return endereco_oficial
 
 
+# ==============================================================================
+# [CONSENSO-MULTIFONTE - 89ª geração] MÓDULO ISOLADO E OPT-IN de consenso geográfico multi-fonte.
+# Objetivo: ganhar inteligência de geocodificação por VOTAÇÃO entre fontes, SEM tocar no pipeline
+# estável. É controlado por uma FLAG (desligada por padrão) e só "assume" quando comprovadamente melhor
+# que o resultado atual (gate conservador). Reutiliza os geocoders já existentes como fontes (não
+# reimplementa) e adiciona a base IBGE embutida (offline) como fonte autoritativa de município.
+# Funções puras (votação/gate/nível) são testadas isoladamente. Enquanto a flag estiver OFF, este bloco
+# é inerte — nenhum caminho de produção o invoca.
+# ==============================================================================
+CONSENSO_MULTIFONTE_ATIVO = False  # OFF por padrão — não afeta Validador/Lote/Alocação/Municípios
+
+
+def _haversine_km_consenso(lat1, lon1, lat2, lon2):
+    """Distância geodésica aproximada (km) entre dois pontos. PURA."""
+    _r = 6371.0088
+    _p1, _p2 = math.radians(lat1), math.radians(lat2)
+    _dp = math.radians(lat2 - lat1)
+    _dl = math.radians(lon2 - lon1)
+    _a = math.sin(_dp / 2) ** 2 + math.cos(_p1) * math.cos(_p2) * math.sin(_dl / 2) ** 2
+    return _r * 2 * math.asin(math.sqrt(min(1.0, max(0.0, _a))))
+
+
+def _nivel_candidato_consenso(cand):
+    """Deriva o NÍVEL espacial de um candidato pelos campos presentes (mais específico → mais genérico).
+    PURA. Usado para o controle de granularidade dentro do consenso."""
+    if cand.get("numero") or cand.get("logradouro"):
+        return "Rua / Logradouro"
+    if cand.get("bairro"):
+        return "Bairro / Localidade"
+    if cand.get("cidade"):
+        return "Município"
+    return "Indefinido"
+
+
+def _fonte_consenso_ibge(texto, uf, base=None):
+    """Fonte OFFLINE (base IBGE embutida): resolve o município com coordenadas oficiais — autoritativa
+    para o nível MUNICÍPIO, sem rede. Retorna lista de candidatos de consenso. PURA (base injetável)."""
+    import re as _re
+    _base = base if base is not None else (IBGE_MUNICIPIOS if 'IBGE_MUNICIPIOS' in globals() else {})
+    _chave = unidecode(str(texto or "")).upper().strip()
+    _chave = _re.sub(r'[^A-Z0-9 ]+', ' ', _chave)
+    _chave = _re.sub(r'\s+', ' ', _chave).strip()
+    _chave = _re.sub(r'\s+[A-Z]{2}$', '', _chave).strip()
+    _itens = _base.get(_chave, [])
+    _out = []
+    for _it in _itens:
+        if uf and _it.get("uf") and _it.get("uf") != uf:
+            continue
+        if _it.get("lat", 0.0) and _it.get("lon", 0.0):
+            _out.append({
+                "fonte": "IBGE", "lat": _it["lat"], "lon": _it["lon"], "nome": _chave.title(),
+                "nivel": "Município", "score_base": 45, "cidade": _chave, "estado": _it.get("uf", ""),
+                "bairro": "", "logradouro": "", "numero": "",
+            })
+    return _out
+
+
+def _votar_consenso(candidatos, limiar_km=3.0):
+    """PURA. Agrupa candidatos por PROXIMIDADE espacial (< limiar_km) e devolve o cluster com o MAIOR
+    número de FONTES distintas (votos). Representante = candidato de maior score_base; coordenada =
+    centróide do cluster. Retorna o dict de consenso ou None. É o coração da votação multi-fonte."""
+    _cands = [c for c in (candidatos or []) if c and c.get("lat") and c.get("lon")]
+    if not _cands:
+        return None
+    _melhor = None
+    for _base in _cands:
+        _grupo = [c for c in _cands
+                  if _haversine_km_consenso(_base["lat"], _base["lon"], c["lat"], c["lon"]) <= limiar_km]
+        _fontes = sorted({c.get("fonte", "?") for c in _grupo})
+        _rep = max(_grupo, key=lambda c: c.get("score_base", 0))
+        _lat_c = sum(c["lat"] for c in _grupo) / len(_grupo)
+        _lon_c = sum(c["lon"] for c in _grupo) / len(_grupo)
+        _cc = {
+            "lat": round(_lat_c, 6), "lon": round(_lon_c, 6), "nome": _rep.get("nome", ""),
+            "nivel": _rep.get("nivel", ""), "fontes": _fontes, "votos": len(_fontes),
+            "score_consenso": min(99, 40 + 15 * len(_fontes)), "_rep_score": _rep.get("score_base", 0),
+        }
+        if (_melhor is None or _cc["votos"] > _melhor["votos"]
+                or (_cc["votos"] == _melhor["votos"] and _cc["_rep_score"] > _melhor["_rep_score"])):
+            _melhor = _cc
+    if _melhor:
+        _melhor.pop("_rep_score", None)
+    return _melhor
+
+
+def _consenso_melhor_que_atual(consenso, score_atual, votos_minimos=2):
+    """PURA e CONSERVADORA. O consenso só ASSUME se houver concordância de >= votos_minimos fontes
+    distintas E seu score superar o atual com margem. Na dúvida, mantém o atual (False)."""
+    if not consenso:
+        return False
+    if consenso.get("votos", 0) < votos_minimos:
+        return False
+    return consenso.get("score_consenso", 0) > (score_atual or 0) + 5
+
+
+def resolver_consenso_geografico(texto, uf=None, score_atual=0):
+    """[CONSENSO-MULTIFONTE - 89ª geração] Resolvedor ISOLADO por consenso. Reúne candidatos da base
+    IBGE (offline, sempre) e — SÓ se CONSENSO_MULTIFONTE_ATIVO — de rede (Nominatim/Photon/ArcGIS,
+    reutilizando os geocoders existentes), monta o consenso por votação espacial e informa se deve
+    ASSUMIR. NÃO é chamado pelo pipeline estável — é opt-in e comprovadamente-melhor-ou-nada. Defensivo."""
+    _cands = []
+    try:
+        _cands.extend(_fonte_consenso_ibge(texto, uf) or [])
+        if CONSENSO_MULTIFONTE_ATIVO:
+            for _fn in (API_Nominatim, API_Photon, API_ArcGIS):
+                try:
+                    for _c in (_fn(texto) or []):
+                        _c = dict(_c)
+                        _c["nome"] = _c.get("cidade") or _c.get("bairro") or texto
+                        _c["nivel"] = _nivel_candidato_consenso(_c)
+                        _cands.append(_c)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    _consenso = _votar_consenso(_cands)
+    return {"consenso": _consenso, "assume": _consenso_melhor_que_atual(_consenso, score_atual),
+            "n_candidatos": len(_cands)}
+# ============================ fim do módulo de consenso ============================
+
+
 @st.cache_data(show_spinner=False)
 def _opcoes_municipios_busca():
     """Opções 'Município - UF' para a busca inteligente (selectbox com filtro nativo)."""
@@ -7804,6 +7939,23 @@ with tab_individual:
                             st.markdown(f"**📍 Origem**  \n{_linha_geo(_lat_o_g, _lon_o_g, _end_o_g, orig_ind, _mun_o_g, _uf_o_g)}")
                         with _cg_d:
                             st.markdown(f"**🎯 Destino**  \n{_linha_geo(_lat_d_g, _lon_d_g, _end_d_g, dest_ind, _mun_d_g, _uf_d_g)}")
+                        # [CONSENSO-MULTIFONTE - 89ª geração] Diagnóstico OPT-IN (gated pela flag —
+                        # invisível em produção). Mostra o consenso multi-fonte lado a lado, sem alterar
+                        # nada da rota: serve para AVALIAR o resolvedor isolado antes de qualquer adoção.
+                        if CONSENSO_MULTIFONTE_ATIVO:
+                            st.divider()
+                            st.markdown("**🔬 Consenso Multi-Fonte (experimental — não afeta a rota)**")
+                            for _lbl_c, _txt_c, _uf_c, _sc_c in [("📍 Origem", orig_ind, _uf_o_g, _num(res_ind[8]) if len(res_ind) > 8 else 0),
+                                                                 ("🎯 Destino", dest_ind, _uf_d_g, _num(res_ind[14]) if len(res_ind) > 14 else 0)]:
+                                _rc = resolver_consenso_geografico(_txt_c, _uf_c, _sc_c)
+                                _cs = _rc.get("consenso")
+                                if _cs:
+                                    st.caption(f"{_lbl_c}: **{_cs['nome']}** ({_cs['nivel']}) · votos: {_cs['votos']} "
+                                               f"[{', '.join(_cs['fontes'])}] · score {_cs['score_consenso']} · "
+                                               f"`{_cs['lat']:.5f}, {_cs['lon']:.5f}`"
+                                               + ("  ·  ✅ **assumiria** (melhor que o atual)" if _rc['assume'] else "  ·  mantém o atual"))
+                                else:
+                                    st.caption(f"{_lbl_c}: sem consenso ({_rc.get('n_candidatos', 0)} candidato(s))")
                     except Exception as _e_geo:
                         logger.error(f"[GRANULARIDADE] Falha no painel de identidade geográfica: {_e_geo}")
                     # [AMBIGUIDADE-HOMONIMOS - 63ª geração / item #3] Em quantas UFs o nome do município
