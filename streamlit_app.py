@@ -62,6 +62,17 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (96ª geração) → CÓDIGO IBGE EM TODA PARTE: RÓTULO DO HUB + DIAGNÓSTICO DE AUSÊNCIA [IBGE-EVERYWHERE]
+#     Diretriz: Cód IBGE como identificador oficial onipresente. Auditoria confirmou cobertura JÁ ampla
+#     (Validador tela; planilha de lote com Cód IBGE+Município+UF de Origem/Destino/Concorrente; Municípios
+#     Próximos tabelas reta+viária; logs de auditoria de Hubs) — fruto das rodadas 54ª/60ª/61ª/78ª. Fechadas
+#     as 2 lacunas concretas: (1) resultado de Alocação de Hubs ganhou colunas com RÓTULO EXPLÍCITO — 'Cód
+#     IBGE Hub'/'Município Hub'/'UF Hub' e 'Cód IBGE Cliente'/'Município Cliente'/'UF Cliente' — espelhando
+#     a identidade oficial já computada (aditivo, sem remover as colunas Origem/Destino); (2) helper puro
+#     _diagnostico_ibge: quando o código NÃO resolve, o Validador passa a EXPLICAR a causa provável
+#     (município não identificado / UF ausente / fora da base) em vez de deixar só '—'. Provado por teste
+#     (diagnóstico por caso; vazio quando o código existe). Sem regressão; 12 abas, RotaPipeline 41, balões
+#     1×, score imutável.
 #   v3.8 (95ª geração) → DOCUMENTAÇÃO OFICIAL (HANDBOOK) EMBARCADA NO APP [DOC-EMBED] (conteúdo estático)
 #     Você pediu para aprofundar a documentação e integrá-la ao app. Entregue: (1) handbook técnico
 #     completo em HTML — 28 seções, agora com as 12 abas detalhadas CAMPO A CAMPO e FAQ expandido para 31
@@ -4312,6 +4323,25 @@ def _resolver_identidade_ibge(municipio, endereco_oficial):
         return {"municipio": _mun or "—", "uf": "—", "cod_ibge": "—"}
 
 
+def _diagnostico_ibge(cod_ibge, municipio, uf):
+    """[IBGE-EVERYWHERE - 95ª geração] Quando o Código IBGE NÃO resolve, explica a PROVÁVEL causa em vez
+    de deixar o campo apenas vazio (diretriz: jamais um '—' sem justificativa). PURA. Retorna "" quando o
+    código está presente (nada a explicar)."""
+    _cod = str(cod_ibge or "").strip()
+    if _cod and _cod not in ("—", "N/A", "0", "None", ""):
+        return ""
+    _mun = str(municipio or "").strip()
+    _uf = str(uf or "").strip()
+    if (not _mun) or _mun in ("—", "N/A", "Não Identificado", "Município Não Mapeado"):
+        return ("Código IBGE não resolvido: o **município não foi identificado** na geocodificação "
+                "(ponto sub-municipal ou falha de localização). A base IBGE indexa por município.")
+    if (not _uf) or _uf in ("—", "N/A"):
+        return (f"Código IBGE não resolvido: **UF não identificada** para “{_mun}”. Informe a UF "
+                f"(ex.: “{_mun}, SP”) para desambiguar e permitir a resolução oficial.")
+    return (f"Código IBGE não resolvido: “{_mun}/{_uf}” **não consta na base IBGE offline** "
+            f"(possível grafia divergente). A localização geográfica e a rota não são afetadas.")
+
+
 def _centroide_municipio(mun_nome, uf_nome):
     """Centróide oficial do município (lat, lon). Prioriza lat/lon do IBGE offline
     quando existir (>0); senão resolve por cidade+UF (centro da cidade) e memoriza.
@@ -8147,6 +8177,9 @@ with tab_individual:
                             f"Confiança: **{res_ind[7] if len(res_ind) > 7 else '—'}** "
                             f"(score {res_ind[8] if len(res_ind) > 8 else '—'}/100)"
                         )
+                        _diag_o = _diagnostico_ibge(_id_o['cod_ibge'], _id_o['municipio'], _id_o['uf'])
+                        if _diag_o:
+                            st.caption(f"ℹ️ {_diag_o}")
                     with _ci_d:
                         st.markdown(
                             f"**🎯 Destino**  \n"
@@ -8157,6 +8190,9 @@ with tab_individual:
                             f"Confiança: **{res_ind[13] if len(res_ind) > 13 else '—'}** "
                             f"(score {res_ind[14] if len(res_ind) > 14 else '—'}/100)"
                         )
+                        _diag_d = _diagnostico_ibge(_id_d['cod_ibge'], _id_d['municipio'], _id_d['uf'])
+                        if _diag_d:
+                            st.caption(f"ℹ️ {_diag_d}")
                     # [GRANULARIDADE - 85ª geração] IDENTIDADE GEOGRÁFICA (endereço + coordenadas
                     # efetivamente ROTEADAS), SEPARADA da identidade administrativa (município/IBGE)
                     # acima. Mede a granularidade pela distância do ponto roteado ao centróide do
@@ -9514,6 +9550,18 @@ with tab_alocacao:
                 _novas_colunas = st.session_state['alo_novas_colunas']
                 
                 df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
+                # [IBGE-EVERYWHERE - 95ª geração] Rótulo EXPLÍCITO do Hub: no fluxo de Alocação de Hubs, o
+                # "Destino" É o hub vencedor. Espelha a identidade oficial do hub (Cód IBGE / Município /
+                # UF) com nomes explícitos "Hub", sem remover as colunas existentes. Aditivo, custo zero.
+                for _de_col, _hub_col in [('Cod IBGE Destino', 'Cód IBGE Hub'),
+                                          ('Municipio Destino', 'Município Hub'), ('UF Destino', 'UF Hub')]:
+                    if _de_col in df_final_alo.columns:
+                        df_final_alo[_hub_col] = df_final_alo[_de_col]
+                # identidade oficial do CLIENTE (origem) com rótulo explícito, espelhando as existentes
+                for _oe_col, _cli_col in [('Cod IBGE Origem', 'Cód IBGE Cliente'),
+                                          ('Municipio Origem', 'Município Cliente'), ('UF Origem', 'UF Cliente')]:
+                    if _oe_col in df_final_alo.columns:
+                        df_final_alo[_cli_col] = df_final_alo[_oe_col]
                 
                 df_final_alo['Linha Reta'] = df_final_alo['Origem'].astype(str).str.strip().map(_dest_lr).fillna(df_final_alo['Linha Reta'])
                 df_final_alo['Status Linha Reta'] = df_final_alo['Origem'].astype(str).str.strip().map(_dest_st).fillna(df_final_alo['Status Linha Reta'])
