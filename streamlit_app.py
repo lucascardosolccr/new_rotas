@@ -62,6 +62,31 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (93ª geração) → FONTE OFFLINE DE RAs DO DF NO CONSENSO [CONSENSO-MULTIFONTE] (módulo isolado)
+#     Atende à ênfase recorrente do documento (reconhecer Vicente Pires/Taguatinga Sul/Samambaia Sul/Asa
+#     Norte como RA) com um incremento que EU consigo testar sem rede: nova FONTE OFFLINE de Regiões
+#     Administrativas do DF no módulo de consenso — _fonte_consenso_ra_df + dicionário _DF_RA_COORDENADAS
+#     (centróides administrativos APROXIMADOS de ~47 RAs/variantes Sul-Norte). Quando o texto casa com uma
+#     RA, o consenso ganha um VOTO offline em nível 'Região Administrativa (DF)' com coordenada de
+#     referência — mesmo sem os geocoders de rede. Somada à fonte IBGE (município) e às de rede (quando a
+#     flag está ON), aumenta a concordância e o score composto para casos do DF. Continua ISOLADO/atrás da
+#     flag para adoção; a fonte em si é offline e pura. RESSALVA: as coordenadas de RA são pontos de
+#     referência (não precisão de logradouro) — as coordenadas finas seguem vindo dos geocoders. Provado
+#     por teste (casa Vicente Pires/Ceilândia/Asa Norte; sufixo Sul/Norte; ignora fora do DF; injetável).
+#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
+#   v3.8 (92ª geração) → CONSISTÊNCIA DA LINHA RETA: BASE FÍSICA CORRETA + VALIDAÇÃO CRUZADA [DIST-RETA-FIX]
+#     Você reportou linha reta "impossível" (ex.: Vicente Pires→Taguatinga Norte: viária 4.9 km < reta
+#     6.961 km, sinuosidade 0.704× INCONSISTENTE). CAUSA RAIZ (confirmada): a GEODÉSICA está CORRETA —
+#     Haversine 6.952 km bate com Karney 6.961 km. O falso "impossível" vinha de comparar a distância
+#     ADOTADA (Google, que roteia entre os NOMES re-geocodificados → 4.9 km) com a geodésica (que usa as
+#     COORDENADAS do ArcGIS). O OSRM, que usa as MESMAS coordenadas, dá 8.51 km → 8.51/6.961 = 1.223
+#     (consistente!). FIX: _montar_indicadores_territoriais ganhou dist_osrm; a sinuosidade/consistência
+#     passam a usar a rota por COORDENADA (OSRM), fisicamente comparável à geodésica; a distância ADOTADA
+#     (Google) é sinalizada à parte com nota explicativa. + Validação cruzada Karney×Haversine no painel
+#     (confirma a linha reta; se divergir >1%, alerta de coordenada/datum). Só toca EXIBIÇÃO/auditoria —
+#     não altera rota, coordenadas nem a geodésica. Provado por teste (base OSRM corrige o falso
+#     impossível; Google-only mantém cautela; impossível genuíno quando até o OSRM < reta). Sem
+#     regressão; 12 abas, RotaPipeline 41, balões 1×.
 #   v3.8 (91ª geração) → FIX DO DIAGNÓSTICO DE CONSENSO (painel vazio) [CONSENSO-MULTIFONTE]
 #     Ao avaliar no ambiente real, o painel "🔬 Consenso Multi-Fonte" aparecia VAZIO (só o cabeçalho).
 #     CAUSA: o painel (Validador) usava _num(res_ind[...]) para o score atual, mas _num só é definido
@@ -5717,7 +5742,7 @@ def _metricas_divergencia(km_a, km_b):
     return {"abs_km": abs_km, "pct": pct, "classificacao": classif}
 
 
-def _montar_indicadores_territoriais(dist_viaria, linha_reta, balsa):
+def _montar_indicadores_territoriais(dist_viaria, linha_reta, balsa, dist_osrm=None):
     """[BARREIRA-SINGLE - 48ª geração] Calcula os indicadores territoriais de uma rota (fator de
     sinuosidade, barreira física provável, consistência física) COM interpretações, para exibição
     no Validador Rápido. Mesma lógica da planilha em lote — centralizada aqui para explicabilidade.
@@ -5725,17 +5750,34 @@ def _montar_indicadores_territoriais(dist_viaria, linha_reta, balsa):
     try:
         dv = float(dist_viaria) if dist_viaria else 0.0
         lr = float(linha_reta) if linha_reta else 0.0
+        do = float(dist_osrm) if dist_osrm else 0.0
     except Exception:
-        dv, lr = 0.0, 0.0
-    fs = round(dv / lr, 3) if lr > 0 else 0.0
+        dv, lr, do = 0.0, 0.0, 0.0
+    # [DIST-RETA-FIX - 92ª geração] A consistência física (viária ≥ reta) só é válida entre os MESMOS
+    # pontos: a geodésica usa as COORDENADAS validadas e o OSRM roteia sobre elas → OSRM é a base física.
+    # O Google roteia entre os NOMES re-geocodificados, podendo dar viária<reta SEM ser erro. Quando há
+    # OSRM, a sinuosidade/consistência usam-no; a distância ADOTADA (Google) é sinalizada à parte.
+    _base_coord = do > 0
+    _dist_fisica = do if _base_coord else dv
+    fs = round(_dist_fisica / lr, 3) if lr > 0 else 0.0
+    fs_adotada = round(dv / lr, 3) if lr > 0 else 0.0
+    _nota_adotada = ""
+    if _base_coord and abs(dv - do) > 0.05 and lr > 0:
+        _nota_adotada = (f"A distância ADOTADA na rota é {dv} km (Google, medida entre os NOMES "
+                         f"re-geocodificados). A sinuosidade/consistência acima usam a rota por COORDENADA "
+                         f"validada (OSRM = {do} km), fisicamente comparável à geodésica.")
     _balsa = str(balsa or "").strip().upper()
-    # Consistência física (lei: viária >= reta)
+    # Consistência física (lei: viária >= reta) — sobre a base física (OSRM quando disponível)
     if 0 < fs < 0.98:
-        consistencia = ("❌ INCONSISTENTE", "A distância viária é MENOR que a linha reta — fisicamente "
-                        "impossível (a estrada nunca é mais curta que a geodésica). Indica erro de "
-                        "geocodificação ou de captura da rota.")
+        consistencia = ("❌ INCONSISTENTE",
+                        ("Mesmo pela coordenada validada (OSRM), a" if _base_coord else "A")
+                        + " distância viária é MENOR que a linha reta — fisicamente impossível (a estrada "
+                        "nunca é mais curta que a geodésica). Indica coordenada de origem/destino incorreta.")
     elif fs > 0:
-        consistencia = ("✅ Consistente", "A distância viária é maior ou igual à linha reta, como esperado fisicamente.")
+        consistencia = ("✅ Consistente",
+                        ("A distância viária por coordenada validada (OSRM) é maior ou igual à linha reta, "
+                         "como esperado fisicamente." if _base_coord else
+                         "A distância viária é maior ou igual à linha reta, como esperado fisicamente."))
     else:
         consistencia = ("—", "Sem dados suficientes para avaliar.")
     # Barreira física provável (inferência a partir da sinuosidade + balsa)
@@ -5764,9 +5806,10 @@ def _montar_indicadores_territoriais(dist_viaria, linha_reta, balsa):
         interp_fs = "Desvio muito elevado — rota bem mais longa que a reta."
     return {
         "fator_sinuosidade": fs, "interp_sinuosidade": interp_fs,
+        "fator_sinuosidade_adotada": fs_adotada, "nota_adotada": _nota_adotada, "base_coord": _base_coord,
         "barreira": barreira[0], "barreira_explicacao": barreira[1], "barreira_confianca": barreira[2],
         "consistencia_status": consistencia[0], "consistencia_explicacao": consistencia[1],
-        "distancia_viaria": dv, "linha_reta": lr,
+        "distancia_viaria": _dist_fisica, "distancia_adotada": dv, "distancia_osrm": do, "linha_reta": lr,
     }
 
 
@@ -7611,6 +7654,61 @@ def _fonte_consenso_ibge(texto, uf, base=None):
     return _out
 
 
+# [CONSENSO-MULTIFONTE - 93ª geração] Centróides administrativos APROXIMADOS das Regiões Administrativas
+# do DF (WGS-84). NÃO são coordenadas de precisão de logradouro — são pontos de referência para (a) dar
+# à fonte offline de RA um VOTO no consenso e (b) fixar o nível "Região Administrativa (DF)". Servem à
+# desambiguação/roteirização em nível de RA; as coordenadas finas continuam vindo das fontes geocoders.
+_DF_RA_COORDENADAS = {
+    "PLANO PILOTO": (-15.7942, -47.8825), "ASA SUL": (-15.8158, -47.9139), "ASA NORTE": (-15.7597, -47.8797),
+    "GAMA": (-16.0139, -48.0628), "TAGUATINGA": (-15.8339, -48.0578), "TAGUATINGA SUL": (-15.8508, -48.0553),
+    "TAGUATINGA NORTE": (-15.8181, -48.0608), "BRAZLANDIA": (-15.6817, -48.2008), "SOBRADINHO": (-15.6528, -47.7900),
+    "SOBRADINHO II": (-15.6533, -47.8306), "PLANALTINA": (-15.6178, -47.6531), "PARANOA": (-15.7739, -47.7822),
+    "NUCLEO BANDEIRANTE": (-15.8703, -47.9686), "CEILANDIA": (-15.8197, -48.1078), "CEILANDIA SUL": (-15.8306, -48.1097),
+    "CEILANDIA NORTE": (-15.8047, -48.1108), "GUARA": (-15.8244, -47.9825), "GUARA I": (-15.8203, -47.9906),
+    "GUARA II": (-15.8306, -47.9756), "CRUZEIRO": (-15.7936, -47.9308), "SAMAMBAIA": (-15.8792, -48.0819),
+    "SAMAMBAIA SUL": (-15.8850, -48.0758), "SAMAMBAIA NORTE": (-15.8650, -48.0900), "SANTA MARIA": (-16.0139, -48.0175),
+    "SAO SEBASTIAO": (-15.9019, -47.7789), "RECANTO DAS EMAS": (-15.9028, -48.0642), "LAGO SUL": (-15.8419, -47.8703),
+    "RIACHO FUNDO": (-15.8858, -48.0119), "RIACHO FUNDO II": (-15.9058, -48.0417), "LAGO NORTE": (-15.7269, -47.8394),
+    "CANDANGOLANDIA": (-15.8511, -47.9556), "AGUAS CLARAS": (-15.8344, -48.0269), "SUDOESTE": (-15.7953, -47.9264),
+    "OCTOGONAL": (-15.7986, -47.9236), "SUDOESTE OCTOGONAL": (-15.7953, -47.9264), "VARJAO": (-15.7139, -47.8794),
+    "PARK WAY": (-15.8917, -47.9639), "SCIA": (-15.7794, -47.9997), "ESTRUTURAL": (-15.7794, -47.9997),
+    "JARDIM BOTANICO": (-15.8719, -47.8003), "ITAPOA": (-15.7461, -47.7650), "SIA": (-15.8017, -47.9508),
+    "VICENTE PIRES": (-15.8069, -48.0258), "FERCAL": (-15.5972, -47.8756), "SOL NASCENTE": (-15.8258, -48.1450),
+    "POR DO SOL": (-15.8258, -48.1450), "ARNIQUEIRA": (-15.8508, -48.0361),
+}
+
+
+def _fonte_consenso_ra_df(texto, uf, coords=None):
+    """[CONSENSO-MULTIFONTE - 93ª geração] Fonte OFFLINE das Regiões Administrativas do DF: quando o
+    texto casa com uma RA (com/sem sufixo Sul/Norte), devolve um candidato de NÍVEL 'Região
+    Administrativa (DF)' com o centróide aproximado — dando à RA um voto no consenso sem depender de
+    rede. PURA (dicionário injetável). Só atua para UF=DF (ou vazia)."""
+    import re as _re
+    _c = coords if coords is not None else _DF_RA_COORDENADAS
+    _uf = unidecode(str(uf or "")).upper().strip()
+    if _uf and _uf != "DF":
+        return []
+    _t = unidecode(str(texto or "")).upper()
+    _t = _re.sub(r'\b(BRASIL|BRAZIL|DF|DISTRITO FEDERAL)\b', ' ', _t)
+    _t = _re.sub(r'[^A-Z0-9 ]+', ' ', _t)
+    _t = _re.sub(r'\s+', ' ', _t).strip()
+    if not _t:
+        return []
+    _coord = _c.get(_t)
+    if _coord is None:  # tenta sem o sufixo direcional (ex.: 'CEILANDIA SUL' → 'CEILANDIA')
+        _base = _re.sub(r'\s+(SUL|NORTE|LESTE|OESTE|CENTRO|[IVX]+)$', '', _t).strip()
+        _coord = _c.get(_base) if _base != _t else None
+        if _coord is not None:
+            _t = _base
+    if _coord is None:
+        return []
+    return [{
+        "fonte": "RA_DF", "lat": _coord[0], "lon": _coord[1], "nome": _t.title(),
+        "nivel": "Região Administrativa (DF)", "score_base": 40, "cidade": "Brasília", "estado": "DF",
+        "bairro": _t.title(), "logradouro": "", "numero": "",
+    }]
+
+
 def _votar_consenso(candidatos, limiar_km=3.0):
     """PURA. Agrupa candidatos por PROXIMIDADE espacial (< limiar_km) e devolve o cluster com o MAIOR
     número de FONTES distintas (votos). Representante = candidato de maior score_base; coordenada =
@@ -7696,6 +7794,7 @@ def resolver_consenso_geografico(texto, uf=None, score_atual=0):
     _consenso = None
     try:
         _cands.extend(_fonte_consenso_ibge(texto, uf) or [])
+        _cands.extend(_fonte_consenso_ra_df(texto, uf) or [])
         if CONSENSO_MULTIFONTE_ATIVO:
             for _fn in (API_Nominatim, API_Photon, API_ArcGIS):
                 try:
@@ -8216,7 +8315,9 @@ with tab_individual:
                 # (antes só na planilha em lote): fator de sinuosidade, barreira física provável e
                 # consistência física — COM interpretações, origem do cálculo, justificativa e confiança.
                 try:
-                    _ind = _montar_indicadores_territoriais(res_ind[0], res_ind[4], res_ind[3])
+                    _comp_ind = res_ind[35] if len(res_ind) > 35 else None
+                    _km_osrm_ind = _comp_ind.get("km_osrm") if isinstance(_comp_ind, dict) else None
+                    _ind = _montar_indicadores_territoriais(res_ind[0], res_ind[4], res_ind[3], dist_osrm=_km_osrm_ind)
                     with st.expander("🌍 Análise Territorial e Barreiras Físicas", expanded=False):
                         st.caption("Indicadores derivados da relação entre a **distância viária** e a **linha reta** "
                                    "(geodésica de Karney). Servem para explicar por que uma rota é mais longa e sinalizar inconsistências.")
@@ -8225,9 +8326,31 @@ with tab_individual:
                                     help="Distância viária ÷ linha reta. Quanto maior, mais a estrada 'contorna'.")
                         _ic2.metric("Consistência Física", _ind['consistencia_status'].split(' ', 1)[-1] if ' ' in _ind['consistencia_status'] else _ind['consistencia_status'])
                         _ic3.metric("Confiança da Inferência", _ind['barreira_confianca'])
-                        st.markdown(f"**Origem do cálculo:** viária = **{_ind['distancia_viaria']} km**, "
+                        _base_lbl = "OSRM — coordenada validada" if _ind.get('base_coord') else "distância adotada"
+                        st.markdown(f"**Origem do cálculo:** viária ({_base_lbl}) = **{_ind['distancia_viaria']} km**, "
                                     f"linha reta (Karney/WGS-84) = **{_ind['linha_reta']} km** → sinuosidade = "
                                     f"viária ÷ reta = **{_ind['fator_sinuosidade']}×**.")
+                        if _ind.get('nota_adotada'):
+                            st.info(f"ℹ️ {_ind['nota_adotada']}")
+                        # [DIST-RETA-FIX - 92ª geração] Validação cruzada da geodésica: Karney × Haversine
+                        # sobre as MESMAS coordenadas roteadas. Confirma que a linha reta está correta (o
+                        # erro, quando há, está nas COORDENADAS, não no algoritmo geodésico).
+                        try:
+                            _lat_o_v, _lon_o_v = float(res_ind[19]), float(res_ind[20])
+                            _lat_d_v, _lon_d_v = float(res_ind[21]), float(res_ind[22])
+                            if all(abs(_c) > 0 for _c in (_lat_o_v, _lon_o_v, _lat_d_v, _lon_d_v)):
+                                _hav = _haversine_km_consenso(_lat_o_v, _lon_o_v, _lat_d_v, _lon_d_v)
+                                _kar = float(_ind['linha_reta'])
+                                _div = abs(_hav - _kar)
+                                _div_pct = (_div / _kar * 100) if _kar > 0 else 0.0
+                                if _div_pct <= 1.0:
+                                    st.caption(f"🔎 Validação cruzada da geodésica: Karney = {_kar:.3f} km · "
+                                               f"Haversine = {_hav:.3f} km · divergência {_div_pct:.2f}% → linha reta **confirmada**.")
+                                else:
+                                    st.warning(f"🔎 Validação cruzada: Karney = {_kar:.3f} km × Haversine = {_hav:.3f} km "
+                                               f"divergem {_div_pct:.2f}% (> 1%). Verificar coordenadas/datum.")
+                        except Exception:
+                            pass
                         st.markdown(f"**Interpretação da sinuosidade:** {_ind['interp_sinuosidade']}")
                         if _ind['consistencia_status'].startswith("❌"):
                             st.error(f"**Consistência física:** {_ind['consistencia_explicacao']}")
