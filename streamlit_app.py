@@ -62,6 +62,18 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (91ª geração) → FIX DO DIAGNÓSTICO DE CONSENSO (painel vazio) [CONSENSO-MULTIFONTE]
+#     Ao avaliar no ambiente real, o painel "🔬 Consenso Multi-Fonte" aparecia VAZIO (só o cabeçalho).
+#     CAUSA: o painel (Validador) usava _num(res_ind[...]) para o score atual, mas _num só é definido
+#     ~1300 linhas depois (painel do concorrente) — NameError na construção da lista do loop, engolido
+#     pelo try/except do painel geográfico. FIX: conversor local _sc_num (seguro) no lugar de _num; e
+#     resolver_consenso_geografico agora é 100% defensivo (o score composto ficou dentro do try) — nunca
+#     lança, o painel sempre mostra as linhas (ou "sem consenso"). Sem impacto em rota/coordenadas.
+#     Validação cruzada com as SUAS telas confirmou 88ª/87ª/83ª funcionando (rótulos das RAs corretos,
+#     nível espacial certo, IBGE offline resolvendo Pirenópolis/Corumbá com score 100). Sem regressão; 12
+#     abas, RotaPipeline 41, balões 1×. NOTA: Vila Mariana/Moema-SP falharam a geocodificação no pipeline
+#     (coords 0,0) — é exatamente o caso que o consenso (com Nominatim/Photon) deve socorrer; agora dá p/
+#     ver no diagnóstico.
 #   v3.8 (90ª geração) → SCORE COMPOSTO E AUDITÁVEL DO CONSENSO [CONSENSO-MULTIFONTE] (módulo isolado)
 #     Evolui o módulo isolado da 89ª atacando o ponto central do novo pedido ("score muito baixo p/ local
 #     correto" e "não usar resultado fraco quando há melhor"): o consenso passou a ter SCORE COMPOSTO e
@@ -7681,6 +7693,7 @@ def resolver_consenso_geografico(texto, uf=None, score_atual=0):
     reutilizando os geocoders existentes), monta o consenso por votação espacial e informa se deve
     ASSUMIR. NÃO é chamado pelo pipeline estável — é opt-in e comprovadamente-melhor-ou-nada. Defensivo."""
     _cands = []
+    _consenso = None
     try:
         _cands.extend(_fonte_consenso_ibge(texto, uf) or [])
         if CONSENSO_MULTIFONTE_ATIVO:
@@ -7693,18 +7706,18 @@ def resolver_consenso_geografico(texto, uf=None, score_atual=0):
                         _cands.append(_c)
                 except Exception:
                     continue
-    except Exception:
-        pass
-    _consenso = _votar_consenso(_cands)
-    # [CONSENSO-MULTIFONTE - 90ª geração] substitui o score simples pelo COMPOSTO e auditável, e leva o
-    # nível SOLICITADO em conta (retornado não mais específico que o pedido).
-    if _consenso:
-        _niv_sol = _nivel_espacial(texto, None, "", uf)
-        _sc, _det = _score_composto_consenso(texto, _consenso.get("nome", ""), _consenso.get("votos", 0),
-                                             uf, _consenso.get("uf", ""), _niv_sol, _consenso.get("nivel", ""))
-        _consenso["score_consenso"] = _sc
-        _consenso["score_detalhes"] = _det
-        _consenso["nivel_solicitado"] = _niv_sol
+        _consenso = _votar_consenso(_cands)
+        # [CONSENSO-MULTIFONTE - 90ª geração] substitui o score simples pelo COMPOSTO e auditável, e leva
+        # o nível SOLICITADO em conta (retornado não mais específico que o pedido).
+        if _consenso:
+            _niv_sol = _nivel_espacial(texto, None, "", uf)
+            _sc, _det = _score_composto_consenso(texto, _consenso.get("nome", ""), _consenso.get("votos", 0),
+                                                 uf, _consenso.get("uf", ""), _niv_sol, _consenso.get("nivel", ""))
+            _consenso["score_consenso"] = _sc
+            _consenso["score_detalhes"] = _det
+            _consenso["nivel_solicitado"] = _niv_sol
+    except Exception as _e_cons:
+        logger.error(f"[CONSENSO-MULTIFONTE] Falha no resolvedor: {_e_cons}")
     return {"consenso": _consenso, "assume": _consenso_melhor_que_atual(_consenso, score_atual),
             "n_candidatos": len(_cands)}
 # ============================ fim do módulo de consenso ============================
@@ -8007,8 +8020,13 @@ with tab_individual:
                         if CONSENSO_MULTIFONTE_ATIVO:
                             st.divider()
                             st.markdown("**🔬 Consenso Multi-Fonte (experimental — não afeta a rota)**")
-                            for _lbl_c, _txt_c, _uf_c, _sc_c in [("📍 Origem", orig_ind, _uf_o_g, _num(res_ind[8]) if len(res_ind) > 8 else 0),
-                                                                 ("🎯 Destino", dest_ind, _uf_d_g, _num(res_ind[14]) if len(res_ind) > 14 else 0)]:
+                            def _sc_num(v):
+                                try:
+                                    return float(v)
+                                except (TypeError, ValueError):
+                                    return 0.0
+                            for _lbl_c, _txt_c, _uf_c, _sc_c in [("📍 Origem", orig_ind, _uf_o_g, _sc_num(res_ind[8]) if len(res_ind) > 8 else 0.0),
+                                                                 ("🎯 Destino", dest_ind, _uf_d_g, _sc_num(res_ind[14]) if len(res_ind) > 14 else 0.0)]:
                                 _rc = resolver_consenso_geografico(_txt_c, _uf_c, _sc_c)
                                 _cs = _rc.get("consenso")
                                 if _cs:
