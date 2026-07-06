@@ -7536,7 +7536,9 @@ def _rotulo_granular_seguro(texto_usuario, endereco_oficial, municipio):
 # Funções puras (votação/gate/nível) são testadas isoladamente. Enquanto a flag estiver OFF, este bloco
 # é inerte — nenhum caminho de produção o invoca.
 # ==============================================================================
-CONSENSO_MULTIFONTE_ATIVO = False  # OFF por padrão — não afeta Validador/Lote/Alocação/Municípios
+CONSENSO_MULTIFONTE_ATIVO = True   # [AVALIAÇÃO - 89ª/90ª] LIGADO para você avaliar o diagnóstico no seu
+# ambiente (com rede real). É SÓ diagnóstico — NÃO altera rota/coordenadas. Para produção limpa, volte
+# para False (uma linha). Enquanto ligado, aparece o painel "🔬 Consenso Multi-Fonte" no Validador.
 
 
 def _haversine_km_consenso(lat1, lon1, lat2, lon2):
