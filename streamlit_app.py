@@ -62,6 +62,18 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (94ª geração) → CONSENSO LIGADO NO PIPELINE PARA RESGATE DE FALHAS (coords 0,0) [CONSENSO-RESGATE]
+#     Seus 5 casos com o painel corrigido (91ª) foram a calibração real e VALIDARAM o portão: assume
+#     quando o pipeline é fraco/falha (Ceilândia 18→84.6, Samambaia Sul 7→86.3, Vicente Pires 13→86.3) e
+#     DEFERE quando o pipeline é forte (Pirenópolis/Corumbá 100; Lapa/Copacabana 85 → mantém atual).
+#     Achado decisivo: Vila Mariana/Moema-SP, que FALHAVAM (coords 0,0, "Falha Geográfica Absoluta"), o
+#     consenso resgata com coordenadas válidas (≈ Vila Mariana/Moema, 2 fontes). 1ª fiação REAL, mínima e
+#     segura: _resgatar_coordenada_consenso liga o consenso no pipeline SOMENTE quando o ponto falhou
+#     totalmente (0,0) e a flag está ON. Pontos válidos (coord != 0,0) NÃO são tocados → zero regressão
+#     nos casos que já funcionam; e 0,0 é rota impossível, logo qualquer coordenada válida é estritamente
+#     melhor. Ainda gated pela flag. Provado por teste (resgata 0,0 quando o consenso assume; não toca
+#     pontos válidos; não resgata sem assume/sem coord; limpa 'Município Não Mapeado'). Sem regressão; 12
+#     abas, RotaPipeline 41, balões 1×. Próximo (com sua validação): expandir a adoção além do 0,0.
 #   v3.8 (93ª geração) → FONTE OFFLINE DE RAs DO DF NO CONSENSO [CONSENSO-MULTIFONTE] (módulo isolado)
 #     Atende à ênfase recorrente do documento (reconhecer Vicente Pires/Taguatinga Sul/Samambaia Sul/Asa
 #     Norte como RA) com um incremento que EU consigo testar sem rede: nova FONTE OFFLINE de Regiões
@@ -6021,6 +6033,32 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     # quando o geocoder a reduz ao município. NÃO altera coordenadas (a rota já usa as corretas).
     end_oficial_o = _rotulo_granular_seguro(origem_clean, end_oficial_o, mun_o)
     end_oficial_d = _rotulo_granular_seguro(destino_clean, end_oficial_d, mun_d)
+    # [CONSENSO-RESGATE - 94ª geração] Resgate de FALHA de geocodificação (coords 0,0) via consenso
+    # multi-fonte — SÓ atua quando o ponto falhou totalmente (0,0) e a flag está ON. Como 0,0 é rota
+    # impossível, qualquer coordenada válida do consenso (>= 2 fontes) é estritamente melhor; pontos
+    # válidos (coord != 0,0) NÃO são tocados, então nada que já funciona regride. Ex.: Vila Mariana/
+    # Moema-SP (que davam 0,0) passam a ser resgatados com coordenadas válidas.
+    if CONSENSO_MULTIFONTE_ATIVO:
+        try:
+            _uf_o_rc = extrair_uf_precisa(end_oficial_o or "")
+            _uf_o_rc = "" if _uf_o_rc == "Indefinido" else _uf_o_rc
+            lat_o, lon_o, end_oficial_o, _fonte_rescue_o, _resg_o = _resgatar_coordenada_consenso(
+                lat_o, lon_o, origem_clean, _uf_o_rc, end_oficial_o, mun_o)
+            if _resg_o:
+                fonte_geo_o = _fonte_rescue_o
+                logger.info(f"[CONSENSO-RESGATE] Origem '{origem_clean}' resgatada: ({lat_o},{lon_o}) via {_fonte_rescue_o}")
+        except Exception as _e_rg_o:
+            logger.error(f"[CONSENSO-RESGATE] Falha no resgate da origem: {_e_rg_o}")
+        try:
+            _uf_d_rc = extrair_uf_precisa(end_oficial_d or "")
+            _uf_d_rc = "" if _uf_d_rc == "Indefinido" else _uf_d_rc
+            lat_d, lon_d, end_oficial_d, _fonte_rescue_d, _resg_d = _resgatar_coordenada_consenso(
+                lat_d, lon_d, destino_clean, _uf_d_rc, end_oficial_d, mun_d)
+            if _resg_d:
+                fonte_geo_d = _fonte_rescue_d
+                logger.info(f"[CONSENSO-RESGATE] Destino '{destino_clean}' resgatado: ({lat_d},{lon_d}) via {_fonte_rescue_d}")
+        except Exception as _e_rg_d:
+            logger.error(f"[CONSENSO-RESGATE] Falha no resgate do destino: {_e_rg_d}")
     
     # BARREIRA TOPOLÓGICA DE COLISÃO E DESAMBIGUAÇÃO ESTRITA
     if lat_o == lat_d and lon_o == lon_d and lat_o != 0.0:
@@ -7819,6 +7857,37 @@ def resolver_consenso_geografico(texto, uf=None, score_atual=0):
         logger.error(f"[CONSENSO-MULTIFONTE] Falha no resolvedor: {_e_cons}")
     return {"consenso": _consenso, "assume": _consenso_melhor_que_atual(_consenso, score_atual),
             "n_candidatos": len(_cands)}
+
+
+def _resgatar_coordenada_consenso(lat, lon, texto, uf, endereco, municipio, resolver=None):
+    """[CONSENSO-RESGATE - 94ª geração] Resgata um ponto que FALHOU totalmente a geocodificação (coords
+    0,0) usando o consenso multi-fonte. Como 0,0 é rota impossível, qualquer coordenada válida do
+    consenso (com >= 2 fontes concordantes) é estritamente melhor — e pontos VÁLIDOS (coord != 0,0) NÃO
+    são tocados, então nada que já funciona regride. Retorna (lat, lon, endereco, fonte_extra,
+    resgatado: bool). PURA em relação ao resolvedor (injetável para teste)."""
+    try:
+        _lat = float(lat); _lon = float(lon)
+    except (TypeError, ValueError):
+        return lat, lon, endereco, "", False
+    if not (_lat == 0.0 and _lon == 0.0):
+        return lat, lon, endereco, "", False   # ponto válido: intocado
+    _res_fn = resolver if resolver is not None else resolver_consenso_geografico
+    try:
+        _rc = _res_fn(texto, uf, 0)
+    except Exception:
+        return lat, lon, endereco, "", False
+    _cs = _rc.get("consenso") if _rc else None
+    if not (_rc and _rc.get("assume") and _cs and (_cs.get("lat") or _cs.get("lon"))):
+        return lat, lon, endereco, "", False
+    _nlat, _nlon = _cs["lat"], _cs["lon"]
+    # rótulo: limpa "MUNICÍPIO NÃO MAPEADO" usando o município que o consenso encontrou (se houver)
+    _end = endereco or ""
+    _mun_cons = _cs.get("nome") or ""
+    if _mun_cons and "NÃO MAPEADO" in _end.upper():
+        import re as _re
+        _end = _re.sub(r'MUNIC[IÍ]PIO N[ÃA]O MAPEADO', _mun_cons.upper(), _end, flags=_re.IGNORECASE)
+    _fonte = "CONSENSO_RESGATE(" + "+".join(_cs.get("fontes", [])) + ")"
+    return _nlat, _nlon, _end, _fonte, True
 # ============================ fim do módulo de consenso ============================
 
 
