@@ -62,6 +62,19 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (90ª geração) → SCORE COMPOSTO E AUDITÁVEL DO CONSENSO [CONSENSO-MULTIFONTE] (módulo isolado)
+#     Evolui o módulo isolado da 89ª atacando o ponto central do novo pedido ("score muito baixo p/ local
+#     correto" e "não usar resultado fraco quando há melhor"): o consenso passou a ter SCORE COMPOSTO e
+#     AUDITÁVEL — componentes explícitos textual (0.35, similaridade query×nome via difflib), consenso
+#     (0.30, nº de fontes concordantes), UF (0.15) e nível (0.20, retornado não mais específico que o
+#     solicitado). Helpers puros _score_composto_consenso, _nivel_compativel_consenso + rank de níveis. O
+#     resolvedor calcula o composto e guarda o detalhamento; o diagnóstico opt-in exibe os componentes
+#     (auditoria do "porquê" do score). Continua ISOLADO e atrás da flag — sem tocar no pipeline. Provado
+#     por teste (composto sobe com concordância/casamento; penaliza UF divergente e over-specification;
+#     nível desconhecido não penaliza). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
+#     NOTA HONESTA: a reengenharia total (PostGIS/R-tree/ML/embeddings/20 fontes) é projeto de grande
+#     porte à parte; sigo por incrementos seguros no módulo isolado e aguardo seus números do diagnóstico
+#     (rede real) p/ calibrar limiar/portão/pesos antes de qualquer fiação no pipeline.
 #   v3.8 (89ª geração) → MÓDULO ISOLADO DE CONSENSO GEOGRÁFICO MULTI-FONTE (OPT-IN) [CONSENSO-MULTIFONTE]
 #     A pedido: ganhar a inteligência de consenso multi-fonte SEM arriscar o pipeline estável. Módulo
 #     NOVO e ISOLADO, atrás da flag CONSENSO_MULTIFONTE_ATIVO (OFF por padrão): reúne candidatos da base
@@ -7604,6 +7617,7 @@ def _votar_consenso(candidatos, limiar_km=3.0):
         _cc = {
             "lat": round(_lat_c, 6), "lon": round(_lon_c, 6), "nome": _rep.get("nome", ""),
             "nivel": _rep.get("nivel", ""), "fontes": _fontes, "votos": len(_fontes),
+            "uf": _rep.get("estado", ""),
             "score_consenso": min(99, 40 + 15 * len(_fontes)), "_rep_score": _rep.get("score_base", 0),
         }
         if (_melhor is None or _cc["votos"] > _melhor["votos"]
@@ -7612,6 +7626,43 @@ def _votar_consenso(candidatos, limiar_km=3.0):
     if _melhor:
         _melhor.pop("_rep_score", None)
     return _melhor
+
+
+# [CONSENSO-MULTIFONTE - 90ª geração] SCORE COMPOSTO E AUDITÁVEL do consenso (componentes explícitos).
+_RANK_NIVEL_CONSENSO = {
+    "País": 0, "Estado": 1, "Município": 2, "Distrito": 3, "Região Administrativa (DF)": 3,
+    "Bairro / Localidade": 4, "Setor": 4, "Rua / Logradouro": 5, "Ponto de Interesse (POI)": 5,
+    "Coordenadas (GPS)": 6, "Indefinido": 4,
+}
+
+
+def _nivel_compativel_consenso(solicitado, retornado):
+    """PURA. Compatível quando o nível RETORNADO não é MAIS específico que o SOLICITADO (regra
+    anti-endereço-indevido). Desconhecidos → tratados como compatíveis (não penaliza na dúvida)."""
+    _rs = _RANK_NIVEL_CONSENSO.get(solicitado)
+    _rr = _RANK_NIVEL_CONSENSO.get(retornado)
+    if _rs is None or _rr is None:
+        return True
+    return _rr <= _rs
+
+
+def _score_composto_consenso(query, nome, votos, uf_sol, uf_cand, nivel_sol, nivel_cand):
+    """PURA. Score 0-100 COMPOSTO e AUDITÁVEL do consenso, com componentes explícitos:
+      • textual  (0.35): similaridade query × nome (difflib);
+      • consenso (0.30): nº de fontes concordantes (1→30, 2→50, 3→70, 4+→90/100);
+      • uf       (0.15): compatibilidade de UF;
+      • nível    (0.20): retornado não mais específico que o solicitado.
+    Retorna (score, detalhes). Quanto maior o consenso + casamento textual/UF/nível, maior o score."""
+    import difflib as _dl
+    _sim = _dl.SequenceMatcher(None, unidecode(str(query or "")).upper(),
+                               unidecode(str(nome or "")).upper()).ratio()
+    _txt = _sim * 100.0
+    _cons = min(100.0, 30.0 + 20.0 * max(0, int(votos or 0) - 1))
+    _uf = 100.0 if (not uf_sol or not uf_cand or uf_sol == uf_cand) else 0.0
+    _niv = 100.0 if _nivel_compativel_consenso(nivel_sol, nivel_cand) else 45.0
+    _score = round(0.35 * _txt + 0.30 * _cons + 0.15 * _uf + 0.20 * _niv, 1)
+    return _score, {"textual": round(_txt, 1), "consenso": round(_cons, 1), "uf": round(_uf, 1),
+                    "nivel": round(_niv, 1), "similaridade": round(_sim, 3)}
 
 
 def _consenso_melhor_que_atual(consenso, score_atual, votos_minimos=2):
@@ -7645,6 +7696,15 @@ def resolver_consenso_geografico(texto, uf=None, score_atual=0):
     except Exception:
         pass
     _consenso = _votar_consenso(_cands)
+    # [CONSENSO-MULTIFONTE - 90ª geração] substitui o score simples pelo COMPOSTO e auditável, e leva o
+    # nível SOLICITADO em conta (retornado não mais específico que o pedido).
+    if _consenso:
+        _niv_sol = _nivel_espacial(texto, None, "", uf)
+        _sc, _det = _score_composto_consenso(texto, _consenso.get("nome", ""), _consenso.get("votos", 0),
+                                             uf, _consenso.get("uf", ""), _niv_sol, _consenso.get("nivel", ""))
+        _consenso["score_consenso"] = _sc
+        _consenso["score_detalhes"] = _det
+        _consenso["nivel_solicitado"] = _niv_sol
     return {"consenso": _consenso, "assume": _consenso_melhor_que_atual(_consenso, score_atual),
             "n_candidatos": len(_cands)}
 # ============================ fim do módulo de consenso ============================
@@ -7952,10 +8012,15 @@ with tab_individual:
                                 _rc = resolver_consenso_geografico(_txt_c, _uf_c, _sc_c)
                                 _cs = _rc.get("consenso")
                                 if _cs:
+                                    _det_c = _cs.get("score_detalhes", {})
+                                    _det_txt = (f" · componentes: txt {_det_c.get('textual','?')} / consenso "
+                                                f"{_det_c.get('consenso','?')} / uf {_det_c.get('uf','?')} / nível "
+                                                f"{_det_c.get('nivel','?')}") if _det_c else ""
                                     st.caption(f"{_lbl_c}: **{_cs['nome']}** ({_cs['nivel']}) · votos: {_cs['votos']} "
                                                f"[{', '.join(_cs['fontes'])}] · score {_cs['score_consenso']} · "
                                                f"`{_cs['lat']:.5f}, {_cs['lon']:.5f}`"
-                                               + ("  ·  ✅ **assumiria** (melhor que o atual)" if _rc['assume'] else "  ·  mantém o atual"))
+                                               + ("  ·  ✅ **assumiria** (melhor que o atual)" if _rc['assume'] else "  ·  mantém o atual")
+                                               + _det_txt)
                                 else:
                                     st.caption(f"{_lbl_c}: sem consenso ({_rc.get('n_candidatos', 0)} candidato(s))")
                     except Exception as _e_geo:
