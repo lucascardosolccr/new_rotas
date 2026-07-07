@@ -73,6 +73,13 @@
 #     retorna rota (fallback geodésico), o Validador sinaliza "🛶 possível acesso fluvial/isolado".
 #     Aditivo ao aviso geodésico existente (só display; não toca a lógica do pipeline). Estudo completo em
 #     ESTUDO_INTELIGENCIA_HIDROGRAFICA.md. Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
+#     EXTENSÃO (mesma geração): coluna 'Modo/Acesso' no LOTE e HUBS (helper puro _classificar_modo_acesso:
+#     Rodoviário / Rodoviário + Balsa / 🛶 Possível fluvial/isolado / Estimado geodésico) — derivada de
+#     'Fonte da Rota' + 'Balsas' + coordenadas já calculadas (custo ZERO). E MECANISMO ESTÁTICO gated para
+#     lista oficial: _municipio_acesso_fluvial + flag FLUVIAL_LISTA_ATIVA + conjunto _MUNICIPIOS_ACESSO_
+#     FLUVIAL (VAZIO por padrão — a fonte autoritativa é o IBGE REGIC "Ligações Rodoviárias e Hidroviárias";
+#     não cravei lista não verificada). Quando populada e ligada, sobrepõe o rótulo com "Acesso fluvial/
+#     isolado (lista oficial)". Ambos os helpers testados (teste_modo_acesso_111).
 #   v3.8 (110ª geração) → REMOÇÃO DO DISTBRASIL + ROTA TRAVADA POR CÓDIGO IBGE + ANÁLISE HIDROVIÁRIA + DOC
 #     Decisão de engenharia do usuário (fluxo majoritariamente de ENDEREÇOS, não pares municipais):
 #     (1) DISTBRASIL REMOVIDO POR COMPLETO — todas as funções (_distbrasil_*, _indicadores_distbrasil,
@@ -1253,6 +1260,51 @@ def _rotulo_metodo_rota(fonte_rota):
     if _fr and _fr not in ("DESCONHECIDA", "N/A", "NAO INFORMADA"):
         return f"Distância viária ({fonte_rota})"
     return "N/A"
+
+
+def _classificar_modo_acesso(fonte_rota, balsa, lat_o, lon_o, lat_d, lon_d):
+    """[INTEL-TERRITORIAL - 111ª geração] Classifica o MODO/ACESSO da rota a partir dos sinais que a
+    aplicação já tem (custo ZERO, sem dados externos):
+      • 'Rodoviário'                 → um motor viário (Google/OSRM) traçou a rota.
+      • 'Rodoviário + Balsa'         → rota viária que cruza travessia por balsa.
+      • '🛶 Possível fluvial/isolado' → geocodificação OK (coords válidas), mas NENHUM motor viário retornou
+                                        rota → pode ser município sem acesso rodoviário (ex.: 43/62 no AM).
+      • 'Estimado (geodésico)'       → fallback geodésico sem coordenadas válidas suficientes.
+    PURA e determinística (testável)."""
+    _fr = str(fonte_rota or "").upper()
+    _eh_geo = "GEOD" in _fr
+    _tem_balsa = str(balsa or "").strip().lower() in ("sim", "yes", "true", "1")
+
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    _geo_ok = bool((_num(lat_o) or _num(lon_o)) and (_num(lat_d) or _num(lon_d)))
+    if not _eh_geo:
+        return "Rodoviário + Balsa" if _tem_balsa else "Rodoviário"
+    return "🛶 Possível fluvial/isolado" if _geo_ok else "Estimado (geodésico)"
+
+
+# [INTEL-TERRITORIAL - 111ª geração] VERIFICAÇÃO ESTÁTICA (opcional/gated) por LISTA OFICIAL de municípios
+# de acesso fluvial/isolado (sem sistema viário). Fonte autoritativa recomendada: IBGE REGIC — "Ligações
+# Rodoviárias e Hidroviárias". A lista fica VAZIA por padrão (não cravamos dado não verificado); popule-a
+# com os Códigos IBGE (7 dígitos, texto) da base oficial e ligue a flag para ativar. Enquanto vazia/
+# desligada, a detecção DINÂMICA (_classificar_modo_acesso) segue cobrindo o caso, sem depender de lista.
+FLUVIAL_LISTA_ATIVA = False
+_MUNICIPIOS_ACESSO_FLUVIAL = frozenset()  # ex.: {"1301902", "1200328", ...} — popular via IBGE REGIC/DNIT
+
+
+def _municipio_acesso_fluvial(cod_ibge, conjunto=None):
+    """[INTEL-TERRITORIAL - 111ª geração] O município (Código IBGE) consta na lista oficial de acesso
+    fluvial/isolado? Retorna bool. `conjunto` injetável para teste; default = _MUNICIPIOS_ACESSO_FLUVIAL
+    (só consultado com FLUVIAL_LISTA_ATIVA). PURA em relação ao conjunto (testável)."""
+    if conjunto is None:
+        if not FLUVIAL_LISTA_ATIVA:
+            return False
+        conjunto = _MUNICIPIOS_ACESSO_FLUVIAL
+    _c = str(cod_ibge or "").strip()
+    return bool(_c) and _c in (conjunto or frozenset())
 
 
 def _montar_corpo_pesquisa(respostas, nota):
@@ -7255,6 +7307,22 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
                         linha_dict['Metodo Utilizado'] = _rotulo_metodo_rota(linha_dict.get('Fonte da Rota', ''))
                     except Exception:
                         linha_dict['Metodo Utilizado'] = "N/A"
+                    # [INTEL-TERRITORIAL - 111ª geração] Coluna 'Modo/Acesso' (detecção dinâmica, custo ZERO):
+                    # Rodoviário / Rodoviário + Balsa / 🛶 Possível fluvial/isolado / Estimado (geodésico).
+                    # Derivada de 'Fonte da Rota' + 'Balsas' + coordenadas já calculadas (res[19..22]).
+                    try:
+                        linha_dict['Modo/Acesso'] = _classificar_modo_acesso(
+                            linha_dict.get('Fonte da Rota', ''), linha_dict.get('Balsas', ''),
+                            res[19] if len(res) > 19 else 0.0, res[20] if len(res) > 20 else 0.0,
+                            res[21] if len(res) > 21 else 0.0, res[22] if len(res) > 22 else 0.0)
+                        # Sobreposição ESTÁTICA (gated): se um dos municípios consta na lista oficial de
+                        # acesso fluvial/isolado, prevalece o rótulo autoritativo. Vazia/desligada → não age.
+                        _cod_o_fl = str(linha_dict.get('Cod IBGE Origem', '') or '').strip()
+                        _cod_d_fl = str(linha_dict.get('Cod IBGE Destino', '') or '').strip()
+                        if _municipio_acesso_fluvial(_cod_o_fl) or _municipio_acesso_fluvial(_cod_d_fl):
+                            linha_dict['Modo/Acesso'] = "🛶 Acesso fluvial/isolado (lista oficial)"
+                    except Exception:
+                        linha_dict['Modo/Acesso'] = "N/A"
                     _aud = res[39] if len(res) > 39 and isinstance(res[39], dict) else None
                     _alertas_auto = []
                     if _aud:
