@@ -62,6 +62,17 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (111ª geração) → ESTUDO HIDROGRÁFICO (veredito) + DETECÇÃO DINÂMICA DE ACESSO FLUVIAL/ISOLADO [INTEL-TERRITORIAL]
+#     Estudo profundo de viabilidade da camada hidrográfica (ANTAQ/BIT/DNIT) + comparação de motores
+#     (Google/OSRM/GraphHopper/Valhalla/ORS/ArcGIS/pgRouting). VEREDITO: NÃO construir a camada pesada —
+#     roteamento fluvial não tem API precisa; dados oficiais são grosseiros (1:250k–1:1M) e sazonais;
+#     detector de barreira por rio duplicaria, com menos precisão, o que a app já faz (balsa do motor +
+#     sinuosidade); nenhuma troca de motor compensa. ÚNICO ganho real: sinalizar municípios de ACESSO
+#     FLUVIAL/ISOLADO (~60–70 no país; 43/62 no AM). Implementado da forma mais inteligente e SEM dados
+#     externos: DETECÇÃO DINÂMICA — quando a geocodificação tem sucesso mas NENHUM motor rodoviário
+#     retorna rota (fallback geodésico), o Validador sinaliza "🛶 possível acesso fluvial/isolado".
+#     Aditivo ao aviso geodésico existente (só display; não toca a lógica do pipeline). Estudo completo em
+#     ESTUDO_INTELIGENCIA_HIDROGRAFICA.md. Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
 #   v3.8 (110ª geração) → REMOÇÃO DO DISTBRASIL + ROTA TRAVADA POR CÓDIGO IBGE + ANÁLISE HIDROVIÁRIA + DOC
 #     Decisão de engenharia do usuário (fluxo majoritariamente de ENDEREÇOS, não pares municipais):
 #     (1) DISTBRASIL REMOVIDO POR COMPLETO — todas as funções (_distbrasil_*, _indicadores_distbrasil,
@@ -8809,6 +8820,23 @@ with tab_individual:
                         st.warning("📐 **Projeção Geodésica Adaptativa (motores viários indisponíveis):** a distância foi **estimada** pela linha "
                                    "reta entre os pontos multiplicada por um fator de desvio rodoviário — **não** é uma rota viária medida. "
                                    "Recomenda-se **reprocessar** quando os motores responderem, para obter a quilometragem oficial.")
+                        # [INTEL-TERRITORIAL - 111ª geração] Detecção DINÂMICA de acesso fluvial/isolado:
+                        # se a geocodificação teve sucesso (coordenadas válidas) mas NENHUM motor rodoviário
+                        # retornou trajeto, pode ser um município SEM acesso rodoviário (ex.: ~43 dos 62 no
+                        # Amazonas). Sem dados externos — usa apenas o comportamento dos motores.
+                        try:
+                            _lat_o_g = float(res_ind[19]) if len(res_ind) > 19 else 0.0
+                            _lon_o_g = float(res_ind[20]) if len(res_ind) > 20 else 0.0
+                            _lat_d_g = float(res_ind[21]) if len(res_ind) > 21 else 0.0
+                            _lon_d_g = float(res_ind[22]) if len(res_ind) > 22 else 0.0
+                            _geo_ok_iso = bool((_lat_o_g or _lon_o_g) and (_lat_d_g or _lon_d_g))
+                        except (ValueError, TypeError):
+                            _geo_ok_iso = False
+                        if _geo_ok_iso:
+                            st.caption("🛶 **Possível acesso fluvial/isolado:** a localização foi encontrada, mas nenhum motor "
+                                       "rodoviário traçou trajeto. Se isso **persistir** após reprocessar, é provável que um dos pontos "
+                                       "seja um **município de acesso fluvial ou isolado** (sem ligação rodoviária) — comum na Amazônia. "
+                                       "Nesses casos, a estimativa geodésica não representa uma viagem rodoviária real.")
                     elif _eh_osrm_vencedor:
                         cc2.metric("Critério", "🏆 Menor Distância",
                                    help="O OSRM encontrou um trajeto mais curto que o Google (acima da tolerância de 2%).")
