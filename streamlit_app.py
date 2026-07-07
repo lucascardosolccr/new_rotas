@@ -62,6 +62,37 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (113ª geração) → CORREÇÃO CRÍTICA: ROTA POR CÓDIGO IBGE NÃO TRAÇAVA (bug de sombreamento) [IBGE-INPUT]
+#     BUG relatado: informar Códigos IBGE (ex.: 2702702 Feliz Deserto/AL, 2704203 Limoeiro de Anadia/AL)
+#     no Validador NÃO traçava rota (vinha "Município Não Mapeado", coords 0,0), embora os códigos existam
+#     na base com coordenadas. CAUSA RAIZ: a base VIVA (GitHub/pickle) traz entradas com o mesmo nome/UF
+#     porém SEM codigo_ibge; o merge antigo (_mesclar_base_embutida) só adicionava UF ausente e NÃO
+#     sobrescrevia — então a entrada embarcada (com código) ficava de fora, e o índice reverso perdia esses
+#     códigos (agravado pelo cache @st.cache_data). CORREÇÃO em DUAS camadas (fallback robusto): (1)
+#     _mesclar_base_embutida agora ENRIQUECE entradas existentes sem código/coordenada com os dados da base
+#     embarcada (conserta _info_municipio_ibge → Cód IBGE no Lote/Hubs e todos os consumidores); (2)
+#     _indice_ibge_por_codigo passou a ser construído a partir da BASE EMBUTIDA diretamente (fundação
+#     garantida: 5571 códigos com coords), com a base viva só como overlay — o Código IBGE NUNCA deixa de
+#     resolver por estado da base viva/cache. Também: banner "🔒 Rota travada" só aparece quando o ponto
+#     REALMENTE resolveu (fonte IBGE_CODIGO_OFICIAL), evitando mensagem contraditória. Colunas 'UF Origem'/
+#     'UF Destino' confirmadas no Lote/Hubs (ao lado de Cod IBGE Origem/Destino). Provado por teste no
+#     cenário exato do bug (teste_ibge_input_fix_113). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
+#     ADICIONALMENTE: ANÁLISE HÍDRICA POR ESTADO (UF) nos resultados do Lote/Hubs — helper puro
+#     _analise_hidrica_por_uf agrega, por UF de origem, rotas com balsa/ferry e municípios de acesso
+#     fluvial/isolado (tabela + métricas + gráfico de barras), só aparecendo quando há esses casos.
+#     Testado (teste_analise_hidrica_uf_113). Atende ao pedido de discriminar por estado o uso de balsa/
+#     corpos hídricos.
+#   v3.8 (112ª geração) → LISTA OFICIAL IBGE REGIC DE ACESSO FLUVIAL/ISOLADO (populada + ativada) [INTEL-TERRITORIAL]
+#     A partir da base oficial IBGE REGIC 2018 (REGIC2018_Rotas_Brasil.xlsx — 71.081 ligações, coluna
+#     'modal'), extraí os municípios que NÃO têm nenhuma ligação rodoviária (só 'Hidroviário' e/ou 'Aéreo',
+#     excluindo 'Hidro-Rodoviário' que é rodovia+balsa): 18 municípios (15 AM, 2 PA/Marajó, 1 PE/Fernando
+#     de Noronha). Populado _MUNICIPIOS_ACESSO_FLUVIAL e LIGADO FLUVIAL_LISTA_ATIVA=True. Agora os DOIS
+#     mecanismos operam juntos: (a) DINÂMICO (111ª) — coluna Modo/Acesso no Lote/Hubs + aviso no Validador
+#     quando nenhum motor viário retorna rota; (b) ESTÁTICO/OFICIAL (112ª) — sobrepõe com "🛶 Acesso
+#     fluvial/isolado (lista oficial)" no Lote/Hubs e novo AVISO de auditoria/XAI no Validador
+#     ("não representa viagem viável por estrada; considere hidroviário/aéreo", citando a fonte REGIC).
+#     Aditivo e seguro (só afeta os 18 códigos). Testado (teste_fluvial_lista_112 + teste_modo_acesso_111).
+#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
 #   v3.8 (111ª geração) → ESTUDO HIDROGRÁFICO (veredito) + DETECÇÃO DINÂMICA DE ACESSO FLUVIAL/ISOLADO [INTEL-TERRITORIAL]
 #     Estudo profundo de viabilidade da camada hidrográfica (ANTAQ/BIT/DNIT) + comparação de motores
 #     (Google/OSRM/GraphHopper/Valhalla/ORS/ArcGIS/pgRouting). VEREDITO: NÃO construir a camada pesada —
@@ -1291,8 +1322,17 @@ def _classificar_modo_acesso(fonte_rota, balsa, lat_o, lon_o, lat_d, lon_d):
 # Rodoviárias e Hidroviárias". A lista fica VAZIA por padrão (não cravamos dado não verificado); popule-a
 # com os Códigos IBGE (7 dígitos, texto) da base oficial e ligue a flag para ativar. Enquanto vazia/
 # desligada, a detecção DINÂMICA (_classificar_modo_acesso) segue cobrindo o caso, sem depender de lista.
-FLUVIAL_LISTA_ATIVA = False
-_MUNICIPIOS_ACESSO_FLUVIAL = frozenset()  # ex.: {"1301902", "1200328", ...} — popular via IBGE REGIC/DNIT
+FLUVIAL_LISTA_ATIVA = True
+# [INTEL-TERRITORIAL - 112ª geração] Municípios de acesso SÓ fluvial/aéreo (sem qualquer ligação
+# rodoviária), extraídos da base oficial IBGE REGIC 2018 — "Base de referência de distâncias rodoviárias,
+# hidroviárias e aéreas" (REGIC2018_Rotas_Brasil.xlsx). Critério: o município não aparece em NENHUMA
+# ligação 'Rodoviário' nem 'Hidro-Rodoviário' — apenas 'Hidroviário' e/ou 'Aéreo'. São 18 (15 AM, 2 PA,
+# 1 PE/Fernando de Noronha). Fonte autoritativa; atualizável quando o IBGE publicar nova edição.
+_MUNICIPIOS_ACESSO_FLUVIAL = frozenset({
+    "1300029", "1300201", "1300409", "1300680", "1301605", "1302108", "1302207", "1302306",
+    "1302801", "1303007", "1303601", "1303908", "1304104", "1304237", "1304260", "1500701",
+    "1502509", "2605459",
+})
 
 
 def _municipio_acesso_fluvial(cod_ibge, conjunto=None):
@@ -1305,6 +1345,34 @@ def _municipio_acesso_fluvial(cod_ibge, conjunto=None):
         conjunto = _MUNICIPIOS_ACESSO_FLUVIAL
     _c = str(cod_ibge or "").strip()
     return bool(_c) and _c in (conjunto or frozenset())
+
+
+def _analise_hidrica_por_uf(df):
+    """[INTEL-TERRITORIAL - 113ª geração] Agrega, por UF de origem, indicadores hídricos da planilha
+    processada: total de rotas, rotas com balsa/ferry e rotas de acesso fluvial/isolado. Retorna um
+    DataFrame ordenado por 'Com Balsa' (desc). PURO (não usa Streamlit); vazio se faltam colunas/dados."""
+    import pandas as _pd
+    if df is None or len(df) == 0:
+        return _pd.DataFrame()
+    _uf_col = "UF Origem" if "UF Origem" in df.columns else ("UF" if "UF" in df.columns else None)
+    if _uf_col is None:
+        return _pd.DataFrame()
+    _d = df.copy()
+    _d["_uf"] = _d[_uf_col].fillna("").astype(str).str.strip().replace("", "N/A")
+    if "Balsas" in _d.columns:
+        _d["_balsa"] = _d["Balsas"].fillna("").astype(str).str.strip().str.lower().isin(["sim", "yes", "true", "1"])
+    else:
+        _d["_balsa"] = False
+    if "Modo/Acesso" in _d.columns:
+        _d["_fluvial"] = _d["Modo/Acesso"].fillna("").astype(str).str.contains("fluvial", case=False, na=False)
+    else:
+        _d["_fluvial"] = False
+    _g = _d.groupby("_uf").agg(Rotas=("_uf", "size"), **{"Com Balsa": ("_balsa", "sum"),
+                                                          "Acesso Fluvial/Isolado": ("_fluvial", "sum")}).reset_index()
+    _g = _g.rename(columns={"_uf": "UF"})
+    _g["% com Balsa"] = (_g["Com Balsa"] / _g["Rotas"] * 100).round(1)
+    _g = _g.sort_values(["Com Balsa", "Rotas"], ascending=False).reset_index(drop=True)
+    return _g
 
 
 def _montar_corpo_pesquisa(respostas, nota):
@@ -3574,10 +3642,11 @@ def _carregar_base_embutida():
 
 
 def _mesclar_base_embutida(base_atual):
-    """[IBGE-EMBUTIDA - 83ª geração] Mescla a base embutida na base carregada, preenchendo QUALQUER
-    município/UF ausente. NÃO sobrescreve entradas já presentes (a base viva, quando existe, tem
-    prioridade). Garante que Cód IBGE/Região/Municípios Próximos nunca fiquem vazios por falha de
-    rede/API/pickle. Defensivo → devolve a base atual em erro."""
+    """[IBGE-EMBUTIDA - 83ª / 113ª geração] Mescla a base embutida na base carregada. Além de ADICIONAR
+    município/UF ausente, agora ENRIQUECE entradas já existentes que estejam SEM codigo_ibge ou SEM
+    coordenada — causa raiz do 'Cód IBGE: —' e da falha de rota por Código IBGE quando a base viva traz
+    o mesmo nome/UF sem código. Não sobrescreve dados válidos já presentes. Defensivo → devolve a base
+    atual em erro."""
     try:
         _emb = _carregar_base_embutida()
         if not _emb:
@@ -3585,10 +3654,17 @@ def _mesclar_base_embutida(base_atual):
         base = base_atual if isinstance(base_atual, dict) else {}
         for _nome, _itens in _emb.items():
             _existentes = base.setdefault(_nome, [])
-            _ufs_pres = {it.get("uf") for it in _existentes}
             for _it in _itens:
-                if _it.get("uf") not in _ufs_pres:
+                _match = next((e for e in _existentes if e.get("uf") == _it.get("uf")), None)
+                if _match is None:
                     _existentes.append(dict(_it))
+                else:
+                    # ENRIQUECIMENTO: preenche código/coordenadas ausentes na entrada viva
+                    if not _match.get("codigo_ibge") and _it.get("codigo_ibge"):
+                        _match["codigo_ibge"] = _it["codigo_ibge"]
+                    if not (_match.get("lat") or _match.get("lon")) and (_it.get("lat") or _it.get("lon")):
+                        _match["lat"] = _it.get("lat", 0.0)
+                        _match["lon"] = _it.get("lon", 0.0)
         return base
     except Exception:
         return base_atual
@@ -3739,20 +3815,38 @@ LISTA_TOPONIMOS = list(IBGE_MUNICIPIOS.keys()) + list(IBGE_DISTRITOS.keys())
 @st.cache_data(show_spinner=False)
 def _indice_ibge_por_codigo():
     """Índice reverso {codigo_ibge (str 7 díg): {municipio, uf, lat, lon}} para resolução O(1) do
-    Código IBGE. Construído UMA vez a partir da base em memória; prefere itens com coordenada válida."""
+    Código IBGE. [IBGE-INPUT - 113ª geração] FUNDAÇÃO GARANTIDA: construído a partir da BASE EMBUTIDA
+    diretamente (offline, sempre com os 5571 códigos e coordenadas válidas), pois a base viva pode ter
+    entradas homônimas SEM codigo_ibge que, no merge, mascaram a embutida e some código do índice. A base
+    viva (IBGE_MUNICIPIOS) entra apenas como OVERLAY não destrutivo (preenche códigos ausentes). Assim, o
+    Código IBGE como entrada NUNCA deixa de resolver por estado da base viva/cache."""
     _idx = {}
-    for _itens in IBGE_MUNICIPIOS.values():
-        for _it in _itens:
-            _cod = _it.get("codigo_ibge")
-            if not _cod:
-                continue
-            _ck = str(_cod).strip()
-            if len(_ck) != 7 or not _ck.isdigit():
-                continue
-            _prev = _idx.get(_ck)
-            if _prev is None or (not _prev.get("lat") and _it.get("lat")):
-                _idx[_ck] = {"municipio": _it.get("municipio", ""), "uf": _it.get("uf", ""),
-                             "lat": _it.get("lat", 0.0) or 0.0, "lon": _it.get("lon", 0.0) or 0.0}
+
+    def _ingerir(_fonte, _sobrescrever_sem_coord):
+        for _itens in _fonte.values():
+            for _it in _itens:
+                _cod = _it.get("codigo_ibge")
+                if not _cod:
+                    continue
+                _ck = str(_cod).strip()
+                if len(_ck) != 7 or not _ck.isdigit():
+                    continue
+                _prev = _idx.get(_ck)
+                _tem_coord = bool(_it.get("lat") or _it.get("lon"))
+                if _prev is None or (_sobrescrever_sem_coord and not (_prev.get("lat") or _prev.get("lon")) and _tem_coord):
+                    _idx[_ck] = {"municipio": _it.get("municipio", ""), "uf": _it.get("uf", ""),
+                                 "lat": _it.get("lat", 0.0) or 0.0, "lon": _it.get("lon", 0.0) or 0.0}
+
+    # (1) base EMBUTIDA — fundação garantida (todos os códigos, coords válidas)
+    try:
+        _ingerir(_carregar_base_embutida(), True)
+    except Exception:
+        pass
+    # (2) base VIVA como overlay: só adiciona códigos ainda ausentes, ou melhora coords faltantes
+    try:
+        _ingerir(IBGE_MUNICIPIOS, True)
+    except Exception:
+        pass
     return _idx
 
 
@@ -8617,19 +8711,19 @@ with tab_individual:
                 
             if res_ind and res_ind[28] != "Falha na leitura da célula (Campo Vazio)." and "FALHA INTERNA" not in res_ind[28]:
                 st.success("✅ Rota estabelecida com sucesso na malha viária!")
-                # [IBGE-INPUT - 110ª geração] Banner de ROTA TRAVADA: quando origem e/ou destino foram
-                # informados por Código IBGE, a identidade oficial (município/UF/coordenada da sede) é
-                # resgatada da base e ADOTADA — a rota fica "travada" nessa identidade oficial.
+                # [IBGE-INPUT - 113ª geração] Banner de ROTA TRAVADA: só afirma "travada" quando o ponto
+                # foi REALMENTE resolvido pelo Código IBGE (fonte IBGE_CODIGO_OFICIAL) — evita mensagem
+                # contraditória caso a resolução falhe.
                 _cod_ori_lock = _e_codigo_ibge(orig_ind)
                 _cod_des_lock = _e_codigo_ibge(dest_ind)
-                if _cod_ori_lock or _cod_des_lock:
-                    _partes_lock = []
-                    if _cod_ori_lock:
-                        _partes_lock.append(f"**Origem** travada no código `{_cod_ori_lock}` "
-                                            f"(fonte: {res_ind[11] if len(res_ind) > 11 else '—'})")
-                    if _cod_des_lock:
-                        _partes_lock.append(f"**Destino** travado no código `{_cod_des_lock}` "
-                                            f"(fonte: {res_ind[17] if len(res_ind) > 17 else '—'})")
+                _fonte_o_lk = str(res_ind[11] if len(res_ind) > 11 else "")
+                _fonte_d_lk = str(res_ind[17] if len(res_ind) > 17 else "")
+                _partes_lock = []
+                if _cod_ori_lock and _fonte_o_lk == "IBGE_CODIGO_OFICIAL":
+                    _partes_lock.append(f"**Origem** travada no código `{_cod_ori_lock}`")
+                if _cod_des_lock and _fonte_d_lk == "IBGE_CODIGO_OFICIAL":
+                    _partes_lock.append(f"**Destino** travado no código `{_cod_des_lock}`")
+                if _partes_lock:
                     st.info("🔒 **Rota travada na identidade oficial do IBGE.** " + " · ".join(_partes_lock)
                             + ". O município, a UF e a coordenada oficial da sede foram resgatados da base "
                             "e adotados como identidade definitiva (sem substituição por fallback/consenso). "
@@ -8752,6 +8846,25 @@ with tab_individual:
                                     st.caption(_av['divergencia'])
                     except Exception as _e_av:
                         logger.error(f"[IBGE-INPUT] Falha na auditoria de validação IBGE: {_e_av}")
+                    # [INTEL-TERRITORIAL - 112ª geração] Sinalização de ACESSO FLUVIAL/ISOLADO (base oficial
+                    # IBGE REGIC 2018): se origem e/ou destino é um município sem ligação rodoviária, a rota
+                    # terrestre é inviável — aviso de auditoria + XAI. Gated por FLUVIAL_LISTA_ATIVA.
+                    try:
+                        _fl_o = _municipio_acesso_fluvial(_id_o.get('cod_ibge', ''))
+                        _fl_d = _municipio_acesso_fluvial(_id_d.get('cod_ibge', ''))
+                        if _fl_o or _fl_d:
+                            _quais_fl = []
+                            if _fl_o:
+                                _quais_fl.append(f"a **origem** ({str(_id_o['municipio']).title()}/{_id_o['uf']})")
+                            if _fl_d:
+                                _quais_fl.append(f"o **destino** ({str(_id_d['municipio']).title()}/{_id_d['uf']})")
+                            st.warning("🛶 **Acesso fluvial/isolado (base oficial IBGE REGIC):** " + " e ".join(_quais_fl)
+                                       + " não possui ligação rodoviária — o acesso é por via **fluvial** (ou aérea). A "
+                                       "distância rodoviária **não representa uma viagem viável** por estrada; considere o "
+                                       "transporte hidroviário/aéreo. *(Fonte: IBGE REGIC 2018 — Ligações Rodoviárias e "
+                                       "Hidroviárias.)*")
+                    except Exception as _e_fl:
+                        logger.error(f"[INTEL-TERRITORIAL] Falha na sinalização de acesso fluvial: {_e_fl}")
                     # [GRANULARIDADE - 85ª geração] IDENTIDADE GEOGRÁFICA (endereço + coordenadas
                     # efetivamente ROTEADAS), SEPARADA da identidade administrativa (município/IBGE)
                     # acima. Mede a granularidade pela distância do ponto roteado ao centróide do
@@ -9792,6 +9905,27 @@ with tab_processamento:
             st.write("---")
             st.markdown("### 📋 Prévia Interativa da Planilha Final")
             st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
+            # [INTEL-TERRITORIAL - 113ª geração] Análise hídrica POR ESTADO (UF): distribuição das rotas com
+            # balsa/ferry e dos municípios de acesso fluvial/isolado. Só aparece quando há esses casos.
+            try:
+                _uf_hidro = _analise_hidrica_por_uf(st.session_state['df_processado'])
+                if (not _uf_hidro.empty) and (int(_uf_hidro["Com Balsa"].sum()) > 0
+                                               or int(_uf_hidro["Acesso Fluvial/Isolado"].sum()) > 0):
+                    with st.expander("🌊 Análise Hídrica por Estado (UF) — balsa e acesso fluvial", expanded=False):
+                        st.caption("Distribuição, por **UF de origem**, das rotas que usam **balsa/ferry** e dos "
+                                   "municípios de **acesso fluvial/isolado** (base oficial IBGE REGIC + detecção dinâmica).")
+                        _c1h, _c2h, _c3h = st.columns(3)
+                        _c1h.metric("Rotas com balsa", int(_uf_hidro["Com Balsa"].sum()))
+                        _c2h.metric("Rotas de acesso fluvial/isolado", int(_uf_hidro["Acesso Fluvial/Isolado"].sum()))
+                        _c3h.metric("UFs com corpos hídricos na rota",
+                                    int((_uf_hidro["Com Balsa"] + _uf_hidro["Acesso Fluvial/Isolado"] > 0).sum()))
+                        st.dataframe(_uf_hidro, use_container_width=True, hide_index=True)
+                        _chart_h = _uf_hidro[_uf_hidro["Com Balsa"] > 0].set_index("UF")[["Com Balsa"]]
+                        if not _chart_h.empty:
+                            st.markdown("**Rotas com balsa por UF**")
+                            st.bar_chart(_chart_h)
+            except Exception as _e_uh:
+                logger.error(f"[INTEL-TERRITORIAL] Falha na análise hídrica por UF: {_e_uh}")
             col_down1, col_down2 = st.columns(2)
             with col_down1:
                 st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
