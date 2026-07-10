@@ -62,6 +62,54 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (126ª geração) → CAMADA DE DESAMBIGUAÇÃO DE MUNICÍPIOS HOMÔNIMOS (offline, com auditoria) [HOMONIMO]
+#     Resolve o problema crítico de homônimos (Santana AP×BA, São Domingos GO×SC, São Miguel do Araguaia
+#     GO, etc.) que causava rotas com o município errado no lote. A app JÁ desambiguava por UF explícita e
+#     por código IBGE (retornando None com segurança quando faltava) — o buraco real era o CONTEXTO DA
+#     PLANILHA. Implementado 100% OFFLINE sobre a base IBGE embutida (sem adicionar APIs pagas — inviável
+#     no alvo $0/Streamlit Cloud/1GB; e determinístico é mais explicável). Motor PURO/testável:
+#     _perfil_uf_planilha (perfil de UF do lote a partir de UFs confiáveis) + _validar_ponto_uf (validação
+#     espacial via bounding box oficial) + _desambiguar_municipio_homonimo (HIERARQUIA de evidências:
+#     código IBGE → UF explícita → nome único → contexto da planilha ≥ limiar, com validação espacial;
+#     senão indeterminado — NÃO força). Pós-passo _enriquecer_desambiguacao_homonimos ANEXA (sem refatorar
+#     _montar_dataframe_final) 8 colunas de auditoria ao Lote e à Alocação: Homônimo Detectado, UF
+#     Desambiguada Origem/Destino, Método Desambiguação, Validação Espacial, Risco de Confusão, Confiança
+#     Identificação, Justificativa Homônimos. UI: painel "🧭 Auditoria de Homônimos" no Lote (contadores de
+#     risco, UF dominante do contexto, tabela priorizada por risco). Honesto: contexto = confiança Média
+#     (não oficial); código/UF = Alta. Validação espacial PEGA a geocodificação do homônimo errado
+#     (coordenada fora da UF → Risco Alto). Provado por teste sobre o CÓDIGO REAL (motor + pós-passo em
+#     DataFrame sintético). Aditivo e defensivo (try/except → df intacto em erro). 12 abas, RotaPipeline
+#     41, balões 1×, score imutável, 0 except nus novos.
+#   v3.8 (125ª geração) → SEQUENCIAMENTO MULTI-PARADA / MILK-RUN (TSP) [TSP]
+#     Dada N paradas distintas (≤25), a melhor ORDEM de visita numa única rota. Núcleo PURO _tsp_ordem
+#     (vizinho-mais-próximo + melhoria 2-opt), reusando _haversine_matriz da 121ª. UI na aba de Lote,
+#     gated pelo nº de paradas distintas (dedup por município/coord), com opção de rota fechada/aberta,
+#     tabela ordenada com pernas e mapa. Honesto: ordena por linha reta (bom ponto de partida). Isolado.
+#   v3.8 (124ª geração) → NARRATIVA EXECUTIVA DO LOTE [NARRATIVA]
+#     Estende a leitura do analista (118ª) para o lote inteiro: um parágrafo em linguagem natural com
+#     total de rotas, % totalmente rodoviário, dependência de balsa/fluvial (REGIC), distância média/máx,
+#     confiança média e o município de maior dor logística. Helper PURO _narrativa_executiva_lote (recebe
+#     só AGREGADOS — não toca DataFrame). UI: expander na aba de Lote. Isolado em try/except.
+#   v3.8 (123ª geração) → MAPA DE CALOR DE DOR LOGÍSTICA POR MUNICÍPIO [DOR-LOG]
+#     Índice 0-100 de dificuldade/custo de atendimento por município de destino, combinando sinais JÁ
+#     medidos: distância, sinuosidade (viária/reta), dependência de balsa e acesso fluvial/isolado (IBGE
+#     REGIC). Helpers PUROS _indice_dor_logistica + _agregar_dor_logistica + _cor_dor_logistica. UI na aba
+#     de Lote: mapa colorido (verde→vermelho) por dor + ranking dos municípios mais difíceis. Painel
+#     estratégico ('onde entregar é mais difícil'). Índice relativo/comparativo. Isolado em try/except.
+#   v3.8 (122ª geração) → ROTAS DOURADAS: PRIORIDADE NO VALIDADOR (override) + RECONCILIAÇÃO/DRIFT [GOLDEN-OVERRIDE][GOLDEN-RECON]
+#     Fecha o loop do flywheel da 120ª de forma SEGURA. (A) OVERRIDE opt-in: checkbox "Priorizar rotas
+#     verificadas" (padrão DESLIGADO ⇒ zero regressão). Ligado, se a rota já está na caderneta, o valor
+#     VERIFICADO é servido na hora e o pipeline é PULADO (res_ind=None → o bloco de exibição, guardado por
+#     `if res_ind`, é ignorado com segurança; verificado que NÃO há `else` de falha nesse if). Envolto em
+#     try/except: qualquer erro cai no cálculo normal pelos motores. NÃO reconstrói o RotaPipeline (mostra
+#     um painel verificado enxuto) nem toca no hot-path do lote. (B) RECONCILIAÇÃO/DRIFT (padrão, com override
+#     desligado): ao recalcular uma rota já verificada, a Caderneta compara recém-calculado × verificado
+#     usando _metricas_divergencia; se ≤10% → ✅ confere; se >10% → ⚠️ divergência (via mudou ou verificação
+#     obsoleta) + re-verificação em 1 clique. Helper puro _reconciliar_rota_dourada. Escolha honesta: o
+#     override cego (pular cálculo) pode servir dado obsoleto — por isso o padrão recalcula e reconcilia,
+#     detectando drift; a prioridade pura fica como opção. Provado por teste sobre o CÓDIGO REAL
+#     (teste_golden_recon_122: confirmado/divergente/sem_registro/limiar; simétrico à métrica do app).
+#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
 #   v3.8 (121ª geração) → OTIMIZADOR DE LOCALIZAÇÃO DE HUB (‘onde abrir o próximo?’) [HUBOPT]
 #     Salto descritivo→prescritivo: o INVERSO da alocação. Dada a distribuição de clientes (coordenadas
 #     Lat/Lon Origem JÁ calculadas — custo ZERO, sem rede), sugere ONDE posicionar p hub(s) para minimizar
@@ -2409,6 +2457,138 @@ def _listar_rotas_douradas(store=None):
     return regs
 
 
+def _reconciliar_rota_dourada(km_calculado, registro_dourado, limiar_pct=10.0):
+    """[GOLDEN-RECON - 122ª geração] Reconcilia o km recém-calculado com o valor VERIFICADO (golden).
+    Detecta DRIFT (a via mudou ou a verificação está desatualizada). Usa a métrica de divergência
+    centralizada do app (_metricas_divergencia: |a−b|/max(a,b)×100, em [0,100]). PURO. Retorna dict
+    {verificada, km_verificado, km_calculado, divergencia_km, divergencia_pct, status, classificacao};
+    status ∈ {'sem_registro', 'confirmado', 'divergente'}."""
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    kv = _f((registro_dourado or {}).get("km")) if isinstance(registro_dourado, dict) else None
+    kc = _f(km_calculado)
+    if kv is None or kv <= 0:
+        return {"verificada": False, "km_verificado": None, "km_calculado": kc,
+                "divergencia_km": 0.0, "divergencia_pct": 0.0, "status": "sem_registro", "classificacao": ""}
+    if kc is None or kc <= 0:
+        return {"verificada": True, "km_verificado": round(kv, 1), "km_calculado": None,
+                "divergencia_km": 0.0, "divergencia_pct": 0.0, "status": "confirmado", "classificacao": ""}
+    _m = _metricas_divergencia(kv, kc)
+    pct = _m["pct"] if _m else round(abs(kv - kc) / max(kv, kc) * 100.0, 1)
+    status = "divergente" if pct > limiar_pct else "confirmado"
+    return {"verificada": True, "km_verificado": round(kv, 1), "km_calculado": round(kc, 1),
+            "divergencia_km": round(kc - kv, 1), "divergencia_pct": pct, "status": status,
+            "classificacao": (_m["classificacao"] if _m else "")}
+
+
+def _indice_dor_logistica(dist_viaria, linha_reta, tem_balsa, modo_acesso, dist_max_ref=1500.0):
+    """[DOR-LOG - 123ª geração] Índice 0-100 de 'dor logística' de uma rota: quão difícil/custoso é
+    atender aquele destino. Combina sinais JÁ medidos — distância absoluta (normalizada por dist_max_ref),
+    sinuosidade (viária/reta), dependência de balsa e acesso fluvial/isolado (REGIC). PURO."""
+    def _f(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+    dv, lr = _f(dist_viaria), _f(linha_reta)
+    _m = str(modo_acesso or "").lower()
+    _fluvial = ("fluvial" in _m) or ("isolado" in _m)
+    if lr > 0 and dv > 0:
+        c_sin = min(100.0, max(0.0, (dv / lr - 1.4) / (3.0 - 1.4) * 100.0))
+    else:
+        c_sin = 0.0
+    c_dist = min(100.0, max(0.0, (dv / dist_max_ref) * 100.0)) if dv > 0 else 0.0
+    c_balsa = 100.0 if tem_balsa else 0.0
+    c_isol = 100.0 if _fluvial else 0.0
+    dor = 0.30 * c_dist + 0.25 * c_sin + 0.25 * c_balsa + 0.20 * c_isol
+    return round(max(0.0, min(100.0, dor)), 1)
+
+
+def _agregar_dor_logistica(registros):
+    """[DOR-LOG - 123ª geração] Agrega dicts {municipio, dor, lat, lon} por município → lista ordenada
+    por dor média desc: [{municipio, dor_media, n, lat, lon}]. PURO."""
+    _por = {}
+    for r in registros:
+        mun = str(r.get("municipio", "") or "").strip()
+        if not mun or mun.lower() == "nan":
+            continue
+        if mun not in _por:
+            _por[mun] = {"dores": [], "lat": r.get("lat"), "lon": r.get("lon")}
+        _por[mun]["dores"].append(float(r.get("dor", 0.0)))
+    out = [{"municipio": mun, "dor_media": round(sum(d["dores"]) / len(d["dores"]), 1),
+            "n": len(d["dores"]), "lat": d["lat"], "lon": d["lon"]}
+           for mun, d in _por.items() if d["dores"]]
+    out.sort(key=lambda x: x["dor_media"], reverse=True)
+    return out
+
+
+def _cor_dor_logistica(dor):
+    """[DOR-LOG - 123ª geração] Gradiente verde→amarelo→vermelho (hex) para um valor de dor 0-100. PURO."""
+    d = max(0.0, min(100.0, float(dor) if dor is not None else 0.0))
+    if d < 50:
+        r, g = int(255 * (d / 50.0)), 200
+    else:
+        r, g = 255, int(200 * (1 - (d - 50.0) / 50.0))
+    return f"#{r:02x}{g:02x}35"
+
+
+def _narrativa_executiva_lote(stats):
+    """[NARRATIVA - 124ª geração] Narrativa executiva em linguagem natural a partir de AGREGADOS do lote
+    (dict) — NÃO acessa DataFrame (recebe números prontos → PURO e testável). Estende a leitura do analista
+    (118ª) para o lote inteiro. Chaves: total, pct_rodoviario, n_balsa, n_fluvial, dist_media, dist_max,
+    score_medio, uf_top, dor_top_mun, dor_top_valor. Retorna str (Markdown)."""
+    def _i(k, d=0):
+        try:
+            return int(stats.get(k, d))
+        except (TypeError, ValueError):
+            return d
+
+    def _f(k, d=0.0):
+        try:
+            return float(stats.get(k, d))
+        except (TypeError, ValueError):
+            return d
+    total = _i("total")
+    if total <= 0:
+        return "Nenhuma rota válida para resumir."
+    partes = [f"Foram processadas **{total:,} rota(s)**".replace(",", ".")]
+    _pct_rod = _f("pct_rodoviario")
+    if _pct_rod > 0:
+        partes[-1] += f", das quais **{_pct_rod:.0f}% são totalmente rodoviárias**"
+    partes[-1] += "."
+    _nb, _nf = _i("n_balsa"), _i("n_fluvial")
+    if _nb > 0 or _nf > 0:
+        _h = []
+        if _nb > 0:
+            _h.append(f"**{_nb}** dependem de **balsa/ferry**")
+        if _nf > 0:
+            _h.append(f"**{_nf}** têm **acesso fluvial/isolado** (IBGE REGIC)")
+        partes.append("Do total, " + " e ".join(_h) + " — pontos que exigem atenção logística especial.")
+    else:
+        partes.append("Nenhuma rota depende de balsa ou tem acesso fluvial/isolado — malha integralmente rodoviária.")
+    _dm, _dx, _sc = _f("dist_media"), _f("dist_max"), _f("score_medio")
+    _d3 = []
+    if _dm > 0:
+        _d3.append(f"distância média de **{_dm:.0f} km**" + (f" (máxima {_dx:.0f} km)" if _dx > 0 else ""))
+    if _sc > 0:
+        _d3.append(f"confiança geográfica média de **{_sc:.0f}/100**")
+    if _d3:
+        partes.append("A operação tem " + " e ".join(_d3) + ".")
+    _uf = str(stats.get("uf_top", "") or "").strip()
+    _mun = str(stats.get("dor_top_mun", "") or "").strip()
+    _d4 = []
+    if _uf:
+        _d4.append(f"a UF **{_uf}** concentra a maior dificuldade agregada")
+    if _mun:
+        _d4.append(f"o município mais difícil é **{_mun}** ({_f('dor_top_valor'):.0f}/100 de dor logística)")
+    if _d4:
+        partes.append("Em distribuição territorial, " + " e ".join(_d4) + ".")
+    return " ".join(partes)
+
+
 def _haversine_matriz(lats_a, lons_a, lats_b, lons_b):
     """[HUBOPT - 121ª geração] Matriz de distâncias Haversine (km) entre A (m pontos) e B (n pontos).
     Retorna np.ndarray (m, n), vetorizado. PURO. Mesmo critério de linha reta do ranking de proximidade."""
@@ -2488,6 +2668,54 @@ def _otimizar_hubs(clientes, candidatos, p=1, pesos=None, objetivo="total", swap
         "dist_max_km": round(float(np.max(melhor)), 1),
         "atribuicao": atribuicao,
     }
+
+
+def _tsp_ordem(pontos, retornar_origem=False):
+    """[TSP - 125ª geração] Ordem de visita (quase) ótima para N paradas (milk-run): vizinho-mais-próximo
+    + melhoria 2-opt. pontos: sequência de (lat, lon). Reusa _haversine_matriz. PURO. Retorna dict
+    {ordem:[idx], distancia_total_km, distancia_por_perna:[km]}."""
+    import numpy as np
+    P = np.asarray(list(pontos), dtype=float)
+    n = len(P)
+    if n == 0:
+        return {"ordem": [], "distancia_total_km": 0.0, "distancia_por_perna": []}
+    if n == 1:
+        return {"ordem": [0], "distancia_total_km": 0.0, "distancia_por_perna": []}
+    D = _haversine_matriz(P[:, 0], P[:, 1], P[:, 0], P[:, 1])
+
+    def _total(seq):
+        t = sum(D[seq[i]][seq[i + 1]] for i in range(len(seq) - 1))
+        if retornar_origem and len(seq) > 1:
+            t += D[seq[-1]][seq[0]]
+        return t
+    # construção: vizinho mais próximo a partir de 0
+    visit = [False] * n
+    ordem = [0]
+    visit[0] = True
+    for _ in range(n - 1):
+        u = ordem[-1]
+        nxt, best = -1, float("inf")
+        for v in range(n):
+            if not visit[v] and D[u][v] < best:
+                best, nxt = D[u][v], v
+        ordem.append(nxt)
+        visit[nxt] = True
+    # melhoria 2-opt (reversão de segmentos)
+    it, melhorou = 0, True
+    while melhorou and it < 80:
+        melhorou = False
+        it += 1
+        _base = _total(ordem)
+        for i in range(1, n - 1):
+            for k in range(i + 1, n):
+                nova = ordem[:i] + ordem[i:k + 1][::-1] + ordem[k + 1:]
+                _nv = _total(nova)
+                if _nv < _base - 1e-9:
+                    ordem, _base, melhorou = nova, _nv, True
+    _pernas = [round(float(D[ordem[i]][ordem[i + 1]]), 1) for i in range(n - 1)]
+    if retornar_origem and n > 1:
+        _pernas.append(round(float(D[ordem[-1]][ordem[0]]), 1))
+    return {"ordem": ordem, "distancia_total_km": round(sum(_pernas), 1), "distancia_por_perna": _pernas}
 
 
 @st.cache_data(show_spinner=False)
@@ -5298,6 +5526,204 @@ def _grau_ambiguidade_homonimos(municipio):
     itens = IBGE_MUNICIPIOS.get(_mun, [])
     ufs = sorted({str(it.get("uf")).upper() for it in itens if it.get("uf")})
     return {"n_ufs": len(ufs), "ufs": ufs}
+
+
+def _perfil_uf_planilha(ufs_confiaveis):
+    """[HOMONIMO - 126ª geração] Constrói o PERFIL DE UF do lote a partir das UFs CONFIÁVEIS (linhas com
+    UF explícita ou nome inequívoco). É o sinal de 'contexto da planilha' para desambiguar homônimos sem
+    UF. PURO. Retorna {'distribuicao': {uf: frac}, 'dominante': uf|'', 'dominante_frac': float, 'n': int}."""
+    _cont = {}
+    _tot = 0
+    for uf in ufs_confiaveis:
+        u = str(uf or "").strip().upper()
+        if len(u) == 2 and u.isalpha():
+            _cont[u] = _cont.get(u, 0) + 1
+            _tot += 1
+    if _tot == 0:
+        return {"distribuicao": {}, "dominante": "", "dominante_frac": 0.0, "n": 0}
+    _dom = max(_cont.items(), key=lambda kv: kv[1])
+    return {"distribuicao": {u: round(c / _tot, 4) for u, c in _cont.items()},
+            "dominante": _dom[0], "dominante_frac": round(_dom[1] / _tot, 4), "n": _tot}
+
+
+def _validar_ponto_uf(lat, lon, uf, bboxes=None):
+    """[HOMONIMO - 126ª geração] Valida se (lat, lon) cai na bounding box oficial da UF (validação
+    espacial). Retorna True/False/None (None quando faltam bbox ou coordenada). PURO. bboxes injetável."""
+    if bboxes is None:
+        bboxes = BOUNDING_BOXES_UF
+    bb = bboxes.get(str(uf or "").strip().upper())
+    if not bb:
+        return None
+    try:
+        la, lo = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None
+    if la == 0 and lo == 0:
+        return None
+    return (bb["lat_min"] <= la <= bb["lat_max"]) and (bb["lon_min"] <= lo <= bb["lon_max"])
+
+
+def _desambiguar_municipio_homonimo(nome_norm, uf_explicita="", cod_ibge="", perfil_uf=None,
+                                    lat=None, lon=None, base=None, bboxes=None, limiar_contexto=0.6):
+    """[HOMONIMO - 126ª geração] Camada de desambiguação de municípios homônimos, 100% OFFLINE (base IBGE
+    embutida). Decide o candidato correto por HIERARQUIA DE EVIDÊNCIAS e produz AUDITORIA completa. Ordem:
+    (1) código IBGE oficial; (2) UF explícita; (3) nome inequívoco (1 UF); (4) contexto da planilha (UF
+    dominante ≥ limiar_contexto) + validação espacial; senão indeterminado (não força — seguro). PURO;
+    base/perfil_uf/bboxes injetáveis. Retorna dict de auditoria com 'item' (candidato | None)."""
+    if base is None:
+        base = IBGE_MUNICIPIOS
+    itens = base.get(nome_norm, []) if nome_norm else []
+    ufs_cand = sorted({str(it.get("uf")).upper() for it in itens if it.get("uf")})
+    n_hom = len(ufs_cand)
+    aud = {"homonimo_detectado": n_hom > 1, "n_homonimos": n_hom, "ufs_candidatas": ufs_cand,
+           "uf_vencedora": "", "codigo_ibge": "", "metodo": "", "score": 0, "confianca": "",
+           "validacao_espacial": None, "risco": "Baixo", "justificativa": "", "item": None}
+    if not itens:
+        aud.update(metodo="não encontrado", risco="Indefinido",
+                   justificativa="Nome não consta na base IBGE offline.")
+        return aud
+
+    def _escolher(item, metodo, score, confianca, just):
+        aud["item"] = item
+        aud["uf_vencedora"] = str(item.get("uf", "")).upper()
+        aud["codigo_ibge"] = item.get("codigo_ibge", "")
+        aud["metodo"], aud["score"], aud["confianca"] = metodo, score, confianca
+        aud["validacao_espacial"] = (_validar_ponto_uf(lat, lon, aud["uf_vencedora"], bboxes)
+                                     if (lat is not None and lon is not None) else None)
+        _vj = ""
+        if aud["validacao_espacial"] is True:
+            _vj = " Coordenada confere com a UF."
+            aud["risco"] = "Baixo" if confianca == "Alta" else "Médio"
+        elif aud["validacao_espacial"] is False:
+            _vj = " ⚠️ Coordenada FORA da UF escolhida — possível geocodificação do homônimo errado."
+            aud["risco"] = "Alto"
+        else:
+            aud["risco"] = "Baixo" if confianca == "Alta" else ("Médio" if n_hom > 1 else "Baixo")
+        aud["justificativa"] = just + _vj
+        return aud
+
+    _cod = str(cod_ibge or "").strip()
+    if _cod and _cod not in ("—", "N/A", "0", "None"):
+        for it in itens:
+            if str(it.get("codigo_ibge")) == _cod:
+                return _escolher(it, "código IBGE", 100, "Alta", f"Resolvido pelo código IBGE oficial {_cod}.")
+    _ufe = str(uf_explicita or "").strip().upper()
+    if _ufe:
+        for it in itens:
+            if str(it.get("uf")).upper() == _ufe:
+                return _escolher(it, "UF explícita", 95 if n_hom > 1 else 90, "Alta",
+                                 f"UF informada ({_ufe}) casa com um candidato oficial.")
+    if n_hom == 1:
+        return _escolher(itens[0], "nome inequívoco", 85, "Alta",
+                         "Nome existe em uma única UF na base IBGE — sem ambiguidade.")
+    perfil = perfil_uf or {}
+    _dom = str(perfil.get("dominante", "") or "").upper()
+    _domf = float(perfil.get("dominante_frac", 0.0) or 0.0)
+    if _dom and _domf >= limiar_contexto and any(str(it.get("uf")).upper() == _dom for it in itens):
+        for it in itens:
+            if str(it.get("uf")).upper() == _dom:
+                _sc = min(int(round(50 + 40 * _domf)), 88)
+                return _escolher(it, "contexto da planilha", _sc, "Média",
+                                 f"UF não informada; {int(_domf * 100)}% do lote é {_dom} e “{nome_norm.title()}” "
+                                 f"existe em {_dom} — desambiguado por contexto (não oficial).")
+    aud.update(metodo="indeterminado", confianca="Baixa", risco="Alto",
+               justificativa=(f"Homônimo em {n_hom} UFs ({', '.join(ufs_cand)}) sem UF, sem código e sem "
+                              "contexto suficiente — não é seguro desambiguar. Informe a UF ou o código IBGE."))
+    return aud
+
+
+def _enriquecer_desambiguacao_homonimos(df):
+    """[HOMONIMO - 126ª geração] Pós-passo (NÃO refatora _montar_dataframe_final): lê o DataFrame já
+    montado e ANEXA colunas de auditoria de desambiguação de homônimos, aplicando o motor offline
+    (_desambiguar_municipio_homonimo) + o CONTEXTO DA PLANILHA (perfil de UF por endpoint). Aditivo e
+    defensivo: em qualquer erro devolve o df intacto. Colunas novas: Homônimo Detectado, UF Desambiguada
+    Origem/Destino, Método Desambiguação, Validação Espacial, Risco de Confusão, Confiança Identificação,
+    Justificativa Homônimos."""
+    try:
+        if df is None or len(df) == 0:
+            return df
+        cols = df.columns
+        n = len(df)
+
+        def _perfil_col(nome_col):
+            if nome_col not in cols:
+                return {}
+            _ufs = [u for u in df[nome_col].astype(str).tolist() if len(u.strip()) == 2 and u.strip().isalpha()]
+            return _perfil_uf_planilha(_ufs)
+        _perf_o, _perf_d = _perfil_col('UF Origem'), _perfil_col('UF Destino')
+
+        def _lst(c, num=False):
+            if c not in cols:
+                return [None if num else ''] * n
+            return (pd.to_numeric(df[c], errors='coerce').tolist() if num else df[c].astype(str).tolist())
+        _mo, _md = _lst('Municipio Origem'), _lst('Municipio Destino')
+        _ufo, _ufd = _lst('UF Origem'), _lst('UF Destino')
+        _codo, _codd = _lst('Cod IBGE Origem'), _lst('Cod IBGE Destino')
+        _lao, _loo = _lst('Lat Origem', True), _lst('Lon Origem', True)
+        _lad, _lod = _lst('Lat Destino', True), _lst('Lon Destino', True)
+
+        _rank = {"Alto": 3, "Médio": 2, "Baixo": 1, "Indefinido": 0}
+        _cr = {"Baixa": 1, "Média": 2, "Alta": 3}
+        _cache = {}
+
+        def _norm(x):
+            try:
+                return semantica.normalizar(x) if x and x.strip().lower() != 'nan' else ""
+            except Exception:
+                return ""
+
+        def _ufok(u):
+            u = str(u).strip().upper()
+            return u if (len(u) == 2 and u.isalpha()) else ""
+
+        def _num(v):
+            return v if (v is not None and v == v) else None
+
+        def _vtxt(v):
+            return "Confere" if v is True else ("Fora" if v is False else "—")
+
+        def _decidir(nome, uf, cod, perfil, lat, lon):
+            _k = (nome, uf, str(cod), id(perfil), round(lat, 3) if lat is not None else None,
+                  round(lon, 3) if lon is not None else None)
+            if _k not in _cache:
+                _cache[_k] = _desambiguar_municipio_homonimo(nome, uf, cod, perfil, lat, lon)
+            return _cache[_k]
+
+        c_hom, c_ufo, c_ufd, c_met, c_val, c_risco, c_conf, c_just = ([] for _ in range(8))
+        for i in range(n):
+            ao = _decidir(_norm(_mo[i]), _ufok(_ufo[i]), _codo[i], _perf_o, _num(_lao[i]), _num(_loo[i]))
+            ad = _decidir(_norm(_md[i]), _ufok(_ufd[i]), _codd[i], _perf_d, _num(_lad[i]), _num(_lod[i]))
+            _ho, _hd = ao["homonimo_detectado"], ad["homonimo_detectado"]
+            c_hom.append("Ambos" if (_ho and _hd) else ("Origem" if _ho else ("Destino" if _hd else "Não")))
+            c_ufo.append(ao["uf_vencedora"] or "—")
+            c_ufd.append(ad["uf_vencedora"] or "—")
+            c_met.append(f"O: {ao['metodo']} | D: {ad['metodo']}")
+            c_val.append(f"O: {_vtxt(ao['validacao_espacial'])} | D: {_vtxt(ad['validacao_espacial'])}")
+            _ro = ao["risco"] if _ho else "Baixo"
+            _rd = ad["risco"] if _hd else "Baixo"
+            c_risco.append(_ro if _rank.get(_ro, 0) >= _rank.get(_rd, 0) else _rd)
+            _cs = [c for c in (ao["confianca"], ad["confianca"]) if c in _cr]
+            c_conf.append(min(_cs, key=lambda c: _cr[c]) if _cs else "—")
+            _js = []
+            if _ho:
+                _js.append(f"Origem — {ao['justificativa']}")
+            if _hd:
+                _js.append(f"Destino — {ad['justificativa']}")
+            c_just.append("  ||  ".join(_js) if _js else "Sem homônimos.")
+
+        df = df.copy()
+        df['Homônimo Detectado'] = c_hom
+        df['UF Desambiguada Origem'] = c_ufo
+        df['UF Desambiguada Destino'] = c_ufd
+        df['Método Desambiguação'] = c_met
+        df['Validação Espacial'] = c_val
+        df['Risco de Confusão'] = c_risco
+        df['Confiança Identificação'] = c_conf
+        df['Justificativa Homônimos'] = c_just
+        return df
+    except Exception as _e:
+        logger.error(f"[HOMONIMO] Falha no enriquecimento de desambiguação: {_e}")
+        return df
 
 
 def _resolver_identidade_ibge(municipio, endereco_oficial):
@@ -9490,14 +9916,30 @@ with tab_individual:
                 _gc1, _gc2 = st.columns([64, 36])
                 with _gc1:
                     st.markdown(f"**Última rota calculada:** {_ult['origem']} → {_ult['destino']}")
-                    _status_ja = (f" · ✅ já verificada em {_ja.get('verificada_em', '—')} ({_ja.get('km', '—')} km)"
-                                  if isinstance(_ja, dict) else "")
-                    st.caption(f"{_ult['km']} km · {_ult.get('tempo', '—')} · score {_ult.get('score_global', '—')}/100{_status_ja}")
+                    st.caption(f"{_ult['km']} km · {_ult.get('tempo', '—')} · score {_ult.get('score_global', '—')}/100")
                 with _gc2:
                     if st.button("🏅 Salvar como verificada", key="golden_salvar", use_container_width=True):
                         _reg = _registrar_rota_dourada(_ult["origem"], _ult["destino"], _ult)
                         st.success(f"Rota verificada salva ({_reg.get('km', '—')} km).")
                         _golden_regs = _listar_rotas_douradas()
+                # [GOLDEN-RECON - 122ª geração] Reconciliação: quando a rota já foi verificada, prioriza o
+                # valor VERIFICADO e detecta DRIFT (via mudou ou verificação desatualizada) comparando com o
+                # recém-calculado. Re-verificação em 1 clique quando diverge.
+                if isinstance(_ja, dict) and _ja.get("km") is not None:
+                    _rec = _reconciliar_rota_dourada(_ult.get("km"), _ja)
+                    if _rec["status"] == "confirmado":
+                        st.success(f"🏅 Valor **verificado** (autoritativo): **{_rec['km_verificado']} km** "
+                                   f"(em {_ja.get('verificada_em', '—')}). ✅ O recálculo confere "
+                                   f"({_rec['km_calculado']} km · Δ {_rec['divergencia_pct']}%).")
+                    elif _rec["status"] == "divergente":
+                        st.warning(f"🏅 Valor verificado: **{_rec['km_verificado']} km** (em {_ja.get('verificada_em', '—')}). "
+                                   f"⚠️ O recálculo deu **{_rec['km_calculado']} km** — divergência de **{_rec['divergencia_pct']}%** "
+                                   f"({_rec['divergencia_km']:+.1f} km). A via pode ter mudado ou a verificação está desatualizada.")
+                        if st.button(f"🔄 Atualizar verificação para {_rec['km_calculado']} km",
+                                     key="golden_reverify", use_container_width=True):
+                            _reg2 = _registrar_rota_dourada(_ult["origem"], _ult["destino"], _ult)
+                            st.success(f"Verificação atualizada para {_reg2.get('km', '—')} km.")
+                            _golden_regs = _listar_rotas_douradas()
             else:
                 st.caption("Calcule uma rota individual abaixo para poder marcá-la como verificada.")
             if _golden_regs:
@@ -9526,10 +9968,39 @@ with tab_individual:
     with col_ind2: 
         dest_ind = st.text_input("Destino (Endereço, POI, Coordenadas ou Código IBGE)", "SAO MIGUEL DO ARAGUAIA , GO, Brasil", help="Insira o destino final. Aceita endereço, POI, coordenadas OU o Código IBGE do município (7 dígitos, ex.: 3550308) — detectado automaticamente. O uso de UF (Ex: GO) assegura máxima precisão contra localidades homônimas em outros estados.")
         
+    st.checkbox("🏅 Priorizar rotas verificadas (serve o valor da caderneta e pula o cálculo quando a rota já foi verificada)",
+                key="golden_prioridade", value=False,
+                help="Ligado: se a rota já estiver na caderneta de Rotas Douradas, o valor VERIFICADO é servido na hora, sem "
+                     "acionar os motores (mais rápido). DESLIGADO (padrão): recalcula sempre pelos motores e reconcilia com o "
+                     "valor verificado — detecta se a via mudou.")
     if st.button("🚀 Calcular Rota Individual", type="primary", help="Inicia o pipeline Bayesiano para geocodificação e aciona os dois motores (Google Maps + OSRM) para selecionar a rota de menor distância."):
         if orig_ind and dest_ind:
-            with st.spinner("Acionando motores de geocodificação e consenso unificado..."):
-                res_ind = executar_pipeline_unificado(orig_ind, dest_ind)
+            # [GOLDEN-OVERRIDE - 122ª geração] Se "Priorizar verificadas" estiver LIGADO e houver registro
+            # dourado para esta rota, SERVE o valor verificado e PULA o pipeline (res_ind=None → o bloco de
+            # exibição abaixo é ignorado com segurança, pois é guardado por `if res_ind`). Opt-in; padrão OFF
+            # ⇒ zero regressão. Envolto em try/except: qualquer falha cai no cálculo normal pelos motores.
+            _gh_prio = None
+            try:
+                if st.session_state.get('golden_prioridade', False):
+                    _gh_prio = _buscar_rota_dourada(orig_ind, dest_ind)
+            except Exception as _e_ghp:
+                logger.error(f"[GOLDEN-OVERRIDE] Falha ao consultar caderneta: {_e_ghp}")
+                _gh_prio = None
+            if isinstance(_gh_prio, dict) and _gh_prio.get("km") is not None:
+                res_ind = None
+                st.success(f"🏅 **Rota servida da caderneta verificada** (sem recálculo) — verificada em "
+                           f"{_gh_prio.get('verificada_em', '—')}.")
+                _gmp1, _gmp2, _gmp3 = st.columns(3)
+                _gmp1.metric("Distância viária (verificada)", f"{_gh_prio.get('km', '—')} km")
+                _gmp2.metric("Tempo (verificado)", f"{_gh_prio.get('tempo', '—')}")
+                _lr_v = _gh_prio.get('linha_reta')
+                _gmp3.metric("Linha reta", f"{_lr_v} km" if _lr_v is not None else "—")
+                st.caption(f"Fonte original: {_gh_prio.get('fonte_rota', '—')} · score {_gh_prio.get('score_global', '—')}/100. "
+                           "Desligue *Priorizar rotas verificadas* para recalcular pelos motores e reconciliar.")
+                st.session_state['ultima_rota_individual'] = dict(_gh_prio)
+            else:
+                with st.spinner("Acionando motores de geocodificação e consenso unificado..."):
+                    res_ind = executar_pipeline_unificado(orig_ind, dest_ind)
                 
             if res_ind and res_ind[28] != "Falha na leitura da célula (Campo Vazio)." and "FALHA INTERNA" not in res_ind[28]:
                 st.success("✅ Rota estabelecida com sucesso na malha viária!")
@@ -10729,6 +11200,9 @@ with tab_processamento:
                     
                     df_final = _montar_dataframe_final(_df_base, _resultados, runner_up_map=_runner_map,
                                                        hub_qual_map=st.session_state.get('alo_hub_qual_map'))
+                    # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos
+                    # (contexto da planilha + validação espacial). Defensivo; nunca quebra o lote.
+                    df_final = _enriquecer_desambiguacao_homonimos(df_final)
                     
                     # Recalcula Linha Reta vetorizada (Haversine IUGG)
                     lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
@@ -10862,6 +11336,196 @@ with tab_processamento:
                             st.bar_chart(_chart_h)
             except Exception as _e_uh:
                 logger.error(f"[INTEL-TERRITORIAL] Falha na análise hídrica por UF: {_e_uh}")
+            # [HOMONIMO - 126ª geração] Painel de Auditoria de Homônimos: superfície visual da camada de
+            # desambiguação (contexto da planilha + validação espacial). Lê as colunas já enriquecidas.
+            try:
+                _dfp_hom = st.session_state['df_processado']
+                if {'Risco de Confusão', 'Homônimo Detectado'}.issubset(_dfp_hom.columns):
+                    _n_hom = int((_dfp_hom['Homônimo Detectado'].astype(str) != 'Não').sum())
+                    if _n_hom > 0:
+                        with st.expander(f"🧭 Auditoria de Homônimos — {_n_hom} rota(s) com nome ambíguo", expanded=False):
+                            st.caption("Camada de desambiguação **100% offline** (base IBGE embutida): resolve municípios homônimos "
+                                       "por código IBGE → UF explícita → nome único → **contexto da planilha** (UF dominante), e valida "
+                                       "espacialmente cada escolha. Priorize as linhas de **risco Alto**.")
+                            _risco = _dfp_hom['Risco de Confusão'].astype(str)
+                            _hc1, _hc2, _hc3 = st.columns(3)
+                            _hc1.metric("Rotas com homônimo", _n_hom)
+                            _hc2.metric("Risco Alto", int((_risco == 'Alto').sum()),
+                                        help="Homônimo sem desambiguação segura, ou coordenada fora da UF esperada.")
+                            _hc3.metric("Risco Médio", int((_risco == 'Médio').sum()),
+                                        help="Desambiguado por contexto da planilha (não oficial).")
+                            try:
+                                _ufs_ctx = ([u for u in _dfp_hom['UF Destino'].astype(str).tolist()
+                                             if len(u.strip()) == 2 and u.strip().isalpha()]
+                                            if 'UF Destino' in _dfp_hom.columns else [])
+                                _perf = _perfil_uf_planilha(_ufs_ctx)
+                                if _perf.get('dominante'):
+                                    st.caption(f"📍 Contexto do lote (destinos): UF dominante **{_perf['dominante']}** "
+                                               f"({int(_perf['dominante_frac'] * 100)}% de {_perf['n']} destinos com UF confiável).")
+                            except Exception:
+                                pass
+                            _cols_show = [c for c in ['Origem', 'Destino', 'Homônimo Detectado', 'Risco de Confusão',
+                                                      'Método Desambiguação', 'Validação Espacial', 'Confiança Identificação',
+                                                      'Justificativa Homônimos'] if c in _dfp_hom.columns]
+                            _df_hom = _dfp_hom[_dfp_hom['Homônimo Detectado'].astype(str) != 'Não'][_cols_show].copy()
+                            _ord = {'Alto': 0, 'Médio': 1, 'Baixo': 2, 'Indefinido': 3}
+                            _df_hom['_o'] = _df_hom['Risco de Confusão'].astype(str).map(lambda x: _ord.get(x, 9))
+                            st.dataframe(_df_hom.sort_values('_o').drop(columns=['_o']),
+                                         use_container_width=True, hide_index=True, height=300)
+                            st.caption("💡 Para eliminar o risco, informe a **UF** (ex.: “São Domingos, GO”) ou o **código IBGE** na "
+                                       "planilha de origem — o código IBGE resolve com 100% de confiança.")
+            except Exception as _e_hp:
+                logger.error(f"[HOMONIMO] Falha no painel de auditoria de homônimos: {_e_hp}")
+            # [NARRATIVA - 124ª geração] Narrativa executiva do lote: resumo em linguagem natural dos
+            # agregados (estilo analista), estendendo a leitura da 118ª para o lote inteiro. Isolado.
+            try:
+                _dfp_nar = st.session_state['df_processado']
+                if 'Distancia' in _dfp_nar.columns and len(_dfp_nar) > 0:
+                    _tot = len(_dfp_nar)
+                    _dvs_n = pd.to_numeric(_dfp_nar['Distancia'], errors='coerce')
+                    _mask_agua = pd.Series(False, index=_dfp_nar.index)
+                    if 'Balsas' in _dfp_nar.columns:
+                        _bmask = _dfp_nar['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1'])
+                        _mask_agua = _mask_agua | _bmask
+                        _n_balsa = int(_bmask.sum())
+                    else:
+                        _n_balsa = 0
+                    if 'Modo/Acesso' in _dfp_nar.columns:
+                        _fmask = _dfp_nar['Modo/Acesso'].astype(str).str.lower().str.contains('fluvial|isolado', regex=True, na=False)
+                        _mask_agua = _mask_agua | _fmask
+                        _n_fluv = int(_fmask.sum())
+                    else:
+                        _n_fluv = 0
+                    _pct_rod = round((1 - _mask_agua.sum() / _tot) * 100, 0)
+                    _score_col = ('Score Final Global' if 'Score Final Global' in _dfp_nar.columns
+                                  else ('Score da Rota' if 'Score da Rota' in _dfp_nar.columns else None))
+                    _sc_med = round(float(pd.to_numeric(_dfp_nar[_score_col], errors='coerce').mean()), 0) if _score_col else 0.0
+                    _dor_top_mun, _dor_top_val = "", 0.0
+                    try:
+                        _lrs_n = pd.to_numeric(_dfp_nar['Linha Reta'], errors='coerce').tolist() if 'Linha Reta' in _dfp_nar.columns else [0] * _tot
+                        _dvs_l = _dvs_n.tolist()
+                        _mns_n = (_dfp_nar['Municipio Destino'] if 'Municipio Destino' in _dfp_nar.columns
+                                  else (_dfp_nar['Destino'] if 'Destino' in _dfp_nar.columns else pd.Series([''] * _tot))).astype(str).tolist()
+                        _bls_n = _dfp_nar['Balsas'].astype(str).tolist() if 'Balsas' in _dfp_nar.columns else None
+                        _mds_n = _dfp_nar['Modo/Acesso'].astype(str).tolist() if 'Modo/Acesso' in _dfp_nar.columns else None
+                        _reg_n = [{"municipio": _mns_n[i],
+                                   "dor": _indice_dor_logistica(_dvs_l[i], _lrs_n[i],
+                                                                (_bls_n[i].strip().lower() in ('sim', 'yes', 'true', '1')) if _bls_n else False,
+                                                                _mds_n[i] if _mds_n else '')} for i in range(_tot)]
+                        _agg_n = _agregar_dor_logistica(_reg_n)
+                        if _agg_n:
+                            _dor_top_mun, _dor_top_val = _agg_n[0]["municipio"], _agg_n[0]["dor_media"]
+                    except Exception as _e_nd:
+                        logger.error(f"[NARRATIVA] Falha ao calcular dor p/ narrativa: {_e_nd}")
+                    _narr = _narrativa_executiva_lote({
+                        "total": _tot, "pct_rodoviario": _pct_rod, "n_balsa": _n_balsa, "n_fluvial": _n_fluv,
+                        "dist_media": float(_dvs_n.mean()) if _dvs_n.notna().any() else 0.0,
+                        "dist_max": float(_dvs_n.max()) if _dvs_n.notna().any() else 0.0,
+                        "score_medio": _sc_med, "dor_top_mun": _dor_top_mun, "dor_top_valor": _dor_top_val})
+                    with st.expander("📝 Narrativa Executiva do Lote", expanded=False):
+                        st.markdown(_narr)
+                        st.caption("Resumo automático em linguagem natural dos agregados do lote — para relatórios e leitura rápida da liderança.")
+            except Exception as _e_narr:
+                logger.error(f"[NARRATIVA] Falha na narrativa executiva: {_e_narr}")
+            # [DOR-LOG - 123ª geração] Mapa de Calor de "Dor Logística": índice por município de destino
+            # combinando distância, sinuosidade, balsa e isolamento (REGIC) — tudo já medido. Painel
+            # estratégico: onde é mais difícil/custoso entregar. Isolado em try/except.
+            try:
+                _dfp_dor = st.session_state['df_processado']
+                _lat_col = 'Lat Destino' if 'Lat Destino' in _dfp_dor.columns else 'Lat Origem'
+                _lon_col = 'Lon Destino' if 'Lon Destino' in _dfp_dor.columns else 'Lon Origem'
+                _mun_col = ('Municipio Destino' if 'Municipio Destino' in _dfp_dor.columns
+                            else ('Destino' if 'Destino' in _dfp_dor.columns else None))
+                if {'Distancia', 'Linha Reta'}.issubset(_dfp_dor.columns) and _mun_col and _lat_col in _dfp_dor.columns:
+                    with st.expander("🔥 Mapa de Calor — Dor Logística por Município", expanded=False):
+                        st.caption("Índice 0-100 de **dificuldade/custo de atendimento** por município de destino, combinando "
+                                   "distância, sinuosidade (viária/reta), dependência de **balsa** e **acesso fluvial/isolado** "
+                                   "(base oficial IBGE REGIC). Reusa o que já foi medido — mostra **onde entregar é mais difícil**.")
+                        _dvs = pd.to_numeric(_dfp_dor['Distancia'], errors='coerce').tolist()
+                        _lrs = pd.to_numeric(_dfp_dor['Linha Reta'], errors='coerce').tolist()
+                        _lats = pd.to_numeric(_dfp_dor[_lat_col], errors='coerce').tolist()
+                        _lons = pd.to_numeric(_dfp_dor[_lon_col], errors='coerce').tolist()
+                        _muns = _dfp_dor[_mun_col].astype(str).tolist()
+                        _balsas = _dfp_dor['Balsas'].astype(str).tolist() if 'Balsas' in _dfp_dor.columns else None
+                        _modos = _dfp_dor['Modo/Acesso'].astype(str).tolist() if 'Modo/Acesso' in _dfp_dor.columns else None
+                        _reg_dor = []
+                        for _ix in range(len(_muns)):
+                            _tb = (_balsas[_ix].strip().lower() in ('sim', 'yes', 'true', '1')) if _balsas else False
+                            _mo = _modos[_ix] if _modos else ''
+                            _lat_v, _lon_v = _lats[_ix], _lons[_ix]
+                            _reg_dor.append({"municipio": _muns[_ix],
+                                             "dor": _indice_dor_logistica(_dvs[_ix], _lrs[_ix], _tb, _mo),
+                                             "lat": (_lat_v if _lat_v == _lat_v else None),
+                                             "lon": (_lon_v if _lon_v == _lon_v else None)})
+                        _agg_dor = _agregar_dor_logistica(_reg_dor)
+                        if _agg_dor:
+                            _dor_geral = round(sum(a["dor_media"] for a in _agg_dor) / len(_agg_dor), 1)
+                            _md1, _md2, _md3 = st.columns(3)
+                            _md1.metric("Dor logística média", f"{_dor_geral}/100")
+                            _md2.metric("Município mais difícil", _agg_dor[0]["municipio"][:22],
+                                        help=f"{_agg_dor[0]['dor_media']}/100")
+                            _md3.metric("Municípios avaliados", len(_agg_dor))
+                            try:
+                                _map_dor = pd.DataFrame([{"lat": a["lat"], "lon": a["lon"],
+                                                          "color": _cor_dor_logistica(a["dor_media"]),
+                                                          "size": 40 + a["dor_media"]}
+                                                         for a in _agg_dor if a["lat"] is not None and a["lon"] is not None])
+                                if not _map_dor.empty:
+                                    st.map(_map_dor, color="color", size="size")
+                                    st.caption("🟢 baixa dor · 🟡 média · 🔴 alta. Tamanho ∝ dor.")
+                            except Exception as _e_mapd:
+                                logger.error(f"[DOR-LOG] Falha no mapa: {_e_mapd}")
+                            st.markdown("**Top municípios por dor logística**")
+                            st.dataframe(pd.DataFrame([{"Município": a["municipio"], "Dor Logística": a["dor_media"],
+                                                        "Rotas": a["n"]} for a in _agg_dor[:20]]),
+                                         use_container_width=True, hide_index=True, height=280)
+                            st.caption("⚠️ Índice relativo/comparativo (não é custo absoluto) — serve para priorizar atenção operacional.")
+            except Exception as _e_dor:
+                logger.error(f"[DOR-LOG] Falha no mapa de dor logística: {_e_dor}")
+            # [TSP - 125ª geração] Sequenciamento multi-parada (milk-run): melhor ordem de visita das
+            # paradas distintas quando são poucas (≤ 25). Reusa _haversine_matriz + 2-opt. Isolado.
+            try:
+                _dfp_tsp = st.session_state['df_processado']
+                if {'Lat Origem', 'Lon Origem'}.issubset(_dfp_tsp.columns):
+                    _nm_tsp = 'Municipio Origem' if 'Municipio Origem' in _dfp_tsp.columns else 'Origem'
+                    _lat_t = pd.to_numeric(_dfp_tsp['Lat Origem'], errors='coerce').tolist()
+                    _lon_t = pd.to_numeric(_dfp_tsp['Lon Origem'], errors='coerce').tolist()
+                    _nms_t = _dfp_tsp[_nm_tsp].astype(str).tolist()
+                    _seen = {}
+                    for _la, _lo, _nm in zip(_lat_t, _lon_t, _nms_t):
+                        if _la != _la or _lo != _lo:
+                            continue
+                        _k = _nm.strip() if (_nm and _nm.strip().lower() != 'nan') else f"{round(_la, 4)},{round(_lo, 4)}"
+                        if _k not in _seen:
+                            _seen[_k] = (_la, _lo)
+                    _MAX_TSP = 25
+                    if 2 <= len(_seen) <= _MAX_TSP:
+                        with st.expander(f"🚚 Sequenciamento de Rota (milk-run) — {len(_seen)} paradas", expanded=False):
+                            st.caption("Melhor **ordem de visita** para percorrer todas as paradas distintas em uma única rota "
+                                       "(vizinho-mais-próximo + 2-opt). Ideal para roteiro de entregas/coletas. Distância em linha reta (Haversine).")
+                            _volta = st.checkbox("Retornar ao ponto de partida (rota fechada)", value=False, key="tsp_volta")
+                            if st.button("🚚 Calcular melhor sequência", key="tsp_run", use_container_width=True):
+                                _nomes_t = list(_seen.keys())
+                                _pts_t = list(_seen.values())
+                                _res_t = _tsp_ordem(_pts_t, retornar_origem=_volta)
+                                _ordem = _res_t["ordem"]
+                                st.success(f"✅ Sequência calculada — **{_res_t['distancia_total_km']:,.0f} km** no total"
+                                           + (" (rota fechada)." if _volta else " (rota aberta)."))
+                                _pernas = _res_t["distancia_por_perna"]
+                                _seq_rows = []
+                                for _pos, _idx in enumerate(_ordem):
+                                    _tem_perna = _pos < len(_ordem) - 1 or _volta
+                                    _seq_rows.append({"Ordem": _pos + 1, "Parada": _nomes_t[_idx],
+                                                      "Perna até próxima (km)": (_pernas[_pos] if (_tem_perna and _pos < len(_pernas)) else "—")})
+                                st.dataframe(pd.DataFrame(_seq_rows), use_container_width=True, hide_index=True)
+                                try:
+                                    st.map(pd.DataFrame({"lat": [_pts_t[i][0] for i in _ordem],
+                                                         "lon": [_pts_t[i][1] for i in _ordem]}), size=60)
+                                except Exception as _e_mapt:
+                                    logger.error(f"[TSP] Falha no mapa: {_e_mapt}")
+                                st.caption("⚠️ Ordem por distância em linha reta; a sequência viária real pode variar levemente — bom ponto de partida para o roteiro.")
+            except Exception as _e_tsp:
+                logger.error(f"[TSP] Falha no sequenciamento multi-parada: {_e_tsp}")
             col_down1, col_down2 = st.columns(2)
             with col_down1:
                 st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -11230,6 +11894,8 @@ with tab_alocacao:
                 _novas_colunas = st.session_state['alo_novas_colunas']
                 
                 df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
+                # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos.
+                df_final_alo = _enriquecer_desambiguacao_homonimos(df_final_alo)
                 # [IBGE-EVERYWHERE - 95ª geração] Rótulo EXPLÍCITO do Hub: no fluxo de Alocação de Hubs, o
                 # "Destino" É o hub vencedor. Espelha a identidade oficial do hub (Cód IBGE / Município /
                 # UF) com nomes explícitos "Hub", sem remover as colunas existentes. Aditivo, custo zero.
