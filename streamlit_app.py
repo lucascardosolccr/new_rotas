@@ -62,6 +62,48 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (118ª geração) → HUB: ÍNDICES COMPOSTOS + LEITURA DO ANALISTA + SIMULAÇÃO ‘E SE?’; ETA COM FAIXA [HUB-XAI][ETA-FAIXA]
+#     Incremento ADITIVO (não toca no score 0.35/0.35/0.30 nem no builder _montar_dataframe_final; reusa dado
+#     já calculado; custo ZERO de rede). (A) PAINEL DE HUBS — três helpers PUROS/testáveis somados ao painel
+#     ‘Auditoria da Disputa de Hubs’ (não duplicam os índices já existentes _indice_robustez/_competitividade):
+#     _indices_compostos_hub (Acessibilidade / Eficiência Logística / Robustez do Resultado, 0-100, com
+#     COMPONENTES exibidos + Classificação Excelente..Crítico, derivados de razão V/R, balsa, Modo/Acesso,
+#     score geográfico, divergência Google×OSRM e folga p/ o 2º); _explicacao_analista_hub (parágrafo em
+#     linguagem natural tecendo os sinais medidos); _simulacao_hub_indisponivel (‘e se o vencedor cair?’ →
+#     2º melhor roteado + impacto km/%). Render isolado em try/except (falha não afeta a auditoria). (B) ETA —
+#     estimar_faixa_tempo_processamento reusa o estimador ponderado como ESPERADO e adiciona faixa
+#     mínimo/pessimista a partir da DISPERSÃO real do histórico (±1σ, ≥3 amostras) ou heurística documentada
+#     (×0.7 / ×1.6) quando há <3 execuções; helpers puros _amostras_tempo_por_rota + _faixa_tempo. Preview do
+#     Lote agora mostra Mínimo/Esperado/Pessimista + decomposição (linhas → rotas únicas × s/rota).
+#     Provado por teste isolado sobre o CÓDIGO REAL (teste_hub_xai_eta_118: índices monotônicos e clipados,
+#     parágrafo coerente, simulação com/sem concorrente, faixa ordenada min≤esp≤pess). Sem regressão; 12 abas,
+#     RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
+#   v3.8 (117ª geração) → CORREÇÃO DEFINITIVA DAS COLUNAS FANTASMA _4.._38 NA PLANILHA EXPORTADA [FIX-COLUNAS-FANTASMA]
+#     SINTOMA: planilhas do Lote/Alocação saíam com colunas '_4','_5',...'_38', em grande parte vazias.
+#     CAUSA RAIZ (confirmada): _montar_dataframe_final iterava com df.itertuples(index=False) + row._asdict();
+#     o itertuples RENOMEIA para nomes POSICIONAIS (_4.._38) toda coluna que não é identificador Python
+#     válido — inclusive as 'Unnamed: N' que o openpyxl cria para células vazias à direita no Excel. Esses
+#     _N vazavam para o dict e a rede de segurança do reindex (114ª) os PRESERVAVA na exportação. NÃO havia
+#     nenhum higienizador no arquivo. CORREÇÃO em 3 camadas (cirúrgica, sem tocar no núcleo do builder):
+#     (1) no topo do builder, DESCARTA colunas-artefato da ENTRADA ('Unnamed:*' e rótulo em branco) — nunca
+#     são dado do usuário; (2) o laço passou a df.itertuples(index=False, name=None) + dict(zip(_cols_orig,
+#     row)) — mantém o baixo pico de RAM do [M17] e PRESERVA os rótulos reais (com espaço/acento), eliminando
+#     o mangling _N; (3) rede final nos DOIS reindex (Lote e Hubs) nunca readmite '_\d+' nem 'Unnamed:'.
+#     Provado por teste isolado (teste_colunas_fantasma_117: entrada com 'Unnamed: 4'.. e rótulos com espaço
+#     → saída sem nenhuma coluna _N e com nomes preservados). Sem regressão; 12 abas, RotaPipeline 41, balões
+#     1×, score imutável 0.35/0.35/0.30, 0 except nus.
+#   v3.8 (116ª geração) → VIABILIDADE DO ROTEAMENTO AQUAVIÁRIO (veredito) + PROVIDER DE MATRIZ (gated) [AQUAVIARIA]
+#     Estudo de viabilidade da camada própria de roteamento aquaviário (pgRouting/OSRM custom/matriz).
+#     VEREDITO: NÃO embarcar roteador — pgRouting exige PostgreSQL/PostGIS e OSRM custom exige container;
+#     ambos são SERVIÇOS EXTERNOS que quebram o modelo single-file da aplicação, para ganho estreito
+#     (aquavia importa em ~18 municípios isolados + portos) e com dados grosseiros (1:250k–1:1M) e sazonais.
+#     A dimensão água já está coberta (balsa + sinuosidade + acesso fluvial REGIC). O caminho PROPORCIONAL
+#     e AUDITÁVEL é uma MATRIZ pré-calculada (gerada 1× no QGIS a partir dos shapes ANTAQ/BIT) consumida por
+#     um provider — sem roteador frágil embarcado. IMPLEMENTADO o mecanismo consumidor (gated, testado):
+#     flag AQUAVIARIA_ATIVA + _distancia_aquaviaria (puro/injetável, simétrico) + _aquaviaria_conectar/
+#     _aquaviaria_provider_sqlite (SQLite bundleado rotas_aqua) + exibição gated no Validador ("🚢 Distância
+#     aquaviária"). Inerte até o usuário fornecer a matriz. Receita QGIS em ESTUDO_ROTEAMENTO_AQUAVIARIO.md.
+#     Provado por teste (teste_aquaviaria_116). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
 #   v3.8 (115ª geração) → LINK OSRM STANDALONE NO LOTE/HUBS + NAVEGAÇÃO DO HANDBOOK EMBARCADO [VIS]
 #     (1) LINK OSRM na planilha: o Lote e a Alocação de Hubs agora trazem a coluna 'Link Mapa OSRM' com um
 #     link STANDALONE do visualizador público do OSRM (map.project-osrm.org), ao lado do 'Link da Rota'
@@ -1360,6 +1402,77 @@ def _link_osrm_publico(lat_o, lon_o, lat_d, lon_d):
             f"&loc={_ld:.6f}%2C{_lnd:.6f}&hl=pt-BR&alt=0&srv=0")
 
 
+# [AQUAVIARIA - 116ª geração] MATRIZ AQUAVIÁRIA PRÉ-CALCULADA (opcional/gated). Não há API pública nem faz
+# sentido embarcar um roteador (pgRouting/OSRM exigem servidor externo — quebram o modelo single-file).
+# O caminho proporcional e AUDITÁVEL é consumir uma MATRIZ pré-calculada no QGIS a partir dos shapes
+# oficiais (ANTAQ/BIT): tabela rotas_aqua(orig, dest, km) por par de Códigos IBGE. Desligada por padrão.
+AQUAVIARIA_ATIVA = False
+
+
+def _distancia_aquaviaria(cod_o, cod_d, provider=None):
+    """[AQUAVIARIA - 116ª geração] Distância AQUAVIÁRIA (km) entre dois municípios por par de Códigos IBGE,
+    a partir de uma MATRIZ pré-calculada. Retorna km (float) ou None. SIMÉTRICA. `provider` injetável
+    (o,d)->km|None; default = SQLite bundleado. PURA em relação ao provider; só age com AQUAVIARIA_ATIVA."""
+    if provider is None and not AQUAVIARIA_ATIVA:
+        return None
+    if provider is None:
+        provider = _aquaviaria_provider_sqlite if "_aquaviaria_provider_sqlite" in globals() else None
+    if provider is None:
+        return None
+    _o, _d = str(cod_o or "").strip(), str(cod_d or "").strip()
+    if not _o or not _d:
+        return None
+    try:
+        _km = provider(_o, _d)
+        if _km is None:
+            _km = provider(_d, _o)  # simetria direção-independente
+        return round(float(_km), 2) if _km is not None else None
+    except Exception:
+        return None
+
+
+@st.cache_resource(show_spinner=False)
+def _aquaviaria_conectar():
+    """[AQUAVIARIA - 116ª geração] Abre (somente leitura) o SQLite da matriz aquaviária bundleada, se
+    existir (via AQUAVIARIA_DB_PATH em secrets/env, ou ao lado do app). Retorna a conexão ou None."""
+    import os as _os, sqlite3 as _sq
+    _cands = []
+    try:
+        if "AQUAVIARIA_DB_PATH" in st.secrets:
+            _cands.append(str(st.secrets["AQUAVIARIA_DB_PATH"]))
+    except Exception:
+        pass
+    _env = _os.environ.get("AQUAVIARIA_DB_PATH", "")
+    if _env:
+        _cands.append(_env)
+    try:
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+    except Exception:
+        _here = "."
+    _cands += ["aquaviaria.sqlite", _os.path.join(_here, "aquaviaria.sqlite")]
+    for _p in _cands:
+        if _p and _os.path.exists(_p):
+            try:
+                return _sq.connect(f"file:{_p}?mode=ro", uri=True, check_same_thread=False)
+            except Exception:
+                continue
+    return None
+
+
+def _aquaviaria_provider_sqlite(orig, dest, conn=None):
+    """[AQUAVIARIA - 116ª geração] Provider concreto: consulta a tabela 'rotas_aqua'(orig, dest, km) por
+    par → km ou None. `conn` injetável para teste; defensivo a banco/tabela ausente."""
+    _c = conn if conn is not None else (_aquaviaria_conectar() if "_aquaviaria_conectar" in globals() else None)
+    if _c is None:
+        return None
+    try:
+        _row = _c.execute("SELECT km FROM rotas_aqua WHERE orig=? AND dest=?",
+                          (int(orig), int(dest))).fetchone()
+        return _row[0] if _row else None
+    except Exception:
+        return None
+
+
 # [INTEL-TERRITORIAL - 111ª geração] VERIFICAÇÃO ESTÁTICA (opcional/gated) por LISTA OFICIAL de municípios
 # de acesso fluvial/isolado (sem sistema viário). Fonte autoritativa recomendada: IBGE REGIC — "Ligações
 # Rodoviárias e Hidroviárias". A lista fica VAZIA por padrão (não cravamos dado não verificado); popule-a
@@ -1957,6 +2070,85 @@ def estimar_tempo_processamento(n_rotas_unicas: int, tipo="lote"):
         return _formatar_duracao(tempo_estimado), baseline, n_amostras, tempo_por_rota
     except Exception:
         return None, "indisponível", 0, 0.0
+
+
+def _amostras_tempo_por_rota(tipo="lote", historico=None):
+    """[ETA-FAIXA - 118ª geração] Coleta as amostras de 'Tempo Médio/Rota (s)' do histórico REAL de
+    execuções (cache_historico_lotes), da mais antiga para a mais recente. `historico` é injetável
+    (dict-like) para teste. PURA em relação ao histórico. Retorna list[float] (pode ser vazia)."""
+    _fonte = historico if historico is not None else (
+        cache_historico_lotes if "cache_historico_lotes" in globals() else {})
+    prefixo = "alocacao_" if tipo == "alocacao" else "lote_"
+    _regs = []
+    try:
+        for chave in _fonte:
+            if not str(chave).startswith(prefixo):
+                continue
+            try:
+                d = _fonte.get(chave)
+                if d and float(d.get("Tempo Médio/Rota (s)", 0)) > 0 and int(d.get("Linhas Validadas", 0)) > 0:
+                    _regs.append((float(str(chave).split("_", 1)[1]), float(d["Tempo Médio/Rota (s)"])))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    _regs.sort(key=lambda x: x[0])
+    return [s for _ts, s in _regs]
+
+
+def _faixa_tempo(n_rotas_unicas, s_esperado, s_otimista, s_pessimista):
+    """[ETA-FAIXA - 118ª geração] Converte três ritmos (s/rota) em três durações totais (s) para n
+    rotas únicas, garantindo a ordem mínimo ≤ esperado ≤ pessimista. PURO. Retorna (min_s, esp_s, pess_s)."""
+    try:
+        n = max(0, int(n_rotas_unicas))
+    except (TypeError, ValueError):
+        n = 0
+
+    def _mul(_s):
+        try:
+            return max(0.0, float(_s)) * n
+        except (TypeError, ValueError):
+            return 0.0
+    _esp = _mul(s_esperado)
+    _min = min(_mul(s_otimista), _esp)
+    _pess = max(_mul(s_pessimista), _esp)
+    return round(_min, 1), round(_esp, 1), round(_pess, 1)
+
+
+def estimar_faixa_tempo_processamento(n_rotas_unicas, tipo="lote", historico=None):
+    """[ETA-FAIXA - 118ª geração] Estimativa de tempo DECOMPOSTA em faixa mínimo/esperado/pessimista.
+    - ESPERADO: reusa estimar_tempo_processamento (o estimador ponderado existente) — não duplica lógica.
+    - FAIXA: derivada da DISPERSÃO real das execuções passadas (s/rota). Com ≥3 amostras, usa
+      média ± 1 desvio-padrão saturado no mínimo observado (faixa empírica, honesta). Com <3 amostras,
+      aplica fatores heurísticos DOCUMENTADOS (otimista ×0.7, pessimista ×1.6) sobre o esperado,
+      refletindo a variabilidade de rede/cache. `historico` injetável para teste.
+    Retorna dict com *_s (segundos), *_txt (formatado), n_amostras, baseline, origem_faixa e s/rota."""
+    if historico is None:
+        _txt, baseline, n_amostras, s_esp = estimar_tempo_processamento(n_rotas_unicas, tipo)
+    else:
+        _am0 = _amostras_tempo_por_rota(tipo, historico)
+        s_esp = (sum(_am0) / len(_am0)) if _am0 else 0.4
+        n_amostras = len(_am0)
+        baseline = "histórico real" if _am0 else "estimativa inicial (sem histórico ainda)"
+    amostras = _amostras_tempo_por_rota(tipo, historico)
+    if len(amostras) >= 3:
+        _media = sum(amostras) / len(amostras)
+        _dp = (sum((x - _media) ** 2 for x in amostras) / len(amostras)) ** 0.5
+        s_otim = max(min(amostras), _media - _dp)
+        s_pess = _media + _dp
+        origem_faixa = f"dispersão real de {len(amostras)} execuções (±1σ)"
+    else:
+        s_otim = float(s_esp) * 0.7
+        s_pess = float(s_esp) * 1.6
+        origem_faixa = "heurística (histórico insuficiente p/ dispersão)"
+    _min_s, _esp_s, _pess_s = _faixa_tempo(n_rotas_unicas, s_esp, s_otim, s_pess)
+    return {
+        "min_s": _min_s, "esperado_s": _esp_s, "pessimista_s": _pess_s,
+        "min_txt": _formatar_duracao(_min_s), "esperado_txt": _formatar_duracao(_esp_s),
+        "pessimista_txt": _formatar_duracao(_pess_s),
+        "n_amostras": n_amostras, "baseline": baseline, "origem_faixa": origem_faixa,
+        "s_por_rota_esperado": round(float(s_esp), 3),
+    }
 
 @st.cache_data(show_spinner=False)
 def _contar_rotas_unicas_preview(file_id, n_linhas, _origens, _destinos):
@@ -7313,6 +7505,183 @@ def _motivo_resumido_perda(dif_km, dif_reta, dif_razao):
     return "Desempate por menor distancia viaria"
 
 
+def _indices_compostos_hub(razao_vr, tem_balsa, modo_acesso, score_global,
+                           divergencia_pct, dif_km, dif_pct):
+    """[HUB-XAI - 118ª geração] Calcula três ÍNDICES COMPOSTOS (0-100) do hub vencedor, cada um a partir
+    de sinais JÁ MEDIDOS pela aplicação (nada é inventado). Retorna dict com o valor + a CLASSIFICAÇÃO
+    de cada índice e seus COMPONENTES (para exibição auditável — XAI). PURO e determinístico.
+
+    • Acessibilidade — facilidade de chegar por estrada: continuidade viária (razão V/R), ausência de
+      balsa, ausência de barreira fluvial/isolada.
+    • Eficiência Logística — qualidade da escolha em rota: diretividade (razão V/R), vantagem sobre o
+      2º melhor (dif %), confiabilidade (score global).
+    • Robustez do Resultado — estabilidade do dado/decisão: confiabilidade geográfica (score global),
+      estabilidade de roteamento (100 − divergência Google×OSRM), folga da decisão (dif km, saturando
+      em 200 km — coincidente com _indice_robustez).
+    """
+    def _clip(v):
+        return round(max(0.0, min(100.0, v)), 1)
+
+    def _f(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+
+    _rvr, _score, _div = _f(razao_vr), _f(score_global), _f(divergencia_pct)
+    _difpct = _f(dif_pct)
+    _difkm = _f(dif_km)
+    _m = str(modo_acesso or "").lower()
+    _fluvial = ("fluvial" in _m) or ("isolado" in _m)
+
+    # continuidade/diretividade a partir da razão V/R (estradas reais ~1.3-1.4×)
+    if _rvr <= 0:
+        _continuidade = 50.0            # sem dado → neutro
+    elif _rvr <= 1.4:
+        _continuidade = 100.0
+    else:
+        _continuidade = 100.0 - min(60.0, (_rvr - 1.4) * 50.0)  # cada +1.0 de excesso tira ~50
+    _continuidade = _clip(_continuidade)
+
+    # Acessibilidade
+    _c_balsa = 100.0 if not tem_balsa else 45.0
+    _c_barreira = 0.0 if _fluvial else 100.0
+    _acess = _clip(0.40 * _continuidade + 0.30 * _c_balsa + 0.30 * _c_barreira)
+
+    # Eficiência Logística
+    _vantagem = _clip(_difpct * 2.0)   # +50% de vantagem sobre o 2º já satura em 100
+    _efic = _clip(0.40 * _continuidade + 0.30 * _vantagem + 0.30 * _clip(_score))
+
+    # Robustez do Resultado
+    _estab_rot = _clip(100.0 - min(100.0, abs(_div)))
+    _folga = _clip(min(100.0, (_difkm / 200.0) * 100.0)) if _difkm > 0 else 0.0
+    _robu = _clip(0.45 * _clip(_score) + 0.30 * _estab_rot + 0.25 * _folga)
+
+    def _lbl(v):
+        if v >= 85:
+            return "Excelente"
+        if v >= 70:
+            return "Muito Bom"
+        if v >= 55:
+            return "Bom"
+        if v >= 40:
+            return "Regular"
+        if v >= 25:
+            return "Ruim"
+        return "Crítico"
+
+    return {
+        "acessibilidade": _acess, "acessibilidade_lbl": _lbl(_acess),
+        "eficiencia": _efic, "eficiencia_lbl": _lbl(_efic),
+        "robustez": _robu, "robustez_lbl": _lbl(_robu),
+        "componentes": {
+            "continuidade_viaria": _continuidade,
+            "sem_balsa": _c_balsa, "sem_barreira": _c_barreira,
+            "vantagem_sobre_2o": _vantagem, "confiabilidade_geografica": _clip(_score),
+            "estabilidade_roteamento": _estab_rot, "folga_decisao": _folga,
+        },
+    }
+
+
+def _explicacao_analista_hub(cliente, hub_venc, conc, dist_v, dist_c, dif_km, dif_pct,
+                             razao_vr, tem_balsa, modo_acesso, score_global,
+                             divergencia_pct, indices):
+    """[HUB-XAI - 118ª geração] Sintetiza uma explicação em LINGUAGEM NATURAL (estilo analista) da
+    escolha do hub, tecendo os sinais já medidos (distância, folga, sinuosidade, balsa, barreira,
+    confiabilidade geográfica, divergência de motores) num parágrafo coeso. PURO e determinístico.
+    Retorna str (Markdown)."""
+    def _f(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+    _dv, _dc = _f(dist_v), _f(dist_c)
+    _difkm, _difpct = _f(dif_km), _f(dif_pct)
+    _rvr, _score, _div = _f(razao_vr), _f(score_global), _f(divergencia_pct)
+    _m = str(modo_acesso or "").lower()
+    _fluvial = ("fluvial" in _m) or ("isolado" in _m)
+    _sem_conc = (not conc) or str(conc).strip().lower() in ("n/a", "nan", "", "—") or _dc <= 0
+
+    if not _sem_conc:
+        _abre = (f"O hub **{hub_venc}** foi indicado para **{cliente}** por oferecer a menor distância "
+                 f"rodoviária ({_dv:.1f} km) entre as bases avaliadas, com vantagem de {_difkm:.1f} km "
+                 f"(+{_difpct:.1f}%) sobre a segunda melhor opção (**{conc}**, {_dc:.1f} km).")
+    else:
+        _abre = (f"O hub **{hub_venc}** foi indicado para **{cliente}** com distância rodoviária de "
+                 f"{_dv:.1f} km. Não há segunda opção viável registrada (base única na região).")
+
+    if _rvr <= 0:
+        _rota = ""
+    elif _rvr <= 1.4:
+        _rota = f" A rota é bem direta (razão viária/reta {_rvr:.2f}×, típica de trajeto sem obstáculos)."
+    elif _rvr <= 1.8:
+        _rota = f" A rota apresenta desvio moderado (razão V/R {_rvr:.2f}×)."
+    else:
+        _rota = f" A rota é sinuosa (razão V/R {_rvr:.2f}×), sugerindo contorno de barreira natural."
+
+    _obst = ""
+    if tem_balsa:
+        _obst += (" O trajeto **depende de travessia por balsa**, o que adiciona sensibilidade a "
+                  "horários e condições do corpo d'água.")
+    if _fluvial:
+        _obst += (" O destino é sinalizado como **acesso fluvial/isolado** (lista oficial IBGE REGIC), "
+                  "sem rota puramente rodoviária.")
+
+    if _score >= 90:
+        _conf = "alta"
+    elif _score >= 75:
+        _conf = "média-alta"
+    elif _score >= 60:
+        _conf = "média"
+    else:
+        _conf = "baixa"
+    _confs = f" A confiabilidade geográfica é {_conf} (score {_score:.0f})"
+    if _div > 0:
+        _confs += f", com divergência Google×OSRM de {_div:.1f}%"
+    _confs += "."
+
+    _robu = indices.get("robustez", 0.0) if isinstance(indices, dict) else 0.0
+    if not _sem_conc and _difkm <= 0:
+        _fecha = " ⚠️ A escolha é um **empate técnico** — pequenas mudanças na malha podem invertê-la."
+    elif not _sem_conc and _difkm < 5:
+        _fecha = f" A vantagem é estreita ({_difkm:.1f} km): decisão **sensível**, recomenda-se monitorar."
+    elif not _sem_conc and _difkm >= 50:
+        _fecha = f" A vantagem de {_difkm:.1f} km torna a escolha **muito robusta** (baixíssima chance de inversão)."
+    else:
+        _fecha = f" No conjunto, a escolha é **consistente** (robustez composta {_robu:.0f}/100)."
+
+    return _abre + _rota + _obst + _confs + _fecha
+
+
+def _simulacao_hub_indisponivel(hub_venc, conc, dist_v, dist_c):
+    """[HUB-XAI - 118ª geração] Simula 'e se o hub vencedor ficar indisponível?': o cliente passaria ao
+    2º melhor (concorrente roteado). Calcula o impacto (km e %) sobre a distância rodoviária. PURO.
+    Retorna dict {disponivel, fallback, dist_fallback, delta_km, delta_pct, impacto, texto}."""
+    def _f(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+    _dv, _dc = _f(dist_v), _f(dist_c)
+    if (not conc) or str(conc).strip().lower() in ("n/a", "nan", "", "—") or _dc <= 0:
+        return {"disponivel": False, "fallback": None,
+                "texto": (f"Se **{hub_venc}** ficar indisponível, **não há segunda base viável registrada** "
+                          f"para este cliente — seria necessário reavaliar a malha de hubs.")}
+    _dkm = round(_dc - _dv, 1)
+    _dpct = round((_dkm / _dv) * 100.0, 1) if _dv > 0 else 0.0
+    if _dpct <= 15:
+        _imp = "🟢 impacto leve"
+    elif _dpct <= 40:
+        _imp = "🟡 impacto moderado"
+    else:
+        _imp = "🔴 impacto severo"
+    _texto = (f"Se **{hub_venc}** ficar indisponível, o cliente seria atendido por **{conc}** "
+              f"({_dc:.1f} km) — acréscimo de **{_dkm:.1f} km (+{_dpct:.1f}%)** na distância rodoviária. "
+              f"Classificação: {_imp}.")
+    return {"disponivel": True, "fallback": conc, "dist_fallback": _dc,
+            "delta_km": _dkm, "delta_pct": _dpct, "impacto": _imp, "texto": _texto}
+
+
 def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
     """[FIX-LOTE - 13ª geração] Processa UM chunk de rotas e retorna o dict de
     resultados {par_id: res}. Usado pelo motor de processamento contínuo em chunks.
@@ -7340,6 +7709,17 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
     Extraído de rodar_pipeline_lote para ser reutilizado pelo motor em chunks após
     todos os chunks concluírem. Lógica de montagem idêntica à original."""
     novos_dados = []
+    # [FIX-COLUNAS-FANTASMA - 117ª geração] Higieniza a planilha de ENTRADA antes de iterar. Colunas
+    # 'Unnamed: N' (células vazias à direita no Excel, que o openpyxl nomeia posicionalmente) e colunas
+    # de rótulo em branco NUNCA são dado do usuário — são resíduo de leitura. Sua presença, somada ao
+    # antigo itertuples()._asdict() (que renomeava rótulos com espaço/acento/inválidos para nomes
+    # POSICIONAIS _4.._38), era a ORIGEM das colunas fantasma vazias na planilha exportada. A correção do
+    # laço abaixo (dict(zip(...))) elimina o mangling e preserva os nomes reais, mantendo o [M17].
+    _cols_artefato = [c for c in df.columns
+                      if str(c).startswith('Unnamed:') or str(c).strip() == '']
+    if _cols_artefato:
+        df = df.drop(columns=_cols_artefato)
+    _cols_orig = list(df.columns)
     # [M17] itertuples() em vez de to_dict('records') — reduz em 60% o pico de RAM
     origens_arr  = df['Origem'].fillna('').astype(str).str.strip().values
     destinos_arr = df['Destino'].fillna('').astype(str).str.strip().values
@@ -7347,9 +7727,12 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
     if 'logs_auditoria' not in st.session_state:
         st.session_state['logs_auditoria'] = []
     
-    for i, row in enumerate(df.itertuples(index=False)):
-        # _asdict() retorna OrderedDict no pandas — convertemos para dict mutável padrão
-        linha_dict = dict(row._asdict())
+    for i, row in enumerate(df.itertuples(index=False, name=None)):
+        # [FIX-COLUNAS-FANTASMA - 117ª geração] name=None → tuplas puras (sem namedtuple): mantém o baixo
+        # pico de RAM do [M17], porém SEM o mangling de nomes do _asdict() (que trocava rótulos com
+        # espaço/acento/inválidos por posicionais _N). dict(zip(_cols_orig, row)) preserva os rótulos
+        # originais EXATAMENTE — eliminando de vez as colunas _4.._38 na planilha final.
+        linha_dict = dict(zip(_cols_orig, row))
         origem  = origens_arr[i]
         destino = destinos_arr[i]
         
@@ -8915,6 +9298,18 @@ with tab_individual:
                                        "Hidroviárias.)*")
                     except Exception as _e_fl:
                         logger.error(f"[INTEL-TERRITORIAL] Falha na sinalização de acesso fluvial: {_e_fl}")
+                    # [AQUAVIARIA - 116ª geração] Distância aquaviária (matriz pré-calculada, gated): quando
+                    # a matriz tem o par de Códigos IBGE, mostra a km por água. Inerte enquanto AQUAVIARIA_ATIVA
+                    # estiver desligada / matriz ausente (impacto zero).
+                    if AQUAVIARIA_ATIVA:
+                        try:
+                            _km_aqua = _distancia_aquaviaria(_id_o.get('cod_ibge', ''), _id_d.get('cod_ibge', ''))
+                            if _km_aqua is not None:
+                                st.info(f"🚢 **Distância aquaviária:** {_km_aqua:.1f} km (matriz oficial pré-calculada "
+                                        "a partir dos shapes ANTAQ/BIT). Estimativa por via navegável — sujeita à "
+                                        "sazonalidade dos rios.")
+                        except Exception as _e_aq:
+                            logger.error(f"[AQUAVIARIA] Falha ao consultar distância aquaviária: {_e_aq}")
                     # [GRANULARIDADE - 85ª geração] IDENTIDADE GEOGRÁFICA (endereço + coordenadas
                     # efetivamente ROTEADAS), SEPARADA da identidade administrativa (município/IBGE)
                     # acima. Mede a granularidade pela distância do ponto roteado ao centróide do
@@ -9603,6 +9998,8 @@ with tab_processamento:
                 tuple(df['Destino'].fillna('').astype(str).values)
             )
             _est_txt, _est_base, _est_n, _est_por_rota = estimar_tempo_processamento(_n_rotas_unicas_prev, tipo="lote")
+            # [ETA-FAIXA - 118ª geração] Faixa mínimo/esperado/pessimista decomposta (aditiva, custo ZERO).
+            _faixa = estimar_faixa_tempo_processamento(_n_rotas_unicas_prev, tipo="lote")
             if _est_txt:
                 with st.container(border=True):
                     ce1, ce2 = st.columns([60, 40])
@@ -9612,6 +10009,19 @@ with tab_processamento:
                     with ce2:
                         st.metric("Rotas Únicas a Processar", f"{_n_rotas_unicas_prev:,}",
                                   help="O sistema processa apenas rotas exclusivas (deduplicação O(U)). Rotas repetidas são reaproveitadas.")
+                    # [ETA-FAIXA - 118ª geração] Faixa de confiança (mínimo / esperado / pessimista).
+                    try:
+                        _cf1, _cf2, _cf3 = st.columns(3)
+                        _cf1.metric("🟢 Mínimo (otimista)", _faixa["min_txt"],
+                                    help="Cenário favorável: rede rápida e cache quente.")
+                        _cf2.metric("🎯 Esperado", _faixa["esperado_txt"],
+                                    help="Cenário central, ponderado para as execuções recentes.")
+                        _cf3.metric("🔴 Pessimista", _faixa["pessimista_txt"],
+                                    help="Cenário adverso: APIs lentas e baixo reaproveitamento de cache.")
+                        st.caption(f"📐 Decomposição: **{n_linhas:,} linha(s)** → **{_n_rotas_unicas_prev:,} rota(s) única(s)** "
+                                   f"(dedup O(U)) × ~{_faixa['s_por_rota_esperado']:.2f}s/rota. Faixa por {_faixa['origem_faixa']}.")
+                    except Exception as _e_faixa:
+                        logger.error(f"[ETA-FAIXA] Falha ao exibir faixa de tempo: {_e_faixa}")
                     if _est_n > 0:
                         st.caption(f"📊 Estimativa calibrada com **{_est_n} execução(ões) real(is)** do histórico "
                                    f"(~{_est_por_rota:.2f}s/rota, ponderado para execuções recentes). "
@@ -9886,8 +10296,14 @@ with tab_processamento:
                     # resultado que não esteja na ordem (Cod IBGE Origem/Destino, UF Origem/Destino,
                     # Modo/Acesso, etc.) — nada mais é descartado no reindex.
                     for col in df_final.columns:
-                        if col not in ordem_finais:
-                            ordem_finais.append(col)
+                        # [FIX-COLUNAS-FANTASMA - 117ª geração] rede final: nunca readmitir colunas-artefato
+                        # (_N posicional ou 'Unnamed:'), caso surjam por qualquer outro caminho de leitura.
+                        if col in ordem_finais:
+                            continue
+                        _cs = str(col)
+                        if re.fullmatch(r'_\d+', _cs) or _cs.startswith('Unnamed:'):
+                            continue
+                        ordem_finais.append(col)
                     df_final = df_final.reindex(columns=ordem_finais)
                     
                     # [SPEED-3] Exportação xlsxwriter (~1.7x vs openpyxl)
@@ -10392,8 +10808,13 @@ with tab_alocacao:
                 # [FIX - 114ª geração] REDE DE SEGURANÇA: preserva colunas extras já presentes (aliases
                 # Cliente/Hub, Cod IBGE Origem/Destino, UF Origem/Destino, Modo/Acesso...) — nada é descartado.
                 for c in df_final_alo.columns:
-                    if c not in ordem_finais_alo:
-                        ordem_finais_alo.append(c)
+                    # [FIX-COLUNAS-FANTASMA - 117ª geração] rede final: não readmitir colunas-artefato.
+                    if c in ordem_finais_alo:
+                        continue
+                    _cs = str(c)
+                    if re.fullmatch(r'_\d+', _cs) or _cs.startswith('Unnamed:'):
+                        continue
+                    ordem_finais_alo.append(c)
                 df_final_alo = df_final_alo.reindex(columns=ordem_finais_alo)
                 
                 output_buffer = io.BytesIO()
@@ -10595,6 +11016,51 @@ with tab_alocacao:
                                 _mi2.metric("🛡️ Índice de Robustez", f"{_ir}/100", help="100 = escolha folgada (≥200 km de vantagem).")
                             except Exception as _e_radar:
                                 logger.error(f"[DISPUTA-INDICES] Falha no radar/índices: {_e_radar}")
+
+                            # [HUB-XAI - 118ª geração] Índices compostos (Acessibilidade / Eficiência /
+                            # Robustez), leitura em linguagem natural (estilo analista) e simulação de
+                            # indisponibilidade — tudo derivado de sinais JÁ medidos (custo ZERO, sem rede).
+                            # Isolado em try/except: falha de render não afeta a auditoria.
+                            try:
+                                _tem_balsa_v = str(_row.get('Balsas', '')).strip().lower() in ('sim', 'yes', 'true', '1')
+                                _modo_v = _row.get('Modo/Acesso', '')
+                                _score_v_num = _num(_score_v)
+                                _div_v = _num(_row.get('Divergencia Motores (%)', 0))
+                                _idx = _indices_compostos_hub(
+                                    razao_vr=_razao_v, tem_balsa=_tem_balsa_v, modo_acesso=_modo_v,
+                                    score_global=_score_v_num, divergencia_pct=_div_v,
+                                    dif_km=_dif_km, dif_pct=_dif_pct)
+                                st.markdown("**🧭 Índices Compostos do Hub (XAI)**")
+                                _cmp = _idx['componentes']
+                                _ix1, _ix2, _ix3 = st.columns(3)
+                                _ix1.metric("🧭 Acessibilidade", f"{_idx['acessibilidade']}/100",
+                                            help="Facilidade de chegar por estrada: continuidade viária, ausência de balsa e de barreira fluvial.")
+                                _ix1.caption(f"**{_idx['acessibilidade_lbl']}** · continuidade {_cmp['continuidade_viaria']:.0f} · "
+                                             f"balsa {_cmp['sem_balsa']:.0f} · barreira {_cmp['sem_barreira']:.0f}")
+                                _ix2.metric("⚙️ Eficiência Logística", f"{_idx['eficiencia']}/100",
+                                            help="Qualidade da escolha em rota: diretividade, vantagem sobre o 2º melhor e confiabilidade.")
+                                _ix2.caption(f"**{_idx['eficiencia_lbl']}** · diretividade {_cmp['continuidade_viaria']:.0f} · "
+                                             f"vantagem {_cmp['vantagem_sobre_2o']:.0f} · confiab. {_cmp['confiabilidade_geografica']:.0f}")
+                                _ix3.metric("🛡️ Robustez do Resultado", f"{_idx['robustez']}/100",
+                                            help="Estabilidade do dado/decisão: confiabilidade geográfica, estabilidade de roteamento e folga da decisão.")
+                                _ix3.caption(f"**{_idx['robustez_lbl']}** · confiab. {_cmp['confiabilidade_geografica']:.0f} · "
+                                             f"estab. rota {_cmp['estabilidade_roteamento']:.0f} · folga {_cmp['folga_decisao']:.0f}")
+                                st.caption("ℹ️ Índices compostos a partir de sinais já medidos (razão V/R, balsa, Modo/Acesso, "
+                                           "score geográfico, divergência Google×OSRM, folga p/ o 2º). A folga da decisão também "
+                                           "aparece isolada acima como Índice de Robustez.")
+
+                                st.markdown("**🗣️ Leitura do Analista**")
+                                st.info(_explicacao_analista_hub(
+                                    cliente=_cli_sel, hub_venc=_venc_nome, conc=_conc_nome,
+                                    dist_v=_venc_dist, dist_c=_conc_dist, dif_km=_dif_km, dif_pct=_dif_pct,
+                                    razao_vr=_razao_v, tem_balsa=_tem_balsa_v, modo_acesso=_modo_v,
+                                    score_global=_score_v_num, divergencia_pct=_div_v, indices=_idx))
+
+                                st.markdown("**🔄 Simulação — e se o hub vencedor ficar indisponível?**")
+                                _sim = _simulacao_hub_indisponivel(_venc_nome, _conc_nome, _venc_dist, _conc_dist)
+                                (st.warning if _sim.get("disponivel") else st.error)(_sim["texto"])
+                            except Exception as _e_xai:
+                                logger.error(f"[HUB-XAI] Falha no painel de índices/analista: {_e_xai}")
 
                         # [RANK-NHUBS - 58ª geração / itens #7/#9] Ranking completo dos hubs candidatos
                         # (linha reta) — atende "ranking completo" e "quais quase entraram" (item #9).
