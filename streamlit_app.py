@@ -62,6 +62,50 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (121ª geração) → OTIMIZADOR DE LOCALIZAÇÃO DE HUB (‘onde abrir o próximo?’) [HUBOPT]
+#     Salto descritivo→prescritivo: o INVERSO da alocação. Dada a distribuição de clientes (coordenadas
+#     Lat/Lon Origem JÁ calculadas — custo ZERO, sem rede), sugere ONDE posicionar p hub(s) para minimizar
+#     a distância. Núcleo PURO/testável: _haversine_matriz (matriz de distâncias vetorizada, mesmo critério
+#     de linha reta do ranking do app) + _otimizar_hubs (heurística GULOSA p-mediana [objetivo=total] ou
+#     p-centro [objetivo=max] — adiciona um hub por vez, o que mais reduz o custo). UI dentro da aba de
+#     Alocação (mantém 12 abas), gated por Lat/Lon Origem presentes: escolhe nº de hubs e objetivo, mostra
+#     hub(s) recomendado(s), distância média/pior-caso/soma, ganho vs. a média em linha reta ATUAL, tabela
+#     de clientes por hub e mapa (clientes × hubs). Candidatos = cidades dos clientes (v1); honesto quanto a
+#     ser linha reta (a viária real se confirma roteando). Isolado em try/except. Provado por teste sobre o
+#     CÓDIGO REAL (teste_hubopt_121: haversine SP–RJ ≈ 360 km; p=2 cobre 2 clusters melhor que p=1; guloso
+#     determinístico; atribuição por cliente coerente). Sem regressão; 12 abas, RotaPipeline 41, balões 1×,
+#     score imutável, 0 except nus novos.
+#   v3.8 (120ª geração) → ROTAS DOURADAS (dataset verificado) + PRÉ-VOO SEM FALSO POSITIVO [GOLDEN][PREVOO-FP]
+#     (A) ZERO FALSO POSITIVO no pré-voo (119ª): REMOVIDOS os dois detectores heurísticos que podiam errar —
+#     'sem UF' (nome de estado por extenso, CEP ou cidade inequívoca gerava alarme falso) e 'grafias
+#     divergentes' (fuzzy). O detector de mojibake ficou PRECISO: só sinaliza quando a correção segura
+#     (round-trip latin-1↔utf-8) REALMENTE muda o texto — logo acentos maiúsculos legítimos ('SÃO PAULO',
+#     'MARANHÃO') deixam de ser falso positivo. O que resta é 100% determinístico (linha em branco,
+#     origem=destino, duplicata exata, coordenada fora/trocada, mojibake real, espaços). (B) ROTAS DOURADAS —
+#     flywheel de dado proprietário: no Validador o usuário marca uma rota conferida como VERIFICADA; ela
+#     persiste em cache_rotas_douradas (propositalmente FORA da limpeza de caches — é ativo, não cache) com
+#     proveniência e data; o painel avisa quando a rota já foi verificada; e o dataset é EXPORTÁVEL (.xlsx).
+#     Captura via session_state (sobrevive ao rerun do botão de salvar). Funções puras/testáveis
+#     (_chave_rota_dourada, _registrar/_buscar/_listar_rotas_douradas). NÃO altera o roteamento (só captura,
+#     superfície e exporta; o override no pipeline fica para um próximo passo deliberado). Provado por teste
+#     sobre o CÓDIGO REAL (teste_golden_prevoo_120: pré-voo não emite mais sem_uf/grafias e não marca 'SÃO
+#     PAULO' como mojibake; golden grava/busca direcional/lista, reverso = None). Sem regressão; 12 abas,
+#     RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
+#   v3.8 (119ª geração) → PRÉ-VOO: RAIO-X DE SAÚDE DA PLANILHA + HIGIENIZAÇÃO EM 1 CLIQUE [PREVOO]
+#     Maior ROI/menor risco da lista de ideias. ADITIVO (não toca no score, no builder nem no pipeline;
+#     roda no preview do Lote sobre o df já carregado; custo ZERO de rede). Antes de processar, um raio-x
+#     detecta os problemas que mais degradam o resultado (lixo na entrada é a causa nº1 de rota ruim):
+#     linhas com Origem/Destino em branco (crítico), origem = destino (0 km), rotas repetidas (informativo,
+#     dedup cuida), coordenadas fora do Brasil ou com lat/lon trocadas (crítico), acentuação corrompida /
+#     mojibake, endereços sem UF, mesmo local grafado de formas diferentes e espaços supérfluos. Emite um
+#     SCORE de saúde 0-100 (Excelente/Boa/Atenção/Crítica) + achados com exemplos e recomendação, e oferece
+#     HIGIENIZAÇÃO em 1 clique — correções NÃO destrutivas (mojibake via round-trip seguro latin-1↔utf-8 +
+#     colapso de espaços), gerando uma planilha limpa para download SEM remover linhas nem alterar o sentido
+#     do endereço. Funções puras/testáveis (_raio_x_planilha, _prevoo_parse_coord/_status_coord/_corrigir_
+#     mojibake/_higienizar_texto/_strip_acentos); reusa _RE_UF_SIGLA e a bbox de validar_coordenada_brasil;
+#     render isolado em try/except. Provado por teste sobre o CÓDIGO REAL (teste_prevoo_119: detecta cada
+#     classe, ignora IBGE de 7 dígitos, não penaliza duplicatas, higieniza mojibake/espaços sem corromper
+#     texto correto). Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
 #   v3.8 (118ª geração) → HUB: ÍNDICES COMPOSTOS + LEITURA DO ANALISTA + SIMULAÇÃO ‘E SE?’; ETA COM FAIXA [HUB-XAI][ETA-FAIXA]
 #     Incremento ADITIVO (não toca no score 0.35/0.35/0.30 nem no builder _montar_dataframe_final; reusa dado
 #     já calculado; custo ZERO de rede). (A) PAINEL DE HUBS — três helpers PUROS/testáveis somados ao painel
@@ -2150,6 +2194,302 @@ def estimar_faixa_tempo_processamento(n_rotas_unicas, tipo="lote", historico=Non
         "s_por_rota_esperado": round(float(s_esp), 3),
     }
 
+
+# ==============================================================================
+# [PREVOO - 119ª geração] RAIO-X DE SAÚDE DA PLANILHA (pré-voo do Lote)
+# ------------------------------------------------------------------------------
+# Detecta, ANTES do processamento, os problemas de dado que mais degradam o
+# resultado (lixo na entrada é a causa nº 1 de rota ruim). Funções PURAS e
+# testáveis; render isolado. Reusa _RE_UF_SIGLA e a bbox de validar_coordenada_brasil.
+# ==============================================================================
+_RE_PREVOO_COORD = re.compile(r'^[\(\[]?\s*(-?\d{1,3}(?:[.,]\d+)?)\s*[;,]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*[\)\]]?$')
+_MOJIBAKE_MARCADORES = ('Ã', 'Â', 'â\x82', 'â\x80', 'ï¿½', '�', 'Ãƒ')
+
+
+def _prevoo_strip_acentos(txt):
+    """[PREVOO - 119ª] Minúsculo, sem acento/pontuação, espaços colapsados — chave p/ comparar grafias. PURO."""
+    import unicodedata
+    s = str(txt or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _prevoo_parse_coord(texto):
+    """[PREVOO - 119ª] Interpreta 'lat, lon' (separador vírgula/ponto-e-vírgula) → (a, b) float ou None. PURO."""
+    m = _RE_PREVOO_COORD.match(str(texto or "").strip())
+    if not m:
+        return None
+    try:
+        return (float(m.group(1).replace(",", ".")), float(m.group(2).replace(",", ".")))
+    except ValueError:
+        return None
+
+
+def _prevoo_status_coord(a, b):
+    """[PREVOO - 119ª] 'ok' | 'trocada' | 'fora' para (a,b) lido como (lat,lon), usando a bbox do Brasil. PURO."""
+    def _in_br(lat, lon):
+        return (-35.0 <= lat <= 6.0) and (-75.0 <= lon <= -28.0)
+    if _in_br(a, b):
+        return "ok"
+    if _in_br(b, a):
+        return "trocada"
+    return "fora"
+
+
+def _prevoo_corrigir_mojibake(s):
+    """[PREVOO - 119ª] Corrige mojibake clássico (UTF-8 lido como Latin-1) SÓ quando há marcadores e o
+    round-trip é seguro; senão devolve o original (nunca corrompe texto já correto). PURO."""
+    txt = str(s)
+    if not any(mk in txt for mk in _MOJIBAKE_MARCADORES):
+        return txt
+    try:
+        return txt.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return txt
+
+
+def _prevoo_higienizar_texto(s):
+    """[PREVOO - 119ª] Higiene NÃO destrutiva de uma célula: corrige mojibake + colapsa espaços + trim. PURO."""
+    return re.sub(r"\s+", " ", _prevoo_corrigir_mojibake(s)).strip()
+
+
+def _raio_x_planilha(origens, destinos, max_exemplos=3):
+    """[PREVOO - 119ª geração] Raio-X de saúde da planilha ANTES do processamento. Varre Origem/Destino
+    em UMA passada (O(N)) e reporta os problemas que mais degradam o resultado. PURO e determinístico.
+    Recebe duas sequências de strings; retorna dict {score, nota, total_linhas, achados}. Cada achado:
+    {id, severidade('critico'|'aviso'|'info'), titulo, contagem, exemplos, recomendacao, corrigivel}."""
+    origens = list(origens)
+    destinos = list(destinos)
+    n = max(len(origens), len(destinos))
+
+    def _cel(seq, i):
+        return str(seq[i]).strip() if (i < len(seq) and seq[i] is not None) else ""
+
+    def _vazio(v):
+        return (v == "") or v.lower() == "nan"
+
+    inc, ig, moji, esp, coord_ruim = [], [], [], [], []
+    pares = {}
+
+    for i in range(n):
+        o, d = _cel(origens, i), _cel(destinos, i)
+        vo, vd = _vazio(o), _vazio(d)
+        if vo or vd:
+            inc.append(i + 2)  # +2 = linha real no Excel (cabeçalho + índice 1-based)
+        if (not vo) and (not vd):
+            _ko, _kd = _prevoo_strip_acentos(o), _prevoo_strip_acentos(d)
+            if _ko and _ko == _kd:
+                ig.append(f"L{i+2}: {o}")
+            pares[(o.lower(), d.lower())] = pares.get((o.lower(), d.lower()), 0) + 1
+        for col, v in (("O", o), ("D", d)):
+            if _vazio(v):
+                continue
+            if v != re.sub(r"\s+", " ", v).strip() or "  " in v:
+                esp.append(f"L{i+2}/{col}")
+            # [PREVOO-FP - 120ª geração] Mojibake PRECISO: só sinaliza quando a correção segura
+            # (round-trip latin-1↔utf-8) REALMENTE muda o texto. Assim, acentos maiúsculos legítimos
+            # ('SÃO PAULO', 'MARANHÃO') NUNCA são falsos positivos.
+            _v_corr = _prevoo_corrigir_mojibake(v)
+            if _v_corr != v:
+                moji.append(f"L{i+2}/{col}: {v} → {_v_corr}")
+            pc = _prevoo_parse_coord(v)
+            if pc is not None:
+                stt = _prevoo_status_coord(pc[0], pc[1])
+                if stt != "ok":
+                    coord_ruim.append(f"L{i+2}/{col}: {v} ({'lat/lon trocadas' if stt == 'trocada' else 'fora do Brasil'})")
+
+    achados = []
+
+    def _add(id_, sev, titulo, itens, rec, corrigivel=False, contagem=None):
+        c = contagem if contagem is not None else len(itens)
+        if c <= 0:
+            return
+        ex = itens[:max_exemplos] if (isinstance(itens, list) and itens and isinstance(itens[0], str)) else []
+        achados.append({"id": id_, "severidade": sev, "titulo": titulo, "contagem": c,
+                        "exemplos": ex, "recomendacao": rec, "corrigivel": corrigivel})
+
+    _add("linhas_incompletas", "critico", "Linhas com Origem ou Destino em branco",
+         [f"linha {x}" for x in inc],
+         "Essas linhas NÃO geram rota. Preencha ou remova antes de processar.", contagem=len(inc))
+    _dup_extra = sum(c - 1 for c in pares.values() if c > 1)
+    _add("duplicatas_exatas", "info", "Rotas repetidas (origem+destino idênticos)", [],
+         f"{_dup_extra} linha(s) repetem uma rota já presente. O motor deduplica automaticamente (O(U)) — "
+         f"apenas informativo, você não paga API por elas.", contagem=_dup_extra)
+    _add("origem_igual_destino", "aviso", "Origem igual ao Destino (distância zero)", ig,
+         "Rotas com origem = destino resultam em 0 km. Verifique se é intencional.")
+    _add("coordenadas_suspeitas", "critico", "Coordenadas fora do Brasil ou com lat/lon trocadas", coord_ruim,
+         "Coordenada inválida gera geocodificação/rota errada. Confira a ordem (lat, lon) e o sinal.")
+    _add("encoding_suspeito", "aviso", "Texto com acentuação corrompida (mojibake)", moji,
+         "Encoding quebrado (ex.: 'SÃ£o Paulo' → 'São Paulo'). O botão de higienização corrige automaticamente.", corrigivel=True)
+    _add("espacos_problematicos", "info", "Espaços extras (início/fim ou duplicados)", esp,
+         "Espaços supérfluos podem quebrar o casamento com o cache. A higienização corrige automaticamente.", corrigivel=True)
+
+    # Score de saúde: 100 − penalidades ponderadas pela fração afetada. Duplicatas NÃO penalizam
+    # (o dedup as resolve — são informativas/positivas).
+    _pesos = {"critico": 45.0, "aviso": 20.0, "info": 6.0}
+    base = max(1, n)
+    penalidade = 0.0
+    for a in achados:
+        if a["id"] == "duplicatas_exatas":
+            continue
+        penalidade += _pesos[a["severidade"]] * min(1.0, a["contagem"] / base)
+    score = round(max(0.0, min(100.0, 100.0 - penalidade)), 1)
+    nota = "Excelente" if score >= 90 else "Boa" if score >= 75 else "Atenção" if score >= 55 else "Crítica"
+    return {"score": score, "nota": nota, "total_linhas": n, "achados": achados}
+
+
+# ==============================================================================
+# [GOLDEN - 120ª geração] CADERNETA DE ROTAS DOURADAS (rotas verificadas)
+# ------------------------------------------------------------------------------
+# Flywheel de dado proprietário: o usuário marca rotas conferidas como VERIFICADAS;
+# elas persistem com proveniência, são exportáveis e o Validador passa a avisar
+# quando uma rota já foi verificada. Funções PURAS (store injetável) e testáveis.
+# ==============================================================================
+def _chave_rota_dourada(origem, destino):
+    """[GOLDEN - 120ª] Chave canônica DIRECIONAL (origem→destino) de uma rota, normalizada (sem acento,
+    minúsculo, espaços colapsados). Direcional porque a distância pode diferir por sentido. PURO."""
+    return f"{_prevoo_strip_acentos(origem)}=>{_prevoo_strip_acentos(destino)}"
+
+
+def _golden_store(store=None):
+    """[GOLDEN - 120ª] Resolve o store (injetável p/ teste; senão o cache persistente global)."""
+    if store is not None:
+        return store
+    return cache_rotas_douradas if "cache_rotas_douradas" in globals() else {}
+
+
+def _registrar_rota_dourada(origem, destino, dados, store=None):
+    """[GOLDEN - 120ª] Grava/atualiza uma rota VERIFICADA na caderneta. `dados`: dict com o resultado
+    (km, tempo, fonte, score, coords...). Carimba data de verificação e a chave. store injetável.
+    Retorna o registro salvo (dict)."""
+    _st = _golden_store(store)
+    reg = dict(dados or {})
+    reg["origem"] = str(origem)
+    reg["destino"] = str(destino)
+    reg["chave"] = _chave_rota_dourada(origem, destino)
+    reg.setdefault("verificada_em", time.strftime("%Y-%m-%d %H:%M:%S"))
+    try:
+        if hasattr(_st, "set"):
+            _st.set(reg["chave"], reg, expire=None)
+        else:
+            _st[reg["chave"]] = reg
+    except Exception:
+        try:
+            _st[reg["chave"]] = reg
+        except Exception:
+            pass
+    return reg
+
+
+def _buscar_rota_dourada(origem, destino, store=None):
+    """[GOLDEN - 120ª] Busca uma rota verificada pela chave direcional. Retorna o registro (dict) ou None."""
+    _st = _golden_store(store)
+    ch = _chave_rota_dourada(origem, destino)
+    try:
+        return _st.get(ch)
+    except Exception:
+        return None
+
+
+def _listar_rotas_douradas(store=None):
+    """[GOLDEN - 120ª] Retorna a lista de registros verificados (dicts). store injetável."""
+    _st = _golden_store(store)
+    regs = []
+    try:
+        for ch in list(_st):
+            try:
+                v = _st.get(ch) if hasattr(_st, "get") else _st[ch]
+                if isinstance(v, dict):
+                    regs.append(v)
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return regs
+
+
+def _haversine_matriz(lats_a, lons_a, lats_b, lons_b):
+    """[HUBOPT - 121ª geração] Matriz de distâncias Haversine (km) entre A (m pontos) e B (n pontos).
+    Retorna np.ndarray (m, n), vetorizado. PURO. Mesmo critério de linha reta do ranking de proximidade."""
+    import numpy as np
+    R = 6371.0088
+    la = np.radians(np.asarray(lats_a, dtype=float))[:, None]
+    lo_a = np.radians(np.asarray(lons_a, dtype=float))[:, None]
+    lb = np.radians(np.asarray(lats_b, dtype=float))[None, :]
+    lo_b = np.radians(np.asarray(lons_b, dtype=float))[None, :]
+    h = np.sin((lb - la) / 2.0) ** 2 + np.cos(la) * np.cos(lb) * np.sin((lo_b - lo_a) / 2.0) ** 2
+    return 2.0 * R * np.arcsin(np.sqrt(np.clip(h, 0.0, 1.0)))
+
+
+def _otimizar_hubs(clientes, candidatos, p=1, pesos=None, objetivo="total", swaps=True):
+    """[HUBOPT - 121ª geração] Seleciona p locais (dentre `candidatos`) que minimizam o custo de atender
+    os `clientes`. Duas fases: (1) construção GULOSA (adiciona o hub que mais reduz o custo) e (2) melhoria
+    por TROCA (interchange / Teitz-Bart): tenta substituir cada hub escolhido por cada candidato de fora e
+    aceita a melhor troca que reduzir o custo, até estabilizar — isso corrige as 'armadilhas' do guloso.
+    objetivo='total' (soma ponderada da distância ao hub mais próximo) ou 'max' (maior distância).
+    clientes/candidatos: sequências de (lat, lon). PURO. Retorna dict com
+    {escolhidos:[idx_candidato], custo, custo_total_km, dist_media_km, dist_max_km, atribuicao}."""
+    import numpy as np
+    C = np.asarray(list(clientes), dtype=float)
+    K = np.asarray(list(candidatos), dtype=float)
+    m, n = len(C), len(K)
+    if m == 0 or n == 0:
+        return {"escolhidos": [], "custo": float("inf"), "custo_total_km": 0.0,
+                "dist_media_km": 0.0, "dist_max_km": 0.0, "atribuicao": []}
+    w = np.ones(m) if pesos is None else np.asarray(pesos, dtype=float)
+    D = _haversine_matriz(K[:, 0], K[:, 1], C[:, 0], C[:, 1])  # (n, m): candidato × cliente
+    p = max(1, min(int(p), n))
+
+    def _custo(sel):
+        dmin = D[sel].min(axis=0)
+        return float(dmin.max()) if objetivo == "max" else float((w * dmin).sum())
+
+    # (1) construção gulosa
+    escolhidos = []
+    melhor = np.full(m, np.inf)
+    for _ in range(p):
+        novo_all = np.minimum(melhor[None, :], D)
+        custos = (novo_all.max(axis=1) if objetivo == "max"
+                  else (novo_all * w[None, :]).sum(axis=1)).astype(float).copy()
+        if escolhidos:
+            custos[escolhidos] = np.inf
+        j = int(np.argmin(custos))
+        escolhidos.append(j)
+        melhor = novo_all[j]
+
+    # (2) melhoria por troca (vertex substitution) — escapa das armadilhas do guloso
+    if swaps and 1 <= p < n:
+        sel = list(escolhidos)
+        custo_atual = _custo(sel)
+        for _ in range(50):  # converge rápido para p pequeno
+            _fora = [c for c in range(n) if c not in sel]
+            _best = None
+            for _hi in range(len(sel)):
+                for _c in _fora:
+                    _cand_sel = sel.copy()
+                    _cand_sel[_hi] = _c
+                    _cst = _custo(_cand_sel)
+                    if _cst < custo_atual - 1e-9 and (_best is None or _cst < _best[0]):
+                        _best = (_cst, _cand_sel)
+            if _best is None:
+                break
+            custo_atual, sel = _best[0], _best[1]
+        escolhidos = sel
+
+    melhor = D[escolhidos].min(axis=0)
+    _atrib_local = np.argmin(D[escolhidos], axis=0)                    # 0..p-1 por cliente
+    atribuicao = [escolhidos[a] for a in _atrib_local.tolist()]
+    return {
+        "escolhidos": escolhidos,
+        "custo": (float(np.max(melhor)) if objetivo == "max" else float(np.sum(w * melhor))),
+        "custo_total_km": round(float(np.sum(w * melhor)), 1),
+        "dist_media_km": round(float(np.average(melhor, weights=w)), 1),
+        "dist_max_km": round(float(np.max(melhor)), 1),
+        "atribuicao": atribuicao,
+    }
+
+
 @st.cache_data(show_spinner=False)
 def _contar_rotas_unicas_preview(file_id, n_linhas, _origens, _destinos):
     """[PERF-UI1 - 15ª geração] Conta rotas únicas (pares origem-destino válidos) com
@@ -2570,6 +2910,10 @@ cache_aprendizado = Cache("./cache_aprendizado")
 cache_aprendizado_auto = Cache("./cache_aprendizado_auto")
 cache_api_health = Cache("./cache_api_health")
 cache_historico_lotes = Cache("./cache_historico_lotes")
+# [GOLDEN - 120ª geração] Caderneta de Rotas Douradas: rotas VERIFICADAS pelo usuário — dataset
+# proprietário persistente. NÃO é cache de performance; guarda o que foi conferido/confiável, com
+# proveniência. Propositalmente FORA da limpeza de caches (o ativo de dado não deve ser descartado).
+cache_rotas_douradas = Cache("./cache_rotas_douradas")
 
 
 # [M12] Thread-safe LRU Cache — substitui LRUDict manual sem proteção de concorrência
@@ -9130,6 +9474,51 @@ tab_individual, tab_processamento, tab_alocacao, tab_analytics, tab_calculadora,
 with tab_individual:
     st.info("🎯 **Objetivo desta aba:** Validar rapidamente uma única rota. Digite a Origem e o Destino para obter a distância viária oficial do Google Maps, o desvio geodésico rigoroso e a explicabilidade do motor de geocodificação.")
     renderizar_guia_aba("geocodificacao")
+    # [GOLDEN - 120ª geração] Caderneta de Rotas Douradas (verificadas): captura manual da última rota
+    # calculada, aviso de "já verificada" e exportação do dataset proprietário. Reusa cache_rotas_douradas
+    # (persistente). Isolado em try/except — nunca bloqueia a aba. O botão de salvar sobrevive ao rerun
+    # porque lê a última rota de session_state (não do resultado do botão de cálculo).
+    try:
+        _golden_regs = _listar_rotas_douradas()
+        with st.expander(f"🏅 Rotas Douradas — Caderneta de Rotas Verificadas ({len(_golden_regs)})", expanded=False):
+            st.caption("Marque rotas conferidas como **verificadas**: elas formam um dataset proprietário, "
+                       "auditável e exportável — e o Validador passa a avisar quando você já conferiu uma rota. "
+                       "A curadoria é manual (você decide o que é confiável); nada é gravado automaticamente.")
+            _ult = st.session_state.get('ultima_rota_individual')
+            if _ult and _ult.get("km") is not None:
+                _ja = _buscar_rota_dourada(_ult["origem"], _ult["destino"])
+                _gc1, _gc2 = st.columns([64, 36])
+                with _gc1:
+                    st.markdown(f"**Última rota calculada:** {_ult['origem']} → {_ult['destino']}")
+                    _status_ja = (f" · ✅ já verificada em {_ja.get('verificada_em', '—')} ({_ja.get('km', '—')} km)"
+                                  if isinstance(_ja, dict) else "")
+                    st.caption(f"{_ult['km']} km · {_ult.get('tempo', '—')} · score {_ult.get('score_global', '—')}/100{_status_ja}")
+                with _gc2:
+                    if st.button("🏅 Salvar como verificada", key="golden_salvar", use_container_width=True):
+                        _reg = _registrar_rota_dourada(_ult["origem"], _ult["destino"], _ult)
+                        st.success(f"Rota verificada salva ({_reg.get('km', '—')} km).")
+                        _golden_regs = _listar_rotas_douradas()
+            else:
+                st.caption("Calcule uma rota individual abaixo para poder marcá-la como verificada.")
+            if _golden_regs:
+                st.divider()
+                try:
+                    _df_g = pd.DataFrame(_golden_regs)
+                    _cols_g = [c for c in ["origem", "destino", "km", "tempo", "linha_reta", "fonte_rota",
+                                           "score_global", "verificada_em"] if c in _df_g.columns]
+                    _df_g_show = _df_g[_cols_g] if _cols_g else _df_g
+                    st.dataframe(_df_g_show, use_container_width=True, hide_index=True, height=220)
+                    _buf_g = io.BytesIO()
+                    with pd.ExcelWriter(_buf_g, engine='xlsxwriter') as _wg:
+                        _df_g_show.to_excel(_wg, index=False, sheet_name="Rotas Verificadas")
+                    st.download_button("⬇️ Exportar dataset verificado (.xlsx)", data=_buf_g.getvalue(),
+                                       file_name="rotas_verificadas.xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                       use_container_width=True, key="golden_export")
+                except Exception as _e_ge:
+                    logger.error(f"[GOLDEN] Falha ao montar/exportar caderneta: {_e_ge}")
+    except Exception as _e_golden:
+        logger.error(f"[GOLDEN] Falha na caderneta de rotas douradas: {_e_golden}")
     st.markdown("### 📍 Validador Rápido de Rota (Single-Shot)")
     col_ind1, col_ind2 = st.columns(2)
     with col_ind1: 
@@ -9169,6 +9558,23 @@ with tab_individual:
                 m_balsa.metric("Uso de Balsas", res_ind[3], help="Indica se a rota obrigatoriamente cruza travessia aquática.")
                 score_g = round((0.35 * res_ind[8]) + (0.35 * res_ind[14]) + (0.30 * res_ind[6]), 2)
                 m_score.metric("Score Global", f"{score_g} / 100", help="Índice combinado de confiança da geocodificação de origem, destino e da rota.")
+                # [GOLDEN - 120ª geração] Guarda a última rota calculada em session_state para a Caderneta de
+                # Rotas Douradas — a captura sobrevive ao rerun do botão de salvar (que fica fora deste bloco).
+                try:
+                    st.session_state['ultima_rota_individual'] = {
+                        "origem": orig_ind, "destino": dest_ind,
+                        "km": res_ind[0] if isinstance(res_ind[0], (int, float)) else None,
+                        "tempo": res_ind[1], "balsa": res_ind[3],
+                        "linha_reta": res_ind[4] if isinstance(res_ind[4], (int, float)) else None,
+                        "fonte_rota": res_ind[5] if len(res_ind) > 5 else "",
+                        "score_global": score_g,
+                        "lat_origem": res_ind[19] if len(res_ind) > 22 else None,
+                        "lon_origem": res_ind[20] if len(res_ind) > 22 else None,
+                        "lat_destino": res_ind[21] if len(res_ind) > 22 else None,
+                        "lon_destino": res_ind[22] if len(res_ind) > 22 else None,
+                    }
+                except Exception as _e_cap:
+                    logger.error(f"[GOLDEN] Falha ao capturar última rota individual: {_e_cap}")
                 
                 # [UX-07] Barra visual de confiança global — leitura instantânea da qualidade
                 st.markdown(f"**Confiança Global do Resultado:** {score_g:.0f}/100", help="Quanto mais cheia e verde a barra, mais confiável é a localização encontrada.")
@@ -10029,6 +10435,64 @@ with tab_processamento:
                     else:
                         st.caption(f"📊 Primeira estimativa ({_est_base}). Após este lote, as próximas estimativas "
                                    f"usarão seus dados reais de desempenho.")
+            
+            # [PREVOO - 119ª geração] Raio-X de saúde da planilha (pré-voo): diagnóstico dos problemas
+            # que mais degradam o resultado + higienização segura em 1 clique. Reusa dado já carregado
+            # (custo ZERO, sem rede). Isolado em try/except — nunca bloqueia o fluxo do Lote.
+            try:
+                _rx = _raio_x_planilha(
+                    df['Origem'].tolist() if 'Origem' in df.columns else [],
+                    df['Destino'].tolist() if 'Destino' in df.columns else [])
+                _emoji_nota = {"Excelente": "🟢", "Boa": "🟢", "Atenção": "🟡", "Crítica": "🔴"}.get(_rx["nota"], "⚪")
+                with st.expander(f"🩺 Pré-voo: Raio-X de Saúde da Planilha — {_emoji_nota} {_rx['nota']} ({_rx['score']}/100)",
+                                 expanded=(_rx["score"] < 90)):
+                    _rc1, _rc2 = st.columns([40, 60])
+                    with _rc1:
+                        st.metric("Saúde do Dado", f"{_rx['score']}/100",
+                                  help="100 = planilha limpa. Quanto maior, menor o risco de resultado ruim por problema de entrada.")
+                        st.progress(_rx["score"] / 100.0)
+                    with _rc2:
+                        if not _rx["achados"]:
+                            st.success("✅ Nenhum problema estrutural detectado em Origem/Destino. Pode processar com segurança.")
+                        else:
+                            _n_crit = sum(1 for a in _rx["achados"] if a["severidade"] == "critico")
+                            _n_avis = sum(1 for a in _rx["achados"] if a["severidade"] == "aviso")
+                            st.caption(f"Foram sinalizados **{len(_rx['achados'])} pontos** de atenção "
+                                       f"({_n_crit} crítico(s), {_n_avis} aviso(s)). Revise abaixo antes de processar.")
+                    _icone = {"critico": "🔴", "aviso": "🟡", "info": "🔵"}
+                    _tem_corrigivel = False
+                    for _a in _rx["achados"]:
+                        _tem_corrigivel = _tem_corrigivel or _a.get("corrigivel", False)
+                        st.markdown(f"{_icone.get(_a['severidade'], '•')} **{_a['titulo']}** — {_a['contagem']} ocorrência(s)")
+                        if _a["exemplos"]:
+                            st.caption("Exemplos: " + " · ".join(str(e) for e in _a["exemplos"]))
+                        st.caption(f"↳ {_a['recomendacao']}")
+                    if _tem_corrigivel:
+                        st.divider()
+                        st.caption("🧼 **Higienização automática** corrige apenas o que é seguro e reversível "
+                                   "(acentuação corrompida e espaços supérfluos). NÃO remove linhas nem altera o sentido do endereço.")
+                        if st.button("🧼 Gerar planilha higienizada", key="prevoo_btn_limpo", use_container_width=True):
+                            try:
+                                _df_limpo = df.copy()
+                                for _colc in _df_limpo.columns:
+                                    if _df_limpo[_colc].dtype == object:
+                                        _df_limpo[_colc] = _df_limpo[_colc].map(
+                                            lambda x: _prevoo_higienizar_texto(x) if isinstance(x, str) else x)
+                                _buf_limpo = io.BytesIO()
+                                with pd.ExcelWriter(_buf_limpo, engine='xlsxwriter') as _w_limpo:
+                                    _df_limpo.to_excel(_w_limpo, index=False)
+                                st.session_state['prevoo_planilha_limpa'] = _buf_limpo.getvalue()
+                            except Exception as _e_limpo:
+                                logger.error(f"[PREVOO] Falha ao gerar planilha higienizada: {_e_limpo}")
+                                st.session_state.pop('prevoo_planilha_limpa', None)
+                        if st.session_state.get('prevoo_planilha_limpa'):
+                            st.download_button("⬇️ Baixar planilha higienizada (.xlsx)",
+                                               data=st.session_state['prevoo_planilha_limpa'],
+                                               file_name="planilha_higienizada.xlsx",
+                                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                               use_container_width=True, key="prevoo_dl_limpo")
+            except Exception as _e_prevoo:
+                logger.error(f"[PREVOO] Falha no raio-x da planilha: {_e_prevoo}")
             
             nome_operador = st.text_input("Matrícula / Nome do Operador (Opcional)", max_chars=50)
             
@@ -11101,6 +11565,96 @@ with tab_alocacao:
                         _tab_a['Razão (V/R)'] = _susp_df_alo['_ratio'].round(2)
                         _tab_a['Diferença %'] = _susp_df_alo['_pct'].round(0)
                         st.dataframe(_tab_a, use_container_width=True, hide_index=True, height=240)
+            # [HUBOPT - 121ª geração] Otimizador de Localização de Hub — "onde abrir o próximo hub?".
+            # Inverso da alocação: dada a distribuição de clientes (coordenadas JÁ calculadas), sugere onde
+            # posicionar p hub(s) para minimizar a distância. Reusa Lat/Lon Origem (custo ZERO, sem rede).
+            # Ranking por Haversine (mesmo critério de proximidade do app). Isolado em try/except.
+            try:
+                _dfp_opt = st.session_state['df_processado']
+                if {'Lat Origem', 'Lon Origem'}.issubset(_dfp_opt.columns):
+                    with st.expander("🎯 Otimizador de Localização — Onde abrir o próximo hub?", expanded=False):
+                        st.caption("O **inverso** da alocação: em vez de dizer qual hub atende cada cliente, sugere **onde "
+                                   "colocar** hub(s) para minimizar a distância aos clientes. Candidatos = as cidades dos seus "
+                                   "clientes; ranqueado por distância em linha reta (Haversine). Reusa as coordenadas já "
+                                   "calculadas — sem novas chamadas de API.")
+                        _cli_lat = pd.to_numeric(_dfp_opt['Lat Origem'], errors='coerce')
+                        _cli_lon = pd.to_numeric(_dfp_opt['Lon Origem'], errors='coerce')
+                        _mask_ok = _cli_lat.notna() & _cli_lon.notna() & ((_cli_lat != 0) | (_cli_lon != 0))
+                        _df_ok = _dfp_opt[_mask_ok]
+                        if len(_df_ok) < 2:
+                            st.info("São necessários ao menos 2 clientes com coordenadas válidas para otimizar.")
+                        else:
+                            _oc1, _oc2 = st.columns(2)
+                            _p_hubs = _oc1.slider("Quantos hubs posicionar?", 1, int(min(5, len(_df_ok))), 1, key="hubopt_p")
+                            _obj_lbl = _oc2.radio("Objetivo", ["Minimizar distância total", "Minimizar pior caso"], key="hubopt_obj")
+                            _objetivo = "max" if "pior" in _obj_lbl else "total"
+                            if st.button("🎯 Otimizar localização", key="hubopt_run", use_container_width=True):
+                                _lat_ok = _cli_lat[_mask_ok].tolist()
+                                _lon_ok = _cli_lon[_mask_ok].tolist()
+                                _cli_pts = list(zip(_lat_ok, _lon_ok))
+                                _nome_col = 'Municipio Origem' if 'Municipio Origem' in _df_ok.columns else 'Origem'
+                                _nomes_cli = _df_ok[_nome_col].astype(str).tolist()
+                                _cand = {}
+                                for _la, _lo, _nm in zip(_lat_ok, _lon_ok, _nomes_cli):
+                                    _key = _nm.strip() if (_nm and _nm.strip().lower() != 'nan') else f"{round(_la,4)},{round(_lo,4)}"
+                                    if _key not in _cand:
+                                        _cand[_key] = (_la, _lo)
+                                _cand_nomes = list(_cand.keys())
+                                _cand_pts = list(_cand.values())
+                                _res_opt = _otimizar_hubs(_cli_pts, _cand_pts, p=_p_hubs, objetivo=_objetivo)
+                                _escolhidos = _res_opt["escolhidos"]
+                                if not _escolhidos:
+                                    st.warning("Não foi possível otimizar com os dados disponíveis.")
+                                else:
+                                    _atual_media = None
+                                    if 'Linha Reta' in _df_ok.columns:
+                                        _lr = pd.to_numeric(_df_ok['Linha Reta'], errors='coerce')
+                                        _lr = _lr[_lr > 0]
+                                        if len(_lr) > 0:
+                                            _atual_media = round(float(_lr.mean()), 1)
+                                    st.success("✅ Otimização concluída.")
+                                    st.markdown("**🏢 Hub(s) recomendado(s):** " +
+                                                " · ".join(f"**{_cand_nomes[i]}**" for i in _escolhidos))
+                                    _mo1, _mo2, _mo3 = st.columns(3)
+                                    _mo1.metric("Distância média ao hub", f"{_res_opt['dist_media_km']} km",
+                                                delta=(f"{round(_res_opt['dist_media_km'] - _atual_media, 1)} km vs atual"
+                                                       if _atual_media is not None else None), delta_color="inverse")
+                                    _mo2.metric("Pior caso (máx.)", f"{_res_opt['dist_max_km']} km")
+                                    _mo3.metric("Soma total", f"{_res_opt['custo_total_km']:,.0f} km")
+                                    if _atual_media is not None:
+                                        _ganho = round(_atual_media - _res_opt['dist_media_km'], 1)
+                                        if _ganho > 0:
+                                            st.caption(f"📉 Redução de **{_ganho} km** na distância média em linha reta por cliente "
+                                                       f"vs. a distribuição atual ({_atual_media} km → {_res_opt['dist_media_km']} km). "
+                                                       "Comparação linha reta × linha reta (Haversine); a viária real seria confirmada roteando.")
+                                        else:
+                                            st.caption(f"ℹ️ A configuração atual já está próxima do ótimo "
+                                                       f"(média atual {_atual_media} km vs. {_res_opt['dist_media_km']} km sugerido).")
+                                    _atrib = _res_opt["atribuicao"]
+                                    _cont = {}
+                                    for _ih in _atrib:
+                                        _cont[_ih] = _cont.get(_ih, 0) + 1
+                                    st.dataframe(pd.DataFrame([
+                                        {"Hub sugerido": _cand_nomes[i],
+                                         "Coordenada": f"{round(_cand_pts[i][0], 5)}, {round(_cand_pts[i][1], 5)}",
+                                         "Clientes atendidos": _cont.get(i, 0)} for i in _escolhidos]),
+                                        use_container_width=True, hide_index=True)
+                                    try:
+                                        _map_cli = pd.DataFrame({"lat": _lat_ok, "lon": _lon_ok})
+                                        _map_cli["color"] = "#3b82f6"
+                                        _map_cli["size"] = 30
+                                        _map_hub = pd.DataFrame({"lat": [_cand_pts[i][0] for i in _escolhidos],
+                                                                 "lon": [_cand_pts[i][1] for i in _escolhidos]})
+                                        _map_hub["color"] = "#ef4444"
+                                        _map_hub["size"] = 140
+                                        st.map(pd.concat([_map_cli, _map_hub], ignore_index=True), color="color", size="size")
+                                        st.caption("🔵 clientes · 🔴 hub(s) sugerido(s).")
+                                    except Exception as _e_map:
+                                        logger.error(f"[HUBOPT] Falha no mapa: {_e_map}")
+                                    st.caption("⚠️ Candidatos = cidades dos clientes; distância em linha reta. Para a decisão final, "
+                                               "confirme a distância viária roteando os cenários na aba de Alocação.")
+            except Exception as _e_hubopt:
+                logger.error(f"[HUBOPT] Falha no otimizador de localização: {_e_hubopt}")
             st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
             st.download_button(
                 label="📥 Baixar Planilha de Alocação Competitiva (.xlsx)",
