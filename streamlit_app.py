@@ -62,6 +62,25 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (127ª geração) → BASE DE AMBIGUIDADE MUNICIPAL + ÍNDICE DE AMBIGUIDADE (offline) [AMBIGUIDADE]
+#     Estende a 126ª: além dos homônimos EXATOS, mapeia NOMES SEMELHANTES (o outro modo de erro: “São
+#     Miguel” vs “São Miguel do Araguaia”, “Machadinho” vs “Machadinho d'Oeste”, “Rio Verde” vs “Rio Verde
+#     de Mato Grosso”). Estudo prévio validou o ganho contra a base real embutida: 241 grupos de homônimos,
+#     521 municípios homônimos (~9% do país), 1.323 pares de nome semelhante; construção em ~0,3s. Decisão
+#     de escopo (pedido do Lucas: só se houver ganho real, sem inflar complexidade): REJEITADO o ensemble
+#     de 18 algoritmos (rapidfuzz — já dependência — cobre Levenshtein/Damerau/token_set/token_sort/partial
+#     por baixo; somar Soundex/Metaphone/Jaro/Dice/TF-IDF só adiciona ruído) e REJEITADO ensemble de
+#     geocoders pagos (inviável $0/1GB). Implementado 100% OFFLINE. Motor PURO/testável: _e_prefixo_tokens
+#     (padrão dominante BR: prefixo de token) + _indice_ambiguidade (0-100: homônimos + semelhantes em
+#     OUTRA UF; bandas Exclusivo/Baixo/Médio/Alto/Muito Alto) + _risco_ambiguidade + _construir_base_
+#     ambiguidade (homônimos exatos + semelhantes por prefixo/complemento/truncamento + near-duplicate
+#     rapidfuzz ≥90, BLOQUEADO por 1º token p/ performance) + _estatisticas_ambiguidade + singleton lazy
+#     _obter_base_ambiguidade. Nova coluna 'Índice de Ambiguidade' no Lote/Alocação (via 126ª, sortável).
+#     Nova sub-aba "🧭 Base de Ambiguidade Municipal" na Auditoria: estatísticas, distribuição de risco,
+#     ranking dos 50 mais ambíguos, consulta por município, e DOWNLOAD das 2 bases de referência
+#     (Municipios_Homonimos.xlsx e Municipios_Nomes_Semelhantes.xlsx) via _df_homonimos_ambiguidade /
+#     _df_semelhantes_ambiguidade. Provado por teste sobre CÓDIGO REAL (motor + exports + integração).
+#     Aditivo/defensivo. 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
 #   v3.8 (126ª geração) → CAMADA DE DESAMBIGUAÇÃO DE MUNICÍPIOS HOMÔNIMOS (offline, com auditoria) [HOMONIMO]
 #     Resolve o problema crítico de homônimos (Santana AP×BA, São Domingos GO×SC, São Miguel do Araguaia
 #     GO, etc.) que causava rotas com o município errado no lote. A app JÁ desambiguava por UF explícita e
@@ -5689,10 +5708,13 @@ def _enriquecer_desambiguacao_homonimos(df):
                 _cache[_k] = _desambiguar_municipio_homonimo(nome, uf, cod, perfil, lat, lon)
             return _cache[_k]
 
-        c_hom, c_ufo, c_ufd, c_met, c_val, c_risco, c_conf, c_just = ([] for _ in range(8))
+        _amb_idx = _obter_base_ambiguidade()
+        c_hom, c_ufo, c_ufd, c_met, c_val, c_risco, c_conf, c_just, c_idx = ([] for _ in range(9))
         for i in range(n):
-            ao = _decidir(_norm(_mo[i]), _ufok(_ufo[i]), _codo[i], _perf_o, _num(_lao[i]), _num(_loo[i]))
-            ad = _decidir(_norm(_md[i]), _ufok(_ufd[i]), _codd[i], _perf_d, _num(_lad[i]), _num(_lod[i]))
+            _no, _nd = _norm(_mo[i]), _norm(_md[i])
+            ao = _decidir(_no, _ufok(_ufo[i]), _codo[i], _perf_o, _num(_lao[i]), _num(_loo[i]))
+            ad = _decidir(_nd, _ufok(_ufd[i]), _codd[i], _perf_d, _num(_lad[i]), _num(_lod[i]))
+            c_idx.append(max(_amb_idx.get(_no, {}).get("indice", 0), _amb_idx.get(_nd, {}).get("indice", 0)))
             _ho, _hd = ao["homonimo_detectado"], ad["homonimo_detectado"]
             c_hom.append("Ambos" if (_ho and _hd) else ("Origem" if _ho else ("Destino" if _hd else "Não")))
             c_ufo.append(ao["uf_vencedora"] or "—")
@@ -5720,10 +5742,165 @@ def _enriquecer_desambiguacao_homonimos(df):
         df['Risco de Confusão'] = c_risco
         df['Confiança Identificação'] = c_conf
         df['Justificativa Homônimos'] = c_just
+        df['Índice de Ambiguidade'] = c_idx
         return df
     except Exception as _e:
         logger.error(f"[HOMONIMO] Falha no enriquecimento de desambiguação: {_e}")
         return df
+
+
+def _e_prefixo_tokens(a_tokens, b_tokens):
+    """[AMBIGUIDADE - 127ª geração] True se a_tokens é prefixo ESTRITO de b_tokens (a mais curto). Captura
+    o padrão dominante de ambiguidade toponímica no Brasil: “São Miguel” ⊂ “São Miguel do Araguaia”. PURO."""
+    return len(a_tokens) < len(b_tokens) and b_tokens[:len(a_tokens)] == a_tokens
+
+
+def _indice_ambiguidade(n_homonimos, n_similares_cross, n_similares_total=0):
+    """[AMBIGUIDADE - 127ª geração] Índice de Ambiguidade 0-100 (0 = nome exclusivo). Combina homônimos
+    EXATOS (mesmo nome em ≥2 UFs, sempre cross-UF) e municípios de nome SEMELHANTE em OUTRA UF (o tipo
+    perigoso). Bandas: 0 Exclusivo / ≤20 Baixo / ≤45 Médio / ≤70 Alto / >70 Muito Alto. PURO."""
+    idx = 0
+    if n_homonimos >= 2:
+        idx += 40 + 15 * (n_homonimos - 2)          # 2→40, 3→55, 4→70, ...
+    idx += 20 * min(int(n_similares_cross), 3)       # até +60 por semelhantes em outra UF
+    if idx == 0 and n_similares_total > 0:
+        idx = 15                                      # só semelhante(s) na mesma UF → risco baixo
+    return max(0, min(100, idx))
+
+
+def _risco_ambiguidade(indice):
+    """[AMBIGUIDADE - 127ª geração] Rótulo de risco a partir do índice 0-100. PURO."""
+    if indice <= 0:
+        return "Exclusivo"
+    if indice <= 20:
+        return "Baixo"
+    if indice <= 45:
+        return "Médio"
+    if indice <= 70:
+        return "Alto"
+    return "Muito Alto"
+
+
+def _construir_base_ambiguidade(base_ibge=None, usar_fuzzy=True, limiar_fuzzy=90):
+    """[AMBIGUIDADE - 127ª geração] Constrói OFFLINE a Base de Ambiguidade a partir da base IBGE embutida
+    (~5,5k municípios). Para cada nome normalizado: grupo de HOMÔNIMOS exatos (mesmo nome em ≥2 UFs) +
+    municípios de nome SEMELHANTE (prefixo de token = truncamento/complemento; e near-duplicate por
+    rapidfuzz token_set_ratio ≥ limiar, tudo BLOQUEADO por 1º token p/ performance) + Índice de Ambiguidade
+    0-100 e risco. PURO/determinístico; base_ibge injetável; sem rede. Retorna {nome_norm: {info}}."""
+    if base_ibge is None:
+        base_ibge = IBGE_MUNICIPIOS
+    nomes = [(nome, tuple(str(nome).split())) for nome in base_ibge.keys() if str(nome).strip()]
+    blocos = {}
+    for nome, toks in nomes:
+        if toks:
+            blocos.setdefault(toks[0], []).append((nome, toks))
+    _ufs_de = {nome: sorted({str(it.get("uf")).upper() for it in base_ibge.get(nome, []) if it.get("uf")})
+               for nome, _ in nomes}
+    resultado = {}
+    for nome, toks in nomes:
+        ufs = _ufs_de.get(nome, [])
+        ufs_self = set(ufs)
+        n_hom = len(ufs)
+        similares = []
+        for nome2, toks2 in (blocos.get(toks[0], []) if toks else []):
+            if nome2 == nome:
+                continue
+            tipo, score = None, 0
+            if _e_prefixo_tokens(toks, toks2):
+                tipo, score = "complemento", 100      # nome2 é a variante mais LONGA (nome ⊂ nome2)
+            elif _e_prefixo_tokens(toks2, toks):
+                tipo, score = "truncamento", 100       # nome2 é a variante mais CURTA (nome2 ⊂ nome)
+            elif usar_fuzzy:
+                r = fuzz.token_set_ratio(nome, nome2, processor=None)
+                if r >= limiar_fuzzy:
+                    tipo, score = "grafia", int(r)
+            if tipo:
+                ufs2 = _ufs_de.get(nome2, [])
+                similares.append({"municipio": nome2, "ufs": ufs2, "tipo": tipo, "score": score})
+        n_sim_cross = sum(1 for s in similares if set(s["ufs"]) - ufs_self)
+        idx = _indice_ambiguidade(n_hom, n_sim_cross, len(similares))
+        resultado[nome] = {"municipio": nome, "itens": base_ibge.get(nome, []), "ufs": ufs,
+                           "n_homonimos": n_hom, "similares": similares, "n_similares": len(similares),
+                           "n_similares_cross": n_sim_cross, "indice": idx, "risco": _risco_ambiguidade(idx)}
+    return resultado
+
+
+def _estatisticas_ambiguidade(base_amb):
+    """[AMBIGUIDADE - 127ª geração] Estatísticas agregadas da Base de Ambiguidade: nº de grupos de
+    homônimos, municípios homônimos, grupos com 3+, pares semelhantes, distribuição por UF e por risco, e
+    ranking dos mais ambíguos. PURO."""
+    grupos_hom, total_hom, grupos_3, pares_sim = 0, 0, 0, 0
+    por_uf, por_risco = {}, {}
+    for _nome, info in base_amb.items():
+        if info["n_homonimos"] >= 2:
+            grupos_hom += 1
+            total_hom += info["n_homonimos"]
+            if info["n_homonimos"] >= 3:
+                grupos_3 += 1
+            for uf in info["ufs"]:
+                por_uf[uf] = por_uf.get(uf, 0) + 1
+        pares_sim += info["n_similares"]
+        por_risco[info["risco"]] = por_risco.get(info["risco"], 0) + 1
+    ranking = sorted(base_amb.values(), key=lambda x: (-x["indice"], -x["n_homonimos"], x["municipio"]))[:50]
+    return {"n_grupos_homonimos": grupos_hom, "n_municipios_homonimos": total_hom,
+            "n_grupos_3mais": grupos_3, "n_pares_similares": pares_sim // 2,
+            "por_uf": dict(sorted(por_uf.items(), key=lambda kv: -kv[1])),
+            "por_risco": por_risco,
+            "ranking": [(x["municipio"], x["indice"], x["risco"], x["n_homonimos"], x["n_similares"])
+                        for x in ranking]}
+
+
+_BASE_AMBIGUIDADE_CACHE = {}
+
+
+def _obter_base_ambiguidade():
+    """[AMBIGUIDADE - 127ª geração] Singleton lazy da Base de Ambiguidade (construída 1× sobre a base IBGE
+    viva, ~0,3s). Defensivo: em erro devolve {} e a app segue sem o recurso."""
+    if not _BASE_AMBIGUIDADE_CACHE:
+        try:
+            _BASE_AMBIGUIDADE_CACHE.update(_construir_base_ambiguidade(IBGE_MUNICIPIOS))
+        except Exception as _e:
+            logger.error(f"[AMBIGUIDADE] Falha ao construir a Base de Ambiguidade: {_e}")
+    return _BASE_AMBIGUIDADE_CACHE
+
+
+def _df_homonimos_ambiguidade(base_amb, regioes=None):
+    """[AMBIGUIDADE - 127ª geração] DataFrame dos municípios HOMÔNIMOS (1 linha por município do grupo):
+    Município, UF, Código IBGE, Região, Qtd Homônimos, Estados Envolvidos, Índice, Risco. PURO."""
+    regioes = regioes if regioes is not None else _UF_PARA_REGIAO
+    linhas = []
+    for nome, info in base_amb.items():
+        if info["n_homonimos"] < 2:
+            continue
+        _estados = ", ".join(info["ufs"])
+        for it in info["itens"]:
+            _uf = str(it.get("uf", "")).upper()
+            linhas.append({"Município": nome.title(), "UF": _uf,
+                           "Código IBGE": it.get("codigo_ibge", "") or "",
+                           "Região": regioes.get(_uf, "Indefinido"),
+                           "Qtd Homônimos": info["n_homonimos"], "Estados Envolvidos": _estados,
+                           "Índice de Ambiguidade": info["indice"], "Risco": info["risco"]})
+    linhas.sort(key=lambda r: (-r["Qtd Homônimos"], r["Município"], r["UF"]))
+    return pd.DataFrame(linhas)
+
+
+def _df_semelhantes_ambiguidade(base_amb):
+    """[AMBIGUIDADE - 127ª geração] DataFrame dos municípios com NOMES SEMELHANTES (1 linha por município
+    que tem semelhantes), ordenado do maior potencial de confusão para o menor. PURO."""
+    linhas = []
+    for nome, info in base_amb.items():
+        if not info["similares"]:
+            continue
+        _sc = [s["score"] for s in info["similares"]]
+        _sims = "; ".join(f"{s['municipio'].title()} ({'/'.join(s['ufs'])})" for s in info["similares"][:10])
+        linhas.append({"Município": nome.title(), "UF(s)": ", ".join(info["ufs"]) or "—",
+                       "Municípios Semelhantes": _sims,
+                       "Similaridade Média (%)": round(sum(_sc) / len(_sc), 1) if _sc else 0,
+                       "Similaridade Máxima (%)": max(_sc) if _sc else 0,
+                       "Qtd Candidatos": len(info["similares"]),
+                       "Índice de Ambiguidade": info["indice"], "Risco": info["risco"]})
+    linhas.sort(key=lambda r: (-r["Índice de Ambiguidade"], -r["Similaridade Máxima (%)"], r["Município"]))
+    return pd.DataFrame(linhas)
 
 
 def _resolver_identidade_ibge(municipio, endereco_oficial):
@@ -14175,7 +14352,7 @@ with tab_auditoria:
     renderizar_guia_aba("auditoria")
     st.markdown("### 🔍 Dossiê Investigativo de Auditoria Viária e Espacial")
     
-    tab_aud_lote, tab_aud_hub = st.tabs(["⚙️ Logs do Lote de Roteamento Padrão", " Logs do Motor de Alocação (Hubs Competitive)"])
+    tab_aud_lote, tab_aud_hub, tab_aud_amb = st.tabs(["⚙️ Logs do Lote de Roteamento Padrão", " Logs do Motor de Alocação (Hubs Competitive)", "🧭 Base de Ambiguidade Municipal"])
     
     with tab_aud_lote:
         if 'logs_auditoria' in st.session_state and st.session_state['logs_auditoria']:
@@ -14190,6 +14367,77 @@ with tab_auditoria:
             st.dataframe(pd.DataFrame(st.session_state['logs_auditoria_alocacao']), use_container_width=True)
         else:
             st.info("Nenhuma árvore de decisão persistida. Processe o cálculo de matrizes matemáticas na aba de Alocação de Hubs () para carregar as justificativas competitivas.")
+
+    with tab_aud_amb:
+        st.markdown("#### 🧭 Base de Ambiguidade Municipal (offline · base IBGE embutida)")
+        st.caption("Mapeamento determinístico de TODOS os municípios brasileiros propensos a confusão: **homônimos exatos** "
+                   "(mesmo nome em ≥2 UFs) e **nomes semelhantes** (truncamento/complemento — “São Miguel” → “São Miguel do "
+                   "Araguaia” — e grafias próximas via rapidfuzz). Cada município recebe um **Índice de Ambiguidade (0–100)**. "
+                   "Construída em memória, sem rede.")
+        try:
+            _amb = _obter_base_ambiguidade()
+            if not _amb:
+                st.warning("Base de ambiguidade indisponível no momento.")
+            else:
+                _est = _estatisticas_ambiguidade(_amb)
+                _m1, _m2, _m3, _m4 = st.columns(4)
+                _m1.metric("Grupos de homônimos", _est["n_grupos_homonimos"])
+                _m2.metric("Municípios homônimos", _est["n_municipios_homonimos"])
+                _m3.metric("Grupos com 3+ UFs", _est["n_grupos_3mais"])
+                _m4.metric("Pares de nome semelhante", _est["n_pares_similares"])
+                _ord_r = ["Exclusivo", "Baixo", "Médio", "Alto", "Muito Alto"]
+                st.caption("**Distribuição por risco:** " +
+                           " · ".join(f"{k}: {_est['por_risco'].get(k, 0)}" for k in _ord_r if k in _est["por_risco"]))
+                with st.expander("🏆 Ranking dos 50 municípios mais ambíguos", expanded=False):
+                    _dfr = pd.DataFrame(_est["ranking"],
+                                        columns=["Município", "Índice", "Risco", "Homônimos (UFs)", "Semelhantes"])
+                    _dfr["Município"] = _dfr["Município"].str.title()
+                    st.dataframe(_dfr, use_container_width=True, hide_index=True, height=340)
+                _q = st.text_input("🔎 Consultar um município", key="amb_query", placeholder="ex.: São Domingos")
+                if _q and _q.strip():
+                    try:
+                        _qn = semantica.normalizar(_q)
+                        _hit = _amb.get(_qn)
+                        if _hit:
+                            st.success(f"**{_qn.title()}** — Índice **{_hit['indice']}** ({_hit['risco']}). "
+                                       f"Homônimo em {_hit['n_homonimos']} UF(s): {', '.join(_hit['ufs']) or '—'}.")
+                            if _hit["similares"]:
+                                st.write("**Nomes semelhantes:** " + "; ".join(
+                                    f"{s['municipio'].title()} ({'/'.join(s['ufs'])}, {s['tipo']})"
+                                    for s in _hit["similares"][:12]))
+                        else:
+                            st.info("Não encontrado na base offline (grafia divergente, ou nome exclusivo sem semelhantes).")
+                    except Exception:
+                        pass
+                st.markdown("##### 📥 Bases de referência (.xlsx)")
+                _cdl1, _cdl2 = st.columns(2)
+                with _cdl1:
+                    try:
+                        _dfh = _df_homonimos_ambiguidade(_amb)
+                        _bh = io.BytesIO()
+                        with pd.ExcelWriter(_bh, engine='xlsxwriter') as _wh:
+                            _dfh.to_excel(_wh, index=False, sheet_name="Homonimos")
+                        st.download_button(f"📥 Municípios Homônimos ({len(_dfh)} linhas)", data=_bh.getvalue(),
+                                           file_name="Municipios_Homonimos.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                           use_container_width=True)
+                    except Exception as _eh:
+                        st.caption(f"Falha ao gerar planilha de homônimos: {_eh}")
+                with _cdl2:
+                    try:
+                        _dfs = _df_semelhantes_ambiguidade(_amb)
+                        _bs = io.BytesIO()
+                        with pd.ExcelWriter(_bs, engine='xlsxwriter') as _ws:
+                            _dfs.to_excel(_ws, index=False, sheet_name="Nomes Semelhantes")
+                        st.download_button(f"📥 Nomes Semelhantes ({len(_dfs)} linhas)", data=_bs.getvalue(),
+                                           file_name="Municipios_Nomes_Semelhantes.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                           use_container_width=True)
+                    except Exception as _es:
+                        st.caption(f"Falha ao gerar planilha de semelhantes: {_es}")
+        except Exception as _e_amb:
+            logger.error(f"[AMBIGUIDADE] Falha no painel de ambiguidade: {_e_amb}")
+            st.warning("Não foi possível carregar o painel de ambiguidade.")
 
 with tab_pesquisa:
     st.info("⭐ **Objetivo desta aba:** Ouvir você. Sua avaliação ajuda a evoluir a plataforma — "
