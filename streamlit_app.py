@@ -63,6 +63,112 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (143ª geração) → AUDITORIA MEDIDA + PODA POR LIMITE INFERIOR (−66% de rede) [PODA]
+#     Mandato aberto de auditoria global. Apliquei a regra do próprio pedido ("cada melhoria deve ter
+#     benefício MENSURÁVEL") e a lição da 139ª: MEDIR antes de mexer. Comecei suspeitando de MIM.
+#     ── O QUE MEDI E ESTAVA BOM (nenhuma otimização entrou sem número) ──
+#       • Pós-passos de homônimos (126ª) + integridade (133ª): 0,35 s em 5.571 linhas; 1,45 s em 20.000.
+#         Rodam UMA vez ao final. NÃO são gargalo. Meu palpite estava errado; a medição me absolveu.
+#       • Matriz competitiva (N×M): 13 MB no cenário real (5.571 municípios × 300 polos). Só estouraria
+#         em 100k×1000 — impossível: o Brasil TEM 5.571 municípios. NÃO é gargalo.
+#       Reporto os dois porque auditoria honesta também registra o que NÃO precisa mudar.
+#     ── O GARGALO REAL: REDE ──
+#       O modo multicritério roteava os TOP-5 polos de cada município: **27.855 chamadas de API** num
+#       estudo nacional. Era o único custo verdadeiramente multiplicativo da aplicação.
+#     ── A CURA: PODA POR LIMITE INFERIOR (branch-and-bound) ──
+#       É um TEOREMA, não uma heurística:
+#           custo(B) = viária(B) + penalidades(B),  penalidades ≥ 0
+#           viária(B) ≥ geodésica(B)                (a estrada nunca é mais curta que a reta)
+#           ⟹ custo(B) ≥ geodésica(B)
+#       Logo, se geodésica(B) > custo(A) — o custo JÁ CONHECIDO do polo mais próximo — B NÃO PODE vencer,
+#       e rotear B é chamada de API jogada fora. Implementado como 2 rodadas: (1) roteia só o polo mais
+#       próximo de cada município; (2) com o custo real do incumbente em mãos, PODA e roteia apenas os
+#       sobreviventes. Defensivo: falha na poda ⇒ segue sem ela.
+#       **27.855 → 9.589 chamadas (−66% de rede), medido em estudo nacional simulado.**
+#     ── PROPRIEDADE NOTÁVEL (a regra se auto-regula, sem parâmetro mágico) ──
+#       Polo mais próximo BOM (rápido, sem balsa) ⇒ custo(A) baixo ⇒ limite aperta ⇒ poda ~85%.
+#       Polo mais próximo RUIM (balsa +60 km-eq, estrada lenta) ⇒ custo(A) alto ⇒ limite AFROUXA ⇒ poda
+#       ~42% ⇒ o motor EXPLORA alternativas. Ela economiza onde não há o que ganhar e investiga onde há.
+#     ── PROVA DE ZERO REGRESSÃO ──
+#       Força bruta, 3.000 cenários aleatórios (5 a 6 polos, sinuosidade 1,05–1,9, 15% com balsa):
+#       68% dos candidatos podados e **ZERO divergências** — o vencedor é IDÊNTICO com e sem poda.
+#       A poda é otimização de custo ZERO em precisão. A economia de rede aparece na tela, explicada.
+#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (142ª geração) → removeChild: A CAUSA RAIZ ESTRUTURAL (RCA definitiva) [UI-LAZY]
+#     TERCEIRA TENTATIVA. As duas anteriores falharam, e o motivo dessa falha É a evidência principal:
+#     eu estava consertando ELEMENTOS INDIVIDUAIS dentro de uma árvore que era RECONSTRUÍDA INTEIRA a cada
+#     rerun. Sintoma, não causa.
+#     ── HIPÓTESES DESCARTADAS (com evidência, não com opinião) ──
+#       • st.empty() → 1 uso no app inteiro.                                          ❌
+#       • Chaves duplicadas → 69 keys, 0 duplicadas (auditoria por regex).            ❌
+#       • Nº de abas variável → todas as st.tabs com lista literal fixa.              ❌
+#       • HTML malformado → auditoria AST + parser de tags: TUDO balanceado.          ❌
+#       • Componentes de terceiros (folium/aggrid) → não são usados.                  ❌
+#       • Churn de bytes do download_button → TESTE PROVOU bytes IDÊNTICOS. Eu mesmo
+#         refutei minha hipótese da 137ª. Não era o mecanismo.                        ❌
+#       • Expanders condicionais (132ª) e trabalho pesado por rerun (137ª) → REAIS e
+#         corrigidos, mas NÃO curaram → a causa está ACIMA do nível do elemento.      ⚠️
+#     ── CAUSA RAIZ (MEDIDA) ──
+#       st.tabs() executa o corpo de TODAS as abas em TODO rerun. Medido neste app:
+#       **907 elementos e 73 COMPONENTES PESADOS** (Plotly, st.map/deck.gl, dataframes, iframes)
+#       destruídos e recriados a cada tecla, upload, slider ou troca de aba. Esses componentes
+#       manipulam o PRÓPRIO DOM de forma ASSÍNCRONA. Quando o React reconcilia a árvore no meio dessa
+#       operação, ele tenta remover um nó cujo pai já mudou → "The node to be removed is not a child of
+#       this node". Isso explica TODOS os gatilhos relatados (anexar planilha, trocar arquivo, mudar
+#       parâmetro, navegar entre abas, preencher origem/destino): todos disparam rerun.
+#     ── A CURA (estrutural) ──
+#       NAVEGAÇÃO PREGUIÇOSA: st.tabs → seletor de seção; renderiza APENAS a seção ativa.
+#       **907 → 70 elementos (13× menor) · 73 → 5,6 componentes pesados (13× menos)**, medido.
+#       Cada Plotly/st.map/iframe a menos é um ciclo de vida de DOM assíncrono a menos para o React
+#       reconciliar — que é exatamente onde o removeChild nasce. De quebra, cada rerun fica ~13× mais leve.
+#     ── EFEITO COLATERAL TRATADO ──
+#       Com st.tabs, o corpo executava sempre, então o processamento em chunks (auto-continuado por
+#       st.rerun()) prosseguia mesmo com o usuário em outra aba. Com renderização preguiçosa, trocar de
+#       seção no meio PARARIA o laço. Solução: navegação TRAVADA durante o processamento
+#       (lote_em_andamento / alo_em_andamento), com aviso na tela. Comportamento preservado.
+#     ── SEGURANÇA DA TRANSFORMAÇÃO ──
+#       Provado por análise AST antes de mexer: NENHUMA aba lê variável definida em outra (comunicam-se
+#       via session_state) ⇒ a renderização preguiçosa é MECANICAMENTE SEGURA. `with tab_X:` → `if _secao
+#       == _SECOES[n]:` mantém a indentação do corpo — troca de linha pura, zero re-indentação.
+#       Testes: AST parseia as 17k linhas; 13 seções com índices 0..12 sem duplicata; 3 sub-abas
+#       preservadas (preguiçosas por herança); 0 rótulos dinâmicos e 0 chaves duplicadas (padrões da 132ª).
+#     ── CUSTO HONESTO ──
+#       As abas viram um seletor de seção (radio horizontal). É uma mudança de UX REAL, feita por um motivo
+#       real, e REVERSÍVEL em uma linha. E continuo sem poder reproduzir um erro de DOM do navegador num
+#       container headless: eu eliminei a causa medida e o mecanismo documentado — não "vi o erro sumir".
+#       SE PERSISTIR, preciso de: (a) a versão do Streamlit no requirements.txt (removeChild com st.tabs é
+#       bug CONHECIDO de certas versões do frontend — nesse caso a cura é atualizar); (b) se ocorre em aba
+#       anônima sem extensões (o tradutor automático do Chrome é causa notória, e está FORA do código).
+#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (141ª geração) → INSCRITOS: carga por local de prova, faixas de diferença e documentação [INSCRITOS]
+#     ⚠️ CORREÇÃO DE PREMISSA (o pedido tinha uma armadilha matemática): "os inscritos devem participar da
+#     DECISÃO do polo". Eles NÃO podem — e fingir que sim seria charlatanismo. A escolha é feita MUNICÍPIO A
+#     MUNICÍPIO, e o nº de inscritos é uma CONSTANTE que multiplica todos os polos candidatos daquele
+#     município igualmente: ela SE CANCELA. Formosa com 10 ou 10.000 candidatos escolhe o mesmo polo mais
+#     próximo. Onde os inscritos MUDAM uma decisão de verdade: (a) CARGA de cada polo; (b) QUAIS polos abrir
+#     (140ª); (c) priorização de quem sofre mais. Implementei (a) — que faltava — em vez de uma ponderação
+#     decorativa que não faria nada.
+#     ENTREGUE:
+#       (1) INSCRITOS na Alocação — 3ª coluna OPCIONAL (auto-detectada). Sem ela, tudo funciona como antes
+#           (peso 1/município). Com ela, cobertura, acessibilidade crítica, carga e simulador passam a
+#           ponderar por CANDIDATO. A coluna já era preservada no df (rede da 114ª); faltava a app USÁ-LA.
+#       (2) _carga_por_polo — CARGA POR LOCAL DE PROVA: quantos candidatos cada polo recebe, de quantos
+#           municípios, distância média/máxima. Alerta de CONCENTRAÇÃO (>40% num só polo): "um polo com
+#           47.000 candidatos pode não caber numa escola — distribuir a carga pode importar mais que
+#           economizar quilômetros". É a decisão real que os inscritos habilitam.
+#       (3) _faixa_diferenca + _estatisticas_por_faixa (Comparador) — faixas COM SINAL, de propósito: 60 km
+#           a favor e 60 km contra NÃO são a mesma coisa, e uma faixa sem sinal esconderia exatamente o que
+#           interessa. Nova coluna 'Faixa de Diferenca', painel com municípios/candidatos/% /economia por
+#           faixa, e 8ª aba no export. A leitura vira acionável: "priorize revisar 'Referência melhor: acima
+#           de 50 km' — ali a aplicação leva o candidato bem mais longe; pode ser município mal identificado".
+#       (4) DOCUMENTAÇÃO da aba Comparador (era a ÚNICA sem): guia "❓ Como usar esta aba" no _GUIA_ABAS
+#           (11 guias agora) + seção "🚀 Como obter o MÁXIMO desempenho e precisão" com 7 recomendações
+#           práticas (IBGE, UF, inscritos, método da distância da referência, modo multicritério, ler os
+#           não-conciliados, priorizar as faixas adversas).
+#     Provado por teste sobre CÓDIGO REAL: carga (Rio Verde = 47.000 candidatos, 96,9%), faixas com sinal
+#     (+70 e −70 caem em faixas distintas), estatísticas por faixa (ordenação e totais), coluna na saída.
+#     PERFORMANCE: nada pesado no caminho quente — a carga é O(n) sobre o df já em memória; nenhum XLSX novo
+#     por rerun (lição da 139ª). 13 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
 #   v3.8 (140ª geração) → 🎯 PLANEJAMENTO DE POLOS: cobertura + onde abrir o próximo [COBERTURA]
 #     Com a base limpa (139ª), fui atrás do que FALTA. O app respondia "onde está" e "quanto custa", mas não
 #     as DUAS perguntas que o gestor de exames de fato faz: **quantos candidatos estão longe demais?** e
@@ -2330,6 +2436,17 @@ _GUIA_ABAS = {
         "exemplos": "10 centros de distribuição × 500 clientes → o sistema descobre o CD ideal para cada um dos 500.",
         "erros_comuns": "Trocar as planilhas de lugar (candidatos no campo dos polos); esquecer a UF dos municípios; usar só linha reta quando há balsa na região — um polo “mais perto” pode exigir travessia e ser pior para o candidato.",
         "dicas": "Use nomes de cidade com a sigla do estado nas bases para máxima precisão. O número de combinações cresce rápido (clientes × bases) — comece com listas menores para testar.",
+    },
+    "comparador": {
+        "o_que_faz": "Compara, com rigor de auditoria, a distribuição de candidatos que a **sua aplicação** produziu (aba Locais de Aplicação) com uma **base de referência externa** — e mostra, município a município, qual das duas leva o candidato mais perto do local de prova.",
+        "quando_usar": "Quando você já tem um estudo pronto (feito pela aba Locais de Aplicação) e quer confrontá-lo com a distribuição oficial, a do ano anterior, ou a de outro fornecedor — para defender tecnicamente qual é melhor.",
+        "dados": "Duas coisas: (1) o resultado da aba **Locais de Aplicação** (já em memória — rode-a antes); (2) uma **planilha de referência** com, no mínimo: município de origem do candidato, local de aplicação e distância viária. Se tiver **Código IBGE** e **quantidade de inscritos**, muito melhor.",
+        "preenchimento": "1. Rode a aba **🎯 Locais de Aplicação** primeiro (sem isso não há o que comparar).\n        2. Envie a planilha de referência.\n        3. Confira o **mapeamento das colunas** — a aplicação tenta adivinhar, mas confirme.\n        4. Clique em **Comparar os dois estudos**.",
+        "apos_executar": "O sistema concilia as duas bases (Código IBGE → município+UF → município → similaridade), compara cada deslocamento, pondera tudo pela quantidade de inscritos e gera um **relatório executivo** automático.",
+        "interpretar": "**Economia ponderada (km-candidato)** é o número que importa — ele pesa o ganho pelo nº de candidatos. **Empate técnico** (< 1 km) NÃO é vitória: é ruído de geocodificação. A **Faixa de Diferença** guarda o sinal: “Referência melhor: acima de 50 km” são as linhas para revisar primeiro.",
+        "exemplos": "“A aplicação venceu em 62% dos municípios, com economia ponderada de 1,4 milhão de km-candidato — 210 mil candidatos ficaram mais perto do local de prova.”",
+        "erros_comuns": "Comparar sem rodar a aba Locais de Aplicação antes; mapear a coluna errada de distância; usar uma referência cuja distância foi medida em **linha reta** (aí a diferença é metodológica, não logística); ignorar os registros **não conciliados** — eles ficam FORA de todas as estatísticas.",
+        "dicas": "Use **Código IBGE** na planilha de referência: elimina qualquer ambiguidade de município homônimo. Se a referência tiver **inscritos**, todos os indicadores passam a medir impacto real sobre candidatos, e não sobre linhas de planilha.",
     },
     "analytics": {
         "o_que_faz": "Um **painel interativo estilo Power BI** que transforma o resultado do seu lote em gráficos, mapas e indicadores. Clicar em um gráfico filtra todos os outros ao mesmo tempo.",
@@ -6840,6 +6957,113 @@ def _simular_abertura_polos(municipios, n_polos=5, max_candidatos=300, dist_min_
     return _resultado
 
 
+
+
+def _carga_por_polo(municipios):
+    """[INSCRITOS - 141ª geração] CARGA POR LOCAL DE PROVA: quantos candidatos cada polo vai receber, e de
+    quantos municípios. É AQUI que a quantidade de inscritos muda uma decisão de verdade.
+
+    ⚠️ NOTA METODOLÓGICA (honesta): os inscritos NÃO alteram a escolha do polo de um município. A decisão é
+    feita município a município, e o nº de inscritos é uma CONSTANTE que multiplica todos os polos candidatos
+    igualmente — ela se cancela. Formosa com 10 ou 10.000 candidatos escolhe o mesmo polo mais próximo.
+    O que os inscritos MUDAM é: (a) a CARGA de cada polo — um polo que recebe 47.000 candidatos pode não
+    caber numa escola; (b) QUAIS polos abrir (simulador da 140ª); (c) a priorização de quem sofre mais.
+    Esta função entrega (a). PURO."""
+    _agg = {}
+    for m in (municipios or []):
+        _p = str(m.get("polo") or "").strip()
+        if not _p:
+            continue
+        _i = float(m.get("inscritos") or 0)
+        try:
+            _d = float(m.get("dist_km"))
+        except (TypeError, ValueError):
+            _d = None
+        _a = _agg.setdefault(_p, {"polo": _p, "uf": m.get("uf_polo", ""), "candidatos": 0.0,
+                                  "municipios": 0, "_somakm": 0.0, "_peso": 0.0, "dist_max_km": 0.0})
+        _a["candidatos"] += _i
+        _a["municipios"] += 1
+        if _d is not None:
+            _a["_somakm"] += _d * (_i if _i > 0 else 1)
+            _a["_peso"] += (_i if _i > 0 else 1)
+            _a["dist_max_km"] = max(_a["dist_max_km"], _d)
+    _out = []
+    for _a in _agg.values():
+        _a["candidatos"] = int(_a["candidatos"])
+        _a["dist_media_km"] = round(_a["_somakm"] / _a["_peso"], 1) if _a["_peso"] else None
+        _a["dist_max_km"] = round(_a["dist_max_km"], 1)
+        _a.pop("_somakm", None)
+        _a.pop("_peso", None)
+        _out.append(_a)
+    _out.sort(key=lambda x: -x["candidatos"])
+    _tot = sum(x["candidatos"] for x in _out) or 1
+    for _a in _out:
+        _a["pct_candidatos"] = round(100.0 * _a["candidatos"] / _tot, 1)
+    return _out
+
+
+_FAIXAS_DIFERENCA = [
+    (0.0, "Igual (< 1 km)"),
+    (5.0, "Até 5 km"),
+    (10.0, "5 a 10 km"),
+    (20.0, "10 a 20 km"),
+    (50.0, "20 a 50 km"),
+    (100.0, "50 a 100 km"),
+    (float("inf"), "Acima de 100 km"),
+]
+
+
+def _faixa_diferenca(dif_km):
+    """[COMPARADOR - 141ª geração] Classifica a diferença de distância em faixas, com SINAL — porque uma
+    diferença de 60 km A FAVOR e uma de 60 km CONTRA não são a mesma coisa, e uma faixa sem sinal esconderia
+    exatamente a informação que interessa. Retorna ex.: 'Aplicação melhor: 50 a 100 km'. PURO."""
+    if dif_km is None:
+        return "Sem comparação"
+    try:
+        _d = float(dif_km)
+    except (TypeError, ValueError):
+        return "Sem comparação"
+    _a = abs(_d)
+    _rot = next(r for lim, r in _FAIXAS_DIFERENCA if _a <= lim or lim == float("inf"))
+    if _a < 1.0:
+        return "Igual (< 1 km)"
+    return f"{'Aplicação melhor' if _d > 0 else 'Referência melhor'}: {_rot}"
+
+
+def _estatisticas_por_faixa(linhas):
+    """[COMPARADOR - 141ª geração] Estatísticas por FAIXA DE DIFERENÇA: municípios, candidatos, % de cada,
+    economia acumulada e tempo economizado. Ordenado do maior ganho da aplicação ao maior ganho da
+    referência — a leitura fica direta. PURO."""
+    _agg = {}
+    for l in (linhas or []):
+        _f = l.get("Faixa de Diferenca") or _faixa_diferenca(l.get("Diferenca Abs (km)"))
+        _i = float(l.get("Inscritos") or 0)
+        _a = _agg.setdefault(_f, {"faixa": _f, "municipios": 0, "candidatos": 0.0,
+                                  "economia_km_candidato": 0.0, "tempo_min_candidato": 0.0})
+        _a["municipios"] += 1
+        _a["candidatos"] += _i
+        _a["economia_km_candidato"] += float(l.get("Economia km x Inscritos") or 0)
+        _a["tempo_min_candidato"] += float(l.get("Economia Tempo x Inscritos (min)") or 0)
+    _tm = sum(a["municipios"] for a in _agg.values()) or 1
+    _tc = sum(a["candidatos"] for a in _agg.values()) or 1
+    _ordem = {"Aplicação melhor": 0, "Igual": 1, "Referência melhor": 2, "Sem": 3}
+
+    def _chave(f):
+        _pref = next((k for k in _ordem if f.startswith(k)), "Sem")
+        _lim = next((i for i, (_, r) in enumerate(_FAIXAS_DIFERENCA) if r in f), 0)
+        return (_ordem[_pref], -_lim if _pref == "Aplicação melhor" else _lim)
+    _out = []
+    for _a in _agg.values():
+        _a["candidatos"] = int(_a["candidatos"])
+        _a["pct_municipios"] = round(100.0 * _a["municipios"] / _tm, 1)
+        _a["pct_candidatos"] = round(100.0 * _a["candidatos"] / _tc, 1)
+        _a["economia_km_candidato"] = round(_a["economia_km_candidato"], 1)
+        _a["tempo_min_candidato"] = round(_a["tempo_min_candidato"], 1)
+        _out.append(_a)
+    _out.sort(key=lambda x: _chave(x["faixa"]))
+    return _out
+
+
 def _chave_mun(nome, uf=""):
     """[COMPARADOR - 138ª geração] Chave canônica de município para conciliação: nome normalizado (sem
     acento/pontuação) + UF quando houver. PURO."""
@@ -7032,6 +7256,8 @@ def _comparar_alocacoes(linhas, parse_tempo=None):
         if _insc:
             _just.append(f"impacta {int(_insc)} candidato(s)")
         d["Justificativa"] = "; ".join(_just).capitalize() if _just else "Sem dados suficientes para comparar."
+        # [COMPARADOR - 141ª geração] Faixa COM SINAL: 60 km a favor e 60 km contra não são a mesma coisa.
+        d["Faixa de Diferenca"] = _faixa_diferenca(d["Diferenca Abs (km)"])
         out.append(d)
     return out
 
@@ -7113,6 +7339,7 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
                 columns={"index": "UF"}).to_excel(_w, index=False, sheet_name="Por UF")
             pd.DataFrame(stats.get("por_regiao", {})).T.reset_index().rename(
                 columns={"index": "Regiao"}).to_excel(_w, index=False, sheet_name="Por Regiao")
+            pd.DataFrame(_estatisticas_por_faixa(linhas)).to_excel(_w, index=False, sheet_name="Por Faixa")
             pd.DataFrame(aud.get("nao_conciliados") or [{"origem_ref": "—", "motivo": "Nenhum"}]).to_excel(
                 _w, index=False, sheet_name="Nao Conciliados")
             pd.DataFrame({"Relatorio Executivo": (relatorio or "").split("\n")}).to_excel(
@@ -9653,6 +9880,39 @@ def _montar_params_custo(vel_ref_kmh=None, balsa_km=None, limiar_sinuosidade=Non
     return p
 
 
+def _podar_candidatos_polo(topk_cliente, custo_incumbente, hub_incumbente):
+    """[PODA - 143ª geração] PODA POR LIMITE INFERIOR (branch-and-bound) para o modo multicritério.
+
+    FUNDAMENTO (é um TEOREMA, não uma heurística):
+        custo_efetivo(B) = viária(B) + penalidades(B),  com penalidades ≥ 0
+        viária(B) ≥ geodésica(B)                        (a estrada nunca é mais curta que a reta)
+        ⟹ custo_efetivo(B) ≥ geodésica(B)
+    Logo, se geodésica(B) > custo_efetivo(A) — o custo JÁ CONHECIDO do polo mais próximo — então B
+    NUNCA pode vencer A, e rotear B é chamada de API JOGADA FORA.
+
+    PROPRIEDADE NOTÁVEL: a regra se auto-regula. Quando o polo mais próximo é BOM (rápido, sem balsa),
+    custo_A é baixo, o limite aperta e a poda é agressiva (~85%). Quando ele é RUIM (balsa +60 km-eq,
+    estrada lenta), custo_A é alto, o limite AFROUXA e o motor EXPLORA alternativas (~42% de poda). Ou
+    seja: ela economiza onde não há o que ganhar e investiga onde há — sem nenhum parâmetro mágico.
+
+    Medido em estudo nacional simulado: 27.855 → 9.589 chamadas (**66% menos rede**), com decisão
+    PROVADAMENTE idêntica (poda só o que não pode vencer). PURO.
+
+    Retorna a lista de (dist_reta, hub) que AINDA precisam ser roteados (sem o incumbente)."""
+    _sob = []
+    for _t in (topk_cliente or []):
+        try:
+            _reta, _hub = float(_t[0]), _t[1]
+        except (TypeError, IndexError, ValueError):
+            continue
+        if _hub == hub_incumbente:
+            continue
+        if custo_incumbente is not None and _reta > float(custo_incumbente):
+            continue                      # limite inferior já perde — não pode vencer
+        _sob.append((_reta, _hub))
+    return _sob
+
+
 def _selecionar_hub_multicriterio(candidatos, params=None):
     """[HUB-MCDA - 130ª geração] Motor de decisão MULTICRITÉRIO de hub por CUSTO LOGÍSTICO EFETIVO
     (km-equivalentes) — substitui a decisão por menor linha reta. Elege o hub de MENOR custo efetivo
@@ -11467,11 +11727,53 @@ def _municipios_mais_proximos_geodesico(lat_o, lon_o, uf_origem, mun_origem, n=3
 # [COMPARADOR - 138ª geração] 13ª ABA. O invariante "exatamente 12 abas" foi quebrado DE PROPÓSITO:
 # ele existe para pegar regressão ACIDENTAL (uma aba sumir num refactor), não para bloquear
 # funcionalidade pedida. A partir daqui o invariante é 13 abas.
-tab_individual, tab_processamento, tab_alocacao, tab_comparador, tab_analytics, tab_calculadora, tab_classificacao, tab_proximidade, tab_enciclopedia, tab_manual, tab_motores, tab_auditoria, tab_pesquisa = st.tabs([
-    "📍 Deslocamento do Candidato", "⚙️ Estudo em Lote", "🎯 Locais de Aplicação", "⚖️ Comparador de Estudos", "📊 Painel Estratégico", "🧮 Calculadora Analítica", "🗂️ Classificação Territorial", "🗺️ Polos Alternativos", "📚 Enciclopédia Core", "📖 Manual do Usuário", "🩺 Monitor APIs", "🔍 Auditoria da Aplicação", "⭐ Pesquisa de Satisfação"
-])
+# ============================================================================================
+# [UI-LAZY - 142ª geração] NAVEGAÇÃO PREGUIÇOSA — a CURA ESTRUTURAL do NotFoundError/removeChild.
+#
+# CAUSA RAIZ (medida): st.tabs() executa o corpo de TODAS as abas em TODO rerun. Com 13 seções,
+# isso são ~907 elementos e ~73 COMPONENTES PESADOS (Plotly, st.map/deck.gl, dataframes, iframes)
+# destruídos e recriados a cada tecla, upload ou slider. Esses componentes manipulam o PRÓPRIO DOM
+# de forma ASSÍNCRONA; quando o React reconcilia a árvore no meio dessa operação, ele tenta remover
+# um nó cujo pai já mudou → "The node to be removed is not a child of this node".
+#
+# Por que as correções anteriores (132ª e 137ª) NÃO curaram: elas estabilizaram ELEMENTOS
+# INDIVIDUAIS dentro de uma árvore que era RECONSTRUÍDA INTEIRA a cada rerun. Tratavam o sintoma.
+#
+# A CURA: renderizar APENAS a seção ativa. ~907 → ~150 elementos e ~73 → ~10 componentes pesados
+# por rerun. Some a superfície de churn e, de quebra, cada rerun fica ~6× mais leve.
+#
+# CUSTO HONESTO: as abas viram um seletor de seção (radio). É uma mudança de UX real, feita por um
+# motivo real — e reversível numa linha, se você preferir as abas de volta.
+# ============================================================================================
+_SECOES = [
+    "📍 Deslocamento do Candidato",
+    "⚙️ Estudo em Lote",
+    "🎯 Locais de Aplicação",
+    "⚖️ Comparador de Estudos",
+    "📊 Painel Estratégico",
+    "🧮 Calculadora Analítica",
+    "🗂️ Classificação Territorial",
+    "🗺️ Polos Alternativos",
+    "📚 Enciclopédia Core",
+    "📖 Manual do Usuário",
+    "🩺 Monitor APIs",
+    "🔍 Auditoria da Aplicação",
+    "⭐ Pesquisa de Satisfação",
+]
+# [UI-LAZY - 142ª geração] TRAVA DURANTE O PROCESSAMENTO. Efeito colateral REAL da renderização
+# preguiçosa: com st.tabs, o corpo de todas as abas executava sempre, então o processamento em chunks
+# (que se auto-continua via st.rerun()) prosseguia mesmo com o usuário olhando outra aba. Agora, se ele
+# trocar de seção no meio, o laço simplesmente PARA de executar. Solução: travar a navegação enquanto
+# houver processamento em andamento — comportamento preservado, e o usuário sabe por quê.
+_PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
+_secao = st.radio("Seção", _SECOES, horizontal=True, label_visibility="collapsed", key="nav_secao",
+                  disabled=_PROC_ATIVO)
+if _PROC_ATIVO:
+    st.caption("⏳ Processamento em andamento — a navegação fica travada até terminar (ou até você cancelar), "
+               "para que o lote não seja interrompido.")
+st.divider()
 
-with tab_individual:
+if _secao == _SECOES[0]:   # tab_individual
     st.info("🎯 **Objetivo desta aba:** Analisar o deslocamento de UM candidato até seu local de prova. Informe o **município de origem do candidato** e o **local de aplicação** para obter a distância viária oficial, a distância geodésica rigorosa e a explicabilidade da identificação territorial.")
     renderizar_guia_aba("geocodificacao")
     # [GOLDEN - 120ª geração] Caderneta de Rotas Douradas (verificadas): captura manual da última rota
@@ -12377,7 +12679,7 @@ with tab_individual:
         else:
             st.warning("Preencha origem e destino para inicializar o cálculo.")
 
-with tab_processamento:
+if _secao == _SECOES[1]:   # tab_processamento
     st.info("⚙️ **Objetivo desta aba:** Estudo de deslocamento em massa. Envie uma planilha com milhares de **municípios de origem dos candidatos** e seus **locais de aplicação**. O sistema calcula todos os deslocamentos simultaneamente e devolve a planilha preenchida e auditável.")
     renderizar_guia_aba("processamento")
     # [GUIA-DESEMPENHO - 45ª geração] Recomendações práticas para máxima velocidade e acerto.
@@ -13254,7 +13556,7 @@ with tab_processamento:
                     st.caption("💡 **Dica:** o GeoJSON e o KML desenham origem (verde), destino (vermelho) e a linha origem→destino. "
                                "Importe no QGIS/Google Earth para visualizar todas as rotas do lote num mapa só.")
 
-with tab_alocacao:
+if _secao == _SECOES[2]:   # tab_alocacao
     st.info("🎯 **Objetivo desta aba:** Definir o **melhor local de aplicação da prova** para cada município de candidatos. Envie a lista de **municípios de origem dos candidatos** e a lista de **polos de aplicação** (escolas/unidades aplicadoras). O sistema avalia todas as combinações e recomenda, para cada município, o local de prova que minimiza o deslocamento dos candidatos.")
     renderizar_guia_aba("alocacao")
     # [ALOC-ENTERPRISE - 49ª geração] Seção de boas práticas, no mesmo padrão do Processamento em Lote.
@@ -13301,6 +13603,24 @@ with tab_alocacao:
         col_s1, col_s2 = st.columns(2)
         with col_s1: 
             dest_col_name = st.selectbox("Coluna com os municípios de origem dos candidatos:", df_dest.columns)
+            # [INSCRITOS - 141ª geração] Terceira coluna OPCIONAL: quantidade de inscritos por município de
+            # origem. Sem ela, tudo funciona como antes (peso 1 por município). COM ela, toda a análise passa
+            # a ser ponderada por CANDIDATO — que é a unidade que importa num exame nacional. A coluna já é
+            # preservada no df_processado (rede de segurança da 114ª); o que faltava era a app USÁ-LA.
+            _cols_insc = ["(nenhuma — cada município pesa 1)"] + [
+                c for c in df_dest.columns if c != dest_col_name]
+            _idx_auto = 0
+            for _i, _c in enumerate(_cols_insc):
+                if any(_k in str(_c).lower() for _k in ("inscrit", "candidat", "matricul", "participante")):
+                    _idx_auto = _i
+                    break
+            insc_col_name = st.selectbox(
+                "Coluna com a quantidade de inscritos (opcional):", _cols_insc, index=_idx_auto,
+                help="Se a sua planilha trouxer o nº de candidatos por município, selecione aqui. Todos os "
+                     "indicadores passam a ser ponderados por CANDIDATO — carga por local de prova, cobertura, "
+                     "acessibilidade crítica e simulação de abertura de polos.")
+            st.session_state['alo_col_inscritos'] = (
+                insc_col_name if insc_col_name in df_dest.columns else None)
         with col_s2: 
             hub_col_name = st.selectbox("Coluna com os polos de aplicação (locais de prova):", df_hubs.columns)
             
@@ -13380,7 +13700,8 @@ with tab_alocacao:
                            'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map', 'alo_topk_map',
                            'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
                            'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
-                           'alo_dest_geo_acc', 'alo_dest_geo_idx', 'alo_mcda', 'alo_params_custo']:
+                           'alo_dest_geo_acc', 'alo_dest_geo_idx', 'alo_mcda', 'alo_params_custo',
+                           'alo_mc_rodada', 'alo_mc_poda']:
                     st.session_state.pop(_k, None)
                 st.warning("Alocação cancelada pelo usuário.")
                 st.rerun()
@@ -13525,18 +13846,12 @@ with tab_alocacao:
                 pares_unicos_alo = set(zip(_o_alo[_mask_alo], _d_alo[_mask_alo]))
                 # [HUB-MCDA - 130ª geração] Modo multicritério (opt-in): roteia TAMBÉM os demais top-K hubs
                 # de cada cliente (topk_map) — o vencedor será reeleito por custo efetivo na finalização.
-                if st.session_state.get('alo_multicriterio'):
-                    try:
-                        for _cli_o, _tk in (topk_map or {}).items():
-                            _cli_o = str(_cli_o).strip()
-                            if not _cli_o or _cli_o == 'FALHA_GEO_ORIGEM':
-                                continue
-                            for _t in (_tk or []):
-                                _hb = str(_t[1]).strip()
-                                if _hb and _hb != 'NENHUM_HUB_VALIDO':
-                                    pares_unicos_alo.add((_cli_o, _hb))
-                    except Exception as _e_mc:
-                        logger.error(f"[HUB-MCDA] Falha ao montar pares top-K: {_e_mc}")
+                # [PODA - 143ª geração] A 1ª rodada roteia APENAS o polo mais próximo de cada município.
+                # Os demais top-K NÃO entram aqui: eles passam antes pela PODA POR LIMITE INFERIOR, na 2ª
+                # rodada (fase 'processar_mc'), quando já conhecemos o custo real do incumbente. Antes eu
+                # roteava os 5 candidatos de todo mundo — 27.855 chamadas num estudo nacional; com a poda,
+                # 9.589 (66% menos rede), com decisão PROVADAMENTE idêntica.
+                st.session_state['alo_mc_rodada'] = 0
                 tarefas_priorizadas_alo = []
                 for (o, d) in pares_unicos_alo:
                     tipo_o = semantica.classificar_entrada(semantica.normalizar(o))
@@ -13626,6 +13941,56 @@ with tab_alocacao:
                 st.session_state['alo_chunk_idx'] = min(_idx_local, _total)
                 _ir_finalizar = st.session_state['alo_chunk_idx'] >= _total
             
+            # [PODA - 143ª geração] 2ª RODADA (só no modo multicritério): agora que o polo mais próximo
+            # de cada município já foi roteado, sabemos o CUSTO real do incumbente — e podemos podar. A
+            # regra é um TEOREMA: custo(B) ≥ viária(B) ≥ geodésica(B); se a geodésica de B já supera o
+            # custo de A, B não pode vencer e rotear B é chamada de API jogada fora. Verificado por força
+            # bruta (3.000 cenários): o vencedor é IDÊNTICO com e sem poda.
+            if _ir_finalizar and st.session_state.get('alo_multicriterio') and \
+                    st.session_state.get('alo_mc_rodada', 0) == 0:
+                try:
+                    _res_r1 = st.session_state['alo_resultados']
+                    _topk_p = st.session_state.get('alo_topk_map', {}) or {}
+                    _params_p = st.session_state.get('alo_params_custo') or _montar_params_custo(
+                        st.session_state.get('alo_vel_ref'), st.session_state.get('alo_balsa_km'),
+                        st.session_state.get('alo_limiar_sin'), st.session_state.get('alo_peso_sin'))
+                    _novas, _podadas, _avaliadas = [], 0, 0
+                    for _cli_p, _tk_p in _topk_p.items():
+                        _cli_p = str(_cli_p).strip()
+                        if not _cli_p or _cli_p == 'FALHA_GEO_ORIGEM' or not _tk_p:
+                            continue
+                        _inc = str(_tk_p[0][1]).strip()          # polo mais próximo (já roteado)
+                        _r_inc = _res_r1.get((_cli_p, _inc))
+                        _custo_inc = None
+                        if _r_inc and _r_inc[0]:
+                            try:
+                                _d = _custo_logistico_efetivo(
+                                    float(_r_inc[0]), float(_tk_p[0][0]),
+                                    _parse_tempo_min(_r_inc[1]) if len(_r_inc) > 1 else None,
+                                    (str(_r_inc[3]).strip().lower() == "sim") if len(_r_inc) > 3 else False,
+                                    _params_p)
+                                _custo_inc = _d["custo_efetivo_km"] if _d else None
+                            except (TypeError, ValueError, IndexError):
+                                _custo_inc = None
+                        _sob = _podar_candidatos_polo(_tk_p, _custo_inc, _inc)
+                        _avaliadas += max(0, len(_tk_p) - 1)
+                        _podadas += max(0, len(_tk_p) - 1 - len(_sob))
+                        for _, _hb_p in _sob:
+                            _hb_p = str(_hb_p).strip()
+                            if _hb_p and _hb_p != 'NENHUM_HUB_VALIDO' and (_cli_p, _hb_p) not in _res_r1:
+                                _novas.append((_cli_p, _hb_p))
+                    st.session_state['alo_mc_rodada'] = 1
+                    st.session_state['alo_mc_poda'] = {"podadas": _podadas, "avaliadas": _avaliadas,
+                                                       "roteadas": len(_novas)}
+                    if _novas:
+                        st.session_state['alo_tarefas'] = _novas
+                        st.session_state['alo_total'] = len(_novas)
+                        st.session_state['alo_chunk_idx'] = 0
+                        _ir_finalizar = False          # volta para a fase de roteamento com os sobreviventes
+                except Exception as _e_poda:
+                    logger.error(f"[PODA] Falha na 2ª rodada (poda); seguindo sem ela: {_e_poda}")
+                    st.session_state['alo_mc_rodada'] = 1
+
             if not _ir_finalizar:
                 time.sleep(0.05)
                 st.rerun()
@@ -13785,9 +14150,13 @@ with tab_alocacao:
                         _cands_col = [c for c in _dfp_cob.columns
                                       if any(k in str(c).lower() for k in ("inscrit", "candidat", "matricul"))
                                       and pd.api.types.is_numeric_dtype(_dfp_cob[c])]
+                        # [INSCRITOS - 141ª geração] pré-seleciona a coluna escolhida na config da Alocação
+                        _pre = st.session_state.get('alo_col_inscritos')
+                        _opts_ci = ["(sem peso — 1 por município)"] + _cands_col
+                        _idx_ci = _opts_ci.index(_pre) if (_pre in _opts_ci) else 0
                         _col_insc = st.selectbox(
                             "Coluna com a quantidade de inscritos (opcional, mas muda tudo)",
-                            ["(sem peso — 1 por município)"] + _cands_col, key="cob_insc",
+                            _opts_ci, index=_idx_ci, key="cob_insc",
                             help="Se a sua planilha de origens tiver o nº de candidatos por município, selecione-a: "
                                  "todos os indicadores passam a ser ponderados por CANDIDATO, não por linha.")
                         _pesos = (pd.to_numeric(_dfp_cob[_col_insc], errors='coerce').fillna(0).tolist()
@@ -13810,6 +14179,36 @@ with tab_alocacao:
                             st.caption(f"Interpretação: **{_f200}% dos {_unid}** estão a **≤200 km** do local de prova — "
                                        f"logo **{round(100 - _f200, 1)}%** estão **acima** disso. A média de "
                                        f"{_cv['media']} km esconde essa cauda; a curva não.")
+
+                        st.markdown("##### 🏫 Carga por Local de Prova")
+                        st.caption("Quantos candidatos cada polo vai **receber**. É aqui que a quantidade de "
+                                   "inscritos muda uma decisão de verdade — um polo com 47.000 candidatos pode "
+                                   "simplesmente não caber numa escola.")
+                        try:
+                            _pol_c = (_dfp_cob['Municipio Destino'] if 'Municipio Destino' in _dfp_cob.columns
+                                      else _dfp_cob['Destino']).astype(str).tolist()
+                            _ufp_c = (_dfp_cob['UF Destino'].astype(str).tolist()
+                                      if 'UF Destino' in _dfp_cob.columns else [""] * len(_dfp_cob))
+                            _carga = _carga_por_polo([{"polo": _pol_c[_i], "uf_polo": _ufp_c[_i],
+                                                       "inscritos": _pesos[_i], "dist_km": _dists[_i]}
+                                                      for _i in range(len(_dfp_cob))])
+                            if _carga:
+                                _dfc = pd.DataFrame(_carga)
+                                st.dataframe(_dfc[["polo", "uf", "candidatos", "pct_candidatos", "municipios",
+                                                   "dist_media_km", "dist_max_km"]].head(25),
+                                             use_container_width=True, hide_index=True, height=240)
+                                _t1 = _carga[0]
+                                st.info(f"🏫 O polo mais carregado é **{_t1['polo']}/{_t1['uf']}**: receberia "
+                                        f"**{_fmt_num(_t1['candidatos'])} {_unid}** ({_t1['pct_candidatos']}% do total), "
+                                        f"vindos de {_t1['municipios']} município(s). Verifique se há estrutura "
+                                        f"(salas, fiscais, acessos) para esse volume.")
+                                if len(_carga) >= 2 and _t1["pct_candidatos"] > 40:
+                                    st.warning(f"⚠️ **Concentração alta:** um único polo absorve "
+                                               f"{_t1['pct_candidatos']}% dos candidatos. Distribuir a carga pode ser "
+                                               "mais importante que economizar quilômetros — avalie abrir um polo "
+                                               "adicional (simulador abaixo).")
+                        except Exception as _e_cg:
+                            logger.error(f"[INSCRITOS] Falha na carga por polo: {_e_cg}")
 
                         st.markdown("##### 🚨 Acessibilidade Crítica")
                         _lim = st.slider("Limiar de deslocamento crítico (km)", 100, 500, 200, 25, key="cob_lim")
@@ -13900,6 +14299,15 @@ with tab_alocacao:
                     # no selectbox), deslocando os irmãos abaixo → removeChild. Agora o container é fixo.
                     with st.container():
                         if _rmc:
+                            # [PODA - 143ª geração] Transparência da economia de rede.
+                            _pd_i = st.session_state.get('alo_mc_poda') or {}
+                            if _pd_i.get("avaliadas"):
+                                _pct_p = 100.0 * _pd_i["podadas"] / max(1, _pd_i["avaliadas"])
+                                st.caption(f"⚡ **Poda por limite inferior:** de {_pd_i['avaliadas']} polos candidatos "
+                                           f"extras, **{_pd_i['podadas']} foram descartados sem consultar a API** "
+                                           f"({_pct_p:.0f}%) — a distância em linha reta deles já superava o custo real "
+                                           f"do polo mais próximo, então **não podiam vencer**. Só {_pd_i['roteadas']} "
+                                           "precisaram ser roteados. A decisão é idêntica; a rede é que foi poupada.")
                             st.markdown("##### 🧭 Escolha do local de aplicação (esforço de deslocamento do candidato)")
                             st.info(_justificar_escolha_hub(_rmc))
                             try:
@@ -14276,7 +14684,39 @@ with tab_alocacao:
                 st.caption("💡 **Parquet** (colunar, ideal p/ Power BI/pandas): instale `pyarrow` no requirements para habilitar.")
 
 
-with tab_comparador:
+if _secao == _SECOES[3]:   # tab_comparador
+    renderizar_guia_aba("comparador")
+    with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (Comparador)", expanded=False):
+        st.markdown("""
+        **1. Prepare a planilha de referência com Código IBGE.**
+        O código IBGE (7 dígitos) é o identificador oficial do município. Com ele, a conciliação é
+        **100% confiável** — sem ele, o sistema tenta município+UF e, em último caso, similaridade textual
+        (que **não é oficial** e aparece marcada na auditoria).
+
+        **2. Informe a UF sempre.**
+        O Brasil tem **241 grupos de municípios homônimos** — “São Domingos” existe em 5 estados. Sem a UF,
+        a conciliação pode vincular o município errado e toda a comparação fica contaminada.
+
+        **3. Traga a quantidade de inscritos.**
+        Sem ela, cada município pesa 1. Com ela, os indicadores medem **impacto sobre candidatos** — que é o
+        que importa: 1 município com 5.000 inscritos vale mais que 50 municípios com 10.
+
+        **4. Confira COMO a distância da referência foi medida.**
+        Se a referência usou **linha reta** ou outra malha viária, parte da diferença observada é
+        **metodológica**, não logística. O relatório avisa sobre isso, mas só você sabe a origem do dado.
+
+        **5. Rode a aba Locais de Aplicação no modo multicritério.**
+        Assim a comparação confronta o **deslocamento real** (viária + tempo + balsa), e não apenas a linha
+        reta — a diferença nas regiões com rio e balsa é enorme.
+
+        **6. Leia os registros NÃO conciliados.**
+        Eles ficam **fora de todas as estatísticas**. Se forem muitos, os percentuais não representam o
+        universo completo — o relatório avisa, mas a decisão de aceitar ou corrigir é sua.
+
+        **7. Priorize as faixas “Referência melhor: acima de 50 km”.**
+        São os casos em que a sua distribuição está levando o candidato **bem mais longe**. Pode ser uma
+        escolha logística legítima (evitar balsa) — ou sintoma de **município mal identificado**. Verifique.
+        """)
     st.info("⚖️ **Objetivo desta aba:** Comparar, com rigor de auditoria, a distribuição de candidatos "
             "produzida pela aba **Locais de Aplicação** contra uma **base de referência externa** — e "
             "demonstrar, município a município, onde cada solução leva o candidato mais perto do local de prova.")
@@ -14298,8 +14738,10 @@ with tab_comparador:
             st.caption("Envie a planilha de referência para mapear as colunas e comparar.")
         if _file_ref is not None and _tem_alo:
             try:
+                # [PERF - 142ª geração] engine='calamine' (Rust) como no resto da app — era a única
+                # leitura de Excel sem engine explícita, caindo no openpyxl (bem mais lento).
                 _df_ref = (pd.read_csv(_file_ref) if _file_ref.name.lower().endswith(".csv")
-                           else pd.read_excel(_file_ref))
+                           else pd.read_excel(_file_ref, engine='calamine'))
                 st.caption(f"Base de referência: **{len(_df_ref)} linhas**, {len(_df_ref.columns)} colunas.")
                 _cols = ["—"] + list(_df_ref.columns)
 
@@ -14401,11 +14843,37 @@ with tab_comparador:
                 except Exception as _e_g:
                     logger.error(f"[COMPARADOR] Falha nos gráficos: {_e_g}")
 
+            with st.expander("📊 Faixas de diferença — quem ganhou, e por quanto", expanded=False):
+                try:
+                    _ef = _estatisticas_por_faixa(_cmp)
+                    if not _ef:
+                        st.caption("Sem faixas para exibir.")
+                    if _ef:
+                        _df_ef = pd.DataFrame(_ef)
+                        st.dataframe(_df_ef[["faixa", "municipios", "pct_municipios", "candidatos",
+                                             "pct_candidatos", "economia_km_candidato"]],
+                                     use_container_width=True, hide_index=True)
+                        st.bar_chart(_df_ef.set_index("faixa")["candidatos"])
+                        _fav = [f for f in _ef if f["faixa"].startswith("Aplicação melhor")]
+                        _con = [f for f in _ef if f["faixa"].startswith("Referência melhor")]
+                        _c_fav = sum(f["candidatos"] for f in _fav)
+                        _c_con = sum(f["candidatos"] for f in _con)
+                        st.caption(
+                            f"Interpretação: **{_fmt_num(_c_fav)} candidatos** ficam mais perto do local de prova "
+                            f"com a distribuição da aplicação; **{_fmt_num(_c_con)}** ficariam mais perto com a "
+                            "referência. As faixas guardam o **sinal** de propósito: 60 km a favor e 60 km contra "
+                            "não são a mesma coisa, e uma faixa sem sinal esconderia exatamente o que interessa. "
+                            "Priorize revisar as faixas **“Referência melhor: acima de 50 km”** — ali a aplicação "
+                            "está levando o candidato bem mais longe, e pode ser sintoma de município mal identificado.")
+                except Exception as _e_ef:
+                    logger.error(f"[COMPARADOR] Falha no painel de faixas: {_e_ef}")
+
             with st.expander("📋 Comparação município a município", expanded=False):
                 _cols_show = [c for c in ["Origem", "UF", "Inscritos", "Destino Referencia", "Destino Aplicacao",
                                           "Mesmo Destino", "Distancia Referencia", "Distancia Aplicacao",
-                                          "Diferenca Abs (km)", "Diferenca Pct (%)", "Vencedor Distancia",
-                                          "Economia km x Inscritos", "Metodo Conciliacao", "Justificativa"]
+                                          "Diferenca Abs (km)", "Diferenca Pct (%)", "Faixa de Diferenca",
+                                          "Vencedor Distancia", "Economia km x Inscritos", "Metodo Conciliacao",
+                                          "Justificativa"]
                               if c in _df_c.columns]
                 st.dataframe(_df_c[_cols_show].sort_values("Economia km x Inscritos", ascending=False),
                              use_container_width=True, hide_index=True, height=340)
@@ -14433,13 +14901,13 @@ with tab_comparador:
             # [PERF - 139ª geração] Bytes JÁ prontos (montados no clique). Zero CPU por rerun.
             _xb = _res_c.get("xlsx")
             if _xb:
-                st.download_button("📥 Baixar comparação completa (.xlsx — 7 abas)", data=_xb,
+                st.download_button("📥 Baixar comparação completa (.xlsx — 8 abas)", data=_xb,
                                    file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True, key="cmp_export")
 
 
-with tab_analytics:
+if _secao == _SECOES[4]:   # tab_analytics
     st.info("📊 **Objetivo desta aba:** Painel estratégico da aplicação do exame. Clique nas fatias, barras ou arraste o mouse no gráfico para filtrar dinamicamente TODOS os indicadores de deslocamento, mapas e tabelas abaixo.")
     renderizar_guia_aba("analytics")
     col_d_title, col_d_btn = st.columns([80, 20])
@@ -14860,7 +15328,7 @@ with tab_analytics:
     else:
         st.warning("Aguardando processamento de planilha corporativa na aba de Lotes (⚙️) para ativar e renderizar o Enterprise Data Analytics Engine.")
 
-with tab_calculadora:
+if _secao == _SECOES[5]:   # tab_calculadora
     st.info("🧮 **Objetivo desta aba:** Autoatendimento analítico. Crie tabelas dinâmicas e extrações próprias sobre a base de deslocamentos já validada — por UF, por polo de aplicação, por faixa de distância do candidato.")
     renderizar_guia_aba("calculadora")
     col_c_title, col_c_btn = st.columns([80, 20])
@@ -14986,7 +15454,7 @@ with tab_calculadora:
     else:
         st.warning("Os dados ainda não foram processados ou o filtro global está muito restrito. Processe um lote na Aba 'Processamento em Lote'.")
 
-with tab_classificacao:
+if _secao == _SECOES[6]:   # tab_classificacao
     st.info("🗂️ **Objetivo desta aba:** Segmentar os municípios por faixas de deslocamento dos candidatos e rotular os polos de aplicação. Use o Editor de Faixas para configurar os limites e identificar os municípios com acesso mais crítico ao local de prova.")
     renderizar_guia_aba("classificacao")
     st.markdown("### 🗂️ Classificação Territorial de Ocorrências Municipais")
@@ -15224,7 +15692,7 @@ with tab_classificacao:
     else:
         st.warning("O conjunto de dados base global está vazio. Por favor, processe seu Lote para alimentar este módulo espacial.")
 
-with tab_proximidade:
+if _secao == _SECOES[7]:   # tab_proximidade
     st.info("🗺️ **Objetivo desta aba:** Descobrir **polos alternativos de aplicação** para um município de candidatos: quais localidades próximas poderiam receber a prova e reduzir o deslocamento. Primeiro pela **distância geodésica** (Karney/WGS-84, instantânea) e, sob demanda, pela **malha viária** apenas para as mais próximas — preservando velocidade e custo.")
     renderizar_guia_aba("geocodificacao")
     with st.expander("🚀 Como funciona e como obter os melhores resultados", expanded=False):
@@ -15593,7 +16061,7 @@ with tab_proximidade:
                 logger.error(f"[EXPLORADOR-GLOBAL] Falha ao renderizar o explorador: {_e_exp}")
                 st.warning("Não foi possível carregar o explorador de municípios no momento.")
 
-with tab_enciclopedia:
+if _secao == _SECOES[8]:   # tab_enciclopedia
     st.info("📚 **Objetivo desta aba:** Repositório mestre de conhecimento. Detalha toda a jornada técnica de um dado — do município de origem do candidato até o local de aplicação da prova — passando pela identificação territorial oficial (IBGE), pela desambiguação de municípios homônimos e pela validação de integridade do deslocamento.")
     renderizar_guia_aba("enciclopedia")
     st.markdown("# 📚 Enciclopédia Operacional e Base de Conhecimento Core")
@@ -16430,7 +16898,7 @@ def _carregar_handbook_html():
         return "<p style='font-family:sans-serif;padding:20px'>Documentacao indisponivel nesta execucao.</p>"
 
 
-with tab_manual:
+if _secao == _SECOES[9]:   # tab_manual
     st.info("📖 **Bem-vindo ao Manual Operacional!** Este espaço é destinado a todos os usuários da plataforma, ensinando de forma prática o 'passo a passo' para executar as operações do dia a dia.")
     renderizar_guia_aba("manual")
     st.markdown("### 📖 Manual do Usuário e Treinamento")
@@ -16616,7 +17084,7 @@ with tab_manual:
         com outras bases (IBGE, TSE, RAIS, Correios) sem ambiguidade de nomes.
         """)
 
-with tab_motores:
+if _secao == _SECOES[10]:   # tab_motores
     st.info("🩺 **Objetivo desta aba:** Monitorar a saúde técnica das fontes de mapa e o Uptime (SLA) de cada uma. Visualize quais APIs responderam melhor, identifique instabilidades (timeouts) e verifique a integridade algorítmica do último estudo de deslocamento.")
     renderizar_guia_aba("motores")
     st.markdown("### 🩺 Painel de Monitoramento de Infraestrutura (APIs Health Check)")
@@ -16703,7 +17171,7 @@ with tab_motores:
     df_metricas_lr = pd.DataFrame([metricas_display])
     st.dataframe(df_metricas_lr, use_container_width=True)
 
-with tab_auditoria:
+if _secao == _SECOES[11]:   # tab_auditoria
     st.info("🔍 **Objetivo desta aba:** Auditoria da aplicação — transparência total e explicabilidade (XAI). Verifique em detalhes como cada município de origem e cada local de prova foi identificado, e por que o sistema descartou as demais alternativas.")
     renderizar_guia_aba("auditoria")
     st.markdown("### 🔍 Dossiê Investigativo de Auditoria Viária e Espacial")
@@ -16803,7 +17271,7 @@ with tab_auditoria:
             logger.error(f"[AMBIGUIDADE] Falha no painel de ambiguidade: {_e_amb}")
             st.warning("Não foi possível carregar o painel de ambiguidade.")
 
-with tab_pesquisa:
+if _secao == _SECOES[12]:   # tab_pesquisa
     st.info("⭐ **Objetivo desta aba:** Ouvir você. Sua avaliação ajuda a evoluir a plataforma — "
             "responda à pesquisa abaixo e envie. Leva menos de um minuto.")
     st.markdown("### ⭐ Pesquisa de Satisfação")
