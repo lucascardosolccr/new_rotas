@@ -62,6 +62,23 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (128ª geração) → ANTI-COLISÃO MUNICÍPIO↔BAIRRO NA GEOCODIFICAÇÃO ESTRITA + INTEGRIDADE [INTEGRIDADE]
+#     CORREÇÃO DE BUG REAL (RFC-001): 'barra, ba' (município Barra/BA, IBGE 2902708, -11.086,-43.146) era
+#     resolvido para o BAIRRO da Barra em SALVADOR (-13.006,-38.528), gerando rota fisicamente impossível
+#     (viária 210 km < linha reta 406 km). CAUSA RAIZ (rastreada em forcar_geocodificacao_hierarquica_
+#     estrita): a ordenação do modo estrito somava +40 por bairro e +50 por logradouro — perfeito p/
+#     endereços, mas p/ um NOME DE MUNICÍPIO puro elegia o bairro homônimo na cidade maior. FIX cirúrgico:
+#     quando a ENTRADA é um município oficial (base IBGE), (1) injeta a ÂNCORA IBGE do município como
+#     candidato (garante o município correto mesmo que a nuvem só devolva o bairro) e (2) pontua preferindo
+#     o município — bairro/logradouro de mesmo nome em OUTRA cidade não recebe o bônus de especificidade.
+#     Endereços reais (nome não-município) mantêm o bônus → SEM regressão. Helpers PUROS/testáveis:
+#     _pontuar_candidato_estrito + _candidato_ibge_municipio + _integridade_geografica (índice 0-100:
+#     penaliza impossibilidade física viária<reta e colisão de entidade município→sub-municipal). Como o
+#     resolvedor estrito alimenta origem E destino em executar_pipeline_unificado, o fix vale p/ TODOS os
+#     módulos (Validador, Lote, Alocação, Próximos). Escopo honesto: RFC pedia reengenharia multi-fonte
+#     (Pelias/GeoNames/reverse em toda chamada/polígono por ponto) — inviável $0/1GB e desnecessária dado o
+#     fix de raiz. Provado por teste sobre CÓDIGO REAL (reproduz o bug + guardas de não-regressão p/
+#     endereço e município). Aditivo/defensivo. 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 nus.
 #   v3.8 (127ª geração) → BASE DE AMBIGUIDADE MUNICIPAL + ÍNDICE DE AMBIGUIDADE (offline) [AMBIGUIDADE]
 #     Estende a 126ª: além dos homônimos EXATOS, mapeia NOMES SEMELHANTES (o outro modo de erro: “São
 #     Miguel” vs “São Miguel do Araguaia”, “Machadinho” vs “Machadinho d'Oeste”, “Rio Verde” vs “Rio Verde
@@ -6151,6 +6168,76 @@ def API_Photon(query):
     registrar_telemetria("PHOTON", False, time.time() - start_t)
     return None
 
+def _pontuar_candidato_estrito(cand, mun_alvo, e_municipio_ibge):
+    """[INTEGRIDADE - 128ª geração] Pontuação anti-colisão município↔bairro para o modo estrito. PURO.
+    Quando a ENTRADA é um município oficial (e_municipio_ibge=True), o candidato que É esse município
+    (cidade == mun_alvo, sem logradouro) recebe bônus alto e vence; um bairro/logradouro homônimo em OUTRA
+    cidade NÃO recebe o bônus de especificidade — era a causa de 'barra, ba' cair no bairro da Barra em
+    Salvador. Para endereços (e_municipio_ibge=False), mantém o bônus de bairro(+40)/logradouro(+50)."""
+    base = cand.get('score_base', 0)
+    cidade = str(cand.get('cidade', '') or '').upper().strip()
+    bairro = str(cand.get('bairro', '') or '').upper().strip()
+    logr = str(cand.get('logradouro', '') or '').upper().strip()
+    if e_municipio_ibge and mun_alvo:
+        if cidade == mun_alvo and not logr:
+            return base + 200
+        if cidade and cidade != mun_alvo:
+            return base            # colisão: entrada virou entidade sub-municipal em OUTRA cidade
+    return base + (40 if bairro else 0) + (50 if logr else 0)
+
+
+def _candidato_ibge_municipio(mun_alvo, uf_in, base=None):
+    """[INTEGRIDADE - 128ª geração] Candidato sintético (âncora oficial) a partir da base IBGE OFFLINE para
+    o município da entrada, ou None. Garante que o município correto exista mesmo quando os geocoders de
+    nuvem só devolvem um bairro homônimo. PURO; base injetável."""
+    if base is None:
+        base = IBGE_MUNICIPIOS
+    itens = base.get(mun_alvo or "", [])
+    it = None
+    if uf_in:
+        it = next((i for i in itens if str(i.get("uf")).upper() == uf_in), None)
+    if it is None and len(itens) == 1:
+        it = itens[0]
+    if it and it.get("lat") and it.get("lon"):
+        return {"lat": it["lat"], "lon": it["lon"], "fonte": "IBGE", "score_base": 30,
+                "cidade": mun_alvo, "estado": str(it.get("uf", "")).upper(),
+                "bairro": "", "logradouro": "", "numero": "", "cep": ""}
+    return None
+
+
+def _integridade_geografica(dist_viaria_km, dist_reta_km, nivel_origem="", nivel_destino="",
+                            mun_origem_pedido="", mun_origem_resolvido="",
+                            mun_destino_pedido="", mun_destino_resolvido=""):
+    """[INTEGRIDADE - 128ª geração] Índice de Integridade Geográfica (0-100) + diagnósticos. PURO/offline.
+    Penaliza: (1) IMPOSSIBILIDADE FÍSICA (viária < reta — a estrada nunca é mais curta que a geodésica);
+    (2) COLISÃO DE ENTIDADE (entrada era município, mas resolvida como ponto sub-municipal em OUTRO
+    município). Retorna {indice, ok, problemas:[...]}."""
+    problemas = []
+    idx = 100
+    try:
+        v, r = float(dist_viaria_km), float(dist_reta_km)
+        if v > 0 and r > 0 and v < r * 0.999:
+            problemas.append(f"Impossibilidade física: viária {v:.1f} km < linha reta {r:.1f} km "
+                             "(a estrada nunca é mais curta que a geodésica) — provável coordenada incorreta.")
+            idx -= 60
+    except (TypeError, ValueError):
+        pass
+
+    def _colisao(lbl, pedido, resolvido, nivel):
+        p, rr = str(pedido or "").upper().strip(), str(resolvido or "").upper().strip()
+        if p and rr and p != rr and str(nivel or "").upper() not in ("", "MUNICIPIO", "MUNICÍPIO"):
+            return (f"Colisão de entidade no {lbl}: “{pedido}” (município) foi resolvido em “{resolvido}” "
+                    f"(nível {nivel}) — troca de município por entidade sub-municipal.")
+        return ""
+    for _c in (_colisao("origem", mun_origem_pedido, mun_origem_resolvido, nivel_origem),
+               _colisao("destino", mun_destino_pedido, mun_destino_resolvido, nivel_destino)):
+        if _c:
+            problemas.append(_c)
+            idx -= 40
+    idx = max(0, min(100, idx))
+    return {"indice": idx, "ok": len(problemas) == 0, "problemas": problemas}
+
+
 def forcar_geocodificacao_hierarquica_estrita(texto_cru):
     texto_norm = semantica.normalizar(texto_cru)
     candidatos = []
@@ -6166,8 +6253,23 @@ def forcar_geocodificacao_hierarquica_estrita(texto_cru):
             
     if not candidatos: 
         return None
-        
-    candidatos.sort(key=lambda x: (x.get('score_base', 0) + (40 if x.get('bairro') else 0) + (50 if x.get('logradouro') else 0)), reverse=True)
+
+    # [INTEGRIDADE - 128ª geração] Anti-colisão município↔bairro. Se a ENTRADA é um município oficial,
+    # injeta a âncora IBGE (garante o município correto mesmo que a nuvem só devolva um bairro homônimo) e
+    # pontua preferindo o município — em vez de um bairro/logradouro de mesmo nome em OUTRA cidade. Foi a
+    # causa raiz de 'barra, ba' → bairro da Barra (Salvador). Defensivo: cai no ordenamento antigo em erro.
+    try:
+        _m = _RE_UF_SIGLA.search(texto_norm)
+        _uf_in = _m.group(0) if _m else ""
+        _mun_alvo = (_RE_UF_SIGLA.sub("", texto_norm).strip() if _uf_in else texto_norm.strip())
+        _e_mun = bool(IBGE_MUNICIPIOS.get(_mun_alvo))
+        if _e_mun:
+            _cand_ibge = _candidato_ibge_municipio(_mun_alvo, _uf_in)
+            if _cand_ibge:
+                candidatos.append(_cand_ibge)
+        candidatos.sort(key=lambda x: _pontuar_candidato_estrito(x, _mun_alvo, _e_mun), reverse=True)
+    except Exception:
+        candidatos.sort(key=lambda x: (x.get('score_base', 0) + (40 if x.get('bairro') else 0) + (50 if x.get('logradouro') else 0)), reverse=True)
     melhor = candidatos[0]
     
     end_f = ", ".join([c for c in [melhor.get('logradouro', ''), melhor.get('bairro', ''), melhor.get('cidade', ''), melhor.get('estado', '')] if c.strip()]) + ", BRASIL"
