@@ -62,6 +62,26 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (129ª geração) → MOTOR DE DECISÃO MULTICRITÉRIO DE HUB (IGQ + XAI) — núcleo puro/testado [HUB-MCDA]
+#     Atende o pedido de reprojetar a escolha do melhor hub. DIAGNÓSTICO (código real): a alocação hoje
+#     atribui o hub por dest_to_hub = VIZINHO MAIS PRÓXIMO EM LINHA RETA (calcular_matriz_competitiva_
+#     vetorizada); _selecionar_hub_por_viaria (69ª) foi escrita mas NUNCA ligada (0 chamadas). Balsa/tempo/
+#     sinuosidade são exibidos, mas NÃO decidem qual hub vence — premissa do usuário confirmada.
+#     ENTREGUE agora (núcleo intelectual, 100% testável): _selecionar_hub_multicriterio — MCDA (soma
+#     ponderada normalizada, estilo TOPSIS simplificado) que elege o hub de menor CUSTO LOGÍSTICO GLOBAL
+#     via Índice Global de Qualidade do Hub (IGQ 0-100), combinando distância viária, tempo, uso de balsa
+#     (FORTE penalização) e sinuosidade (viária/reta), com PESOS AUDITÁVEIS (padrão viária .35/tempo .25/
+#     balsa .30/sinuosidade .10) e desempate que PRIORIZA rota terrestre. Helpers puros: _normalizar_
+#     criterio + _justificar_escolha_hub (XAI em linguagem natural — “rota X% mais curta, tempo Y% menor,
+#     não usa balsa; ponto de atenção: linha reta maior compensada; critério decisivo: …”). METODOLOGIA:
+#     cada critério é min-max normalizado entre os candidatos (1=melhor); IGQ = 100·Σ(peso·componente)/
+#     Σpesos; vence o maior IGQ; empate → sem balsa → menor viária. Provado por teste sobre CÓDIGO REAL
+#     no cenário do usuário (hub mais próximo em linha reta mas com balsa PERDE p/ concorrente terrestre;
+#     pesos governam; robustez p/ rota inválida/vazio). LIMITE HONESTO / PRÓXIMA RODADA DEDICADA: ligar o
+#     motor como SELETOR ao vivo exige rotear os top-K candidatos (topk_map já os tem por linha reta)
+#     capturando balsa/tempo de cada um — o runner-up atual não traz balsa; será um modo OPT-IN “rota
+#     viária multicritério” (default intacto = zero regressão), testado no ambiente real. Aditivo; 12 abas,
+#     RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
 #   v3.8 (128ª geração) → ANTI-COLISÃO MUNICÍPIO↔BAIRRO NA GEOCODIFICAÇÃO ESTRITA + INTEGRIDADE [INTEGRIDADE]
 #     CORREÇÃO DE BUG REAL (RFC-001): 'barra, ba' (município Barra/BA, IBGE 2902708, -11.086,-43.146) era
 #     resolvido para o BAIRRO da Barra em SALVADOR (-13.006,-38.528), gerando rota fisicamente impossível
@@ -8497,6 +8517,145 @@ def _selecionar_hub_por_viaria(candidatos):
         _out['margem_pct'] = round(100.0 * _margem / _venc['dist_viaria'], 1) if _venc['dist_viaria'] > 0 else None
         _out['empate_tecnico'] = _margem < 5.0
     return _out
+
+
+_PESOS_HUB_PADRAO = {"viaria": 0.35, "tempo": 0.25, "balsa": 0.30, "sinuosidade": 0.10}
+
+
+def _normalizar_criterio(valores, menor_melhor=True):
+    """[HUB-MCDA - 129ª geração] Min-max normaliza uma lista de valores para [0,1] (1 = melhor). Valores
+    ausentes viram 0.5 (neutro). Se todos iguais, todos 1.0. PURO."""
+    _vs = [v for v in valores if isinstance(v, (int, float))]
+    if not _vs:
+        return [0.5] * len(valores)
+    lo, hi = min(_vs), max(_vs)
+    if hi == lo:
+        return [1.0 if isinstance(v, (int, float)) else 0.5 for v in valores]
+    out = []
+    for v in valores:
+        if not isinstance(v, (int, float)):
+            out.append(0.5)
+            continue
+        n = (v - lo) / (hi - lo)
+        out.append(round(1.0 - n if menor_melhor else n, 4))
+    return out
+
+
+def _selecionar_hub_multicriterio(candidatos, pesos=None, penalidade_balsa=1.0):
+    """[HUB-MCDA - 129ª geração] Motor de decisão MULTICRITÉRIO de hub (MCDA — soma ponderada normalizada,
+    estilo TOPSIS simplificado). Substitui a decisão por distância única: elege o hub de menor CUSTO
+    LOGÍSTICO GLOBAL, não a menor linha reta. Cada candidato: {'hub', 'dist_viaria', 'dist_reta'(opc),
+    'tempo_min'(opc), 'balsa'(bool,opc), 'modo'(str,opc)}. Combina, com PESOS auditáveis: distância viária,
+    tempo, uso de balsa (forte penalização) e sinuosidade (viária/reta). Calcula o Índice Global de
+    Qualidade do Hub (IGQ 0-100) por candidato e elege o de MAIOR IGQ. PURO/determinístico; pesos/base
+    injetáveis. Rotas inválidas (viária None/≤0) não concorrem. Retorna dict com vencedor, ranking
+    (com componentes por critério), runner_up, margem_igq, criterio_decisivo e pesos."""
+    pesos = dict(pesos or _PESOS_HUB_PADRAO)
+    _validos = []
+    for c in (candidatos or []):
+        try:
+            dv = float(c.get('dist_viaria')) if c.get('dist_viaria') is not None else None
+        except (TypeError, ValueError):
+            dv = None
+        if dv is None or dv <= 0:
+            continue
+        try:
+            dr = float(c['dist_reta']) if c.get('dist_reta') not in (None, "") else None
+        except (TypeError, ValueError):
+            dr = None
+        try:
+            tm = float(c['tempo_min']) if c.get('tempo_min') not in (None, "") else None
+        except (TypeError, ValueError):
+            tm = None
+        balsa = bool(c.get('balsa'))
+        sin = round(dv / dr, 4) if (dr and dr > 0) else None
+        _validos.append({'hub': c.get('hub'), 'dist_viaria': round(dv, 3), 'dist_reta': dr,
+                         'tempo_min': tm, 'balsa': balsa, 'modo': c.get('modo', ''), 'sinuosidade': sin})
+    out = {'vencedor': None, 'igq_vencedor': None, 'ranking': [], 'runner_up': None,
+           'igq_runner_up': None, 'margem_igq': None, 'criterio_decisivo': None, 'pesos': pesos,
+           'n_candidatos': len(_validos)}
+    if not _validos:
+        return out
+    n_via = _normalizar_criterio([c['dist_viaria'] for c in _validos], menor_melhor=True)
+    n_tmp = _normalizar_criterio([c['tempo_min'] for c in _validos], menor_melhor=True)
+    n_sin = _normalizar_criterio([(c['sinuosidade'] if c['sinuosidade'] else None) for c in _validos], menor_melhor=True)
+    n_bal = [(1.0 if not c['balsa'] else max(0.0, 1.0 - penalidade_balsa)) for c in _validos]
+    _soma_p = sum(pesos.get(k, 0) for k in ("viaria", "tempo", "balsa", "sinuosidade")) or 1.0
+    for i, c in enumerate(_validos):
+        comp = {"viaria": round(n_via[i], 4), "tempo": round(n_tmp[i], 4),
+                "balsa": round(n_bal[i], 4), "sinuosidade": round(n_sin[i], 4)}
+        igq = 100.0 * (pesos.get("viaria", 0) * comp["viaria"] + pesos.get("tempo", 0) * comp["tempo"] +
+                       pesos.get("balsa", 0) * comp["balsa"] + pesos.get("sinuosidade", 0) * comp["sinuosidade"]) / _soma_p
+        c['igq'] = round(igq, 1)
+        c['componentes'] = comp
+    _validos.sort(key=lambda d: (-d['igq'], d['balsa'], d['dist_viaria']))
+    for i, c in enumerate(_validos, start=1):
+        c['posicao'] = i
+    venc = _validos[0]
+    out['vencedor'] = venc['hub']
+    out['igq_vencedor'] = venc['igq']
+    out['ranking'] = _validos
+    if len(_validos) >= 2:
+        ru = _validos[1]
+        out['runner_up'] = ru['hub']
+        out['igq_runner_up'] = ru['igq']
+        out['margem_igq'] = round(venc['igq'] - ru['igq'], 1)
+        # critério decisivo: onde o vencedor mais superou o runner-up (peso × Δcomponente)
+        _difs = {k: pesos.get(k, 0) * (venc['componentes'][k] - ru['componentes'][k])
+                 for k in ("viaria", "tempo", "balsa", "sinuosidade")}
+        _melhor_k = max(_difs, key=lambda k: _difs[k])
+        _rot = {"viaria": "distância viária", "tempo": "tempo de viagem",
+                "balsa": "ausência de balsa", "sinuosidade": "rota mais direta (sinuosidade)"}
+        out['criterio_decisivo'] = _rot.get(_melhor_k, _melhor_k) if _difs[_melhor_k] > 0 else "melhor equilíbrio geral"
+    return out
+
+
+def _justificar_escolha_hub(resultado_mcda):
+    """[HUB-MCDA - 129ª geração] Justificativa explicável (XAI) da escolha multicritério, em linguagem
+    natural, comparando o vencedor com o runner-up nos critérios medidos. PURO. Retorna string (Markdown)."""
+    v = None
+    for c in resultado_mcda.get('ranking', []):
+        if c['hub'] == resultado_mcda.get('vencedor'):
+            v = c
+            break
+    if not v:
+        return "Sem candidatos válidos para justificar a escolha."
+    ru = None
+    for c in resultado_mcda.get('ranking', []):
+        if c['hub'] == resultado_mcda.get('runner_up'):
+            ru = c
+            break
+    if not ru:
+        return (f"**{v['hub']}** foi o único hub com rota válida (IGQ {v['igq']}/100) — "
+                "escolhido por ausência de concorrente viável.")
+    def _pct(a, b):
+        return (100.0 * (b - a) / b) if (isinstance(a, (int, float)) and isinstance(b, (int, float)) and b) else None
+    _fav, _obs = [], []
+    _dp = _pct(v['dist_viaria'], ru['dist_viaria'])
+    if _dp is not None:
+        (_fav if _dp > 0 else _obs).append(
+            f"rota viária **{abs(_dp):.0f}% {'mais curta' if _dp > 0 else 'mais longa'}** "
+            f"({v['dist_viaria']:.0f} km vs {ru['dist_viaria']:.0f} km)")
+    _tp = _pct(v['tempo_min'], ru['tempo_min'])
+    if _tp is not None:
+        (_fav if _tp > 0 else _obs).append(
+            f"tempo **{abs(_tp):.0f}% {'menor' if _tp > 0 else 'maior'}**")
+    if v['balsa'] != ru['balsa']:
+        (_fav if not v['balsa'] else _obs).append(
+            "**não usa balsa**" if not v['balsa'] else "usa balsa (travessia)")
+    if isinstance(v['dist_reta'], (int, float)) and isinstance(ru['dist_reta'], (int, float)):
+        _rp = _pct(ru['dist_reta'], v['dist_reta'])  # linha reta: quanto o vencedor está mais distante
+        if _rp is not None and _rp > 0:
+            _obs.append(f"linha reta **{_rp:.0f}% maior** (compensada pela rota)")
+    _txt = f"O hub **{v['hub']}** foi escolhido (IGQ **{v['igq']}/100** vs {ru['igq']} do {ru['hub']})"
+    if _fav:
+        _txt += ": " + _fav[0] + ("; " + "; ".join(_fav[1:]) if len(_fav) > 1 else "")
+    if _obs:
+        _txt += (". Ponto(s) de atenção: " + "; ".join(_obs))
+    _cd = resultado_mcda.get('criterio_decisivo')
+    if _cd:
+        _txt += f". Critério decisivo: **{_cd}**."
+    return _txt
 
 
 def _explicar_derrota_concorrente(dif_km, dif_reta, dif_razao, dif_tempo=None, dif_score=None):
