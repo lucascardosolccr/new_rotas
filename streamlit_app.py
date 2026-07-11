@@ -1,7 +1,8 @@
 # ==============================================================================
 # VERSÃO: 3.8
 # DATA: 2026-06
-# DESCRIÇÃO: Motor Nacional de Roteirização Inteligente — Plataforma Corporativa B2B
+# DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
+#            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
 #
 # ==============================================================================
 # MAPA DE ARQUITETURA (para manutenção — Etapa 7: explicabilidade)
@@ -62,6 +63,152 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (135ª geração) → DOCUMENTAÇÃO E IDENTIDADE DO PRODUTO NO CONTEXTO DE EXAMES [DOC-EXAMES]
+#     Completa a 134ª: agora a DOCUMENTAÇÃO e o NOME do produto também assumem a identidade de plataforma de
+#     inteligência logística para aplicação de exames nacionais. (1) NOME: "Motor Nacional de Roteirização
+#     Inteligente" → "Motor Nacional de Inteligência Logística para Exames" (mantém a marca "Motor Nacional";
+#     PROPOSTO — trocar é 1 constante). Aplicado em page_title, menu About, <h1> da home, apresentação da
+#     home, abertura da Enciclopédia, cabeçalho do arquivo e metadados de export GPX/KML (o arquivo que o
+#     usuário abre no QGIS também é a cara do produto). (2) HANDBOOK EMBARCADO (_HANDBOOK_HTML_B64, blob
+#     gzip+base64): decodificado (88.918 chars), recontextualizado e RE-EMBARCADO (90.200 chars). Método
+#     honesto: reescrita integral das SEÇÕES DE IDENTIDADE (título, h1, Visão Geral, "O problema que
+#     resolve", Público-alvo) + PASSE DE TERMINOLOGIA cirúrgico (42 ocorrências: hub→polo de aplicação,
+#     cliente→município de candidatos, motorista→candidato, roteirização→análise de deslocamento, Alocação de
+#     Hubs→Definição de Locais de Aplicação, B2B→institucional). NÃO reescrevi as 28 seções técnicas do zero
+#     — elas contêm conteúdo correto construído em 130+ gerações; destruí-las para trocar vocabulário seria
+#     vandalismo. (3) _GUIA_ABAS: os 3 guias-núcleo (Deslocamento do Candidato, Estudo em Lote, Locais de
+#     Aplicação) REESCRITOS de fato — não traduzidos: o guia agora ensina o usuário a evitar o erro que
+#     realmente importa ("o Brasil tem 241 grupos de municípios homônimos — São Domingos existe em 5 UFs;
+#     sem a UF, todo o estudo de deslocamento fica errado") e a ler a Integridade Geográfica. (4) Demais
+#     enquadramentos de aba (Enciclopédia, Monitor, Classificação, Calculadora) recontextualizados.
+#     Provado por teste sobre CÓDIGO REAL: handbook decodifica, HTML íntegro (DOCTYPE→</html>), 28 seções
+#     preservadas, nova identidade presente, ZERO ocorrências de hub/cliente/motorista, nome antigo
+#     eliminado; os 10 guias parseiam e os 3 núcleos estão no contexto de exames.
+#     LIMITE HONESTO: as seções TÉCNICAS profundas do handbook (Pipeline, Algoritmos, Scores, Consenso,
+#     Guia do Desenvolvedor) tiveram o vocabulário trocado, mas seus EXEMPLOS internos ainda citam casos
+#     logísticos genéricos. Reescrevê-los caso a caso é uma geração própria, se você quiser.
+#     12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (134ª geração) → RECONTEXTUALIZAÇÃO PARA PLANEJAMENTO DE EXAMES NACIONAIS [EXAMES]
+#     Mudança de IDENTIDADE DO PRODUTO: a app não calcula rotas de motorista/entregador — ela apoia o
+#     PLANEJAMENTO E A AUDITORIA DO DESLOCAMENTO DE CANDIDATOS até seus LOCAIS DE PROVA (ENADE, ENEM, CNU,
+#     concursos). DECISÃO DE ARQUITETURA (a armadilha do pedido): os nomes de coluna NÃO são rótulos — são
+#     CHAVES INTERNAS ('Origem' 45×, 'Distancia' 49×, 'Municipio Origem' 38× no código: builder, pós-passos,
+#     painéis, mapas de session_state, Rotas Douradas). Renomeá-las no DataFrame QUEBRARIA a aplicação
+#     inteira. Solução profissional: SEPARAR MODELO INTERNO DE APRESENTAÇÃO — as chaves ficam, a tradução
+#     acontece nas FRONTEIRAS. ENTREGUE: (1) os 12 rótulos de aba recontextualizados (Geocodificação →
+#     "Deslocamento do Candidato"; Alocação de Hubs → "Locais de Aplicação"; Municípios Próximos → "Polos
+#     Alternativos"; Enterprise Analytics → "Painel Estratégico"; Auditoria → "Auditoria da Aplicação") —
+#     nomes de VARIÁVEL e contagem preservados (invariante das 12 abas intacto); (2) o enquadramento de cada
+#     aba ("Objetivo desta aba") reescrito sob a ótica do candidato; (3) rótulos de entrada: Origem →
+#     "Município de origem do candidato", Destino → "Local de aplicação da prova"; botões: "Calcular Rota
+#     Individual" → "Analisar Deslocamento do Candidato", "Processar Cruzamento Espacial" → "Definir
+#     Melhores Locais de Aplicação"; uploaders da Alocação → municípios dos candidatos / polos de aplicação;
+#     (4) _MAPA_COLUNAS_EXAME (30 colunas) + _renomear_colunas_exame(df) PURO, aplicado APENAS na FRONTEIRA
+#     DE EXPORTAÇÃO sobre CÓPIA: a planilha sai com "Município de Origem do Candidato", "Local de Aplicação
+#     da Prova", "Distância do Candidato ao Local de Prova (km)", "Tempo Estimado de Deslocamento",
+#     "Travessia por Balsa no Deslocamento", "Polo de Aplicação", "Segundo Melhor Local de Aplicação" etc.,
+#     enquanto o df interno segue com as chaves originais; (5) XAI da escolha do polo reescrita sob a ótica
+#     do candidato ("proporciona o menor esforço de deslocamento aos candidatos… o deslocamento não exige
+#     travessia por balsa"); painel "Auditoria da Escolha do Local de Prova (recomendado × alternativa)".
+#     Provado por teste sobre CÓDIGO REAL: cabeçalhos traduzidos na exportação; df interno NÃO mutado;
+#     colunas do usuário/não-mapeadas preservadas; valores intactos; vazio/sem-match robusto. GUARDA DE
+#     NÃO-REGRESSÃO: verificado que todas as chaves internas seguem referenciadas no código.
+#     LIMITE HONESTO: recontextualizei a SUPERFÍCIE de alto impacto (abas, enquadramentos, entradas, botões,
+#     decisão/XAI, planilhas). Enciclopédia Core, Manual do Usuário e textos internos de painéis secundários
+#     ainda usam vocabulário logístico — são centenas de strings e merecem uma geração própria, para não
+#     inflar o risco desta. Termos técnicos consagrados mantidos (geocodificação, Código IBGE,
+#     georreferenciamento, roteamento). 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 nus.
+#   v3.8 (133ª geração) → VEREDITO DE INTEGRIDADE GEOGRÁFICA (RFC-001 §15/§16/§17/§20) [INTEGRIDADE]
+#     O buraco que sobrava da RFC-001 estava na TELA: no caso Barra o app afirmava "✅ Rota estabelecida com
+#     sucesso · Score 96.5/100" AO MESMO TEMPO em que reportava "Consistência Física: ❌ INCONSISTENTE —
+#     fisicamente impossível". Detectar e aprovar na mesma tela é PIOR que não detectar: o usuário confia.
+#     ENTREGUE: (1) o veredito do Validador passa a ser CONDICIONADO à integridade — impossibilidade física
+#     (viária < reta) ou colisão de entidade REPROVAM a rota, com o Índice de Integridade Geográfica (0-100)
+#     e os problemas nomeados, em vez do banner de sucesso; (2) pós-passo _enriquecer_integridade_geografica
+#     anexa ao Lote e à Alocação as colunas 'Integridade Geográfica' e 'Alerta de Integridade' — dá forma
+#     MEDÍVEL e AUDITÁVEL ao critério de aceitação §20 em TODOS os módulos; (3) painel "🛡️ Integridade
+#     Geográfica do Lote" (integridade média, reprovadas, tabela das violações), no padrão de UI estável da
+#     132ª (container sempre existe, rótulo estático). Helper PURO _integridade_de_rota: descobre o município
+#     PEDIDO no texto do usuário (só quando o texto É um município da base IBGE — endereços/POIs/códigos NÃO
+#     disparam a regra, zero falso positivo) e o compara com o RESOLVIDO. BUG CORRIGIDO na 128ª: o _colisao
+#     exigia nivel != município, o que SUPRIMIA o alerta quando o nível vinha vazio — agora pedido != resolvido
+#     basta. BUG CORRIGIDO no próprio helper (achado pelo teste): "barra, ba" → "BARRA," (vírgula colada)
+#     nunca batia na base; sanitização de pontuação resolveu. Provado por teste sobre CÓDIGO REAL: caso Barra
+#     → 0/100 com AMBOS os problemas (física + troca Barra→Salvador); rota correta → 100/100; endereço/POI/
+#     código IBGE → 100/100 (sem falso positivo); lote auditável; df vazio/sem colunas robusto.
+#     ESCOPO HONESTO (3ª vez, mesmos motivos): §9/§10/§18 consenso ao vivo com Pelias/GeoNames/HERE/Mapbox/
+#     Bing = APIs pagas, inviável em $0/1GB; §13 reverse geocoding OBRIGATÓRIO em toda coordenada dobraria as
+#     chamadas de rede num lote de milhares — a validação por polígono/bbox OFFLINE já dá o mesmo sinal sem
+#     rede. §14 (anti-colisão) já foi entregue na 128ª, que é a CAUSA RAIZ; esta geração é o cinto de
+#     segurança para qualquer caso que escape. 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 nus.
+#   v3.8 (132ª geração) → CAUSA RAIZ DO "removeChild" ELIMINADA + PADRÃO DE UI ESTÁVEL [UI-ESTAVEL]
+#     BUG (P0, desde a 126ª): NotFoundError "Failed to execute 'removeChild' on 'Node'". INVESTIGAÇÃO
+#     (auditoria scriptada do arquivo inteiro): DESCARTADAS as hipóteses de st.empty() (só 1 uso), chaves
+#     duplicadas (51 keys, 0 duplicadas), nº de abas variável (4 st.tabs, todas com lista literal fixa) e
+#     HTML perigoso (11 unsafe_allow_html, 0 com <script>/document./window.). CAUSA RAIZ: instabilidade da
+#     FORMA DA ÁRVORE de componentes. O resultado do Lote é uma cadeia de expanders IRMÃOS (suspeitas →
+#     hídrica → homônimos → dor → milk-run → GIS), quase todos com EXISTÊNCIA CONDICIONAL e/ou RÓTULO
+#     DINÂMICO (contagem no título). A 126ª inseriu o expander de Homônimos NO MEIO dessa cadeia com AMBOS
+#     os defeitos (if _n_hom > 0 + f"...{_n_hom}..."): quando um container do meio some/aparece, todos os
+#     irmãos seguintes DESLOCAM DE ÍNDICE; e um rótulo que muda dá NOVA IDENTIDADE ao container no React
+#     (unmount/remount). Com os 20 st.rerun() do app (processamento em chunks + time.sleep(0.05) → rerun),
+#     o React acabava tentando remover um nó já destacado → removeChild. Casos agudos adicionais: o
+#     expander de calibração da 131ª ficava ENTRE o checkbox e o BOTÃO primário (marcar o checkbox deslocava
+#     o botão) e o painel MCDA da 130ª aparecia/sumia ao trocar o cliente no selectbox.
+#     CURA (arquitetura de renderização estável — "hierarquia fixa de componentes"):
+#       (1) TODO container SEMPRE EXISTE, na mesma posição — a condição vai para DENTRO do corpo;
+#       (2) TODO rótulo é ESTÁTICO — contagens/notas vão para o CORPO (st.caption), nunca para o título;
+#       (3) blocos que apareciam/sumiam viram st.container() fixo com o if dentro.
+#     Aplicado a 9 containers (6 da cadeia do Lote + Pré-voo + Validação IBGE + Rotas Douradas + painel
+#     MCDA + calibração). Bônus: os sliders da 131ª agora sempre existem → fim da coleta de estado de widget.
+#     PADRÃO OBRIGATÓRIO PARA AS PRÓXIMAS GERAÇÕES (impede a reintrodução do bug):
+#       ❌ NUNCA:  if cond: with st.expander(f"Título — {n}"): ...
+#       ✅ SEMPRE: with st.expander("Título"):        # existe sempre, rótulo estático
+#                      if cond: st.caption(f"{n} ..."); <corpo>
+#                      else:    st.caption("Nada a exibir.")
+#     Verificado por auditoria estrutural (AST): 68 expanders → 100% rótulo estático; 4 st.tabs → contagem
+#     fixa; 51 keys → 0 duplicadas; cadeia do Lote → 6 containers incondicionais. LIMITE HONESTO: não é
+#     possível reproduzir um erro de DOM do navegador num container headless — eu ELIMINEI as causas
+#     estruturais (a cura documentada), não "vi o erro sumir". Restam guardas de ESQUEMA (if colunas
+#     existem) que são estáveis dentro da sessão (o mesmo df em todos os reruns) e não piscam.
+#     12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (131ª geração) → PARÂMETROS DO CUSTO LOGÍSTICO EXPOSTOS NA INTERFACE (calibração) [HUB-PARAMS]
+#     Fecha a 130ª: o preço de uma balsa, a velocidade "normal" e o quanto uma rota indireta incomoda são
+#     decisões OPERACIONAIS do usuário — não constantes do código. A Alocação (sob o modo multicritério)
+#     ganhou o expander "⚙️ Calibrar o custo logístico (km-equivalentes)" com 4 sliders: velocidade de
+#     referência (20-120 km/h), penalidade da balsa (0-300 km-eq), limiar de sinuosidade (1.0-2.5×) e peso
+#     da sinuosidade (0-1.5), MAIS uma PRÉVIA AO VIVO que mostra, com a calibração atual, quanto custa uma
+#     rota com balsa vs. uma terrestre e qual venceria — o usuário vê o efeito antes de rodar. Helper PURO
+#     _montar_params_custo: valida e GRAMPEIA cada valor à faixa sã (lixo/NaN/ausente → padrão; fora da
+#     faixa → teto/piso), de modo que nenhuma calibração produza um modelo de custo absurdo. Os parâmetros
+#     são CONGELADOS no clique (session_state['alo_params_custo']) — a decisão usa exatamente o que o
+#     usuário viu na tela, imune a GC de widget durante o run; fallback reconstrói dos widgets e, em último
+#     caso, usa os padrões. Fluem para _reatribuir_hubs_multicriterio → _selecionar_hub_multicriterio →
+#     _custo_logistico_efetivo, e aparecem no painel de decisão (que já lê 'params' do resultado). Limpeza
+#     de 'alo_mcda'/'alo_params_custo' no cancelar (chaves NÃO-widget; nunca as dos widgets). Provado por
+#     teste sobre CÓDIGO REAL: validação (lixo→padrão, fora da faixa→grampeado) e, sobretudo, que a
+#     CALIBRAÇÃO GOVERNA a decisão — o MESMO lote elege hubs diferentes com balsa=0 vs 60 vs 300 km-eq.
+#     Aditivo/defensivo; modo default (linha reta) intacto. 12 abas, RotaPipeline 41, balões 1×, score
+#     imutável, 0 except nus novos.
+#   v3.8 (130ª geração) → SELETOR DE HUB MULTICRITÉRIO LIGADO (custo logístico efetivo) + modo opt-in [HUB-MCDA]
+#     Resposta à pergunta "os pesos foram os mais inteligentes?": NÃO — soma ponderada + min-max é instável
+#     (o IGQ de um hub dependia de QUAIS outros candidatos estavam no conjunto) e os pesos são abstratos.
+#     SUBSTITUÍ o núcleo pelo MODELO DE CUSTO GENERALIZADO da engenharia de transportes: _custo_logistico_
+#     efetivo → CUSTO em KM-EQUIVALENTES (viária + penalidade por LENTIDÃO [déficit vs velocidade de ref.]
+#     + BALSA fixa + SINUOSIDADE), ABSOLUTO e estável (imune ao conjunto), interpretável ("Hub A = 340
+#     km-efetivos"). _selecionar_hub_multicriterio agora elege o MENOR custo efetivo e deriva o IGQ 0-100 =
+#     100×menor_custo/custo (estável). Ganho colateral: captura QUALIDADE DE ESTRADA — uma rota curta+lenta
+#     (asfalto ruim) perde p/ uma longa+rápida (rodovia), decisão que distância pura erra. Params
+#     auditáveis/injetáveis (vel_ref 60 km/h, balsa 60 km-eq, limiar sinuosidade 1.3×). LIGADO de fato
+#     (antes só existia o núcleo): modo OPT-IN "🛣️ rota viária multicritério" na Alocação — roteia os top-K
+#     hubs de cada cliente (topk_map) e _reatribuir_hubs_multicriterio reelege o Destino por custo efetivo
+#     ANTES da montagem; default (toggle off) BYTE-A-BYTE intacto (seleção por linha reta). Painel "🧭
+#     Decisão multicritério" na Auditoria da Disputa (ranking por custo/IGQ/viária/tempo/balsa/sinuosidade +
+#     XAI) e colunas no export (IGQ Hub, Custo Efetivo Hub/2º, Diferença Custo %, Justificativa XAI).
+#     Provado por teste sobre CÓDIGO REAL (cenário do usuário: hub + próximo em reta com balsa PERDE p/
+#     terrestre; estabilidade do custo absoluto; qualidade de estrada; reatribuição + fallback). Aditivo/
+#     defensivo (try/except → mantém linha reta em erro). 12 abas, RotaPipeline 41, balões 1×, score
+#     imutável, 0 except nus novos.
 #   v3.8 (129ª geração) → MOTOR DE DECISÃO MULTICRITÉRIO DE HUB (IGQ + XAI) — núcleo puro/testado [HUB-MCDA]
 #     Atende o pedido de reprojetar a escolha do melhor hub. DIAGNÓSTICO (código real): a alocação hoje
 #     atribui o hub por dest_to_hub = VIZINHO MAIS PRÓXIMO EM LINHA RETA (calcular_matriz_competitiva_
@@ -1752,13 +1899,13 @@ def _incrementar_metrica(campo: str, valor: int = 1):
 # CONFIGURAÇÃO DE UI/UX E AMBIENTE
 # ==============================================================================
 st.set_page_config(
-    page_title="Motor Nacional de Roteirização Inteligente",
+    page_title="Motor Nacional de Inteligência Logística para Exames",
     page_icon="🗺️",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
         'Get Help': 'https://docs.claude.com',
-        'About': "### Motor Nacional de Roteirização Inteligente\nPlataforma corporativa B2B de geocodificação, inferência Bayesiana e auditoria logística. Versão 1.3."
+        'About': "### Motor Nacional de Inteligência Logística para Exames\nPlataforma institucional de planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova (ENADE, ENEM, CNU e demais exames nacionais). Versão 1.3."
     }
 )
 
@@ -2003,36 +2150,36 @@ def ds_barra_confianca(score: float) -> str:
 # exemplos, erros_comuns, dicas. Linguagem para quem nunca viu geocodificação.
 _GUIA_ABAS = {
     "geocodificacao": {
-        "o_que_faz": "Descobre **onde fica** um endereço no mapa (latitude/longitude) e calcula a **distância real de carro** entre dois pontos. É o teste rápido de uma única rota.",
-        "quando_usar": "Quando você quer conferir uma rota específica na hora, sem montar planilha. Ideal para validar um endereço suspeito ou tirar uma dúvida pontual.",
-        "dados": "Dois textos: uma **Origem** (de onde sai) e um **Destino** (para onde vai). Cada um pode ser um endereço, o nome de um lugar conhecido (ex: \"Aeroporto de Brasília\") ou coordenadas no formato `-15.79, -47.88`.",
-        "preenchimento": "1. Digite a origem no primeiro campo.\n        2. Digite o destino no segundo.\n        3. **Sempre que puder, inclua a sigla do estado** (ex: `, GO`) — isso evita confusão entre cidades de mesmo nome.\n        4. Clique em **Calcular Rota Individual**.",
-        "apos_executar": "O sistema consulta várias fontes de mapa ao mesmo tempo (ArcGIS, OpenStreetMap, TomTom), cruza as respostas, escolhe a mais confiável e mede a distância real pela estrada e em linha reta.",
-        "interpretar": "**Distância Viária** = km reais por asfalto. **Linha Reta** = voo de pássaro (serve de árbitro contra fretes inflados). **Barra de confiança**: verde = ótima localização; amarela/vermelha = vale revisar o endereço digitado.",
+        "o_que_faz": "Analisa o **deslocamento de um único candidato** até seu local de prova: descobre onde ficam exatamente o município de origem e o local de aplicação, e mede a **distância real por estrada** entre eles. É o estudo rápido de um caso.",
+        "quando_usar": "Quando você quer conferir um deslocamento específico na hora, sem montar planilha. Ideal para validar um município suspeito (homônimo!) ou tirar uma dúvida pontual sobre um local de aplicação.",
+        "dados": "Dois textos: o **município de origem do candidato** e o **local de aplicação da prova**. Cada um pode ser um município, um endereço (a escola aplicadora), coordenadas no formato `-15.79, -47.88` ou o **Código IBGE** do município (7 dígitos).",
+        "preenchimento": "1. Digite o município de origem do candidato no primeiro campo.\n        2. Digite o local de aplicação da prova no segundo.\n        3. **Sempre inclua a sigla do estado** (ex: `, GO`) — sem ela o sistema pode escolher um município homônimo de outro estado, e todo o estudo de deslocamento fica errado.\n        4. Clique em **Analisar Deslocamento do Candidato**.",
+        "apos_executar": "O sistema consulta várias fontes de mapa ao mesmo tempo (ArcGIS, OpenStreetMap, TomTom), cruza as respostas, ancora a identidade no **Código IBGE oficial**, escolhe a mais confiável e mede o deslocamento real pela estrada e em linha reta.",
+        "interpretar": "**Distância Viária** = km que o candidato realmente percorre por estrada. **Linha Reta** = distância geodésica (árbitro: a estrada nunca pode ser mais curta que ela). **Integridade Geográfica**: 100/100 = identificação confiável; abaixo disso, o município pode ter sido trocado — não use o resultado.",
         "exemplos": "`Ribeirão Cascalheira, MT` → `São Miguel do Araguaia, GO`. Ou coordenadas puras: `-15.79, -47.88` → `-16.68, -49.25`.",
-        "erros_comuns": "Esquecer a sigla do estado (pode achar cidade homônima errada); digitar só o nome de uma rua sem a cidade; deixar um dos campos vazio.",
-        "dicas": "Quanto mais completo o endereço, melhor. Abra a 'Auditoria Detalhada' para ver exatamente quais fontes concordaram e por quê.",
+        "erros_comuns": "Esquecer a sigla do estado — o Brasil tem **241 grupos de municípios homônimos** (São Domingos existe em 5 UFs!). Digitar só o nome de uma escola sem o município. Deixar um campo vazio.",
+        "dicas": "O **Código IBGE** (7 dígitos) é a forma mais segura: trava a identidade do município e elimina qualquer ambiguidade. Abra a 'Auditoria Detalhada' para ver quais fontes concordaram e por quê.",
     },
     "processamento": {
-        "o_que_faz": "Processa **milhares de rotas de uma vez**. Você envia uma planilha Excel com colunas de Origem e Destino, e ele devolve a mesma planilha preenchida com distâncias, tempos, coordenadas e nível de confiança de cada linha.",
-        "quando_usar": "Quando você tem uma lista grande de rotas (entregas, fretes, visitas) e precisa calcular todas de uma vez, em vez de uma por uma.",
+        "o_que_faz": "Faz o **estudo de deslocamento em massa**: pega uma planilha com milhares de municípios de origem de candidatos e seus locais de aplicação e calcula todos os deslocamentos de uma vez.",
+        "quando_usar": "Quando você precisa dimensionar a logística de um exame inteiro — todos os municípios de candidatos contra os locais de prova previstos.",
         "dados": "Um arquivo **.xlsx** contendo obrigatoriamente duas colunas chamadas exatamente **Origem** e **Destino**. Pode ter outras colunas — elas serão preservadas.",
         "preenchimento": "1. Clique em **Selecionar Arquivo Excel** e escolha sua planilha.\n        2. Confira a mensagem de validação (verde = pronto).\n        3. (Opcional) Informe seu nome/matrícula.\n        4. Clique **uma única vez** em **Iniciar Processamento em Lote** e acompanhe a barra de progresso.",
         "apos_executar": "O processamento é **contínuo e automático**: após um único clique, o sistema pré-aquece a geocodificação e processa todas as rotas até o fim **sem precisar clicar de novo**. Ele extrai apenas as rotas **únicas** (evita recalcular repetidas), processa várias em paralelo em execuções curtas (para nunca cair a conexão) e reaproveita o cache. Ao terminar, mostra um Scorecard de Qualidade.",
-        "interpretar": "Durante o processamento, o painel ao vivo mostra progresso, velocidade e tempo restante (ETA) — e avança sozinho. O **Scorecard** ao final resume a saúde do lote: taxa de sucesso, quantas rotas são confiáveis e quantas têm anomalias. Baixe o Excel pronto no botão azul.",
+        "interpretar": "Cada linha vira um deslocamento auditado: distância do candidato ao local de prova, tempo estimado, travessia por balsa, e a **Integridade Geográfica** (100 = identificação confiável). Confira o painel de homônimos antes de usar os números.",
         "exemplos": "Uma planilha com 2.000 linhas de entregas: coluna Origem = endereço do depósito, coluna Destino = endereço do cliente.",
-        "erros_comuns": "Colunas com nome errado (tem que ser 'Origem' e 'Destino'); arquivo em formato antigo (.xls em vez de .xlsx); células vazias no meio da planilha (são ignoradas e marcadas como erro).",
+        "erros_comuns": "Planilha sem a sigla do estado nos municípios (risco de homônimo); coluna errada selecionada; municípios escritos só pela primeira palavra (“São Miguel” em vez de “São Miguel do Araguaia”).",
         "dicas": "Você **não precisa** ficar clicando: o lote continua sozinho até concluir, mesmo com dezenas de milhares de linhas. Rotas repetidas entre lotes são reaproveitadas automaticamente. Limite atual: 100.000 linhas por arquivo.",
     },
     "alocacao": {
-        "o_que_faz": "Descobre **qual base/depósito é o mais próximo** de cada cliente. Você dá uma lista de clientes e uma lista de bases, e o sistema calcula automaticamente o melhor par para cada cliente.",
-        "quando_usar": "Quando você tem vários centros de distribuição e precisa decidir qual atende cada cliente com o menor trajeto — clássico problema de logística de hubs.",
-        "dados": "**Duas planilhas .xlsx**: uma com os endereços dos clientes (Origens) e outra com os municípios/bases (Destinos). Você escolhe qual coluna usar em cada arquivo.",
-        "preenchimento": "1. Envie a planilha de **clientes** no primeiro campo.\n        2. Envie a planilha de **bases** no segundo.\n        3. Selecione a coluna correta de cada arquivo nos menus.\n        4. Clique em **Processar Cruzamento Espacial**.",
+        "o_que_faz": "Descobre **qual é o melhor local de aplicação da prova** para cada município de candidatos — o polo que minimiza o deslocamento de quem vai fazer o exame.",
+        "quando_usar": "Quando você precisa decidir **onde aplicar a prova**: você tem os municípios onde moram os candidatos e uma lista de polos possíveis (escolas/unidades aplicadoras), e quer saber qual polo atende melhor cada município.",
+        "dados": "Duas planilhas: (1) os **municípios de origem dos candidatos**; (2) os **polos de aplicação** candidatos (municípios, escolas ou unidades aplicadoras). Cada um pode ser nome, coordenadas ou Código IBGE.",
+        "preenchimento": "1. Envie a planilha de **municípios de candidatos** no primeiro campo.\n        2. Envie a planilha de **polos de aplicação** no segundo.\n        3. Selecione a coluna correta de cada arquivo.\n        4. Se quiser a decisão pelo deslocamento REAL (e não só linha reta), marque **multicritério**.\n        5. Clique em **Definir Melhores Locais de Aplicação**.",
         "apos_executar": "Para cada cliente, o sistema mede a distância até todas as bases, escolhe a mais próxima (vizinho mais próximo geográfico) e ainda mostra qual seria a segunda opção, com a justificativa da escolha.",
-        "interpretar": "A coluna **Concorrente Analisado** mostra a 2ª base mais próxima; a **Justificativa** explica por que a base vencedora foi escolhida. Quanto menor a distância, melhor a alocação.",
+        "interpretar": "Para cada município de candidatos, o sistema recomenda um **local de aplicação** e mostra a **alternativa** (2º melhor). A justificativa explica sob a ótica do candidato: menor tempo de deslocamento, sem travessia por balsa, melhor acessibilidade viária.",
         "exemplos": "10 centros de distribuição × 500 clientes → o sistema descobre o CD ideal para cada um dos 500.",
-        "erros_comuns": "Escolher a coluna errada nos menus; misturar clientes e bases nos arquivos trocados; bases sem endereço resolvível.",
+        "erros_comuns": "Trocar as planilhas de lugar (candidatos no campo dos polos); esquecer a UF dos municípios; usar só linha reta quando há balsa na região — um polo “mais perto” pode exigir travessia e ser pior para o candidato.",
         "dicas": "Use nomes de cidade com a sigla do estado nas bases para máxima precisão. O número de combinações cresce rápido (clientes × bases) — comece com listas menores para testar.",
     },
     "analytics": {
@@ -3097,7 +3244,7 @@ def _df_para_kml(df):
     diretamente no Google Earth e no QGIS. Lê apenas colunas já existentes."""
     linhas = ['<?xml version="1.0" encoding="UTF-8"?>',
               '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
-              '<name>Rotas - Motor Nacional de Roteirizacao</name>',
+              '<name>Deslocamentos de Candidatos - Motor Nacional de Inteligencia Logistica para Exames</name>',
               '<Style id="origem"><IconStyle><color>ff16a34a</color></IconStyle></Style>',
               '<Style id="rota"><LineStyle><color>ffeb6325</color><width>3</width></LineStyle></Style>']
     for _, row in df.iterrows():
@@ -3127,7 +3274,7 @@ def _df_para_gpx(df):
     dispositivos GPS, Garmin, e apps de navegação. Cada rota vira um waypoint de origem,
     um de destino e uma <rte> (rota) com os dois pontos. Lê apenas colunas existentes."""
     linhas = ['<?xml version="1.0" encoding="UTF-8"?>',
-              '<gpx version="1.1" creator="Motor Nacional de Roteirizacao" xmlns="http://www.topografix.com/GPX/1/1">']
+              '<gpx version="1.1" creator="Motor Nacional de Inteligencia Logistica para Exames" xmlns="http://www.topografix.com/GPX/1/1">']
     rotas_xml = []
     for idx, row in df.iterrows():
         try:
@@ -6244,10 +6391,15 @@ def _integridade_geografica(dist_viaria_km, dist_reta_km, nivel_origem="", nivel
         pass
 
     def _colisao(lbl, pedido, resolvido, nivel):
+        # [INTEGRIDADE - 133ª geração] Regra reforçada: se o usuário pediu um MUNICÍPIO e a app resolveu em
+        # OUTRO município, é troca de entidade — independentemente do nível espacial. (Na 128ª eu exigia
+        # nivel != município, o que SUPRIMIA o alerta quando o nível vinha vazio.) O nível só enriquece o texto.
         p, rr = str(pedido or "").upper().strip(), str(resolvido or "").upper().strip()
-        if p and rr and p != rr and str(nivel or "").upper() not in ("", "MUNICIPIO", "MUNICÍPIO"):
-            return (f"Colisão de entidade no {lbl}: “{pedido}” (município) foi resolvido em “{resolvido}” "
-                    f"(nível {nivel}) — troca de município por entidade sub-municipal.")
+        if p and rr and p != rr:
+            _n = str(nivel or "").strip()
+            return (f"Colisão de entidade no {lbl}: “{pedido}” (município) foi resolvido em “{resolvido}”"
+                    + (f" (nível {_n})" if _n else "")
+                    + " — troca indevida do município por outra entidade.")
         return ""
     for _c in (_colisao("origem", mun_origem_pedido, mun_origem_resolvido, nivel_origem),
                _colisao("destino", mun_destino_pedido, mun_destino_resolvido, nivel_destino)):
@@ -6256,6 +6408,128 @@ def _integridade_geografica(dist_viaria_km, dist_reta_km, nivel_origem="", nivel
             idx -= 40
     idx = max(0, min(100, idx))
     return {"indice": idx, "ok": len(problemas) == 0, "problemas": problemas}
+
+
+def _integridade_de_rota(dist_viaria, dist_reta, texto_origem="", texto_destino="",
+                         mun_origem_res="", mun_destino_res="", nivel_origem="", nivel_destino="",
+                         base=None, norm=None):
+    """[INTEGRIDADE - 133ª geração] Índice de Integridade Geográfica de UMA rota, a partir do que a app já
+    tem. Descobre o município PEDIDO no texto do usuário (só quando o texto É um município da base IBGE —
+    endereços/POIs não disparam a regra) e compara com o município RESOLVIDO; soma a validação FÍSICA
+    (viária ≥ reta). É a forma operacional dos §15/§16/§20 da RFC-001. PURO; base/norm injetáveis."""
+    base = IBGE_MUNICIPIOS if base is None else base
+    if norm is None:
+        def norm(x):
+            return semantica.normalizar(x)
+
+    def _pedido(txt):
+        try:
+            t = norm(txt or "")
+        except Exception:
+            return ""
+        if not t or t.strip().lower() == "nan":
+            return ""
+        # Remove a UF e a PONTUAÇÃO ("barra, ba" → "BARRA, BA" → "BARRA"): sem isso a vírgula sobrava
+        # colada no nome e o município nunca batia na base — a colisão passava despercebida.
+        alvo = _RE_UF_SIGLA.sub(" ", t)
+        alvo = re.sub(r"[^A-Z0-9 ]", " ", alvo)
+        alvo = re.sub(r"\s+", " ", alvo).strip()
+        return alvo if base.get(alvo) else ""
+
+    def _res(m):
+        try:
+            t = norm(m or "")
+        except Exception:
+            return ""
+        return "" if t.strip().lower() in ("", "nan", "nao identificado", "não identificado") else t
+    return _integridade_geografica(dist_viaria, dist_reta, nivel_origem, nivel_destino,
+                                   _pedido(texto_origem), _res(mun_origem_res),
+                                   _pedido(texto_destino), _res(mun_destino_res))
+
+
+_MAPA_COLUNAS_EXAME = {
+    # Identidade do candidato e do local de prova
+    'Origem': 'Município de Origem do Candidato',
+    'Destino': 'Local de Aplicação da Prova',
+    'Municipio Origem': 'Município de Origem (oficial IBGE)',
+    'Municipio Destino': 'Município do Local de Aplicação',
+    'UF Origem': 'UF de Origem do Candidato',
+    'UF Destino': 'UF do Local de Aplicação',
+    'Cod IBGE Origem': 'Cód IBGE do Município de Origem',
+    'Cod IBGE Destino': 'Cód IBGE do Local de Aplicação',
+    'Endereco Oficial Origem': 'Endereço Oficial do Município de Origem',
+    'Endereco Oficial Destino': 'Endereço Oficial do Local de Aplicação',
+    # Deslocamento do candidato
+    'Distancia': 'Distância do Candidato ao Local de Prova (km)',
+    'Linha Reta': 'Distância Geodésica (km)',
+    'Tempo': 'Tempo Estimado de Deslocamento',
+    'Balsas': 'Travessia por Balsa no Deslocamento',
+    'Modo/Acesso': 'Forma de Deslocamento ao Local de Prova',
+    'Fator Sinuosidade': 'Sinuosidade do Deslocamento',
+    'Razão (V/R)': 'Razão Viária/Geodésica do Deslocamento',
+    # Polo de aplicação (fluxo de Alocação)
+    'Cód IBGE Hub': 'Cód IBGE do Polo de Aplicação',
+    'Município Hub': 'Município do Polo de Aplicação',
+    'UF Hub': 'UF do Polo de Aplicação',
+    'Concorrente Analisado': 'Segundo Melhor Local de Aplicação',
+    'Distancia Concorrente': 'Distância à Alternativa de Aplicação (km)',
+    'Linha Reta Concorrente': 'Distância Geodésica à Alternativa (km)',
+    'Tempo Concorrente': 'Tempo Estimado até a Alternativa',
+    'IGQ Hub': 'Índice de Qualidade do Polo (0-100)',
+    'Custo Efetivo Hub (km-eq)': 'Esforço de Deslocamento do Polo (km-equiv.)',
+    'Hub 2o (Custo)': 'Alternativa de Aplicação (2º melhor)',
+    'Custo Efetivo 2o (km-eq)': 'Esforço de Deslocamento da Alternativa (km-equiv.)',
+    'Diferenca Custo p/ 2o (%)': 'Vantagem sobre a Alternativa (%)',
+    'Justificativa Hub (XAI)': 'Justificativa da Escolha do Local de Prova',
+}
+
+
+def _renomear_colunas_exame(df, mapa=None):
+    """[EXAMES - 134ª geração] Traduz os CABEÇALHOS da planilha exportada para a linguagem de planejamento
+    de exames (município de origem do candidato / local de aplicação / polo). Aplicado APENAS na FRONTEIRA
+    DE EXPORTAÇÃO, sobre uma CÓPIA: as chaves internas do DataFrame ('Origem', 'Distancia', ...) são
+    referenciadas em centenas de pontos do código (builder, pós-passos, painéis, Rotas Douradas) e NÃO
+    podem ser renomeadas sem quebrar a aplicação. Separar modelo interno de apresentação é o que torna
+    esta tradução segura. PURO; mapa injetável; só renomeia colunas presentes."""
+    try:
+        if df is None or len(df.columns) == 0:
+            return df
+        _m = _MAPA_COLUNAS_EXAME if mapa is None else mapa
+        return df.rename(columns={k: v for k, v in _m.items() if k in df.columns})
+    except Exception as _e:
+        logger.error(f"[EXAMES] Falha ao renomear colunas para exportação: {_e}")
+        return df
+
+
+def _enriquecer_integridade_geografica(df):
+    """[INTEGRIDADE - 133ª geração] Pós-passo ADITIVO (não refatora _montar_dataframe_final): anexa ao lote
+    e à alocação as colunas 'Integridade Geográfica' (0-100) e 'Alerta de Integridade'. Dá forma MEDÍVEL e
+    AUDITÁVEL ao critério de aceitação da RFC-001 (§20): nenhuma rota pode ter geodésica > viária, e nenhum
+    município pode ser trocado por outra entidade. Defensivo: em erro devolve o df intacto."""
+    try:
+        if df is None or len(df) == 0:
+            return df
+        cols, n = df.columns, len(df)
+
+        def _lst(c, num=False):
+            if c not in cols:
+                return [None if num else ''] * n
+            return (pd.to_numeric(df[c], errors='coerce').tolist() if num else df[c].astype(str).tolist())
+        _dv, _lr = _lst('Distancia', True), _lst('Linha Reta', True)
+        _to, _td = _lst('Origem'), _lst('Destino')
+        _mo, _md = _lst('Municipio Origem'), _lst('Municipio Destino')
+        _idx, _alerta = [], []
+        for i in range(n):
+            _r = _integridade_de_rota(_dv[i], _lr[i], _to[i], _td[i], _mo[i], _md[i])
+            _idx.append(_r["indice"])
+            _alerta.append(" | ".join(_r["problemas"]) if _r["problemas"] else "OK")
+        df = df.copy()
+        df['Integridade Geográfica'] = _idx
+        df['Alerta de Integridade'] = _alerta
+        return df
+    except Exception as _e:
+        logger.error(f"[INTEGRIDADE] Falha no enriquecimento de integridade: {_e}")
+        return df
 
 
 def forcar_geocodificacao_hierarquica_estrita(texto_cru):
@@ -8519,143 +8793,212 @@ def _selecionar_hub_por_viaria(candidatos):
     return _out
 
 
-_PESOS_HUB_PADRAO = {"viaria": 0.35, "tempo": 0.25, "balsa": 0.30, "sinuosidade": 0.10}
+_PARAMS_CUSTO_HUB = {
+    "vel_ref_kmh": 60.0,        # velocidade de referência (asfalto típico de interior BR)
+    "balsa_km": 60.0,           # penalidade fixa da balsa em km-equivalentes (espera + risco de horário + custo da travessia)
+    "limiar_sinuosidade": 1.3,  # acima disto a rota é considerada indireta
+    "peso_sinuosidade": 0.5,    # fração do desvio (viária − reta) que vira penalidade quando a rota é indireta
+}
 
 
-def _normalizar_criterio(valores, menor_melhor=True):
-    """[HUB-MCDA - 129ª geração] Min-max normaliza uma lista de valores para [0,1] (1 = melhor). Valores
-    ausentes viram 0.5 (neutro). Se todos iguais, todos 1.0. PURO."""
-    _vs = [v for v in valores if isinstance(v, (int, float))]
-    if not _vs:
-        return [0.5] * len(valores)
-    lo, hi = min(_vs), max(_vs)
-    if hi == lo:
-        return [1.0 if isinstance(v, (int, float)) else 0.5 for v in valores]
-    out = []
-    for v in valores:
-        if not isinstance(v, (int, float)):
-            out.append(0.5)
-            continue
-        n = (v - lo) / (hi - lo)
-        out.append(round(1.0 - n if menor_melhor else n, 4))
-    return out
+def _custo_logistico_efetivo(dist_viaria, dist_reta=None, tempo_min=None, balsa=False, params=None):
+    """[HUB-MCDA - 130ª geração] CUSTO LOGÍSTICO EFETIVO em KM-EQUIVALENTES (menor = melhor). Modelo de
+    custo generalizado (engenharia de transportes), ABSOLUTO e estável — NÃO depende do conjunto de
+    candidatos (ao contrário de min-max). Componentes: km reais rodados (viária) + penalidade por LENTIDÃO
+    (déficit de tempo vs velocidade de referência) + penalidade fixa por BALSA + penalidade por
+    SINUOSIDADE (desvio da rota vs linha reta, só quando indireta). PURO; params injetáveis. Retorna dict
+    com 'custo_efetivo_km' e o detalhamento por componente, ou None se a viária for inválida."""
+    p = {**_PARAMS_CUSTO_HUB, **(params or {})}
+    try:
+        base = float(dist_viaria)
+    except (TypeError, ValueError):
+        return None
+    if base <= 0:
+        return None
+    det = {"base_km": round(base, 1), "pen_tempo_km": 0.0, "pen_balsa_km": 0.0, "pen_sinuosidade_km": 0.0}
+    custo = base
+    if tempo_min not in (None, ""):
+        try:
+            _km_ref = (float(tempo_min) / 60.0) * p["vel_ref_kmh"]   # km que caberiam no tempo à vel. de referência
+            _pt = max(0.0, _km_ref - base)                            # déficit → rota mais lenta que a referência
+            custo += _pt
+            det["pen_tempo_km"] = round(_pt, 1)
+        except (TypeError, ValueError):
+            pass
+    if balsa:
+        custo += p["balsa_km"]
+        det["pen_balsa_km"] = round(p["balsa_km"], 1)
+    if dist_reta not in (None, ""):
+        try:
+            _dr = float(dist_reta)
+            if _dr > 0 and (base / _dr) > p["limiar_sinuosidade"]:
+                _ps = max(0.0, (base - _dr)) * p["peso_sinuosidade"]
+                custo += _ps
+                det["pen_sinuosidade_km"] = round(_ps, 1)
+        except (TypeError, ValueError):
+            pass
+    det["custo_efetivo_km"] = round(custo, 1)
+    return det
 
 
-def _selecionar_hub_multicriterio(candidatos, pesos=None, penalidade_balsa=1.0):
-    """[HUB-MCDA - 129ª geração] Motor de decisão MULTICRITÉRIO de hub (MCDA — soma ponderada normalizada,
-    estilo TOPSIS simplificado). Substitui a decisão por distância única: elege o hub de menor CUSTO
-    LOGÍSTICO GLOBAL, não a menor linha reta. Cada candidato: {'hub', 'dist_viaria', 'dist_reta'(opc),
-    'tempo_min'(opc), 'balsa'(bool,opc), 'modo'(str,opc)}. Combina, com PESOS auditáveis: distância viária,
-    tempo, uso de balsa (forte penalização) e sinuosidade (viária/reta). Calcula o Índice Global de
-    Qualidade do Hub (IGQ 0-100) por candidato e elege o de MAIOR IGQ. PURO/determinístico; pesos/base
-    injetáveis. Rotas inválidas (viária None/≤0) não concorrem. Retorna dict com vencedor, ranking
-    (com componentes por critério), runner_up, margem_igq, criterio_decisivo e pesos."""
-    pesos = dict(pesos or _PESOS_HUB_PADRAO)
+def _montar_params_custo(vel_ref_kmh=None, balsa_km=None, limiar_sinuosidade=None, peso_sinuosidade=None):
+    """[HUB-PARAMS - 131ª geração] Monta o dict de parâmetros do CUSTO LOGÍSTICO EFETIVO a partir dos
+    valores informados na interface, VALIDANDO e limitando cada um a uma faixa sã (valor ausente, não
+    numérico ou fora da faixa cai no padrão / é grampeado). Garante que a calibração do usuário nunca
+    produza um modelo de custo absurdo. PURO/determinístico."""
+    p = dict(_PARAMS_CUSTO_HUB)
+
+    def _num(v, lo, hi, padrao):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return padrao
+        if x != x:  # NaN
+            return padrao
+        return max(lo, min(hi, x))
+    p["vel_ref_kmh"] = _num(vel_ref_kmh, 20.0, 120.0, _PARAMS_CUSTO_HUB["vel_ref_kmh"])
+    p["balsa_km"] = _num(balsa_km, 0.0, 300.0, _PARAMS_CUSTO_HUB["balsa_km"])
+    p["limiar_sinuosidade"] = _num(limiar_sinuosidade, 1.0, 2.5, _PARAMS_CUSTO_HUB["limiar_sinuosidade"])
+    p["peso_sinuosidade"] = _num(peso_sinuosidade, 0.0, 1.5, _PARAMS_CUSTO_HUB["peso_sinuosidade"])
+    return p
+
+
+def _selecionar_hub_multicriterio(candidatos, params=None):
+    """[HUB-MCDA - 130ª geração] Motor de decisão MULTICRITÉRIO de hub por CUSTO LOGÍSTICO EFETIVO
+    (km-equivalentes) — substitui a decisão por menor linha reta. Elege o hub de MENOR custo efetivo
+    (viária + lentidão + balsa + sinuosidade), com desempate que prioriza rota TERRESTRE e depois menor
+    viária. Deriva o Índice Global de Qualidade do Hub (IGQ 0-100 = 100 × menor_custo ÷ custo do candidato
+    — estável e absoluto, ao contrário do min-max). Cada candidato: {'hub','dist_viaria','dist_reta'(opc),
+    'tempo_min'(opc),'balsa'(bool,opc),'modo'(str,opc)}. PURO/determinístico; params injetáveis. Rotas
+    inválidas (viária None/≤0) não concorrem. Retorna dict com vencedor, ranking (com componentes de
+    custo), runner_up, margem de custo, critério decisivo e params."""
     _validos = []
     for c in (candidatos or []):
-        try:
-            dv = float(c.get('dist_viaria')) if c.get('dist_viaria') is not None else None
-        except (TypeError, ValueError):
-            dv = None
-        if dv is None or dv <= 0:
+        _det = _custo_logistico_efetivo(c.get('dist_viaria'), c.get('dist_reta'),
+                                        c.get('tempo_min'), bool(c.get('balsa')), params)
+        if _det is None:
             continue
         try:
-            dr = float(c['dist_reta']) if c.get('dist_reta') not in (None, "") else None
+            _dr = float(c['dist_reta']) if c.get('dist_reta') not in (None, "") else None
         except (TypeError, ValueError):
-            dr = None
+            _dr = None
         try:
-            tm = float(c['tempo_min']) if c.get('tempo_min') not in (None, "") else None
+            _tm = float(c['tempo_min']) if c.get('tempo_min') not in (None, "") else None
         except (TypeError, ValueError):
-            tm = None
-        balsa = bool(c.get('balsa'))
-        sin = round(dv / dr, 4) if (dr and dr > 0) else None
-        _validos.append({'hub': c.get('hub'), 'dist_viaria': round(dv, 3), 'dist_reta': dr,
-                         'tempo_min': tm, 'balsa': balsa, 'modo': c.get('modo', ''), 'sinuosidade': sin})
-    out = {'vencedor': None, 'igq_vencedor': None, 'ranking': [], 'runner_up': None,
-           'igq_runner_up': None, 'margem_igq': None, 'criterio_decisivo': None, 'pesos': pesos,
+            _tm = None
+        _dv = round(float(c.get('dist_viaria')), 3)
+        _validos.append({'hub': c.get('hub'), 'dist_viaria': _dv, 'dist_reta': _dr, 'tempo_min': _tm,
+                         'balsa': bool(c.get('balsa')), 'modo': c.get('modo', ''),
+                         'sinuosidade': round(_dv / _dr, 4) if (_dr and _dr > 0) else None,
+                         'custo_efetivo': _det["custo_efetivo_km"], 'componentes': _det})
+    out = {'vencedor': None, 'igq_vencedor': None, 'custo_vencedor': None, 'ranking': [],
+           'runner_up': None, 'igq_runner_up': None, 'custo_runner_up': None, 'margem_custo_km': None,
+           'criterio_decisivo': None, 'params': {**_PARAMS_CUSTO_HUB, **(params or {})},
            'n_candidatos': len(_validos)}
     if not _validos:
         return out
-    n_via = _normalizar_criterio([c['dist_viaria'] for c in _validos], menor_melhor=True)
-    n_tmp = _normalizar_criterio([c['tempo_min'] for c in _validos], menor_melhor=True)
-    n_sin = _normalizar_criterio([(c['sinuosidade'] if c['sinuosidade'] else None) for c in _validos], menor_melhor=True)
-    n_bal = [(1.0 if not c['balsa'] else max(0.0, 1.0 - penalidade_balsa)) for c in _validos]
-    _soma_p = sum(pesos.get(k, 0) for k in ("viaria", "tempo", "balsa", "sinuosidade")) or 1.0
-    for i, c in enumerate(_validos):
-        comp = {"viaria": round(n_via[i], 4), "tempo": round(n_tmp[i], 4),
-                "balsa": round(n_bal[i], 4), "sinuosidade": round(n_sin[i], 4)}
-        igq = 100.0 * (pesos.get("viaria", 0) * comp["viaria"] + pesos.get("tempo", 0) * comp["tempo"] +
-                       pesos.get("balsa", 0) * comp["balsa"] + pesos.get("sinuosidade", 0) * comp["sinuosidade"]) / _soma_p
-        c['igq'] = round(igq, 1)
-        c['componentes'] = comp
-    _validos.sort(key=lambda d: (-d['igq'], d['balsa'], d['dist_viaria']))
+    _min = min(c['custo_efetivo'] for c in _validos)
+    for c in _validos:
+        c['igq'] = round(100.0 * _min / c['custo_efetivo'], 1) if c['custo_efetivo'] > 0 else 0.0
+    _validos.sort(key=lambda d: (d['custo_efetivo'], d['balsa'], d['dist_viaria']))
     for i, c in enumerate(_validos, start=1):
         c['posicao'] = i
     venc = _validos[0]
-    out['vencedor'] = venc['hub']
-    out['igq_vencedor'] = venc['igq']
-    out['ranking'] = _validos
+    out.update(vencedor=venc['hub'], igq_vencedor=venc['igq'], custo_vencedor=venc['custo_efetivo'],
+               ranking=_validos)
     if len(_validos) >= 2:
         ru = _validos[1]
-        out['runner_up'] = ru['hub']
-        out['igq_runner_up'] = ru['igq']
-        out['margem_igq'] = round(venc['igq'] - ru['igq'], 1)
-        # critério decisivo: onde o vencedor mais superou o runner-up (peso × Δcomponente)
-        _difs = {k: pesos.get(k, 0) * (venc['componentes'][k] - ru['componentes'][k])
-                 for k in ("viaria", "tempo", "balsa", "sinuosidade")}
-        _melhor_k = max(_difs, key=lambda k: _difs[k])
-        _rot = {"viaria": "distância viária", "tempo": "tempo de viagem",
-                "balsa": "ausência de balsa", "sinuosidade": "rota mais direta (sinuosidade)"}
-        out['criterio_decisivo'] = _rot.get(_melhor_k, _melhor_k) if _difs[_melhor_k] > 0 else "melhor equilíbrio geral"
+        out.update(runner_up=ru['hub'], igq_runner_up=ru['igq'], custo_runner_up=ru['custo_efetivo'],
+                   margem_custo_km=round(ru['custo_efetivo'] - venc['custo_efetivo'], 1))
+        _difs = {"distância viária": ru['componentes']['base_km'] - venc['componentes']['base_km'],
+                 "tempo de viagem": ru['componentes']['pen_tempo_km'] - venc['componentes']['pen_tempo_km'],
+                 "ausência de balsa": ru['componentes']['pen_balsa_km'] - venc['componentes']['pen_balsa_km'],
+                 "rota mais direta (sinuosidade)": ru['componentes']['pen_sinuosidade_km'] - venc['componentes']['pen_sinuosidade_km']}
+        _mk = max(_difs, key=lambda k: _difs[k])
+        out['criterio_decisivo'] = _mk if _difs[_mk] > 0 else "menor custo logístico global"
     return out
 
 
 def _justificar_escolha_hub(resultado_mcda):
-    """[HUB-MCDA - 129ª geração] Justificativa explicável (XAI) da escolha multicritério, em linguagem
-    natural, comparando o vencedor com o runner-up nos critérios medidos. PURO. Retorna string (Markdown)."""
-    v = None
-    for c in resultado_mcda.get('ranking', []):
-        if c['hub'] == resultado_mcda.get('vencedor'):
-            v = c
-            break
+    """[HUB-MCDA - 130ª geração] Justificativa explicável (XAI) da escolha por custo efetivo, em linguagem
+    natural, comparando vencedor × runner-up. PURO. Retorna string (Markdown)."""
+    _rank = resultado_mcda.get('ranking', [])
+    v = next((c for c in _rank if c['hub'] == resultado_mcda.get('vencedor')), None)
     if not v:
-        return "Sem candidatos válidos para justificar a escolha."
-    ru = None
-    for c in resultado_mcda.get('ranking', []):
-        if c['hub'] == resultado_mcda.get('runner_up'):
-            ru = c
-            break
+        return "Nenhum local de aplicação com deslocamento válido para justificar a escolha."
+    ru = next((c for c in _rank if c['hub'] == resultado_mcda.get('runner_up')), None)
     if not ru:
-        return (f"**{v['hub']}** foi o único hub com rota válida (IGQ {v['igq']}/100) — "
-                "escolhido por ausência de concorrente viável.")
+        return (f"**{v['hub']}** foi o único local de aplicação com deslocamento viável "
+                f"({v['custo_efetivo']:.0f} km-equiv) — recomendado por ausência de alternativa.")
+
     def _pct(a, b):
         return (100.0 * (b - a) / b) if (isinstance(a, (int, float)) and isinstance(b, (int, float)) and b) else None
     _fav, _obs = [], []
     _dp = _pct(v['dist_viaria'], ru['dist_viaria'])
-    if _dp is not None:
+    if _dp is not None and abs(_dp) >= 1:
         (_fav if _dp > 0 else _obs).append(
-            f"rota viária **{abs(_dp):.0f}% {'mais curta' if _dp > 0 else 'mais longa'}** "
-            f"({v['dist_viaria']:.0f} km vs {ru['dist_viaria']:.0f} km)")
+            f"deslocamento **{abs(_dp):.0f}% {'mais curto' if _dp > 0 else 'mais longo'}** "
+            f"({v['dist_viaria']:.0f} vs {ru['dist_viaria']:.0f} km)")
     _tp = _pct(v['tempo_min'], ru['tempo_min'])
-    if _tp is not None:
-        (_fav if _tp > 0 else _obs).append(
-            f"tempo **{abs(_tp):.0f}% {'menor' if _tp > 0 else 'maior'}**")
+    if _tp is not None and abs(_tp) >= 1:
+        (_fav if _tp > 0 else _obs).append(f"tempo de deslocamento **{abs(_tp):.0f}% {'menor' if _tp > 0 else 'maior'}** para os candidatos")
     if v['balsa'] != ru['balsa']:
-        (_fav if not v['balsa'] else _obs).append(
-            "**não usa balsa**" if not v['balsa'] else "usa balsa (travessia)")
-    if isinstance(v['dist_reta'], (int, float)) and isinstance(ru['dist_reta'], (int, float)):
-        _rp = _pct(ru['dist_reta'], v['dist_reta'])  # linha reta: quanto o vencedor está mais distante
-        if _rp is not None and _rp > 0:
-            _obs.append(f"linha reta **{_rp:.0f}% maior** (compensada pela rota)")
-    _txt = f"O hub **{v['hub']}** foi escolhido (IGQ **{v['igq']}/100** vs {ru['igq']} do {ru['hub']})"
+        (_fav if not v['balsa'] else _obs).append("o deslocamento **não exige travessia por balsa**" if not v['balsa'] else "o deslocamento **exige travessia por balsa**")
+    _txt = (f"**{v['hub']}** foi recomendado como local de aplicação: proporciona o **menor esforço de "
+            f"deslocamento aos candidatos** — {v['custo_efetivo']:.0f} km-equivalentes (Índice de Qualidade do "
+            f"Polo {v['igq']}/100) contra {ru['custo_efetivo']:.0f} da alternativa **{ru['hub']}** "
+            f"(economia de {resultado_mcda.get('margem_custo_km', 0):.0f} km-equiv. por candidato)")
     if _fav:
-        _txt += ": " + _fav[0] + ("; " + "; ".join(_fav[1:]) if len(_fav) > 1 else "")
+        _txt += ". Vantagens: " + "; ".join(_fav)
     if _obs:
-        _txt += (". Ponto(s) de atenção: " + "; ".join(_obs))
+        _txt += ". Ponto(s) de atenção: " + "; ".join(_obs)
     _cd = resultado_mcda.get('criterio_decisivo')
     if _cd:
         _txt += f". Critério decisivo: **{_cd}**."
     return _txt
+
+
+def _reatribuir_hubs_multicriterio(topk_map, resultados, params=None, parse_tempo=None):
+    """[HUB-MCDA - 130ª geração] Dado o topk_map (top-K hubs por cliente, por linha reta) e os resultados
+    JÁ roteados de cada par (cliente, hub), reelege o hub de cada cliente por CUSTO LOGÍSTICO EFETIVO
+    (multicritério). Extrai por candidato: viária=res[0], reta=topk, tempo=parse(res[1]), balsa=(res[3]=='Sim').
+    PURO; params/parse_tempo injetáveis. Retorna (novo_dest_to_hub, mcda_por_cliente). Cliente sem candidato
+    roteado válido mantém o vencedor de linha reta (1º do topk). Defensivo em cada par."""
+    parse_tempo = parse_tempo or _parse_tempo_min
+    novo_dest, mcda = {}, {}
+    for _cli, _topk in (topk_map or {}).items():
+        _cands = []
+        for _tup in (_topk or []):
+            try:
+                _reta, _hub = _tup[0], _tup[1]
+            except (TypeError, IndexError):
+                continue
+            _res = (resultados or {}).get((_cli, _hub))
+            if not _res:
+                continue
+            try:
+                _dv = float(_res[0]) if _res[0] is not None else None
+            except (TypeError, ValueError, IndexError):
+                _dv = None
+            if not _dv or _dv <= 0:
+                continue
+            try:
+                _tm = parse_tempo(_res[1]) if len(_res) > 1 else None
+            except Exception:
+                _tm = None
+            _bal = (str(_res[3]).strip().lower() == "sim") if (len(_res) > 3 and _res[3] is not None) else False
+            _cands.append({"hub": _hub, "dist_viaria": _dv, "dist_reta": _reta, "tempo_min": _tm, "balsa": _bal})
+        if not _cands:
+            if _topk:
+                novo_dest[_cli] = _topk[0][1]
+            continue
+        _r = _selecionar_hub_multicriterio(_cands, params)
+        if _r.get("vencedor"):
+            novo_dest[_cli] = _r["vencedor"]
+            mcda[_cli] = _r
+        elif _topk:
+            novo_dest[_cli] = _topk[0][1]
+    return novo_dest, mcda
 
 
 def _explicar_derrota_concorrente(dif_km, dif_reta, dif_razao, dif_tempo=None, dif_score=None):
@@ -9377,7 +9720,7 @@ if _qp_rota == "osrm" and st.query_params.get("g"):
 
 st.markdown("""
 <div class="corporate-header">
-    <h1 class="corporate-title">🗺️ Motor Nacional de Roteirização Inteligente</h1>
+    <h1 class="corporate-title">🗺️ Motor Nacional de Inteligência Logística para Exames</h1>
     <p class="corporate-subtitle">Plataforma Corporativa B2B de Geocodificação, Inferência Bayesiana e Auditoria Logística Avançada.</p>
 </div>
 """, unsafe_allow_html=True)
@@ -9405,7 +9748,7 @@ with st.sidebar:
     st.caption("📘 **Handbook técnico completo** (28 seções, navegável e com busca): aba **📖 Manual do Usuário** → *Handbook Técnico Completo* (visualize aqui dentro ou baixe o HTML).")
     with st.expander("🎯 Visão Geral e Filosofia"):
         st.markdown("""
-        O **Motor Nacional de Roteirização Inteligente** é o sistema core de inteligência logística B2B da operação. Diferente de sistemas comuns que dependem de uma única API comercial (correndo risco de indisponibilidade e falsos positivos topológicos), esta plataforma foi projetada com a arquitetura de **Pipeline Híbrido Multimotor**.
+        O **Motor Nacional de Inteligência Logística para Exames** é a plataforma institucional que apoia o planejamento e a auditoria do **deslocamento de candidatos até seus locais de prova** (ENADE, ENEM, CNU, concursos públicos). Diferente de sistemas que dependem de uma única API comercial (com risco de indisponibilidade e de trocar um município por um homônimo de outro estado), esta plataforma foi projetada com a arquitetura de **Pipeline Híbrido Multimotor**, ancorada na base oficial do **IBGE**.
         """)
     with st.expander("🔎 Inteligência de Busca e Componentes do Ensemble"):
         st.markdown("""
@@ -10332,11 +10675,11 @@ def _municipios_mais_proximos_geodesico(lat_o, lon_o, uf_origem, mun_origem, n=3
 
 
 tab_individual, tab_processamento, tab_alocacao, tab_analytics, tab_calculadora, tab_classificacao, tab_proximidade, tab_enciclopedia, tab_manual, tab_motores, tab_auditoria, tab_pesquisa = st.tabs([
-    "📍 Geocodificação", "⚙️ Processamento Lote", "🎯 Alocação de Hubs", "📊 Enterprise Analytics", "🧮 Calculadora Analítica", "🗂️ Classificação Territorial", "🗺️ Municípios Próximos", "📚 Enciclopédia Core", "📖 Manual do Usuário", "🩺 Monitor APIs", "🔍 Auditoria", "⭐ Pesquisa de Satisfação"
+    "📍 Deslocamento do Candidato", "⚙️ Estudo em Lote", "🎯 Locais de Aplicação", "📊 Painel Estratégico", "🧮 Calculadora Analítica", "🗂️ Classificação Territorial", "🗺️ Polos Alternativos", "📚 Enciclopédia Core", "📖 Manual do Usuário", "🩺 Monitor APIs", "🔍 Auditoria da Aplicação", "⭐ Pesquisa de Satisfação"
 ])
 
 with tab_individual:
-    st.info("🎯 **Objetivo desta aba:** Validar rapidamente uma única rota. Digite a Origem e o Destino para obter a distância viária oficial do Google Maps, o desvio geodésico rigoroso e a explicabilidade do motor de geocodificação.")
+    st.info("🎯 **Objetivo desta aba:** Analisar o deslocamento de UM candidato até seu local de prova. Informe o **município de origem do candidato** e o **local de aplicação** para obter a distância viária oficial, a distância geodésica rigorosa e a explicabilidade da identificação territorial.")
     renderizar_guia_aba("geocodificacao")
     # [GOLDEN - 120ª geração] Caderneta de Rotas Douradas (verificadas): captura manual da última rota
     # calculada, aviso de "já verificada" e exportação do dataset proprietário. Reusa cache_rotas_douradas
@@ -10344,7 +10687,10 @@ with tab_individual:
     # porque lê a última rota de session_state (não do resultado do botão de cálculo).
     try:
         _golden_regs = _listar_rotas_douradas()
-        with st.expander(f"🏅 Rotas Douradas — Caderneta de Rotas Verificadas ({len(_golden_regs)})", expanded=False):
+        # [UI-ESTAVEL - 132ª geração] Rótulo ESTÁTICO (a contagem foi para o corpo): um rótulo que muda
+        # entre reruns dá nova identidade ao container no React → unmount/remount → removeChild.
+        with st.expander("🏅 Rotas Douradas — Caderneta de Rotas Verificadas", expanded=False):
+            st.caption(f"**{len(_golden_regs)}** rota(s) verificada(s) na caderneta.")
             st.caption("Marque rotas conferidas como **verificadas**: elas formam um dataset proprietário, "
                        "auditável e exportável — e o Validador passa a avisar quando você já conferiu uma rota. "
                        "A curadoria é manual (você decide o que é confiável); nada é gravado automaticamente.")
@@ -10402,16 +10748,16 @@ with tab_individual:
     st.markdown("### 📍 Validador Rápido de Rota (Single-Shot)")
     col_ind1, col_ind2 = st.columns(2)
     with col_ind1: 
-        orig_ind = st.text_input("Origem (Endereço, POI, Coordenadas ou Código IBGE)", "Ribeirão Cascalheira , MT, Brasil", help="Insira o local de partida. Aceita endereço, POI, coordenadas OU o Código IBGE do município (7 dígitos, ex.: 5300108) — o tipo é detectado automaticamente. O sistema bloqueará a busca apenas para o Estado cuja sigla for identificada.")
+        orig_ind = st.text_input("Município de origem do candidato (endereço, coordenadas ou Código IBGE)", "Ribeirão Cascalheira , MT, Brasil", help="Insira o local de partida. Aceita endereço, POI, coordenadas OU o Código IBGE do município (7 dígitos, ex.: 5300108) — o tipo é detectado automaticamente. O sistema bloqueará a busca apenas para o Estado cuja sigla for identificada.")
     with col_ind2: 
-        dest_ind = st.text_input("Destino (Endereço, POI, Coordenadas ou Código IBGE)", "SAO MIGUEL DO ARAGUAIA , GO, Brasil", help="Insira o destino final. Aceita endereço, POI, coordenadas OU o Código IBGE do município (7 dígitos, ex.: 3550308) — detectado automaticamente. O uso de UF (Ex: GO) assegura máxima precisão contra localidades homônimas em outros estados.")
+        dest_ind = st.text_input("Local de aplicação da prova (endereço, coordenadas ou Código IBGE)", "SAO MIGUEL DO ARAGUAIA , GO, Brasil", help="Insira o destino final. Aceita endereço, POI, coordenadas OU o Código IBGE do município (7 dígitos, ex.: 3550308) — detectado automaticamente. O uso de UF (Ex: GO) assegura máxima precisão contra localidades homônimas em outros estados.")
         
     st.checkbox("🏅 Priorizar rotas verificadas (serve o valor da caderneta e pula o cálculo quando a rota já foi verificada)",
                 key="golden_prioridade", value=False,
                 help="Ligado: se a rota já estiver na caderneta de Rotas Douradas, o valor VERIFICADO é servido na hora, sem "
                      "acionar os motores (mais rápido). DESLIGADO (padrão): recalcula sempre pelos motores e reconcilia com o "
                      "valor verificado — detecta se a via mudou.")
-    if st.button("🚀 Calcular Rota Individual", type="primary", help="Inicia o pipeline Bayesiano para geocodificação e aciona os dois motores (Google Maps + OSRM) para selecionar a rota de menor distância."):
+    if st.button("🚀 Analisar Deslocamento do Candidato", type="primary", help="Inicia o pipeline Bayesiano para geocodificação e aciona os dois motores (Google Maps + OSRM) para selecionar a rota de menor distância."):
         if orig_ind and dest_ind:
             # [GOLDEN-OVERRIDE - 122ª geração] Se "Priorizar verificadas" estiver LIGADO e houver registro
             # dourado para esta rota, SERVE o valor verificado e PULA o pipeline (res_ind=None → o bloco de
@@ -10441,7 +10787,30 @@ with tab_individual:
                     res_ind = executar_pipeline_unificado(orig_ind, dest_ind)
                 
             if res_ind and res_ind[28] != "Falha na leitura da célula (Campo Vazio)." and "FALHA INTERNA" not in res_ind[28]:
-                st.success("✅ Rota estabelecida com sucesso na malha viária!")
+                # [INTEGRIDADE - 133ª geração / RFC-001 §15/§16/§20] VEREDITO condicionado à INTEGRIDADE.
+                # Antes o app afirmava "✅ sucesso · score 96.5" AO MESMO TEMPO em que reportava
+                # "Consistência Física: ❌ INCONSISTENTE" (caso Barra: viária 210 km < reta 406 km). Detectar
+                # e aprovar ao mesmo tempo é pior que não detectar. Agora a impossibilidade física ou a
+                # colisão de entidade REPROVAM a rota — um único elemento em cada ramo (UI estável, 132ª).
+                try:
+                    _integ = _integridade_de_rota(
+                        res_ind[0] if len(res_ind) > 0 else None,
+                        res_ind[4] if len(res_ind) > 4 else None,
+                        orig_ind, dest_ind,
+                        res_ind[10] if len(res_ind) > 10 else "",
+                        res_ind[16] if len(res_ind) > 16 else "")
+                except Exception as _e_ig:
+                    logger.error(f"[INTEGRIDADE] Falha ao avaliar integridade da rota: {_e_ig}")
+                    _integ = {"indice": 100, "ok": True, "problemas": []}
+                if _integ["ok"]:
+                    st.success(f"✅ Rota estabelecida com sucesso na malha viária! · 🛡️ **Integridade Geográfica "
+                               f"{_integ['indice']}/100**")
+                else:
+                    st.error("⛔ **Rota REPROVADA na validação de integridade geográfica** — 🛡️ Integridade "
+                             f"**{_integ['indice']}/100**. O resultado NÃO é confiável e não deve ser usado.\n\n"
+                             + "\n\n".join(f"• {_p}" for _p in _integ["problemas"])
+                             + "\n\n💡 Informe a **UF** (ex.: “Barra, BA”) ou o **Código IBGE** do município para "
+                               "travar a identidade oficial e recalcular.")
                 # [IBGE-INPUT - 113ª geração] Banner de ROTA TRAVADA: só afirma "travada" quando o ponto
                 # foi REALMENTE resolvido pelo Código IBGE (fonte IBGE_CODIGO_OFICIAL) — evita mensagem
                 # contraditória caso a resolução falhe.
@@ -11208,7 +11577,7 @@ with tab_individual:
             st.warning("Preencha origem e destino para inicializar o cálculo.")
 
 with tab_processamento:
-    st.info("⚙️ **Objetivo desta aba:** Processamento em massa O(U). Envie uma planilha Excel com milhares de origens e destinos. O sistema extrairá rotas únicas, calculará os desvios de todas simultaneamente e devolverá a planilha rigorosamente preenchida.")
+    st.info("⚙️ **Objetivo desta aba:** Estudo de deslocamento em massa. Envie uma planilha com milhares de **municípios de origem dos candidatos** e seus **locais de aplicação**. O sistema calcula todos os deslocamentos simultaneamente e devolve a planilha preenchida e auditável.")
     renderizar_guia_aba("processamento")
     # [GUIA-DESEMPENHO - 45ª geração] Recomendações práticas para máxima velocidade e acerto.
     with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (recomendações)", expanded=False):
@@ -11271,7 +11640,10 @@ with tab_processamento:
                         if _rv_l['consistente'] is False:
                             _confl_l.append((_row_l.get(_col_cod_l), _rv_l['detalhe'], _rv_l['correcao']))
                     if _confl_l:
-                        with st.expander(f"⚠️ Validação IBGE: {len(_confl_l)} inconsistência(s) Código × Município/UF (amostra de até 500 linhas)", expanded=False):
+                        # [UI-ESTAVEL - 132ª geração] Rótulo ESTÁTICO (a contagem foi para o corpo): um rótulo que muda
+                        # entre reruns dá nova identidade ao container no React → unmount/remount → removeChild.
+                        with st.expander("⚠️ Validação IBGE — Código × Município/UF", expanded=False):
+                            st.caption(f"**{len(_confl_l)} inconsistência(s)** (amostra de até 500 linhas).")
                             st.caption("Divergências entre o Código IBGE e o Município/UF informados na "
                                        "planilha. O oficial do código é a referência sugerida.")
                             for _cod_c, _det_c, _cor_c in _confl_l[:40]:
@@ -11353,8 +11725,10 @@ with tab_processamento:
                     df['Origem'].tolist() if 'Origem' in df.columns else [],
                     df['Destino'].tolist() if 'Destino' in df.columns else [])
                 _emoji_nota = {"Excelente": "🟢", "Boa": "🟢", "Atenção": "🟡", "Crítica": "🔴"}.get(_rx["nota"], "⚪")
-                with st.expander(f"🩺 Pré-voo: Raio-X de Saúde da Planilha — {_emoji_nota} {_rx['nota']} ({_rx['score']}/100)",
-                                 expanded=(_rx["score"] < 90)):
+                # [UI-ESTAVEL - 132ª geração] Rótulo ESTÁTICO (a contagem foi para o corpo): um rótulo que muda
+                # entre reruns dá nova identidade ao container no React → unmount/remount → removeChild.
+                with st.expander("🩺 Pré-voo: Raio-X de Saúde da Planilha", expanded=False):
+                    st.caption(f"Nota **{_emoji_nota} {_rx['nota']}** ({_rx['score']}/100).")
                     _rc1, _rc2 = st.columns([40, 60])
                     with _rc1:
                         st.metric("Saúde do Dado", f"{_rx['score']}/100",
@@ -11641,6 +12015,8 @@ with tab_processamento:
                     # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos
                     # (contexto da planilha + validação espacial). Defensivo; nunca quebra o lote.
                     df_final = _enriquecer_desambiguacao_homonimos(df_final)
+                    # [INTEGRIDADE - 133ª geração] Pós-passo ADITIVO: Índice de Integridade Geográfica + alerta por rota.
+                    df_final = _enriquecer_integridade_geografica(df_final)
                     
                     # Recalcula Linha Reta vetorizada (Haversine IUGG)
                     lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
@@ -11685,7 +12061,9 @@ with tab_processamento:
                     # [SPEED-3] Exportação xlsxwriter (~1.7x vs openpyxl)
                     output_buffer = io.BytesIO()
                     with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
-                        df_final.to_excel(writer, index=False)
+                        # [EXAMES - 134ª geração] Cabeçalhos traduzidos para o contexto de exames APENAS na exportação
+                        # (sobre cópia). As chaves internas do df permanecem — renomeá-las quebraria a app inteira.
+                        _renomear_colunas_exame(df_final).to_excel(writer, index=False)
                     st.session_state['planilha_pronta'] = output_buffer.getvalue()
                     st.session_state['df_processado'] = df_final
                     st.session_state['lote_tempo_total'] = tempo_lote_segundos
@@ -11731,9 +12109,13 @@ with tab_processamento:
             renderizar_scorecard_qualidade(st.session_state['df_processado'])
             # [AUDIT-SUSPEITAS - 43ª geração] Auditoria automática de rotas suspeitas (razão V/R anômala)
             _susp_df, _susp_resumo = _auditar_rotas_suspeitas(st.session_state['df_processado'])
-            if _susp_resumo:
-                _n_susp = _susp_resumo.get("suspeitas", 0)
-                with st.expander(f"🔍 Auditoria Automática de Rotas Suspeitas ({_n_susp} sinalizada(s))", expanded=(_n_susp > 0)):
+            # [UI-ESTAVEL - 132ª geração] Existência incondicional + rótulo estático (ver changelog 132ª).
+            _n_susp = _susp_resumo.get("suspeitas", 0) if _susp_resumo else 0
+            with st.expander("🔍 Auditoria Automática de Rotas Suspeitas", expanded=(_n_susp > 0)):
+                if not _susp_resumo:
+                    st.caption("Auditoria de rotas suspeitas indisponível para este lote.")
+                if _susp_resumo:
+                    st.caption(f"**{_n_susp} rota(s)** sinalizada(s).")
                     st.caption(f"Análise pós-processamento da razão **distância viária ÷ linha reta**. Limiar adotado: "
                                f"**{_susp_resumo.get('limiar','—')}×** (o maior entre o técnico 1,8× e o estatístico Q3+1,5·IQR). "
                                f"Razão mediana do lote: {_susp_resumo.get('ratio_mediano','—')}× em {_susp_resumo.get('total',0)} rotas válidas.")
@@ -11757,9 +12139,13 @@ with tab_processamento:
             # balsa/ferry e dos municípios de acesso fluvial/isolado. Só aparece quando há esses casos.
             try:
                 _uf_hidro = _analise_hidrica_por_uf(st.session_state['df_processado'])
-                if (not _uf_hidro.empty) and (int(_uf_hidro["Com Balsa"].sum()) > 0
-                                               or int(_uf_hidro["Acesso Fluvial/Isolado"].sum()) > 0):
-                    with st.expander("🌊 Análise Hídrica por Estado (UF) — balsa e acesso fluvial", expanded=False):
+                # [UI-ESTAVEL - 132ª geração] Existência incondicional + rótulo estático (ver changelog 132ª).
+                _ok_hidro = (not _uf_hidro.empty) and (int(_uf_hidro["Com Balsa"].sum()) > 0
+                                             or int(_uf_hidro["Acesso Fluvial/Isolado"].sum()) > 0)
+                with st.expander("🌊 Análise Hídrica por Estado (UF) — balsa e acesso fluvial", expanded=False):
+                    if not _ok_hidro:
+                        st.caption("Nenhuma rota com balsa ou acesso fluvial/isolado neste lote.")
+                    if _ok_hidro:
                         st.caption("Distribuição, por **UF de origem**, das rotas que usam **balsa/ferry** e dos "
                                    "municípios de **acesso fluvial/isolado** (base oficial IBGE REGIC + detecção dinâmica).")
                         _c1h, _c2h, _c3h = st.columns(3)
@@ -11776,12 +12162,54 @@ with tab_processamento:
                 logger.error(f"[INTEL-TERRITORIAL] Falha na análise hídrica por UF: {_e_uh}")
             # [HOMONIMO - 126ª geração] Painel de Auditoria de Homônimos: superfície visual da camada de
             # desambiguação (contexto da planilha + validação espacial). Lê as colunas já enriquecidas.
+            # [INTEGRIDADE - 133ª geração / RFC-001 §20] Painel de Integridade Geográfica do lote: torna
+            # MEDÍVEL o critério de aceitação ("nenhuma rota com geodésica > viária; nenhum município
+            # trocado"). Segue o padrão de UI estável da 132ª: container SEMPRE existe, rótulo ESTÁTICO.
+            try:
+                _dfp_int = st.session_state['df_processado']
+                _tem_int = 'Integridade Geográfica' in _dfp_int.columns
+                with st.expander("🛡️ Integridade Geográfica do Lote", expanded=False):
+                    if not _tem_int:
+                        st.caption("Indisponível para este lote (reprocesse para gerar os indicadores).")
+                    if _tem_int:
+                        _ig = pd.to_numeric(_dfp_int['Integridade Geográfica'], errors='coerce').fillna(100)
+                        _reprov = _dfp_int[_ig < 100]
+                        _ic1, _ic2, _ic3 = st.columns(3)
+                        _ic1.metric("Integridade média", f"{_ig.mean():.0f}/100")
+                        _ic2.metric("Rotas reprovadas", int((_ig < 100).sum()),
+                                    help="Impossibilidade física (viária < linha reta) ou troca do município pedido.")
+                        _ic3.metric("Rotas íntegras", int((_ig >= 100).sum()))
+                        if len(_reprov) == 0:
+                            st.success("✅ Nenhuma inconsistência: toda rota tem viária ≥ linha reta e o município "
+                                       "pedido foi o resolvido.")
+                        if len(_reprov) > 0:
+                            st.error(f"⛔ **{len(_reprov)} rota(s)** violam a integridade geográfica — o resultado "
+                                     "delas não é confiável. Informe a **UF** ou o **Código IBGE** desses pontos e reprocesse.")
+                            _cols_int = [c for c in ['Origem', 'Destino', 'Distancia', 'Linha Reta',
+                                                     'Integridade Geográfica', 'Alerta de Integridade']
+                                         if c in _reprov.columns]
+                            st.dataframe(_reprov[_cols_int].sort_values('Integridade Geográfica'),
+                                         use_container_width=True, hide_index=True, height=260)
+                        st.caption("A lei física é simples: **a estrada nunca é mais curta que a geodésica**. Uma rota "
+                                   "com viária < linha reta denuncia coordenada errada (tipicamente um município "
+                                   "trocado por um bairro homônimo).")
+            except Exception as _e_ip:
+                logger.error(f"[INTEGRIDADE] Falha no painel de integridade: {_e_ip}")
             try:
                 _dfp_hom = st.session_state['df_processado']
                 if {'Risco de Confusão', 'Homônimo Detectado'}.issubset(_dfp_hom.columns):
                     _n_hom = int((_dfp_hom['Homônimo Detectado'].astype(str) != 'Não').sum())
-                    if _n_hom > 0:
-                        with st.expander(f"🧭 Auditoria de Homônimos — {_n_hom} rota(s) com nome ambíguo", expanded=False):
+                    # [UI-ESTAVEL - 132ª geração] CAUSA RAIZ do NotFoundError "removeChild": este container
+                    # tinha EXISTÊNCIA CONDICIONAL (if _n_hom > 0) e RÓTULO DINÂMICO (contagem no título).
+                    # Inserido na 126ª NO MEIO da cadeia de expanders irmãos do resultado do Lote, ele fazia
+                    # a forma da árvore mudar entre reruns → os irmãos seguintes deslocavam de índice → o
+                    # React tentava remover um nó já destacado. CURA: o expander SEMPRE existe, com rótulo
+                    # ESTÁTICO; a contagem e a condição vivem no CORPO. Árvore rígida = zero remount.
+                    with st.expander("🧭 Auditoria de Homônimos", expanded=False):
+                        if _n_hom == 0:
+                            st.success("✅ Nenhuma rota com município homônimo neste lote.")
+                        if _n_hom > 0:
+                            st.caption(f"**{_n_hom} rota(s)** com nome ambíguo.")
                             st.caption("Camada de desambiguação **100% offline** (base IBGE embutida): resolve municípios homônimos "
                                        "por código IBGE → UF explícita → nome único → **contexto da planilha** (UF dominante), e valida "
                                        "espacialmente cada escolha. Priorize as linhas de **risco Alto**.")
@@ -11874,8 +12302,12 @@ with tab_processamento:
                 _lon_col = 'Lon Destino' if 'Lon Destino' in _dfp_dor.columns else 'Lon Origem'
                 _mun_col = ('Municipio Destino' if 'Municipio Destino' in _dfp_dor.columns
                             else ('Destino' if 'Destino' in _dfp_dor.columns else None))
-                if {'Distancia', 'Linha Reta'}.issubset(_dfp_dor.columns) and _mun_col and _lat_col in _dfp_dor.columns:
-                    with st.expander("🔥 Mapa de Calor — Dor Logística por Município", expanded=False):
+                # [UI-ESTAVEL - 132ª geração] Existência incondicional + rótulo estático (ver changelog 132ª).
+                _ok_dor = {'Distancia', 'Linha Reta'}.issubset(_dfp_dor.columns) and _mun_col and _lat_col in _dfp_dor.columns
+                with st.expander("🔥 Mapa de Calor — Dor Logística por Município", expanded=False):
+                    if not _ok_dor:
+                        st.caption("Indisponível: o lote não tem as colunas de distância/coordenada necessárias.")
+                    if _ok_dor:
                         st.caption("Índice 0-100 de **dificuldade/custo de atendimento** por município de destino, combinando "
                                    "distância, sinuosidade (viária/reta), dependência de **balsa** e **acesso fluvial/isolado** "
                                    "(base oficial IBGE REGIC). Reusa o que já foi medido — mostra **onde entregar é mais difícil**.")
@@ -11937,8 +12369,12 @@ with tab_processamento:
                         if _k not in _seen:
                             _seen[_k] = (_la, _lo)
                     _MAX_TSP = 25
-                    if 2 <= len(_seen) <= _MAX_TSP:
-                        with st.expander(f"🚚 Sequenciamento de Rota (milk-run) — {len(_seen)} paradas", expanded=False):
+                    # [UI-ESTAVEL - 132ª geração] Existência incondicional + rótulo estático (ver changelog 132ª).
+                    with st.expander("🚚 Sequenciamento de Rota (milk-run)", expanded=False):
+                        if not (2 <= len(_seen) <= _MAX_TSP):
+                            st.caption(f"Requer entre 2 e {_MAX_TSP} paradas distintas com coordenada (este lote tem {len(_seen)}).")
+                        if 2 <= len(_seen) <= _MAX_TSP:
+                            st.caption(f"**{len(_seen)} paradas** distintas.")
                             st.caption("Melhor **ordem de visita** para percorrer todas as paradas distintas em uma única rota "
                                        "(vizinho-mais-próximo + 2-opt). Ideal para roteiro de entregas/coletas. Distância em linha reta (Haversine).")
                             _volta = st.checkbox("Retornar ao ponto de partida (rota fechada)", value=False, key="tsp_volta")
@@ -11990,7 +12426,8 @@ with tab_processamento:
             # integração direta com QGIS, ArcGIS, Google Earth, Power BI, GPS e mais.
             _df_exp = st.session_state['df_processado']
             _n_geo = _contar_rotas_geo_validas(_df_exp)
-            with st.expander(f"🌍 Exportações Avançadas para GIS ({_n_geo} rotas georreferenciadas)", expanded=False):
+            # [UI-ESTAVEL - 132ª geração] Existência incondicional + rótulo estático (ver changelog 132ª).
+            with st.expander("🌍 Exportações Avançadas para GIS", expanded=False):
                 if _n_geo == 0:
                     st.info("Nenhuma rota com coordenadas válidas para exportação geográfica neste lote.")
                 else:
@@ -12017,7 +12454,7 @@ with tab_processamento:
                                "Importe no QGIS/Google Earth para visualizar todas as rotas do lote num mapa só.")
 
 with tab_alocacao:
-    st.info("🎯 **Objetivo desta aba:** Inteligência Logística de Hubs. Envie uma lista de clientes (Origens) e uma lista de Centros de Distribuição/Bases (Destinos). O sistema calculará todas as combinações espaciais e descobrirá automaticamente qual é a Base Logística mais próxima de cada cliente individualmente.")
+    st.info("🎯 **Objetivo desta aba:** Definir o **melhor local de aplicação da prova** para cada município de candidatos. Envie a lista de **municípios de origem dos candidatos** e a lista de **polos de aplicação** (escolas/unidades aplicadoras). O sistema avalia todas as combinações e recomenda, para cada município, o local de prova que minimiza o deslocamento dos candidatos.")
     renderizar_guia_aba("alocacao")
     # [ALOC-ENTERPRISE - 49ª geração] Seção de boas práticas, no mesmo padrão do Processamento em Lote.
     with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (Alocação de Hubs)", expanded=False):
@@ -12052,9 +12489,9 @@ with tab_alocacao:
         """)
     col_a1, col_a2 = st.columns(2)
     with col_a1: 
-        file_dest = st.file_uploader("1. Planilha de Endereços / Entregas (Origens)", type=["xlsx"], key="up_dests_v19", help="Cada origem pode ser endereço, localidade, coordenadas ou o Código IBGE do município (7 dígitos). O resultado traz Cód IBGE Cliente/Origem.")
+        file_dest = st.file_uploader("1. Planilha de Municípios de Origem dos Candidatos", type=["xlsx"], key="up_dests_v19", help="Cada origem pode ser endereço, localidade, coordenadas ou o Código IBGE do município (7 dígitos). O resultado traz Cód IBGE Cliente/Origem.")
     with col_a2: 
-        file_hubs = st.file_uploader("2. Planilha de Municípios / Bases (Destinos)", type=["xlsx"], key="up_hubs_v19", help="Cada base/hub pode ser identificado por nome, coordenadas ou Código IBGE do município (7 dígitos). O resultado traz Cód IBGE Hub.")
+        file_hubs = st.file_uploader("2. Planilha de Polos de Aplicação (locais de prova candidatos)", type=["xlsx"], key="up_hubs_v19", help="Cada base/hub pode ser identificado por nome, coordenadas ou Código IBGE do município (7 dígitos). O resultado traz Cód IBGE Hub.")
         
     if file_hubs and file_dest:
         df_hubs = pd.read_excel(file_hubs, engine='calamine')
@@ -12062,9 +12499,9 @@ with tab_alocacao:
         
         col_s1, col_s2 = st.columns(2)
         with col_s1: 
-            dest_col_name = st.selectbox("Selecione a coluna que contém os Endereços (Origens):", df_dest.columns)
+            dest_col_name = st.selectbox("Coluna com os municípios de origem dos candidatos:", df_dest.columns)
         with col_s2: 
-            hub_col_name = st.selectbox("Selecione a coluna que contém os Municípios/Bases (Destinos):", df_hubs.columns)
+            hub_col_name = st.selectbox("Coluna com os polos de aplicação (locais de prova):", df_hubs.columns)
             
         # ==================================================================
         # [FIX-ALOC - 14ª geração] MOTOR DE ALOCAÇÃO CONTÍNUO EM CHUNKS
@@ -12079,8 +12516,59 @@ with tab_alocacao:
         CHUNK_SIZE_ALO = 200
         _alo_ativo = st.session_state.get('alo_em_andamento', False)
         
+        st.checkbox(
+            "🛣️ Escolher o local de aplicação por deslocamento real (multicritério) — mais preciso, mais lento",
+            key="alo_multicriterio", disabled=_alo_ativo,
+            help="Em vez de escolher o hub só pela menor LINHA RETA, roteia os top-K hubs mais próximos de cada cliente e "
+                 "elege o de MENOR CUSTO LOGÍSTICO EFETIVO (km-equivalentes): distância viária + lentidão + balsa + "
+                 "sinuosidade. Roteia mais rotas por cliente, portanto é mais lento.")
+        
+        # [HUB-PARAMS - 131ª geração] Parâmetros do custo expostos: a calibração é OPERACIONAL (o preço de
+        # uma balsa depende da sua operação), então quem decide é o usuário — não uma constante do código.
+        # [UI-ESTAVEL - 132ª geração] Este expander ficava ENTRE o checkbox e o botão primário e só existia
+        # quando o modo estava ligado: marcar o checkbox deslocava o BOTÃO de posição na árvore → removeChild.
+        # Agora SEMPRE existe (colapsado, sem poluir) e os sliders sempre existem — o que, de quebra, elimina
+        # a coleta de estado de widget que me obrigava a congelar os params.
+        with st.expander("⚙️ Calibrar o custo logístico (km-equivalentes)", expanded=False):
+                if not st.session_state.get('alo_multicriterio'):
+                    st.caption("Estes parâmetros valem para o modo **multicritério** (marque a opção acima para usá-los).")
+                st.caption("O esforço de deslocamento até cada polo é medido em **km-equivalentes**: `viária + lentidão + balsa + sinuosidade`. "
+                           "Ajuste abaixo quanto cada fator “vale” em km na **sua** operação — vence o hub de menor custo.")
+                _pc1, _pc2 = st.columns(2)
+                with _pc1:
+                    st.slider("🚚 Velocidade de referência (km/h)", 20, 120,
+                              int(_PARAMS_CUSTO_HUB['vel_ref_kmh']), 5, key="alo_vel_ref", disabled=_alo_ativo,
+                              help="Velocidade que você considera 'normal'. Rotas mais LENTAS que isso pagam uma "
+                                   "penalidade proporcional ao tempo perdido — é assim que estrada ruim é penalizada.")
+                    st.slider("⛴️ Penalidade da balsa (km-equiv.)", 0, 300,
+                              int(_PARAMS_CUSTO_HUB['balsa_km']), 10, key="alo_balsa_km", disabled=_alo_ativo,
+                              help="Quanto uma travessia de balsa 'custa' em km rodados (espera, horário, tarifa, risco). "
+                                   "0 = balsa não penaliza. Padrão 60 km.")
+                with _pc2:
+                    st.slider("🌀 Limiar de sinuosidade (×)", 1.0, 2.5,
+                              float(_PARAMS_CUSTO_HUB['limiar_sinuosidade']), 0.05, key="alo_limiar_sin", disabled=_alo_ativo,
+                              help="A partir de que razão viária÷reta a rota é considerada indireta e passa a ser penalizada.")
+                    st.slider("🌀 Peso da sinuosidade", 0.0, 1.5,
+                              float(_PARAMS_CUSTO_HUB['peso_sinuosidade']), 0.05, key="alo_peso_sin", disabled=_alo_ativo,
+                              help="Que fração do desvio (viária − reta) vira penalidade quando a rota é indireta. 0 = não penaliza.")
+                try:
+                    _pv = _montar_params_custo(st.session_state.get('alo_vel_ref'), st.session_state.get('alo_balsa_km'),
+                                               st.session_state.get('alo_limiar_sin'), st.session_state.get('alo_peso_sin'))
+                    _ex_b = _custo_logistico_efetivo(200, 170, 300, True, _pv)    # 200 km, 5 h, COM balsa
+                    _ex_t = _custo_logistico_efetivo(240, 210, 240, False, _pv)   # 240 km, 4 h, terrestre
+                    if _ex_b and _ex_t:
+                        _venc_ex = "terrestre (240 km)" if _ex_t["custo_efetivo_km"] <= _ex_b["custo_efetivo_km"] else "com balsa (200 km)"
+                        st.caption(
+                            f"**Prévia com esta calibração** — rota **com balsa** (200 km, 5 h): "
+                            f"**{_ex_b['custo_efetivo_km']:.0f} km-eq** (base {_ex_b['base_km']:.0f} + lentidão "
+                            f"{_ex_b['pen_tempo_km']:.0f} + balsa {_ex_b['pen_balsa_km']:.0f} + sinuosidade {_ex_b['pen_sinuosidade_km']:.0f}) "
+                            f"· rota **terrestre** (240 km, 4 h): **{_ex_t['custo_efetivo_km']:.0f} km-eq**. "
+                            f"→ Venceria a rota **{_venc_ex}**.")
+                except Exception as _e_pv:
+                    logger.error(f"[HUB-PARAMS] Falha na prévia dos parâmetros de custo: {_e_pv}")
+        
         _clicou_alo = st.button(
-            "🎯 Processar Cruzamento Espacial e Roteamento Duplo", type="primary",
+            "🎯 Definir Melhores Locais de Aplicação", type="primary",
             disabled=_alo_ativo,
             help="Inicia o processamento contínuo da alocação. Um único clique processa tudo automaticamente."
         )
@@ -12091,7 +12579,7 @@ with tab_alocacao:
                            'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map', 'alo_topk_map',
                            'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
                            'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
-                           'alo_dest_geo_acc', 'alo_dest_geo_idx']:
+                           'alo_dest_geo_acc', 'alo_dest_geo_idx', 'alo_mcda', 'alo_params_custo']:
                     st.session_state.pop(_k, None)
                 st.warning("Alocação cancelada pelo usuário.")
                 st.rerun()
@@ -12155,6 +12643,11 @@ with tab_alocacao:
                     st.session_state['alo_dest_geo_idx'] = 0
                     st.session_state['alo_df_dest_cols'] = list(df_dest.columns)
                     st.session_state['alo_start_clock'] = time.time()
+                    # [HUB-PARAMS - 131ª geração] Congela os parâmetros de custo NO CLIQUE: a decisão usará
+                    # exatamente a calibração que o usuário viu na tela (imune a mexidas/GC durante o run).
+                    st.session_state['alo_params_custo'] = _montar_params_custo(
+                        st.session_state.get('alo_vel_ref'), st.session_state.get('alo_balsa_km'),
+                        st.session_state.get('alo_limiar_sin'), st.session_state.get('alo_peso_sin'))
                     st.rerun()
 
         # ---- FASE GEO-DESTINOS (time-boxed): geocodifica os destinos e monta a matriz ----
@@ -12229,6 +12722,20 @@ with tab_alocacao:
                     (_o_alo.str.lower() != 'nan') & (_d_alo.str.lower() != 'nan')
                 )
                 pares_unicos_alo = set(zip(_o_alo[_mask_alo], _d_alo[_mask_alo]))
+                # [HUB-MCDA - 130ª geração] Modo multicritério (opt-in): roteia TAMBÉM os demais top-K hubs
+                # de cada cliente (topk_map) — o vencedor será reeleito por custo efetivo na finalização.
+                if st.session_state.get('alo_multicriterio'):
+                    try:
+                        for _cli_o, _tk in (topk_map or {}).items():
+                            _cli_o = str(_cli_o).strip()
+                            if not _cli_o or _cli_o == 'FALHA_GEO_ORIGEM':
+                                continue
+                            for _t in (_tk or []):
+                                _hb = str(_t[1]).strip()
+                                if _hb and _hb != 'NENHUM_HUB_VALIDO':
+                                    pares_unicos_alo.add((_cli_o, _hb))
+                    except Exception as _e_mc:
+                        logger.error(f"[HUB-MCDA] Falha ao montar pares top-K: {_e_mc}")
                 tarefas_priorizadas_alo = []
                 for (o, d) in pares_unicos_alo:
                     tipo_o = semantica.classificar_entrada(semantica.normalizar(o))
@@ -12331,9 +12838,49 @@ with tab_alocacao:
                 _df_dest_cols = st.session_state['alo_df_dest_cols']
                 _novas_colunas = st.session_state['alo_novas_colunas']
                 
+                # [HUB-MCDA - 130ª geração] Modo multicritério (opt-in): reelege o hub de cada cliente por
+                # CUSTO LOGÍSTICO EFETIVO usando os top-K JÁ roteados, e reatribui o Destino ANTES da montagem.
+                # Default (toggle off) intacto. Defensivo: em erro mantém a atribuição por linha reta.
+                if st.session_state.get('alo_multicriterio'):
+                    try:
+                        _topk_mc = st.session_state.get('alo_topk_map', {})
+                        # [HUB-PARAMS - 131ª geração] Usa a calibração do usuário (congelada no clique);
+                        # se ausente, reconstrói dos widgets; se tudo faltar, cai nos padrões validados.
+                        _params_mc = st.session_state.get('alo_params_custo') or _montar_params_custo(
+                            st.session_state.get('alo_vel_ref'), st.session_state.get('alo_balsa_km'),
+                            st.session_state.get('alo_limiar_sin'), st.session_state.get('alo_peso_sin'))
+                        _novo_dest_mc, _mcda_mc = _reatribuir_hubs_multicriterio(_topk_mc, _resultados,
+                                                                                 params=_params_mc)
+                        if _novo_dest_mc:
+                            _oo = _df_pares['Origem'].astype(str).str.strip()
+                            _df_pares['Destino'] = _oo.map(_novo_dest_mc).fillna(_df_pares['Destino'])
+                            st.session_state['alo_mcda'] = _mcda_mc
+                    except Exception as _e_mcf:
+                        logger.error(f"[HUB-MCDA] Falha na reatribuição multicritério: {_e_mcf}")
                 df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
                 # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos.
                 df_final_alo = _enriquecer_desambiguacao_homonimos(df_final_alo)
+                # [INTEGRIDADE - 133ª geração] Pós-passo ADITIVO: Índice de Integridade Geográfica + alerta por rota.
+                df_final_alo = _enriquecer_integridade_geografica(df_final_alo)
+                # [HUB-MCDA - 130ª geração] Colunas da decisão multicritério (quando o modo está ativo): IGQ,
+                # custo efetivo do vencedor e do 2º, diferença % e justificativa XAI — por cliente (Origem).
+                # O tempo/balsa/modo/sinuosidade do vencedor já saem nas colunas de rota padrão do hub eleito.
+                _mcda_map = st.session_state.get('alo_mcda') or {}
+                if _mcda_map:
+                    try:
+                        _oc_mc = df_final_alo['Origem'].astype(str).str.strip()
+                        _campo = lambda k: _oc_mc.map(lambda o: (_mcda_map.get(o) or {}).get(k))
+                        df_final_alo['IGQ Hub'] = _campo('igq_vencedor')
+                        df_final_alo['Custo Efetivo Hub (km-eq)'] = _campo('custo_vencedor')
+                        df_final_alo['Hub 2o (Custo)'] = _campo('runner_up')
+                        df_final_alo['Custo Efetivo 2o (km-eq)'] = _campo('custo_runner_up')
+                        _vc = pd.to_numeric(_campo('custo_vencedor'), errors='coerce')
+                        _rc = pd.to_numeric(_campo('custo_runner_up'), errors='coerce')
+                        df_final_alo['Diferenca Custo p/ 2o (%)'] = (((_rc - _vc) / _vc) * 100).round(1)
+                        df_final_alo['Justificativa Hub (XAI)'] = _oc_mc.map(
+                            lambda o: _justificar_escolha_hub(_mcda_map[o]) if o in _mcda_map else "")
+                    except Exception as _e_mcc:
+                        logger.error(f"[HUB-MCDA] Falha ao anexar colunas multicritério: {_e_mcc}")
                 # [IBGE-EVERYWHERE - 95ª geração] Rótulo EXPLÍCITO do Hub: no fluxo de Alocação de Hubs, o
                 # "Destino" É o hub vencedor. Espelha a identidade oficial do hub (Cód IBGE / Município /
                 # UF) com nomes explícitos "Hub", sem remover as colunas existentes. Aditivo, custo zero.
@@ -12387,7 +12934,9 @@ with tab_alocacao:
                 
                 output_buffer = io.BytesIO()
                 with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
-                    df_final_alo.to_excel(writer, index=False)
+                    # [EXAMES - 134ª geração] Cabeçalhos traduzidos para o contexto de exames APENAS na exportação
+                    # (sobre cópia). As chaves internas do df permanecem — renomeá-las quebraria a app inteira.
+                    _renomear_colunas_exame(df_final_alo).to_excel(writer, index=False)
                 st.session_state['df_processado'] = df_final_alo
                 st.session_state['alo_planilha_pronta'] = output_buffer.getvalue()
                 st.session_state['alo_tempo_total'] = tempo_alo_segundos
@@ -12426,11 +12975,40 @@ with tab_alocacao:
             # calculados (colunas Concorrente Analisado/Distancia Concorrente) — custo ZERO.
             _dfp_alo = st.session_state['df_processado']
             if 'Concorrente Analisado' in _dfp_alo.columns and 'Origem' in _dfp_alo.columns:
-                with st.expander("🏆 Auditoria da Disputa de Hubs (vencedor × concorrente)", expanded=True):
-                    st.caption("Selecione um cliente para ver **por que** o hub vencedor foi escolhido e **quanto** o "
-                               "melhor concorrente perdeu — uma auditoria técnica da decisão de alocação.")
+                with st.expander("🏆 Auditoria da Escolha do Local de Prova (recomendado × alternativa)", expanded=True):
+                    st.caption("Selecione um **município de candidatos** para ver **por que** o local de aplicação foi recomendado "
+                               "e **quanto** a melhor alternativa ficou atrás — auditoria técnica da decisão.")
                     _clientes = _dfp_alo['Origem'].dropna().astype(str).unique().tolist()
-                    _cli_sel = st.selectbox("Cliente (Origem)", options=_clientes, index=0 if _clientes else None, key="disputa_cli")
+                    _cli_sel = st.selectbox("Município de origem dos candidatos", options=_clientes, index=0 if _clientes else None, key="disputa_cli")
+                    # [HUB-MCDA - 130ª geração] Decisão multicritério (quando o modo opt-in rodou): ranking por
+                    # CUSTO LOGÍSTICO EFETIVO (km-eq) + IGQ + justificativa XAI, para o cliente selecionado.
+                    _mcda_alo = st.session_state.get('alo_mcda') or {}
+                    _rmc = _mcda_alo.get(_cli_sel) if _cli_sel else None
+                    # [UI-ESTAVEL - 132ª geração] Bloco antes CONDICIONAL (aparecia/sumia ao trocar o cliente
+                    # no selectbox), deslocando os irmãos abaixo → removeChild. Agora o container é fixo.
+                    with st.container():
+                        if _rmc:
+                            st.markdown("##### 🧭 Escolha do local de aplicação (esforço de deslocamento do candidato)")
+                            st.info(_justificar_escolha_hub(_rmc))
+                            try:
+                                _lin = []
+                                for _c in _rmc.get('ranking', []):
+                                    _lin.append({"Pos": _c.get('posicao'), "Hub": _c.get('hub'),
+                                                 "Custo Efetivo (km-eq)": _c.get('custo_efetivo'), "IGQ": _c.get('igq'),
+                                                 "Viária (km)": _c.get('dist_viaria'),
+                                                 "Tempo (min)": round(_c['tempo_min']) if isinstance(_c.get('tempo_min'), (int, float)) else None,
+                                                 "Balsa": "Sim" if _c.get('balsa') else "Não", "Sinuosidade": _c.get('sinuosidade'),
+                                                 "+km-eq p/ vencer": round(_c['custo_efetivo'] - _rmc['custo_vencedor'], 1) if isinstance(_c.get('custo_efetivo'), (int, float)) else None})
+                                if _lin:
+                                    st.dataframe(pd.DataFrame(_lin), use_container_width=True, hide_index=True)
+                                _pa = _rmc.get('params', {})
+                                st.caption(f"Parâmetros do custo: velocidade de referência {int(_pa.get('vel_ref_kmh', 60))} km/h · "
+                                           f"penalidade de balsa {int(_pa.get('balsa_km', 60))} km-equiv · "
+                                           f"sinuosidade penalizada acima de {_pa.get('limiar_sinuosidade', 1.3)}×. "
+                                           "Menor custo efetivo vence; empate → sem balsa → menor viária.")
+                            except Exception as _e_mp:
+                                logger.error(f"[HUB-MCDA] Falha no painel multicritério: {_e_mp}")
+                            st.divider()
                     if _cli_sel:
                         _row = _dfp_alo[_dfp_alo['Origem'].astype(str) == _cli_sel].iloc[0]
                         def _num(v):
@@ -12653,9 +13231,13 @@ with tab_alocacao:
                                        "não ser o 1º da linha reta. Os demais mostram **quais quase entraram**. A seleção que roteia "
                                        "**todos** os candidatos por via e escolhe o de menor distância viária é o próximo passo (itens #7/#9).")
             _susp_df_alo, _susp_resumo_alo = _auditar_rotas_suspeitas(st.session_state['df_processado'])
-            if _susp_resumo_alo:
-                _n_susp_alo = _susp_resumo_alo.get("suspeitas", 0)
-                with st.expander(f"🔍 Auditoria Automática de Rotas Suspeitas ({_n_susp_alo} sinalizada(s))", expanded=(_n_susp_alo > 0)):
+            # [UI-ESTAVEL - 132ª geração] Existência incondicional + rótulo estático (ver changelog 132ª).
+            _n_susp_alo = _susp_resumo_alo.get("suspeitas", 0) if _susp_resumo_alo else 0
+            with st.expander("🔍 Auditoria Automática de Rotas Suspeitas", expanded=False):
+                if not _susp_resumo_alo:
+                    st.caption("Auditoria de rotas suspeitas indisponível para este lote.")
+                if _susp_resumo_alo:
+                    st.caption(f"**{_n_susp_alo} rota(s)** sinalizada(s).")
                     st.caption(f"Razão **distância viária ÷ linha reta**. Limiar: **{_susp_resumo_alo.get('limiar','—')}×** "
                                f"(maior entre técnico 1,8× e estatístico Q3+1,5·IQR). Mediana: {_susp_resumo_alo.get('ratio_mediano','—')}× "
                                f"em {_susp_resumo_alo.get('total',0)} rotas.")
@@ -12782,7 +13364,7 @@ with tab_alocacao:
                 st.caption("💡 **Parquet** (colunar, ideal p/ Power BI/pandas): instale `pyarrow` no requirements para habilitar.")
 
 with tab_analytics:
-    st.info("📊 **Objetivo desta aba:** Sistema Analítico Global estilo Power BI. Clique nas fatias, barras ou arraste o mouse no Scatter Plot para filtrar dinamicamente TODOS os indicadores, mapas e tabelas abaixo.")
+    st.info("📊 **Objetivo desta aba:** Painel estratégico da aplicação do exame. Clique nas fatias, barras ou arraste o mouse no gráfico para filtrar dinamicamente TODOS os indicadores de deslocamento, mapas e tabelas abaixo.")
     renderizar_guia_aba("analytics")
     col_d_title, col_d_btn = st.columns([80, 20])
     with col_d_title: 
@@ -13203,7 +13785,7 @@ with tab_analytics:
         st.warning("Aguardando processamento de planilha corporativa na aba de Lotes (⚙️) para ativar e renderizar o Enterprise Data Analytics Engine.")
 
 with tab_calculadora:
-    st.info("🧮 **Objetivo desta aba:** Uma ferramenta de autoatendimento Analítico (Self-Service BI). Realize extrações, crie tabelas dinâmicas e pivote informações de forma flexível utilizando a base que já passou pela blindagem e filtros globais.")
+    st.info("🧮 **Objetivo desta aba:** Autoatendimento analítico. Crie tabelas dinâmicas e extrações próprias sobre a base de deslocamentos já validada — por UF, por polo de aplicação, por faixa de distância do candidato.")
     renderizar_guia_aba("calculadora")
     col_c_title, col_c_btn = st.columns([80, 20])
     with col_c_title: 
@@ -13317,7 +13899,7 @@ with tab_calculadora:
         st.warning("Os dados ainda não foram processados ou o filtro global está muito restrito. Processe um lote na Aba 'Processamento em Lote'.")
 
 with tab_classificacao:
-    st.info("🗂️ **Objetivo desta aba:** Segmentar a volumetria logística por município, criar faixas personalizadas e rotular os polos de distribuição. Utilize o Editor de Faixas abaixo para configurar os limites, divisores operacionais e níveis críticos.")
+    st.info("🗂️ **Objetivo desta aba:** Segmentar os municípios por faixas de deslocamento dos candidatos e rotular os polos de aplicação. Use o Editor de Faixas para configurar os limites e identificar os municípios com acesso mais crítico ao local de prova.")
     renderizar_guia_aba("classificacao")
     st.markdown("### 🗂️ Classificação Territorial de Ocorrências Municipais")
     
@@ -13553,7 +14135,7 @@ with tab_classificacao:
         st.warning("O conjunto de dados base global está vazio. Por favor, processe seu Lote para alimentar este módulo espacial.")
 
 with tab_proximidade:
-    st.info("🗺️ **Objetivo desta aba:** Inteligência Espacial. Descubra os municípios brasileiros mais próximos de uma origem, primeiro pela **distância geodésica** (Karney/WGS-84, instantânea, sem consumir APIs) e, sob demanda, pela **malha viária** (Google/OSRM) apenas para o subconjunto mais próximo — preservando velocidade e custo.")
+    st.info("🗺️ **Objetivo desta aba:** Descobrir **polos alternativos de aplicação** para um município de candidatos: quais localidades próximas poderiam receber a prova e reduzir o deslocamento. Primeiro pela **distância geodésica** (Karney/WGS-84, instantânea) e, sob demanda, pela **malha viária** apenas para as mais próximas — preservando velocidade e custo.")
     renderizar_guia_aba("geocodificacao")
     with st.expander("🚀 Como funciona e como obter os melhores resultados", expanded=False):
         st.markdown("""
@@ -13924,14 +14506,14 @@ with tab_proximidade:
                 st.warning("Não foi possível carregar o explorador de municípios no momento.")
 
 with tab_enciclopedia:
-    st.info("📚 **Objetivo desta aba:** Servir como o repositório mestre de conhecimento. Esta enciclopédia detalha toda a jornada técnica de um dado dentro do aplicativo, abordando 100% das funcionalidades corporativas, desde a limpeza gramatical até a validação geométrica extrema anti-colisão.")
+    st.info("📚 **Objetivo desta aba:** Repositório mestre de conhecimento. Detalha toda a jornada técnica de um dado — do município de origem do candidato até o local de aplicação da prova — passando pela identificação territorial oficial (IBGE), pela desambiguação de municípios homônimos e pela validação de integridade do deslocamento.")
     renderizar_guia_aba("enciclopedia")
     st.markdown("# 📚 Enciclopédia Operacional e Base de Conhecimento Core")
     
     with st.expander("1. Visão Geral do Sistema", expanded=True):
         st.markdown("""
         **O que é o sistema?**
-        O *Motor Nacional de Roteirização Inteligente* é uma plataforma corporativa B2B projetada para processar, em escala industrial, a conversão de endereços de texto livre em rotas matemáticas roteirizáveis.
+        O *Motor Nacional de Inteligência Logística para Exames* é uma plataforma institucional projetada para transformar, em escala nacional, listas de municípios de candidatos e de locais de aplicação em **estudos de deslocamento auditáveis** — com identificação territorial oficial, desambiguação de homônimos e validação de integridade física de cada trajeto.
         
         **Qual problema ele resolve?**
         Elimina a dependência de APIs logísticas frágeis (como o Google isolado, que pode falhar em áreas rurais), superando problemas de *falsos positivos topológicos*, onde endereços incompletos são jogados aleatoriamente no centro do estado ou do país.
@@ -14331,7 +14913,348 @@ with tab_enciclopedia:
 # components.html + botão de download. NÃO afeta rota/geocodificação — é conteúdo estático.
 # ============================================================================
 _HANDBOOK_HTML_B64 = (
-    "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"
+    "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"
 )
 
 
@@ -14522,7 +15445,7 @@ with tab_manual:
         """)
 
 with tab_motores:
-    st.info("🩺 **Objetivo desta aba:** Monitorar a saúde técnica do ecossistema e o Uptime (SLA) de cada parceiro. Visualize quais APIs em nuvem responderam melhor, identifique instabilidades (timeouts), observe os tempos médios de resposta e verifique a integridade algorítmica do último lote.")
+    st.info("🩺 **Objetivo desta aba:** Monitorar a saúde técnica das fontes de mapa e o Uptime (SLA) de cada uma. Visualize quais APIs responderam melhor, identifique instabilidades (timeouts) e verifique a integridade algorítmica do último estudo de deslocamento.")
     renderizar_guia_aba("motores")
     st.markdown("### 🩺 Painel de Monitoramento de Infraestrutura (APIs Health Check)")
     
@@ -14609,7 +15532,7 @@ with tab_motores:
     st.dataframe(df_metricas_lr, use_container_width=True)
 
 with tab_auditoria:
-    st.info("🔍 **Objetivo desta aba:** Transparência Total e Explicabilidade (XAI). Funciona como uma 'Caixa Preta' aberta do sistema. Verifique em detalhes qual algoritmo tomou a decisão para cada coordenada e por que ele escolheu descartar outras opções em caso de empate de proximidade.")
+    st.info("🔍 **Objetivo desta aba:** Auditoria da aplicação — transparência total e explicabilidade (XAI). Verifique em detalhes como cada município de origem e cada local de prova foi identificado, e por que o sistema descartou as demais alternativas.")
     renderizar_guia_aba("auditoria")
     st.markdown("### 🔍 Dossiê Investigativo de Auditoria Viária e Espacial")
     
