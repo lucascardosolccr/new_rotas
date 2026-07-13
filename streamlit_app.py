@@ -63,6 +63,234 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (160ª geração) → COMPARADOR: o VEREDITO vem antes dos números [CMP-DIDATICO]
+#     "Os painéis ainda são confusos." Fui contar: a aba mostrava **23 KPIs e 8 painéis**.
+#     ── O DIAGNÓSTICO ──
+#       Era uma **PILHA DE FATOS, não uma resposta**. O usuário abria, via 23 números, e tinha que MONTAR a
+#       conclusão sozinho. Pior: **"km-candidato" é a unidade central de TODA a análise — e a tela NUNCA a
+#       explicava.** O sujeito lia "economia ponderada: 2.600.000 km-candidato" e não fazia ideia se isso era
+#       muito, pouco, bom ou ruim.
+#     ── A CURA: INVERTER A ORDEM (como num parecer técnico de verdade) ──
+#       (1) **POSSO CONFIAR NISTO?** — vem PRIMEIRO. Se a conciliação foi ruim, nada mais importa. Com 57%
+#           conciliado a app diz, ANTES de mostrar qualquer percentual: "os percentuais abaixo NÃO
+#           representam o universo completo".
+#       (2) **QUAL É A RESPOSTA?** — uma frase, em português: "🏆 A SUA APLICAÇÃO produziu a melhor
+#           distribuição. Ela levou o candidato mais perto em 62% dos municípios."
+#       (3) **QUAL O TAMANHO?** — traduzido para **ESCALA HUMANA**. E é aqui que mora o pulo do gato:
+#           "2.600.000 km-candidato" **não significa nada para ninguém**.
+#           "**Cada candidato anda 12,4 km A MENOS**" significa tudo.
+#           É o MESMO número, dividido pelo total de candidatos — mas é a diferença entre um DADO e um
+#           ENTENDIMENTO.
+#     ── "📖 COMO LER ESTA ANÁLISE" (leia uma vez, entenda para sempre) ──
+#       Explica o que é km-candidato (com o PORQUÊ: poupar 10 km para 5.000 candidatos importa mais que 200
+#       km para 10); por que empate técnico não é vitória; o que é conciliar (tabela dos 4 métodos com o
+#       nível de confiança de cada um); **em que ORDEM ler os 7 painéis**; e o que significa um número
+#       NEGATIVO (a sua aplicação levou o candidato mais longe).
+#     ── LEGENDA EM TODOS OS GRÁFICOS E PAINÉIS ──
+#       Cada um agora tem "📖 Como ler" (o que é o eixo, o que é a altura, o que significa negativo) E "🔎 O
+#       que este gráfico diz" (a leitura do SEU dado). Exemplos: o gráfico "quem venceu" conta MUNICÍPIOS, não
+#       candidatos — por isso responde "onde", enquanto o KPI de economia responde "quanto". O CV ganhou
+#       explicação própria: é o número que separa "melhoria estrutural" de "melhoria pontual", e duas
+#       comparações com a MESMA MÉDIA podem contar histórias OPOSTAS.
+#     ── DETALHE QUE IMPORTA ──
+#       Os números saíam em formato AMERICANO ("12.4 km", "57.4%") num app brasileiro. Corrigido: 8 pontos.
+#     Suíte: 89 → **92 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (159ª geração) → HIERARQUIA VISUAL: a app era uma PAREDE DE CAIXAS COLORIDAS [UX-HIERARQUIA]
+#     Pergunta: "o visual está moderno, elegante e didático?" Respondi com MEDIÇÃO, não com opinião.
+#     ── O DIAGNÓSTICO (medido) ──
+#       **138 caixas coloridas** (st.info/success/warning/error) + **193 legendas**. A seção "Deslocamento
+#       do Candidato" sozinha tem **94 elementos** (8 info + 12 success + 13 warning + 3 error + 58 captions).
+#       Isso é a parede de caixas clássica do Streamlit. E o problema não é estético — é COGNITIVO:
+#       **quando TUDO está destacado, NADA está.** Cada insight que escrevi virou um st.info() saturado; o
+#       olho não sabe onde pousar. Não era hierarquia: era ruído.
+#     ── A CURA: ONDE HÁ ALAVANCAGEM ──
+#       Uma injeção de CSS conserta as 138 caixas DE UMA VEZ, sem tocar em uma linha de lógica:
+#       (1) CAIXAS ACHATADAS — fundo saturado → **barra de acento à esquerda** (o padrão de Stripe, Linear,
+#           GitHub, Power BI). A cor continua comunicando severidade, mas PARA DE GRITAR (fundo a 7-9% de
+#           opacidade em vez de fill sólido).
+#       (2) LEGENDAS RECUAM — 193 captions competiam com o conteúdo. Uma legenda que grita não é legenda.
+#           Agora é apoio silencioso: menor, mais discreta, disponível para quem procura.
+#       (3) ESCALA TIPOGRÁFICA REAL — os títulos eram quase todos h5. Sem escala não há hierarquia: o olho
+#           não distingue "seção" de "subseção". O h5 (o mais usado) virou um RÓTULO DE PAINEL (uppercase,
+#           letter-spacing, linha divisória) — para de fingir que é título e passa a ser o que é.
+#       (4) MÉTRICAS VIRAM CARTÕES — eram números FLUTUANDO NO VAZIO. Agora têm borda, fundo e respiro, e o
+#           olho lê a linha de KPIs como um BLOCO, escaneando de uma vez em vez de item a item.
+#       (5) TABELAS — cabeçalho ancorado (a âncora do olho ao rolar) e hover de linha (é assim que se
+#           rastreia uma linha numa tabela larga sem se perder).
+#     ── DISCIPLINA MANTIDA ──
+#       **Zero componente adicionado.** Medido: 75 elementos / 6,1 pesados por rerun — IDÊNTICO à 158ª. A
+#       renderização preguiçosa da 142ª (que me custou TRÊS gerações) segue intacta. Zero cor hardcoded
+#       (117 usos de token). WCAG AA continua passando.
+#     ── O QUE **NÃO** SE RESOLVE COM CSS (e eu não vou fingir que resolvi) ──
+#       A CONTAGEM de elementos. 94 numa única seção é muito, e nenhum estilo conserta isso — é problema de
+#       CONTEÚDO, não de aparência. Resolver exige decidir O QUE CORTAR, e isso depende de saber o que você
+#       de fato usa e o que apenas ignora. Me diga qual seção te cansa e eu corto com bisturi, em vez de
+#       adivinhar.
+#     Suíte: 89 testes. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (158ª geração) → AUDITEI O MEU PRÓPRIO CÓDIGO NOVO (e minhas 3 suspeitas erraram) [PERF]
+#     SÉTIMA vez do mesmo prompt. Não fingi novidade. Apliquei o que disse na 153ª: o que rende é auditar
+#     CÓDIGO NOVO — e eu escrevi ~530 linhas desde então (154ª a 157ª). Meu histórico é ruim: plantei bug de
+#     caminho quente na 138ª E na 152ª. Suspeitei de mim primeiro.
+#     ── SUSPEITA 1: "as funções novas devem estar detonando o caminho quente" ── ERRADA.
+#       Medi as 7 funções que adicionei, em escala nacional (5.571 linhas): **119 ms no TOTAL**. Não é a
+#       catástrofe da 152ª (44.500 ms). Reporto porque auditoria honesta registra quando a suspeita NÃO se
+#       confirma — se eu tivesse "otimizado" tudo, teria adicionado risco por quase zero ganho.
+#     ── SUSPEITA 2: "o Styler de cor deve ser caro" ── ERRADA (e a medição me ensinou algo).
+#       Os 43 ms que medi de início eram WARMUP DO IMPORT: o pandas Styler é PREGUIÇOSO — só computa no
+#       render. Custo real: ~28 µs/linha. E as tabelas coloridas na prática são PEQUENAS (contingência: 15
+#       linhas; ocupação: ~300 polos) ⇒ ~10 ms. Não é problema. O teto de 3.000 linhas é rede de segurança
+#       bem colocada.
+#     ── SUSPEITA 3: "falta resiliência de API" ── ERRADA.
+#       Auditado: timeout em **100% das chamadas de rede** (0 sem), retry, circuit breaker, fallback entre
+#       provedores, telemetria por API, e rate limiting (executor dedicado de 1 worker para o Nominatim,
+#       que exige 1 req/s). Já estava sólido.
+#     ── O QUE ERA REAL: 62,7 ms de DESPERDÍCIO PURO ──
+#       _validar_planilha_comparativa (pré-voo do Comparador) roda FORA de qualquer botão — a CADA RERUN da
+#       seção. Em escala nacional: **62,7 ms recalculando A MESMA validação, sobre O MESMO DataFrame, com O
+#       MESMO mapeamento.** Não é lento por ser mal escrito: é lento por ser INÚTIL. Memoizado pela
+#       assinatura da entrada → recalcula só quando a planilha ou o mapeamento mudam de verdade.
+#     ── E A SUÍTE TINHA O PONTO CEGO DE NOVO ──
+#       6 das 7 funções novas NÃO estavam na lista de vigilância de caminho quente. A regra que criei na
+#       153ª não se atualiza sozinha quando eu escrevo código novo. _validar_planilha_comparativa entrou —
+#       e VERIFIQUEI NOS DOIS SENTIDOS: a suíte **FALHA na V157** (sem a memoização) e **PASSA na V158**.
+#       Um teste que nunca falhou nunca provou nada.
+#     Suíte: 89 testes. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (157ª geração) → BUG DO ALTAIR + CALIBRAÇÃO EXPLICADA + DECOMPOSIÇÃO EXATA [ALTAIR-FIX]
+#     ── 1. O BUG QUE DERRUBAVA A APP (causa raiz, não paliativo) ──
+#       StreamlitAPIException em col_p5.altair_chart(chart_muns, on_select="rerun").
+#       CAUSA: chart_muns = **alt.layer(bar_mun, text_bar)** → LayerChart = gráfico MULTI-VIEW. O Streamlit
+#       PROÍBE seleção em gráfico composto (_disallow_multi_view_charts). Não é bug do Altair nem de versão:
+#       é limitação DOCUMENTADA — um gráfico multi-view não tem uma "view" única onde ancorar a seleção.
+#       Auditei os 6 gráficos com on_select: **só o chart_muns era composto**; os outros 5 são simples.
+#       A camada `text_bar` existia SÓ para colar o número em cima da barra — e esse número **JÁ ESTAVA no
+#       tooltip** do bar_mun. Ou seja: a camada custava a INTERATIVIDADE INTEIRA do painel (o clique que
+#       filtra o dashboard) para exibir informação DUPLICADA. Removida. Zero perda, filtro de volta.
+#       PROTEGIDO NA SUÍTE: teste estático impede que qualquer gráfico com on_select volte a ser multi-view.
+#     ── 2. A RESPOSTA À SUA PERGUNTA 6 (e é desconfortável) ──
+#       "Calibração e multicritério funcionam juntos?" Fui ao código: os parâmetros de calibração **só são
+#       LIDOS dentro do bloco do multicritério**. Logo: **calibrar SEM ligar o multicritério não faz
+#       absolutamente NADA.** O usuário mexia em 4 sliders, processava, e o resultado era IDÊNTICO. Era uma
+#       armadilha silenciosa. Agora, com o multicritério desligado, o painel diz isso EM VERMELHO.
+#     ── 3. A CALIBRAÇÃO ERA CONFUSA — agora ela ENSINA ──
+#       Tutorial didático dentro do painel: o que é (uma frase), por que a distância não basta (com O SEU
+#       exemplo da balsa, em tabela), o que cada controle faz e quando aumentá-lo. Mais **4 PERFIS PRONTOS**
+#       para quem não quer calibrar à mão: ⚖️ Equilibrado · 🚫 Evitar balsa a todo custo (balsa = 250 km-eq)
+#       · ⏱️ Priorizar tempo (vel. ref. 90 km/h) · 📏 Só distância (zera tudo — serve para COMPARAR).
+#     ── 4. DECOMPOSIÇÃO EXATA: "por que este polo venceu?" ──
+#       _decompor_custo_hub. E aqui há algo que quase nenhum sistema multicritério pode afirmar: **a
+#       contribuição de cada critério é EXATA, não estimada.** O modelo é ADITIVO (custo = viária + lentidão
+#       + balsa + sinuosidade), logo "Distância 54,5% · Lentidão 27,3% · Balsa 18,2%" é ARITMÉTICA, não
+#       palpite de importância. A maioria dos sistemas usa soma ponderada com normalização min-max, onde a
+#       "importância" depende do conjunto de candidatos e não significa nada em absoluto. Aqui, como o custo
+#       é medido em km-equivalentes (unidade real e absoluta), a decomposição é literal.
+#       Painel novo mostra, por município: cada parcela em km, o critério DETERMINANTE, e quanto o pior
+#       candidato custaria a mais.
+#     ── 5. O SEU CASO DA BALSA JÁ FUNCIONAVA ──
+#       Testei o exemplo EXATO do seu prompt (Polo A: 180 km + balsa + 4h30 · Polo B: 195 km sem balsa +
+#       2h50): a app **já elegia o B**, correto. Custo A = 330 km-eq (180 viária + 90 lentidão + 60 balsa);
+#       custo B = 195. **O que faltava não era capacidade — era EXPLICAÇÃO.** Agora a app mostra a conta.
+#     Suíte: 84 → **89 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (156ª geração) → CÓDIGO IBGE: PRIORIDADE ABSOLUTA (a causa raiz do bug real) [IBGE-ABSOLUTO]
+#     BUG REPORTADO com dados concretos: 1300904, 1500701, 1504505, 1505700, 1507706 "não reconhecidos".
+#     ── O QUE A INVESTIGAÇÃO DESCARTOU (com prova, não com opinião) ──
+#       • A base tem os 5 códigos? SIM: Canutama/AM, Anajás/PA, Melgaço/PA, Ponta de Pedras/PA e São
+#         Sebastião da Boa Vista/PA. Todos presentes.
+#       • A base está íntegra? SIM, e provei por CHECAGEM INTERNA (que vale mais que lista decorada): o
+#         PREFIXO do código bate com a UF em 100% dos 5.571 · zero duplicata · zero coordenada fora do
+#         Brasil · 5.570 municípios + Fernando de Noronha (distrito estadual com código IBGE) = 5.571.
+#       • A cadeia de resolução funciona? SIM: detector, índice reverso O(1), validador e resolvedor
+#         resolvem os 5 corretamente.
+#     ── A CAUSA RAIZ (uma só) ──
+#       Existem DOIS caminhos de geocodificação. `obter_coordenadas_e_endereco_oficial` intercepta o código
+#       IBGE (98ª geração). Mas o modo ESTRITO — `forcar_geocodificacao_hierarquica_estrita`, que dispara na
+#       barreira anti-colisão — NÃO. Ele chamava _resolver_municipio_offline, que busca por NOME: o código
+#       "1300904" normalizado vira a chave "1300904", que NÃO EXISTE num índice indexado por NOME → devolve
+#       None → o código cai na NUVEM, e ArcGIS/Nominatim/Photon recebem a string "1300904" **como se fosse
+#       um endereço**. É óbvio que falha.
+#       CORRIGIDO com a regra que você exigiu: se a entrada é um Código IBGE VÁLIDO, nenhuma API adivinha,
+#       nenhuma heurística substitui, nenhuma desambiguação ocorre. **A base oficial é a AUTORIDADE MÁXIMA.**
+#       Auditei TODOS os caminhos que consultam nuvem: os 5 agora interceptam ou estão protegidos pelo
+#       invólucro que intercepta.
+#     ── ⚠️ EU QUASE CORROMPI DADO OFICIAL — e uma asserção me salvou ──
+#       Notei que os 5 municípios são de acesso fluvial (Marajó + rio Purus) e fui "completar" a lista
+#       _MUNICIPIOS_ACESSO_FLUVIAL. Escrevi os códigos DE MEMÓRIA. Minha própria verificação contra a base
+#       pegou: **6 dos 11 estavam ERRADOS** (eu "lembrava" 1500503=Afuá, mas é ALMEIRIM; 1501709=Breves,
+#       mas é BRAGANÇA; 1506005=Portel, mas é PRAINHA). Eu teria marcado municípios COM estrada como
+#       isolados.
+#       E aí li o comentário original: aquela lista **NÃO é curada à mão** — vem do **IBGE REGIC 2018**
+#       (REGIC2018_Rotas_Brasil.xlsx), com critério preciso ("não aparece em NENHUMA ligação 'Rodoviário'
+#       nem 'Hidro-Rodoviário'"). Os 5 não estão lá porque o REGIC os classifica como hidro-rodoviários.
+#       **REVERTI. A lista oficial segue INTACTA (18).** Sobrescrever dado oficial com palpite seria pior
+#       que o bug original — e agora há um TESTE que impede isso de acontecer.
+#     ── ROTINA DE INTEGRIDADE PERMANENTE (pedido explícito) ──
+#       A suíte agora percorre os **5.571 códigos a CADA DEPLOY** pela cadeia REAL: detecção, resolução,
+#       prefixo×UF, coordenada, duplicata. Mais um teste de REGRESSÃO com os 5 códigos que VOCÊ reportou —
+#       se algum voltar a falhar, o deploy não passa. Suíte: 76 → **84 testes**.
+#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (155ª geração) → UX: o Design System era DECORATIVO e eu vazava nomes de variável [UX-TABELA]
+#     Segunda rodada de UX. Na 148ª fiz os tokens, a navegação lateral e o onboarding — e declarei o que NÃO
+#     fiz. Fui buscar o que sobrou, e achei dois problemas REAIS. Um deles é meu.
+#     ── 0. WCAG: MEDI ANTES DE MEXER ──
+#       A WCAG está no seu pedido, e ninguém mede contraste — só acha bonito. Medi os 30 tokens da 148ª:
+#       **toda a paleta PASSA na AA** (títulos 18:1, corpo 15:1, legendas 7,4:1, semânticas 4,9-9:1).
+#       Reporto porque auditoria honesta também registra o que está certo. E medi o USO REAL, não o token
+#       isolado: --brand-3 dá 3,66:1 como TEXTO (reprovaria), mas ele é FUNDO de botão — o par real é texto
+#       branco sobre ele = **5,17:1 ✅**. Medir o token fora de contexto teria dado falso alarme.
+#     ── 1. O DESIGN SYSTEM ERA DECORATIVO ──
+#       Criei 30 tokens na 148ª... e deixei **48 cores HARDCODED** nos componentes. Ou seja: trocar a paleta
+#       no :root NÃO MUDARIA QUASE NADA. Um Design System que os componentes não usam é enfeite, não sistema.
+#       CORRIGIDO: **48 → 0 cores hardcoded · 85 usos de var(--token) · 34 tokens.** Agora trocar uma linha
+#       no :root muda a aplicação inteira — que é o ponto de existir um Design System.
+#     ── 2. EU VAZAVA NOME DE VARIÁVEL NA CARA DO USUÁRIO ──
+#       O gestor abria a tabela de contingência e lia `viavel_sem_ele`, `km_candidato_a_mais`,
+#       `impacto_km_candidato`. **17 chaves snake_case** vazando em tabelas que fundamentam decisão pública.
+#       Eu construí essas tabelas (140ª-154ª) e deixei as chaves internas escaparem.
+#       CORRIGIDO: _rotular_colunas traduz na FRONTEIRA DE APRESENTAÇÃO (mesma arquitetura da 134ª) — o df
+#       INTERNO segue com as chaves originais, porque o código depende delas. 8 tabelas corrigidas.
+#     ── 3. O PERIGO PRECISA CHEGAR AO OLHO ANTES DA LEITURA ──
+#       _colorir_risco: um gestor escaneando 5.571 linhas NÃO CONSEGUE VER "Risco Alto" escrito em texto
+#       simples no meio de milhares de "Risco Baixo". A informação está lá e é INVISÍVEL. Cor aqui não é
+#       decoração — é o canal pelo qual o perigo chega ao olho. Polo 100% lotado → 🔴 vermelho; 85-99% →
+#       🟠 âmbar; economia negativa (a aplicação levou o candidato mais longe) → 🔴. Acima de 3.000 linhas
+#       devolve o df cru: o Styler ficaria caro e o valor cai.
+#     ── O QUE CONTINUO NÃO FAZENDO (e por quê) ──
+#       Sem animações, sem JS, sem novos gráficos. Eles ressuscitariam o removeChild que me custou TRÊS
+#       gerações. Verificado: **70 elementos / 5,6 pesados por rerun — IDÊNTICO à 154ª.** O redesign não
+#       custou um único componente.
+#     Suíte: 70 → **76 testes** (Design System, WCAG e vazamento de chave interna agora são INVARIANTES
+#     verificados a cada deploy). 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (154ª geração) → 🚨 CONTINGÊNCIA + ⚖️ EQUIDADE: as duas perguntas que faltavam [CONTINGENCIA]
+#     ── 1. "E SE UM POLO CAIR?" ──
+#       Escola alagada, greve, interdição, problema estrutural — isso ACONTECE, e às vezes a DUAS SEMANAS da
+#       prova. A plataforma não sabia responder: quais municípios ficam órfãos? para onde vão? a capacidade
+#       restante absorve? quanto custa aos candidatos?
+#       _contingencia_polos: para CADA polo, remove-o, REALOCA tudo com Vogel respeitando a capacidade dos
+#       sobreviventes, e mede o estrago. Mas o entregável não é "o que acontece se X cair" — é o RANKING DE
+#       CRITICIDADE: **QUAL polo você NÃO PODE PERDER.**
+#       Isso muda a operação. Sem o ranking, o gestor espalha reserva técnica e vistoria por igual sobre 300
+#       polos — sendo que a queda da maioria custaria QUASE NADA, e a de um punhado seria CATASTRÓFICA.
+#       Testado: "🔴 BRASILIA é insubstituível. 16.000 candidatos dependem dele. Se cair, 10.000 ficam SEM
+#       VAGA — a prova simplesmente NÃO ACONTECE para eles." Um candidato sem lugar não é "mais
+#       deslocamento": é a prova não existir. Por isso a criticidade penaliza isso com peso brutal.
+#       💡 A OTIMIZAÇÃO DE ONTEM HABILITOU ESTA FEATURE: 300 simulações de queda em escala nacional levam
+#       **18,8 s**. Com o algoritmo O(n²·k) da 152ª levariam **222 MINUTOS** — seria inviável. A 153ª não
+#       foi só "mais rápido": ela tornou POSSÍVEL o que veio depois.
+#     ── 2. EFICIÊNCIA × EQUIDADE: agora é uma ESCOLHA, não um efeito colateral ──
+#       Na 140ª eu NOMEEI esta tensão e escrevi "a decisão é sua" — mas **não te dei a ferramenta para
+#       decidir**. O simulador só sabia maximizar o ganho TOTAL, que privilegia clusters densos e deixa os
+#       isolados para trás. Isso é uma escolha de política pública sendo feita por omissão do software.
+#       Agora o simulador tem OBJETIVO:
+#         ⚡ EFICIÊNCIA (padrão) — maximiza a economia TOTAL. Abre onde há MUITA gente.
+#         ⚖️ EQUIDADE — só conta o ganho de quem está ACIMA do limiar crítico. Um polo que economiza
+#            1 milhão de km-candidato entre gente que já estava a 40 km vale **ZERO** neste modo.
+#       PROVADO POR TESTE que os dois divergem: num cenário com um cluster rico (27.000 candidatos a 60 km)
+#       e um isolado pobre (650 candidatos a 450 km), EFICIÊNCIA abre no cluster (ganho 1.447.225 km-cand);
+#       EQUIDADE abre no isolado (450 km → 0,6 km para os únicos que sofriam). **As duas respostas são
+#       legítimas — elas respondem perguntas DIFERENTES.** O software agora deixa o gestor escolher qual,
+#       em vez de decidir por ele em silêncio.
+#     Suíte: 64 → **70 testes** (os dois motores nasceram protegidos; a regra de caminho quente já cobriu o
+#     código novo e me obrigou a declarar _contingencia_polos como pesada).
+#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
 #   v3.8 (153ª geração) → EU REINCIDI PELA TERCEIRA VEZ — e a suíte tinha um PONTO CEGO [PERF]
 #     SEXTA vez que o MESMO prompt de auditoria chega. Não fingi novidade. Mas havia uma auditoria LEGÍTIMA
 #     a fazer: eu escrevi ~250 linhas NOVAS na 152ª. Código novo = superfície nova. Auditei o MEU código de
@@ -2540,6 +2768,10 @@ st.markdown("""
         --warn:    #E67E22;
         --danger:  #E74C3C;
         --info:    #3498DB;
+        --brand-3: #2563EB;   /* botão primário (estado ativo)          */
+        --caution: #F1C40F;   /* pílula "aceitável" — abaixo de aviso   */
+        --tx-4:    #6B7280;   /* texto desabilitado / borda de tooltip  */
+        --on-brand:#FFFFFF;   /* texto SOBRE a cor de marca             */
 
         /* — escala tipográfica (razão 1.25, não 8 tamanhos avulsos) — */
         --fs-xs: 12px;  --fs-sm: 13px;  --fs-md: 14px;
@@ -2632,6 +2864,154 @@ st.markdown("""
         display: flex; align-items: center; justify-content: center;
     }
 
+    /* ================================================================================
+       [UX-HIERARQUIA - 159ª geração] O PROBLEMA MEDIDO: 138 caixas coloridas e 193 legendas.
+       A tela "Deslocamento do Candidato" sozinha tem 94 elementos. Isso é a parede de caixas
+       clássica do Streamlit — e o problema não é estético, é COGNITIVO:
+       **quando tudo está destacado, nada está.**
+       Cada insight virou um st.info() saturado. O olho não sabe onde pousar.
+
+       A CURA (uma injeção de CSS, zero linha de lógica tocada, 138 caixas de uma vez):
+       trocar o FUNDO SATURADO por uma BARRA DE ACENTO à esquerda — o padrão de Stripe, Linear,
+       GitHub e Power BI. A cor continua comunicando a severidade, mas para de GRITAR.
+       ================================================================================ */
+    div[data-testid="stAlert"],
+    div[data-testid="stNotification"] {
+        border-radius: var(--r-sm) !important;
+        border: 1px solid var(--sf-3) !important;
+        border-left-width: 3px !important;
+        box-shadow: none !important;
+        padding: var(--sp-3) var(--sp-4) !important;
+        margin-bottom: var(--sp-3) !important;
+    }
+    /* fundo QUASE neutro: a cor vive na barra, não na área inteira */
+    div[data-testid="stAlert"] > div,
+    div[data-testid="stNotification"] > div {
+        background: transparent !important;
+    }
+    div[data-testid="stAlert"] p,
+    div[data-testid="stNotification"] p {
+        font-size: var(--fs-md) !important;
+        line-height: 1.55 !important;
+        color: var(--tx-2) !important;
+    }
+    /* Streamlit distingue os 4 tipos pela cor de fundo herdada; usamos a barra para cada um. */
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentInfo"]) {
+        background: rgba(52, 152, 219, .07) !important;
+        border-left-color: var(--info) !important;
+    }
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentSuccess"]) {
+        background: rgba(46, 204, 113, .07) !important;
+        border-left-color: var(--ok) !important;
+    }
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentWarning"]) {
+        background: rgba(230, 126, 34, .07) !important;
+        border-left-color: var(--warn) !important;
+    }
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentError"]) {
+        background: rgba(231, 76, 60, .09) !important;
+        border-left-color: var(--danger) !important;
+    }
+
+    /* ---------- LEGENDAS: recuam de verdade ----------
+       193 st.caption() competindo com o conteúdo principal. Uma legenda que grita não é legenda.
+       Aqui ela vira o que deveria ser: apoio silencioso, disponível para quem procurar. */
+    div[data-testid="stCaptionContainer"] p,
+    [data-testid="stCaptionContainer"] {
+        font-size: var(--fs-sm) !important;
+        color: var(--tx-3) !important;
+        line-height: 1.5 !important;
+    }
+
+    /* ---------- ESCALA TIPOGRÁFICA REAL ----------
+       Os títulos eram quase todos h5 ("#####"). Sem escala, não há hierarquia:
+       o olho não distingue "seção" de "subseção" de "detalhe". */
+    .main h1 { font-size: var(--fs-2xl) !important; font-weight: 700 !important; color: var(--tx-1) !important;
+               letter-spacing: -.02em; }
+    .main h2 { font-size: var(--fs-xl) !important; font-weight: 600 !important; color: var(--tx-1) !important;
+               margin-top: var(--sp-6) !important; }
+    .main h3 { font-size: var(--fs-lg) !important; font-weight: 600 !important; color: var(--tx-1) !important;
+               margin-top: var(--sp-5) !important; }
+    .main h4 { font-size: var(--fs-md) !important; font-weight: 600 !important; color: var(--tx-2) !important; }
+    /* h5 = o subtítulo de painel que a app mais usa: vira RÓTULO, não título */
+    .main h5 {
+        font-size: var(--fs-sm) !important;
+        font-weight: 700 !important;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+        color: var(--tx-3) !important;
+        margin-top: var(--sp-5) !important;
+        margin-bottom: var(--sp-2) !important;
+        padding-bottom: var(--sp-1);
+        border-bottom: 1px solid var(--sf-3);
+    }
+
+    /* ---------- BOTÃO PRIMÁRIO: um só protagonista por tela ---------- */
+    button[kind="primary"] {
+        border-radius: var(--r-sm) !important;
+        font-weight: 600 !important;
+        box-shadow: var(--sh-1) !important;
+        transition: transform .08s ease, box-shadow .12s ease;
+    }
+    button[kind="primary"]:hover {
+        transform: translateY(-1px);
+        box-shadow: var(--sh-2) !important;
+    }
+
+    /* ================================================================================
+       [UX-HIERARQUIA - 159ª geração] MÉTRICAS VIRAM CARTÕES.
+       Hoje são NÚMEROS FLUTUANDO NO VAZIO — sem moldura, sem agrupamento visual, competindo
+       com o texto ao redor. Em Stripe, Power BI e Azure Portal, um KPI é um CARTÃO: tem borda,
+       tem fundo, tem respiro. Isso não é enfeite — é o que permite ao olho tratar "os números"
+       como um bloco único e escanear a linha inteira de uma vez, em vez de ler item a item.
+       ================================================================================ */
+    div[data-testid="stMetric"] {
+        background: var(--sf-2);
+        border: 1px solid var(--sf-3);
+        border-radius: var(--r-md);
+        padding: var(--sp-3) var(--sp-4);
+        transition: border-color .12s ease;
+    }
+    div[data-testid="stMetric"]:hover { border-color: var(--brand); }
+
+    /* ---------- TABELAS: legíveis de verdade ----------
+       O cabeçalho precisa se separar do corpo (é a âncora do olho ao rolar), e a linha sob o
+       cursor precisa se destacar (é como se rastreia uma linha numa tabela larga sem perder-se). */
+    div[data-testid="stDataFrame"] {
+        border: 1px solid var(--sf-3);
+        border-radius: var(--r-md);
+        overflow: hidden;
+    }
+    div[data-testid="stDataFrame"] thead th {
+        background: var(--sf-3) !important;
+        color: var(--tx-1) !important;
+        font-weight: 600 !important;
+        font-size: var(--fs-sm) !important;
+        letter-spacing: .02em;
+    }
+    div[data-testid="stDataFrame"] tbody tr:hover td {
+        background: var(--sf-2) !important;
+    }
+
+    /* ---------- EXPANDERS: painéis, não acordeões genéricos ---------- */
+    div[data-testid="stExpander"] {
+        border: 1px solid var(--sf-3) !important;
+        border-radius: var(--r-md) !important;
+        background: var(--sf-1);
+        margin-bottom: var(--sp-3);
+    }
+    div[data-testid="stExpander"] summary {
+        font-weight: 600 !important;
+        font-size: var(--fs-md) !important;
+        color: var(--tx-2) !important;
+        padding: var(--sp-3) var(--sp-4) !important;
+    }
+    div[data-testid="stExpander"] summary:hover { color: var(--tx-1) !important; }
+
     /* ---------- MÉTRICAS: hierarquia legível ---------- */
     [data-testid="stMetricValue"] {
         font-size: var(--fs-xl) !important;
@@ -2649,21 +3029,21 @@ st.markdown("""
     }
     
     .stApp {
-        background-color: #0E1117;
+        background-color: var(--sf-0);
     }
     
     [data-testid="stSidebar"] {
-        background-color: #161A25;
-        border-right: 1px solid #2D3342;
+        background-color: var(--sf-1);
+        border-right: 1px solid var(--sf-3);
     }
     
     [data-testid="stMetric"] {
-        background-color: #1E232F;
-        border: 1px solid #2D3342;
+        background-color: var(--sf-2);
+        border: 1px solid var(--sf-3);
         padding: 1.2rem;
         border-radius: 8px;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        border-left: 4px solid #3B82F6;
+        border-left: 4px solid var(--brand);
         transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
     }
     
@@ -2673,14 +3053,14 @@ st.markdown("""
     }
     
     [data-testid="stMetricLabel"] {
-        color: #9CA3AF !important;
+        color: var(--tx-3) !important;
         font-weight: 500;
         font-size: 0.95rem;
         margin-bottom: 0.5rem;
     }
     
     [data-testid="stMetricValue"] {
-        color: #F9FAFB !important;
+        color: var(--tx-1) !important;
         font-weight: 700;
         font-size: 1.8rem;
     }
@@ -2695,25 +3075,25 @@ st.markdown("""
     }
     
     [data-baseweb="tab"] {
-        background-color: #161A25;
-        border: 1px solid #2D3342;
+        background-color: var(--sf-1);
+        border: 1px solid var(--sf-3);
         border-bottom: none;
         border-radius: 8px 8px 0 0;
         padding: 12px 24px;
-        color: #9CA3AF;
+        color: var(--tx-3);
         font-weight: 600;
         transition: all 0.2s;
     }
     
     [data-baseweb="tab"]:hover {
-        color: #F9FAFB;
-        background-color: #1E232F;
+        color: var(--tx-1);
+        background-color: var(--sf-2);
     }
     
     [data-baseweb="tab"][aria-selected="true"] {
-        background-color: #3B82F6;
-        color: #FFFFFF;
-        border-color: #3B82F6;
+        background-color: var(--brand);
+        color: var(--on-brand);
+        border-color: var(--brand);
     }
     
     .stButton > button {
@@ -2723,44 +3103,44 @@ st.markdown("""
     }
     
     .stButton > button[kind="primary"] {
-        background-color: #3B82F6;
+        background-color: var(--brand);
         color: white;
         border: none;
     }
     
     .stButton > button[kind="primary"]:hover {
-        background-color: #2563EB;
+        background-color: var(--brand-3);
         box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.5);
     }
     
     [data-testid="stExpander"] {
-        background-color: #1E232F;
-        border: 1px solid #2D3342;
+        background-color: var(--sf-2);
+        border: 1px solid var(--sf-3);
         border-radius: 8px;
     }
     
     [data-testid="stExpander"] summary {
         font-weight: 600;
-        color: #E5E7EB;
+        color: var(--tx-2);
     }
     
     [data-testid="stDataFrame"] {
-        border: 1px solid #2D3342;
+        border: 1px solid var(--sf-3);
         border-radius: 8px;
         overflow: hidden;
     }
     
     .corporate-header {
-        background: linear-gradient(135deg, #161A25 0%, #1E232F 100%);
+        background: linear-gradient(135deg, var(--sf-1) 0%, var(--sf-2) 100%);
         padding: 24px;
         border-radius: 12px;
         margin-bottom: 30px;
-        border-left: 6px solid #3B82F6;
+        border-left: 6px solid var(--brand);
         box-shadow: 0 4px 6px rgba(0,0,0,0.2);
     }
     
     .corporate-title {
-        color: #F9FAFB;
+        color: var(--tx-1);
         margin: 0;
         font-weight: 700;
         font-size: 24px;
@@ -2768,7 +3148,7 @@ st.markdown("""
     }
     
     .corporate-subtitle {
-        color: #9CA3AF;
+        color: var(--tx-3);
         margin: 5px 0 0 0;
         font-size: 15px;
         font-weight: 400;
@@ -2776,7 +3156,7 @@ st.markdown("""
     
     .filter-badge {
         display: inline-block;
-        background-color: #3B82F6;
+        background-color: var(--brand);
         color: white;
         padding: 4px 10px;
         border-radius: 20px;
@@ -2793,7 +3173,7 @@ st.markdown("""
     /* Acessibilidade: foco visível por teclado (WCAG 2.4.7) */
     button:focus-visible, a:focus-visible, input:focus-visible,
     [data-baseweb="tab"]:focus-visible, select:focus-visible {
-        outline: 3px solid #60A5FA !important;
+        outline: 3px solid var(--brand-2) !important;
         outline-offset: 2px !important;
         border-radius: 6px;
     }
@@ -2813,28 +3193,28 @@ st.markdown("""
         font-size: 12.5px; font-weight: 600; line-height: 1.6;
     }
     .ds-pill::before { content: ''; width: 8px; height: 8px; border-radius: 50%; }
-    .ds-pill-excelente { background: rgba(46,204,113,.15); color: #2ECC71; }
-    .ds-pill-excelente::before { background: #2ECC71; }
-    .ds-pill-boa { background: rgba(52,152,219,.15); color: #3498DB; }
-    .ds-pill-boa::before { background: #3498DB; }
-    .ds-pill-aceitavel { background: rgba(241,196,15,.15); color: #F1C40F; }
-    .ds-pill-aceitavel::before { background: #F1C40F; }
-    .ds-pill-revisar { background: rgba(230,126,34,.15); color: #E67E22; }
-    .ds-pill-revisar::before { background: #E67E22; }
-    .ds-pill-erro { background: rgba(231,76,60,.15); color: #E74C3C; }
-    .ds-pill-erro::before { background: #E74C3C; }
+    .ds-pill-excelente { background: rgba(46,204,113,.15); color: var(--ok); }
+    .ds-pill-excelente::before { background: var(--ok); }
+    .ds-pill-boa { background: rgba(52,152,219,.15); color: var(--info); }
+    .ds-pill-boa::before { background: var(--info); }
+    .ds-pill-aceitavel { background: rgba(241,196,15,.15); color: var(--caution); }
+    .ds-pill-aceitavel::before { background: var(--caution); }
+    .ds-pill-revisar { background: rgba(230,126,34,.15); color: var(--warn); }
+    .ds-pill-revisar::before { background: var(--warn); }
+    .ds-pill-erro { background: rgba(231,76,60,.15); color: var(--danger); }
+    .ds-pill-erro::before { background: var(--danger); }
 
     /* Card informativo do Design System */
     .ds-card {
-        background: #1E232F; border: 1px solid #2D3342;
+        background: var(--sf-2); border: 1px solid var(--sf-3);
         border-radius: 10px; padding: 16px 18px; margin-bottom: 12px;
     }
-    .ds-card-title { color: #E5E7EB; font-weight: 600; font-size: 14px; margin: 0 0 6px 0; }
-    .ds-card-body  { color: #9CA3AF; font-size: 13px; margin: 0; line-height: 1.6; }
+    .ds-card-title { color: var(--tx-2); font-weight: 600; font-size: 14px; margin: 0 0 6px 0; }
+    .ds-card-body  { color: var(--tx-3); font-size: 13px; margin: 0; line-height: 1.6; }
 
     /* Skeleton loading — placeholder animado durante carregamento */
     .ds-skeleton {
-        background: linear-gradient(90deg, #1E232F 25%, #2D3342 50%, #1E232F 75%);
+        background: linear-gradient(90deg, var(--sf-2) 25%, var(--sf-3) 50%, var(--sf-2) 75%);
         background-size: 200% 100%;
         animation: ds-shimmer 1.4s ease-in-out infinite;
         border-radius: 8px;
@@ -2845,11 +3225,11 @@ st.markdown("""
     }
 
     /* Barra de confiança visual (0-100) */
-    .ds-confbar-track { background:#2D3342; border-radius:999px; height:8px; width:100%; overflow:hidden; }
+    .ds-confbar-track { background:var(--sf-3); border-radius:999px; height:8px; width:100%; overflow:hidden; }
     .ds-confbar-fill  { height:8px; border-radius:999px; transition: width .4s ease; }
 
     /* Tooltip nativo aprimorado em elementos com [data-ds-tip] */
-    [data-ds-tip] { position: relative; cursor: help; border-bottom: 1px dotted #6B7280; }
+    [data-ds-tip] { position: relative; cursor: help; border-bottom: 1px dotted var(--tx-4); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -7347,7 +7727,8 @@ def _acessibilidade_critica(municipios, limiar_km=200.0):
 
 
 def _simular_abertura_polos(municipios, n_polos=5, max_candidatos=300, dist_min_km=30.0,
-                            polos_existentes=None, matriz_fn=None):
+                            polos_existentes=None, matriz_fn=None,
+                            objetivo="eficiencia", limiar_equidade_km=200.0):
     """[COBERTURA - 140ª geração] SIMULADOR DE ABERTURA DE POLOS (facility location guloso). Responde à
     pergunta que o gestor de fato faz: **onde abrir o próximo local de prova?**
 
@@ -7360,10 +7741,15 @@ def _simular_abertura_polos(municipios, n_polos=5, max_candidatos=300, dist_min_
     diz QUAIS municípios investigar como polo; a decisão final exige rotear os finalistas de verdade (o
     motor multicritério faz isso).
 
-    ⚠️ EFICIÊNCIA ≠ EQUIDADE: o guloso maximiza os km-candidato TOTAIS poupados, então ele privilegia
-    CLUSTERS DENSOS. Municípios isolados, com poucos candidatos, podem seguir mal atendidos mesmo depois de
-    abrir polos — a matemática está certa, mas a política pública pode não estar. Use a lista de
-    ACESSIBILIDADE CRÍTICA como contrapeso: ela mostra quem está sendo deixado para trás.
+    ⚠️ EFICIÊNCIA × EQUIDADE — agora é UMA ESCOLHA SUA, não um efeito colateral [154ª geração]:
+      • objetivo="eficiencia" (padrão): maximiza os km-candidato TOTAIS poupados. Privilegia CLUSTERS
+        DENSOS — abre polos onde há muita gente. Municípios isolados com poucos candidatos podem seguir
+        mal atendidos. A matemática está certa; a política pública pode não estar.
+      • objetivo="equidade": conta o ganho APENAS para os municípios que HOJE estão acima do limiar crítico
+        (padrão 200 km). Ou seja, só valoriza polos que ajudam QUEM ESTÁ PIOR. Um polo que economiza
+        1 milhão de km-candidato entre gente que já estava a 40 km vale ZERO neste modo.
+    Na 140ª eu NOMEEI essa tensão e disse "a decisão é sua" — mas não te dei a ferramenta para decidir.
+    Agora dei. As duas respostas são legítimas; elas respondem a perguntas DIFERENTES.
 
     DISTÂNCIA MÍNIMA: sem essa restrição o guloso sugeria polos a 12 km um do outro (matematicamente ótimo,
     operacionalmente absurdo). Candidatos a menos de `dist_min_km` de um polo já existente ou já escolhido
@@ -7400,6 +7786,12 @@ def _simular_abertura_polos(municipios, n_polos=5, max_candidatos=300, dist_min_
             if float(_Dex[_c].min()) < dist_min_km:
                 _bloq.add(_cand_idx[_c])
 
+    # [EQUIDADE - 154ª geração] máscara do objetivo: em "equidade", só contam os que HOJE estão mal servidos.
+    _eq = str(objetivo).lower().startswith("equi")
+    _peso_obj = (_ins * (_dist > float(limiar_equidade_km))) if _eq else _ins
+    if _eq and float(_peso_obj.sum()) <= 0:
+        return []                    # ninguém acima do limiar: nada a fazer em modo equidade
+
     _resultado = []
     _dist_atual = _dist.copy()
     _usados = set()
@@ -7417,7 +7809,7 @@ def _simular_abertura_polos(municipios, n_polos=5, max_candidatos=300, dist_min_
                 if float(_dm.min()) < dist_min_km:
                     continue
             _reducao = np.maximum(0.0, _dist_atual - _D[:, _c])   # só migra quem fica MAIS PERTO
-            _ganho = float((_reducao * _ins).sum())
+            _ganho = float((_reducao * _peso_obj).sum())           # o OBJETIVO decide o que conta
             if _ganho > _ganho_max:
                 _melhor, _ganho_max, _mask_best = _c, _ganho, _reducao
         if _melhor is None or _ganho_max <= 0:
@@ -7432,6 +7824,7 @@ def _simular_abertura_polos(municipios, n_polos=5, max_candidatos=300, dist_min_
         _dist_atual = np.minimum(_dist_atual, _D[:, _melhor])     # abre o polo
         _depois = float((_dist_atual[_benef] * _ins[_benef]).sum() / _ins[_benef].sum()) if _n_cand else 0.0
         _resultado.append({
+            "objetivo": "equidade" if _eq else "eficiencia",
             "ordem": _rodada + 1,
             "polo": _m[_i_mun].get("nome"),
             "uf": _m[_i_mun].get("uf", ""),
@@ -7575,6 +7968,180 @@ def _alocar_com_capacidade(municipios, capacidades, permitir_sem_vaga=True):
     _out["preco_da_restricao_km_cand"] = round(_out["custo_real_km_cand"] - _out["custo_ideal_km_cand"], 1)
     _out["deslocados"].sort(key=lambda d: -d["impacto_km_candidato"])
     return _out
+
+
+
+
+def _contingencia_polos(municipios, capacidades, top=15):
+    """[CONTINGENCIA - 154ª geração] ANÁLISE DE CONTINGÊNCIA: **e se um polo cair?**
+
+    Escola alagada, greve, interdição, problema estrutural — isso ACONTECE, e às vezes a duas semanas da
+    prova. Até aqui a plataforma não sabia responder: quais municípios ficam órfãos? para onde vão? a
+    capacidade restante absorve? quanto custa aos candidatos?
+
+    Para CADA polo, simula sua queda: remove-o, REALOCA tudo com Vogel respeitando a capacidade dos
+    sobreviventes, e mede o estrago. Devolve o RANKING DE CRITICIDADE — porque a pergunta que importa não é
+    "o que acontece se o polo X cair", é **"QUAL polo eu não posso perder"**.
+
+    Isso muda a operação: o gestor sabe onde colocar reserva técnica, vistoria prioritária e plano B —
+    em vez de espalhar recurso por igual sobre 300 polos, sendo que a queda da maioria custaria quase nada.
+
+    Retorna lista ordenada por criticidade, cada item com: candidatos que dependem do polo, municípios
+    realocados, km-candidato a mais, quantos ficariam SEM VAGA (o cenário vermelho) e se o plano seguiria
+    viável. PURO."""
+    _base = _alocar_com_capacidade(municipios, capacidades)
+    _custo_base = _base["custo_real_km_cand"]
+    _out = []
+    for _polo in list(capacidades.keys()):
+        _caps_sem = {p: c for p, c in capacidades.items() if p != _polo}
+        _dependem = [m for m in municipios if _base["alocacao"].get(m["nome"]) == _polo]
+        _cand_dep = int(sum(float(m.get("inscritos") or 0) for m in _dependem))
+        if not _caps_sem:
+            _out.append({"polo": _polo, "candidatos_que_dependem": _cand_dep,
+                         "municipios_que_dependem": len(_dependem), "viavel_sem_ele": False,
+                         "candidatos_sem_vaga": _cand_dep, "municipios_realocados": 0,
+                         "km_candidato_a_mais": 0.0, "criticidade": float("inf")})
+            continue
+        _sem = _alocar_com_capacidade(municipios, _caps_sem)
+        _realoc = sum(1 for m in municipios
+                      if _base["alocacao"].get(m["nome"]) and
+                      _sem["alocacao"].get(m["nome"]) != _base["alocacao"].get(m["nome"]))
+        _sv = int(sum(x["inscritos"] for x in _sem["sem_vaga"]))
+        _dano = round(_sem["custo_real_km_cand"] - _custo_base, 1)
+        # criticidade: o dano em km-candidato + uma penalidade PESADA por candidato sem vaga.
+        # Um candidato sem lugar para fazer a prova é incomparavelmente pior que km a mais — não é
+        # "mais deslocamento", é a prova NÃO ACONTECER para ele.
+        _crit = _dano + _sv * 10000.0
+        _out.append({"polo": _polo, "candidatos_que_dependem": _cand_dep,
+                     "municipios_que_dependem": len(_dependem),
+                     "viavel_sem_ele": _sem["viavel"] and _sv == 0,
+                     "candidatos_sem_vaga": _sv,
+                     "municipios_realocados": _realoc,
+                     "km_candidato_a_mais": _dano,
+                     "criticidade": round(_crit, 1)})
+    _out.sort(key=lambda x: -x["criticidade"])
+    return _out[:top]
+
+
+
+
+_ROTULOS_TABELA = {
+    # contingência
+    "polo": "Polo de Aplicação", "candidatos_que_dependem": "Candidatos que Dependem",
+    "municipios_que_dependem": "Municípios que Dependem", "viavel_sem_ele": "Plano Sobrevive?",
+    "candidatos_sem_vaga": "⛔ Candidatos SEM VAGA", "municipios_realocados": "Municípios Realocados",
+    "km_candidato_a_mais": "Custo se Cair (km-candidato)", "criticidade": "Criticidade",
+    # capacidade
+    "municipio": "Município", "uf": "UF", "inscritos": "Candidatos",
+    "polo_ideal": "Polo Ideal", "custo_ideal_km": "Distância Ideal (km)",
+    "polo_real": "Polo Recebido", "custo_real_km": "Distância Real (km)",
+    "km_a_mais": "Km a Mais", "impacto_km_candidato": "Impacto (km-candidato)",
+    "motivo": "Motivo", "capacidade": "Capacidade", "usado": "Ocupado",
+    "livre": "Vagas Livres", "pct": "Ocupação (%)",
+    # simulador de polos
+    "ordem": "Ordem", "objetivo": "Objetivo", "ganho_km_candidato": "Ganho (km-candidato)",
+    "municipios_beneficiados": "Municípios Beneficiados",
+    "candidatos_beneficiados": "Candidatos Beneficiados",
+    "dist_media_antes_km": "Distância Média ANTES (km)",
+    "dist_media_depois_km": "Distância Média DEPOIS (km)",
+    "reducao_media_km": "Redução Média (km)",
+    # acessibilidade / cobertura
+    "nome": "Município", "dist_atual_km": "Distância Atual (km)",
+    # Pareto / distribuição
+    "posicao": "Posição", "economia_km_candidato": "Economia (km-candidato)",
+    "pct_do_total": "% do Total", "pct_acumulado": "% Acumulado",
+    "n": "Registros", "media": "Média", "mediana": "Mediana", "desvio_padrao": "Desvio-Padrão",
+    "coef_variacao": "Coef. de Variação", "minimo": "Mínimo", "maximo": "Máximo",
+    "amplitude": "Amplitude", "q1": "Q1 (25%)", "q3": "Q3 (75%)", "iqr": "Amplitude Interquartil",
+    # comparador / faixas
+    "faixa": "Faixa de Diferença", "municipios": "Municípios", "candidatos": "Candidatos",
+    "pct_municipios": "% dos Municípios", "pct_candidatos": "% dos Candidatos",
+    "tempo_min_candidato": "Tempo (min-candidato)", "pct_candidatos_polo": "% dos Candidatos",
+    "origem_ref": "Origem (referência)",
+    # carga
+    "uf_polo": "UF do Polo", "dist_media_km": "Distância Média (km)",
+    "dist_max_km": "Distância Máxima (km)",
+}
+
+
+def _rotular_colunas(df, extra=None):
+    """[UX-TABELA - 155ª geração] Traduz as CHAVES INTERNAS das tabelas para rótulos que um HUMANO lê.
+
+    BUG QUE ISTO CORRIGE (meu): o gestor abria a tabela de contingência e lia `viavel_sem_ele`,
+    `km_candidato_a_mais`, `impacto_km_candidato`. Isso é NOME DE VARIÁVEL na cara do usuário — 17 chaves
+    snake_case vazando em tabelas que fundamentam decisão pública.
+
+    Mesma arquitetura da 134ª: traduz na FRONTEIRA DE APRESENTAÇÃO. O DataFrame interno segue com as chaves
+    originais (o código depende delas); só a EXIBIÇÃO muda. PURO."""
+    try:
+        if df is None or len(df.columns) == 0:
+            return df
+        _m = dict(_ROTULOS_TABELA)
+        if extra:
+            _m.update(extra)
+        return df.rename(columns={c: _m[c] for c in df.columns if c in _m})
+    except Exception as _e:
+        logger.error(f"[UX-TABELA] Falha ao rotular colunas: {_e}")
+        return df
+
+
+_CORES_RISCO = {
+    "alto": "#4A1D1D", "muito alto": "#4A1D1D", "⛔": "#4A1D1D", "não": "#4A1D1D",
+    "médio": "#4A3A1D", "media": "#4A3A1D", "aviso": "#4A3A1D",
+    "baixo": "#1D3A28", "exclusivo": "#1D3A28", "sim": "#1D3A28", "✅": "#1D3A28",
+}
+
+
+def _colorir_risco(df, cols_risco=None, cols_pct_ruim=None, cols_negativo_ruim=None):
+    """[UX-TABELA - 155ª geração] COLORAÇÃO CONDICIONAL onde mora o perigo.
+
+    POR QUE ISTO NÃO É ENFEITE: um gestor escaneando 5.571 linhas NÃO CONSEGUE VER "Risco Alto" escrito em
+    texto simples no meio de milhares de "Risco Baixo". A informação está lá e é INVISÍVEL. Cor não é
+    decoração aqui — é o canal pelo qual o perigo chega ao olho antes da leitura consciente.
+
+    Colore: colunas de RISCO/status (Alto→vermelho, Médio→âmbar, Baixo→verde), colunas de OCUPAÇÃO
+    (≥100% → vermelho: o polo está estourado) e colunas onde NEGATIVO é RUIM (a aplicação levou o candidato
+    mais longe). Devolve um Styler; em erro devolve o df cru (nunca quebra a tela)."""
+    try:
+        import pandas as _pd
+        if df is None or len(df) == 0 or len(df) > 3000:
+            return df                       # tabelas gigantes: o Styler fica caro e o valor cai
+        _cr = [c for c in (cols_risco or []) if c in df.columns]
+        _cp = [c for c in (cols_pct_ruim or []) if c in df.columns]
+        _cn = [c for c in (cols_negativo_ruim or []) if c in df.columns]
+        if not (_cr or _cp or _cn):
+            return df
+
+        def _st(v, col):
+            if col in _cr:
+                _t = str(v).strip().lower()
+                for _k, _c in _CORES_RISCO.items():
+                    if _t.startswith(_k):
+                        return f"background-color: {_c}"
+                return ""
+            if col in _cp:
+                try:
+                    _f = float(v)
+                except (TypeError, ValueError):
+                    return ""
+                if _f >= 100:
+                    return "background-color: #4A1D1D; font-weight: 600"
+                if _f >= 85:
+                    return "background-color: #4A3A1D"
+                return ""
+            if col in _cn:
+                try:
+                    _f = float(v)
+                except (TypeError, ValueError):
+                    return ""
+                if _f < 0:
+                    return "background-color: #4A1D1D"
+                return ""
+            return ""
+        return df.style.apply(lambda s: [_st(v, s.name) for v in s], axis=0)
+    except Exception as _e:
+        logger.error(f"[UX-TABELA] Falha ao colorir: {_e}")
+        return df
 
 
 def _carga_por_polo(municipios):
@@ -8461,6 +9028,109 @@ def _fmt_num(x, casas=0):
     return _t.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
+
+
+def _veredito_comparacao(stats, aud, linhas=None):
+    """[CMP-DIDATICO - 160ª geração] O VEREDITO: responde ANTES de justificar.
+
+    O PROBLEMA QUE ISTO RESOLVE: a aba mostrava **23 KPIs e 8 painéis** — uma PILHA DE FATOS, não uma
+    resposta. O usuário abria e tinha que MONTAR a conclusão sozinho, a partir de números como "economia
+    ponderada: 1.400.000 km-candidato" — uma unidade que a tela nunca explicava.
+
+    Aqui a ordem se inverte, como num parecer técnico de verdade:
+      1. **Posso confiar nisto?**  (se não, nada mais importa — e isso vem PRIMEIRO)
+      2. **Qual é a resposta?**    (uma frase, em português)
+      3. **Qual o tamanho disso?** (traduzido para ESCALA HUMANA: km a menos POR CANDIDATO)
+
+    A tradução para escala humana é o ponto: "1.400.000 km-candidato" não significa nada para ninguém.
+    "**Cada candidato anda 12,4 km a menos**" significa tudo. É o mesmo número, dividido pelo total de
+    candidatos — mas é a diferença entre um dado e um entendimento. PURO."""
+    br = stats.get("brasil", {}) if stats else {}
+    _tot_ref = aud.get("total_ref", 0) if aud else 0
+    _conc = aud.get("conciliados", 0) if aud else 0
+    _fuzzy = aud.get("por_fuzzy", 0) if aud else 0
+    _pct_conc = round(100.0 * _conc / _tot_ref, 1) if _tot_ref else 0.0
+    _nao = len(aud.get("nao_conciliados", []) or []) if aud else 0
+
+    # ---------- 1. CONFIANÇA (vem primeiro: se não dá para confiar, o resto é ruído) ----------
+    if _pct_conc >= 95 and _fuzzy == 0:
+        _conf, _ico_c = "ALTA", "🟢"
+        _conf_txt = (f"**{_fmt_num(_pct_conc, 1)}% dos municípios da referência foram conciliados**, todos por vínculo "
+                     "oficial (código IBGE ou município+UF). Pode confiar nos números abaixo.")
+    elif _pct_conc >= 80:
+        _conf, _ico_c = "MÉDIA", "🟡"
+        _partes = [f"**{_fmt_num(_pct_conc, 1)}% conciliados**"]
+        if _fuzzy:
+            _partes.append(f"**{_fuzzy} vínculo(s) por SIMILARIDADE textual** (não é vínculo oficial — "
+                           "confira-os na Auditoria)")
+        if _nao:
+            _partes.append(f"**{_nao} registro(s) ficaram FORA de todas as estatísticas**")
+        _conf_txt = " · ".join(_partes) + ". Leia os números abaixo com essa ressalva."
+    else:
+        _conf, _ico_c = "BAIXA", "🔴"
+        _conf_txt = (f"Apenas **{_fmt_num(_pct_conc, 1)}%** dos municípios foram conciliados. **Os percentuais abaixo NÃO "
+                     "representam o universo completo** — eles descrevem só a parte que casou. Corrija a "
+                     "planilha (adicione UF ou Código IBGE) antes de tirar conclusões.")
+
+    # ---------- 2. A RESPOSTA (uma frase) ----------
+    _p_app = br.get("pct_venceu_app", 0)
+    _p_ref = br.get("pct_venceu_ref", 0)
+    _p_emp = br.get("pct_empate", 0)
+    _econ = br.get("economia_ponderada_km", 0)
+    _insc = br.get("inscritos", 0)
+
+    if _p_app > _p_ref + 5:
+        _ico, _titulo = "🏆", "A SUA APLICAÇÃO produziu a melhor distribuição"
+        _frase = (f"Ela levou o candidato **mais perto do local de prova** em **{_p_app}% dos municípios**. "
+                  f"A referência venceu em {_p_ref}%, e {_p_emp}% empataram tecnicamente.")
+    elif _p_ref > _p_app + 5:
+        _ico, _titulo = "⚠️", "A BASE DE REFERÊNCIA produziu a melhor distribuição"
+        _frase = (f"Ela levou o candidato mais perto em **{_p_ref}% dos municípios**, contra {_p_app}% da sua "
+                  f"aplicação. Vale investigar antes de adotar a sua distribuição.")
+    else:
+        _ico, _titulo = "⚖️", "As duas soluções são tecnicamente EQUIVALENTES"
+        _frase = (f"Sua aplicação venceu em {_p_app}%, a referência em {_p_ref}%, e {_p_emp}% empataram. "
+                  "Nenhuma é claramente superior no conjunto — a escolha pode se dar por outros critérios.")
+
+    # ---------- 3. ESCALA HUMANA (o número que a pessoa entende) ----------
+    _km_por_cand = round(_econ / _insc, 1) if _insc else 0.0
+    _benef = br.get("candidatos_beneficiados", 0)
+    _prej = br.get("candidatos_prejudicados", 0)
+    _tempo_min = br.get("economia_tempo_ponderada_min", 0)
+
+    _humano = []
+    if _km_por_cand > 0:
+        _humano.append(f"Na prática: **cada candidato anda {_fmt_num(_km_por_cand, 1)} km A MENOS**, em média.")
+    elif _km_por_cand < 0:
+        _humano.append(f"Na prática: **cada candidato anda {_fmt_num(abs(_km_por_cand), 1)} km A MAIS**, em média.")
+    if _benef:
+        _humano.append(f"**{_fmt_num(_benef)} candidatos** ficaram mais perto")
+    if _prej:
+        _humano.append(f"**{_fmt_num(_prej)} ficaram mais longe**")
+    if _tempo_min:
+        _h = abs(_tempo_min) / 60.0
+        _humano.append(f"**{_fmt_num(_h)} horas-candidato** "
+                       f"{'poupadas' if _tempo_min > 0 else 'a mais'}")
+
+    # ---------- 4. O QUE FAZER AGORA ----------
+    _acao = None
+    if _p_ref > 20 and linhas:
+        _piores = sorted([l for l in linhas if (l.get("Diferenca Abs (km)") or 0) < -20],
+                         key=lambda l: float(l.get("Economia km x Inscritos") or 0))[:3]
+        if _piores:
+            _acao = ("🔎 **Onde olhar primeiro:** os municípios em que a sua aplicação levou o candidato "
+                     "MUITO mais longe — " +
+                     ", ".join(f"**{p.get('Origem')}/{p.get('UF', '')}** "
+                               f"({abs(float(p.get('Diferenca Abs (km)') or 0)):.0f} km a mais)"
+                               for p in _piores) +
+                     ". Pode ser escolha logística legítima (evitar balsa) — ou município mal identificado.")
+
+    return {"confianca": _conf, "icone_confianca": _ico_c, "texto_confianca": _conf_txt,
+            "icone": _ico, "titulo": _titulo, "frase": _frase,
+            "escala_humana": _humano, "acao": _acao,
+            "km_por_candidato": _km_por_cand, "pct_conciliado": _pct_conc}
+
+
 def _relatorio_executivo_comparacao(stats, aud, top_municipios=None):
     """[COMPARADOR - 138ª geração] RELATÓRIO EXECUTIVO automático: transforma os números da comparação num
     parecer técnico em linguagem natural (resumo, metodologia, resultados, divergências, análise territorial,
@@ -8725,6 +9395,37 @@ def forcar_geocodificacao_hierarquica_estrita(texto_cru, modo_oficial=None):
     # [OFFLINE - 144ª geração] CURTO-CIRCUITO: se a entrada é inequivocamente um município, a resposta
     # OFICIAL já está em memória. Antes, 3 APIs eram chamadas e o resultado era praticamente descartado
     # (a âncora IBGE já era injetada logo abaixo). ~95% das chamadas de geocodificação eliminadas.
+    # =========================================================================================
+    # [IBGE-ABSOLUTO - 156ª geração] PRIORIDADE ABSOLUTA DO CÓDIGO IBGE — a CAUSA RAIZ do bug relatado.
+    #
+    # O BUG: este caminho (modo estrito, anti-colisão) NÃO conhecia códigos IBGE. Ele chamava
+    # _resolver_municipio_offline, que busca por NOME: o código "1300904" normalizado vira a chave
+    # "1300904", que NÃO EXISTE num índice indexado por NOME → devolve None → o código cai na NUVEM, e
+    # ArcGIS/Nominatim/Photon recebem a string "1300904" **como se fosse um endereço**. É óbvio que falha.
+    #
+    # A base estava certa o tempo todo (auditei os 5.571 códigos: prefixo bate com a UF em 100%, zero
+    # duplicatas, zero coordenada fora do Brasil). O índice reverso resolvia 1300904 → CANUTAMA/AM em O(1).
+    # O que faltava era ESTE caminho perguntar ao índice ANTES de perguntar à nuvem.
+    #
+    # REGRA, como pedido: se a entrada é um código IBGE VÁLIDO, nenhuma API adivinha, nenhuma heurística
+    # substitui, nenhuma desambiguação ocorre. A base oficial é a AUTORIDADE MÁXIMA. Ponto final.
+    # =========================================================================================
+    _cod_abs = _e_codigo_ibge(texto_norm)
+    if _cod_abs:
+        _it_abs = _indice_ibge_por_codigo().get(_cod_abs)
+        if _it_abs and _it_abs.get("lat") and _it_abs.get("lon"):
+            registrar_telemetria("IBGE_OFICIAL", True, 0.0)
+            _mun_abs = _titulo_municipio(_it_abs["municipio"])
+            _uf_abs = _it_abs["uf"]
+            return (float(_it_abs["lat"]), float(_it_abs["lon"]),
+                    f"{_mun_abs.upper()}, {_uf_abs}, BRASIL", "IDENTIDADE_OFICIAL_IBGE", 100, "",
+                    _mun_abs, "IBGE (Base Oficial — Autoridade Máxima)",
+                    [f"🔒 Código IBGE {_cod_abs} → {_mun_abs}/{_uf_abs}. Resolvido pela BASE OFICIAL em "
+                     "O(1), sem consultar nenhuma API. O código IBGE tem PRIORIDADE ABSOLUTA: nenhuma "
+                     "heurística, consenso ou desambiguação pode substituí-lo."])
+        if not _it_abs:
+            logger.error(f"[IBGE-ABSOLUTO] Código {_cod_abs} não existe na base oficial embarcada.")
+
     _mo = _MODO_OFICIAL_OFFLINE.get("ativo", True) if modo_oficial is None else bool(modo_oficial)
     if _mo:
         try:
@@ -11055,6 +11756,43 @@ _PARAMS_CUSTO_HUB = {
     "limiar_sinuosidade": 1.3,  # acima disto a rota é considerada indireta
     "peso_sinuosidade": 0.5,    # fração do desvio (viária − reta) que vira penalidade quando a rota é indireta
 }
+
+
+def _decompor_custo_hub(dist_viaria, dist_reta=None, tempo_min=None, balsa=False, params=None):
+    """[SENSIBILIDADE - 157ª geração] DECOMPOSIÇÃO DO CUSTO: quanto CADA critério pesou na decisão.
+
+    ISTO NÃO É ESTIMATIVA. O modelo é **ADITIVO**:
+        custo = viária + penalidade_lentidão + penalidade_balsa + penalidade_sinuosidade
+    Logo a contribuição de cada parcela é **EXATA**. "Distância → 42% · Tempo → 31% · Balsa → 18%" é um
+    FATO ARITMÉTICO, não um palpite de importância.
+
+    Por que isso é raro: a maioria dos sistemas multicritério usa soma ponderada com normalização min-max,
+    onde a "importância" de um critério depende do CONJUNTO de candidatos e não significa nada em absoluto.
+    Aqui, como o custo é medido em km-equivalentes (unidade real e absoluta), a decomposição é literal.
+
+    Responde direto a "POR QUE este polo venceu?" e a "QUAL critério foi determinante?". PURO."""
+    _d = _custo_logistico_efetivo(dist_viaria, dist_reta, tempo_min, balsa, params)
+    if not _d:
+        return {}
+    _parcelas = {
+        "Distância viária": float(_d.get("base_km") or 0),
+        "Lentidão da estrada": float(_d.get("pen_tempo_km") or 0),
+        "Travessia de balsa": float(_d.get("pen_balsa_km") or 0),
+        "Sinuosidade do traçado": float(_d.get("pen_sinuosidade_km") or 0),
+    }
+    _tot = sum(_parcelas.values())
+    if _tot <= 0:
+        return {}
+    _pct = {k: round(100.0 * v / _tot, 1) for k, v in _parcelas.items()}
+    _det = max(_parcelas.items(), key=lambda kv: kv[1])
+    _pen = _tot - _parcelas["Distância viária"]
+    return {"parcelas_km": {k: round(v, 1) for k, v in _parcelas.items()},
+            "parcelas_pct": _pct,
+            "custo_efetivo_km": round(_tot, 1),
+            "penalidades_km": round(_pen, 1),
+            "pct_penalidades": round(100.0 * _pen / _tot, 1),
+            "criterio_determinante": _det[0],
+            "peso_determinante_pct": _pct[_det[0]]}
 
 
 def _custo_logistico_efetivo(dist_viaria, dist_reta=None, tempo_min=None, balsa=False, params=None):
@@ -15013,10 +15751,82 @@ if _secao == _SECOES[2]:   # tab_alocacao
         # quando o modo estava ligado: marcar o checkbox deslocava o BOTÃO de posição na árvore → removeChild.
         # Agora SEMPRE existe (colapsado, sem poluir) e os sliders sempre existem — o que, de quebra, elimina
         # a coleta de estado de widget que me obrigava a congelar os params.
+        # [CALIBRA-UX - 157ª geração] TUTORIAL + PRESETS. O painel era CONFUSO: 4 sliders técnicos sem
+        # explicar o que fazem, quando usar, nem que valores escolher. Pior — havia uma ARMADILHA: os
+        # parâmetros só são LIDOS dentro do bloco do multicritério, então **calibrar sem ligar o
+        # multicritério não fazia absolutamente NADA**. O usuário mexia em tudo, processava, e o resultado
+        # era IDÊNTICO. Agora isso é dito na cara, e há presets prontos para quem não quer calibrar à mão.
         with st.expander("⚙️ Calibrar o custo logístico (km-equivalentes)", expanded=False):
                 if not st.session_state.get('alo_multicriterio'):
-                    st.caption("Estes parâmetros valem para o modo **multicritério** (marque a opção acima para usá-los).")
-                st.caption("O esforço de deslocamento até cada polo é medido em **km-equivalentes**: `viária + lentidão + balsa + sinuosidade`. "
+                    st.error("⛔ **A calibração está DESLIGADA.** Estes parâmetros só têm efeito no modo "
+                             "**multicritério** — marque a caixa **“🛣️ Escolher local de aplicação por "
+                             "deslocamento real”** acima. Sem ela, mexer nos controles abaixo **não muda "
+                             "absolutamente nada** no resultado.")
+                st.markdown("""
+                #### 📖 O que é isto, em uma frase
+                A plataforma não escolhe o polo mais **perto**. Ela escolhe o de **menor esforço real de
+                deslocamento** — e mede esse esforço numa moeda única: o **km-equivalente**.
+
+                #### 🤔 Por que a distância não basta
+                Dois locais de prova para o mesmo município:
+
+                | | Polo A | Polo B |
+                |---|---|---|
+                | Distância por estrada | **180 km** | 195 km |
+                | Travessia de balsa | **Sim** 🚢 | Não |
+                | Tempo | **4h30** | 2h50 |
+
+                O polo A é **15 km mais perto**. Mas o candidato acorda de madrugada, espera a balsa e chega
+                **1h40 depois**. Quem já fez esse trajeto sabe: **o polo B é melhor.** O km-equivalente
+                traduz isso em número:
+
+                | Parcela | Polo A | Polo B |
+                |---|---|---|
+                | Distância viária | 180 km | 195 km |
+                | + Lentidão da estrada | **+90 km** | 0 |
+                | + Travessia de balsa | **+60 km** | 0 |
+                | **= Esforço real** | **330 km-eq** | **195 km-eq** 🏆 |
+
+                O polo B vence — **mesmo sendo mais longe**. A calibração define **quanto cada incômodo
+                “vale” em quilômetros, na SUA operação**.
+
+                #### 🎛️ O que cada controle faz
+                | Controle | O que significa | Aumente se... |
+                |---|---|---|
+                | **Velocidade de referência** | O que você considera estrada “normal”. Rotas mais lentas ganham penalidade. | ...quer punir mais as estradas ruins. |
+                | **Penalidade da balsa** | Quantos km de estrada “valem” uma travessia. | ...balsa é problema sério (fila, horário, cancelamento). |
+                | **Limiar de sinuosidade** | A partir de quanto uma rota “dá volta”. | ...tolera mais desvio. (Diminua para punir mais.) |
+                | **Peso da sinuosidade** | Quanto punir cada km de desvio. | ...traçado sinuoso é risco (serra, curva). |
+                """)
+                st.markdown("##### 🎯 Não quer calibrar à mão? Escolha um perfil:")
+                _pre = st.radio("Perfil de calibração", [
+                        "⚖️ Equilibrado (recomendado)",
+                        "🚫 Evitar balsa a todo custo",
+                        "⏱️ Priorizar o menor tempo",
+                        "📏 Só distância (ignorar tudo)"],
+                    key="calib_preset",
+                    help="Cada perfil sugere os 4 valores de uma vez. Ajuste os controles abaixo conforme o perfil.")
+                _PRESETS = {
+                    "⚖️ Equilibrado (recomendado)": (60, 60, 1.3, 0.5,
+                        "O padrão. Uma balsa vale 60 km de estrada; rotas abaixo de 60 km/h são punidas; "
+                        "desvios acima de 30% da linha reta contam meio ponto. Serve para a maioria dos casos."),
+                    "🚫 Evitar balsa a todo custo": (60, 250, 1.3, 0.5,
+                        "Uma balsa passa a valer **250 km**. Na prática, o motor só manda o candidato para uma "
+                        "rota com travessia se **não houver alternativa terrestre razoável**. Use quando a balsa "
+                        "é risco operacional real (fila, horário fixo, cancelamento por maré)."),
+                    "⏱️ Priorizar o menor tempo": (90, 60, 1.6, 0.2,
+                        "A velocidade de referência sobe para 90 km/h: **toda rota mais lenta leva penalidade "
+                        "pesada**. A sinuosidade quase não conta. Use quando o que dói é o candidato passar "
+                        "horas na estrada, não a quilometragem."),
+                    "📏 Só distância (ignorar tudo)": (60, 0, 9.9, 0.0,
+                        "⚠️ Zera as penalidades: **balsa não custa nada, estrada lenta não custa nada**. O "
+                        "vencedor vira o de menor quilometragem. Serve para COMPARAR: rode assim, depois com o "
+                        "Equilibrado, e veja quantos municípios mudam de polo."),
+                }
+                _v, _b, _l, _ps, _expl = _PRESETS[_pre]
+                st.info(f"**{_pre}** → velocidade **{_v} km/h** · balsa **+{_b} km-eq** · limiar **{_l}** · "
+                        f"peso **{_ps}**\n\n{_expl}")
+                st.caption("O esforço de deslocamento até cada polo é medido em **km-equivalentes**. "
                            "Ajuste abaixo quanto cada fator “vale” em km na **sua** operação — vence o hub de menor custo.")
                 _pc1, _pc2 = st.columns(2)
                 with _pc1:
@@ -15559,9 +16369,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                                       for _i in range(len(_dfp_cob))])
                             if _carga:
                                 _dfc = pd.DataFrame(_carga)
-                                st.dataframe(_dfc[["polo", "uf", "candidatos", "pct_candidatos", "municipios",
-                                                   "dist_media_km", "dist_max_km"]].head(25),
-                                             use_container_width=True, hide_index=True, height=240)
+                                st.dataframe(_rotular_colunas(_dfc[[
+                                    "polo", "uf", "candidatos", "pct_candidatos", "municipios",
+                                    "dist_media_km", "dist_max_km"]].head(25)),
+                                    use_container_width=True, hide_index=True, height=240)
                                 _t1 = _carga[0]
                                 st.info(f"🏫 O polo mais carregado é **{_t1['polo']}/{_t1['uf']}**: receberia "
                                         f"**{_fmt_num(_t1['candidatos'])} {_unid}** ({_t1['pct_candidatos']}% do total), "
@@ -15648,17 +16459,58 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                         st.dataframe(pd.DataFrame(_rc["sem_vaga"]), use_container_width=True,
                                                      hide_index=True)
                                     if _rc["deslocados"]:
-                                        st.dataframe(pd.DataFrame(_rc["deslocados"]), use_container_width=True,
-                                                     hide_index=True, height=240)
+                                        st.dataframe(_rotular_colunas(pd.DataFrame(_rc["deslocados"])),
+                                                     use_container_width=True, hide_index=True, height=240)
                                     _oc = pd.DataFrame([{"Polo": _p, **_o} for _p, _o in _rc["ocupacao"].items()])
                                     if len(_oc):
                                         _oc = _oc.sort_values("pct", ascending=False)
-                                        st.dataframe(_oc, use_container_width=True, hide_index=True, height=200)
+                                        st.dataframe(
+                                            _colorir_risco(_rotular_colunas(_oc), cols_pct_ruim=["Ocupação (%)"]),
+                                            use_container_width=True, hide_index=True, height=200)
                                         _lot = _oc[_oc["pct"] >= 100]
                                         if len(_lot):
                                             st.caption(f"🔴 **{len(_lot)} polo(s) 100% lotados** — são eles que estão "
                                                        "empurrando candidatos para longe. Ampliá-los é a intervenção "
                                                        "de maior retorno.")
+                                    # [CONTINGENCIA - 154ª geração] E SE UM POLO CAIR? Escola alagada, greve,
+                                    # interdição — acontece, e às vezes a duas semanas da prova.
+                                    st.markdown("###### 🚨 Contingência: qual polo você NÃO pode perder?")
+                                    if st.button("🚨 Simular a queda de cada polo", key="cont_run",
+                                                 help="Para CADA polo, remove-o e realoca tudo respeitando a "
+                                                      "capacidade dos sobreviventes. Mostra o ranking de "
+                                                      "criticidade — onde colocar reserva técnica e vistoria."):
+                                        with st.spinner("Simulando a queda de cada polo..."):
+                                            st.session_state['cont_res'] = _contingencia_polos(
+                                                _mun_cap, _caps, top=15)
+                                    _ct = st.session_state.get('cont_res')
+                                    if not _ct:
+                                        st.caption("Clique acima para descobrir quais polos são insubstituíveis.")
+                                    if _ct:
+                                        _t0 = _ct[0]
+                                        if not _t0["viavel_sem_ele"]:
+                                            st.error(
+                                                f"🔴 **{_t0['polo']} é insubstituível.** "
+                                                f"**{_fmt_num(_t0['candidatos_que_dependem'])} candidatos** dependem "
+                                                f"dele. Se cair, **{_fmt_num(_t0['candidatos_sem_vaga'])} ficam SEM "
+                                                "VAGA** — a prova simplesmente **não acontece** para eles. "
+                                                "Reserva técnica e vistoria prioritária começam aqui.")
+                                        if _t0["viavel_sem_ele"]:
+                                            st.warning(
+                                                f"⚠️ **{_t0['polo']}** é o polo mais crítico: se cair, todos ainda "
+                                                f"cabem, mas custaria **{_fmt_num(_t0['km_candidato_a_mais'])} "
+                                                "km-candidato** a mais.")
+                                        # [UX-TABELA - 155ª geração] rótulos humanos + o PERIGO colorido.
+                                        _df_ct = _rotular_colunas(pd.DataFrame(_ct))
+                                        st.dataframe(
+                                            _colorir_risco(_df_ct,
+                                                           cols_risco=["Plano Sobrevive?"],
+                                                           cols_negativo_ruim=[]),
+                                            use_container_width=True, hide_index=True, height=280)
+                                        st.caption("**Por que isto importa:** sem este ranking, o gestor espalha "
+                                                   "reserva e vistoria por igual sobre todos os polos — sendo que a "
+                                                   "queda da maioria custaria **quase nada**, e a de um punhado "
+                                                   "seria **catastrófica**. Concentre o recurso no topo desta lista.")
+
                                     st.caption("**Método:** aproximação de Vogel (arrependimento). Atende primeiro o "
                                                "município que mais PERDE se não conseguir seu polo ideal — não o de "
                                                "menor custo. Um guloso ingênuo encheria os melhores polos com quem "
@@ -15686,14 +16538,27 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             st.error(f"⛔ **{len(_crit)} município(s)** acima de {_lim} km, somando "
                                      f"**{_fmt_num(_tot_crit)} {_unid}**. Ordenados por IMPACTO (inscritos × km) — "
                                      "3.000 candidatos a 210 km doem mais que 20 a 400 km.")
-                            st.dataframe(pd.DataFrame(_crit)[["nome", "uf", "inscritos", "dist_atual_km",
-                                                              "impacto_km_candidato"]].head(30),
-                                         use_container_width=True, hide_index=True, height=240)
+                            st.dataframe(_rotular_colunas(pd.DataFrame(_crit)[
+                                ["nome", "uf", "inscritos", "dist_atual_km", "impacto_km_candidato"]].head(30)),
+                                use_container_width=True, hide_index=True, height=240)
 
                         st.markdown("##### 🏗️ Simulador: onde abrir o próximo polo?")
                         st.caption("Calcula, para cada município, quanto se pouparia **se um polo abrisse ali** — "
                                    "considerando que só migram os candidatos que ficariam **mais perto**. Escolhe o "
                                    "melhor, atualiza as distâncias e repete (guloso).")
+                        # [EQUIDADE - 154ª geração] O OBJETIVO agora é uma ESCOLHA. Na 140ª eu nomeei a
+                        # tensão eficiência × equidade e disse "a decisão é sua" — sem dar a ferramenta.
+                        _obj = st.radio(
+                            "O que o polo novo deve maximizar?",
+                            ["⚡ Eficiência — maior economia TOTAL de deslocamento",
+                             "⚖️ Equidade — ajudar quem está PIOR atendido"],
+                            key="cob_obj", horizontal=False,
+                            help="EFICIÊNCIA abre polos onde há MUITA gente (o total economizado é enorme, "
+                                 "mas pode ser gente que já estava bem servida). EQUIDADE só valoriza polos "
+                                 "que ajudam quem está ACIMA do limiar crítico — pouca gente, mas são os que "
+                                 "de fato sofrem. As duas respostas são legítimas: elas respondem perguntas "
+                                 "DIFERENTES.")
+                        _obj_key = "equidade" if _obj.startswith("⚖️") else "eficiencia"
                         _s1, _s2 = st.columns(2)
                         _n_polos = _s1.slider("Quantos polos simular", 1, 10, 3, key="cob_npolos")
                         _dmin = _s2.slider("Distância mínima entre polos (km)", 0, 200, 50, 10, key="cob_dmin",
@@ -15707,16 +16572,18 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                         pd.to_numeric(_dfp_cob['Lon Destino'], errors='coerce'))
                                         if a == a and b == b})
                                 st.session_state['cob_sim'] = _simular_abertura_polos(
-                                    _muns, n_polos=int(_n_polos), dist_min_km=float(_dmin), polos_existentes=_pex)
+                                    _muns, n_polos=int(_n_polos), dist_min_km=float(_dmin),
+                                    polos_existentes=_pex, objetivo=_obj_key,
+                                    limiar_equidade_km=float(_lim))
                         _sim_r = st.session_state.get('cob_sim')
                         if not _sim_r:
                             st.caption("Clique em **Simular** para ver o ranking de municípios candidatos a polo.")
                         if _sim_r:
                             _df_sim = pd.DataFrame(_sim_r)
-                            st.dataframe(_df_sim[["ordem", "polo", "uf", "ganho_km_candidato",
-                                                  "candidatos_beneficiados", "municipios_beneficiados",
-                                                  "dist_media_antes_km", "dist_media_depois_km", "reducao_media_km"]],
-                                         use_container_width=True, hide_index=True)
+                            st.dataframe(_rotular_colunas(_df_sim[[
+                                "ordem", "polo", "uf", "ganho_km_candidato", "candidatos_beneficiados",
+                                "municipios_beneficiados", "dist_media_antes_km", "dist_media_depois_km",
+                                "reducao_media_km"]]), use_container_width=True, hide_index=True)
                             _p1 = _sim_r[0]
                             st.success(f"🏗️ **Melhor abertura: {_p1['polo']}/{_p1['uf']}** — pouparia "
                                        f"**{_fmt_num(_p1['ganho_km_candidato'])} km-candidato**, beneficiando "
@@ -15727,6 +16594,11 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                 st.map(_df_sim[["lat", "lon"]].astype(float), size=20000, color="#16a34a")
                             except Exception:
                                 pass
+                            st.caption(f"🎯 Objetivo usado: **{_sim_r[0].get('objetivo', 'eficiencia')}**"
+                                       + (f" — só contou o ganho dos municípios acima de **{_lim} km** "
+                                          "(quem já estava bem servido não valeu ponto)."
+                                          if _sim_r[0].get('objetivo') == 'equidade' else
+                                          " — maximizou a economia TOTAL, o que privilegia clusters densos."))
                             st.warning("⚠️ **Duas ressalvas honestas.** (1) A simulação usa distância **geodésica** "
                                        "(linha reta), não viária — ela serve para **triagem**: diz quais municípios "
                                        "investigar, e os finalistas devem ser roteados de verdade (modo multicritério). "
@@ -15764,6 +16636,54 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                            f"({_pct_p:.0f}%) — a distância em linha reta deles já superava o custo real "
                                            f"do polo mais próximo, então **não podiam vencer**. Só {_pd_i['roteadas']} "
                                            "precisaram ser roteados. A decisão é idêntica; a rede é que foi poupada.")
+                            # [SENSIBILIDADE - 157ª geração] POR QUE ESTE POLO VENCEU — decomposição EXATA.
+                        # O custo é ADITIVO, então a contribuição de cada critério não é estimada: é
+                        # aritmética. "Distância 54,5% · Lentidão 27,3% · Balsa 18,2%" é um FATO.
+                        with st.container():
+                            _md = st.session_state.get('alo_mcda') or {}
+                            if _md:
+                                st.markdown("##### 🔬 Por que este polo venceu? (decomposição exata do custo)")
+                                _opts_d = sorted(_md.keys())[:400]
+                                _sel_d = st.selectbox("Município para inspecionar", _opts_d, key="dec_mun")
+                                _dd = _md.get(_sel_d) or {}
+                                _cands = _dd.get("candidatos") or []
+                                if not _cands:
+                                    st.caption("Sem candidatos registrados para este município.")
+                                if _cands:
+                                    _linhas_d = []
+                                    for _c in _cands:
+                                        _dec = _decompor_custo_hub(
+                                            _c.get("dist_viaria"), _c.get("dist_reta"),
+                                            _c.get("tempo_min"), _c.get("balsa"),
+                                            st.session_state.get('alo_params_custo'))
+                                        if not _dec:
+                                            continue
+                                        _linhas_d.append({
+                                            "Polo": _c.get("hub"),
+                                            "Esforço total (km-eq)": _dec["custo_efetivo_km"],
+                                            **{f"{k} (km)": v for k, v in _dec["parcelas_km"].items()},
+                                            "Critério determinante": _dec["criterio_determinante"],
+                                            "Peso do determinante": f"{_dec['peso_determinante_pct']}%",
+                                        })
+                                    if _linhas_d:
+                                        _df_d = pd.DataFrame(_linhas_d).sort_values("Esforço total (km-eq)")
+                                        st.dataframe(_df_d, use_container_width=True, hide_index=True)
+                                        _venc = _df_d.iloc[0]
+                                        _pior = _df_d.iloc[-1] if len(_df_d) > 1 else None
+                                        st.success(
+                                            f"🏆 **{_venc['Polo']}** venceu com **{_venc['Esforço total (km-eq)']} "
+                                            f"km-equivalentes**. Critério determinante: "
+                                            f"**{_venc['Critério determinante']}** "
+                                            f"({_venc['Peso do determinante']} do esforço).")
+                                        if _pior is not None and len(_df_d) > 1:
+                                            _dif = _pior["Esforço total (km-eq)"] - _venc["Esforço total (km-eq)"]
+                                            st.caption(
+                                                f"O pior candidato ({_pior['Polo']}) custaria "
+                                                f"**{_pior['Esforço total (km-eq)']} km-eq** — "
+                                                f"**{_fmt_num(_dif, 1)} km-eq a mais** por candidato. "
+                                                "As colunas mostram **exatamente** de onde vem cada quilômetro: "
+                                                "o modelo é ADITIVO, então isto é aritmética, não estimativa.")
+
                             st.markdown("##### 🧭 Escolha do local de aplicação (esforço de deslocamento do candidato)")
                             st.info(_justificar_escolha_hub(_rmc))
                             try:
@@ -16278,7 +17198,17 @@ if _secao == _SECOES[3]:   # tab_comparador
                 _vp = None
                 with st.container():
                     if _ok_map:
-                        _vp = _validar_planilha_comparativa(_df_ref, _mapa_val)
+                        # [PERF - 158ª geração] MEMOIZADO pela assinatura da entrada. O portão de validação
+                        # roda FORA de qualquer botão — ou seja, a CADA RERUN da seção. Medido em escala
+                        # nacional (5.571 linhas): **62,7 ms de CPU recalculando A MESMA validação, sobre O
+                        # MESMO DataFrame, com O MESMO mapeamento**. Desperdício puro. Agora recalcula só
+                        # quando a planilha ou o mapeamento realmente mudam.
+                        _assin_v = (len(_df_ref), tuple(sorted(str(v) for v in _mapa_val.values() if v)),
+                                    tuple(_df_ref.columns))
+                        if st.session_state.get('cmp_val_assin') != _assin_v:
+                            st.session_state['cmp_val_res'] = _validar_planilha_comparativa(_df_ref, _mapa_val)
+                            st.session_state['cmp_val_assin'] = _assin_v
+                        _vp = st.session_state['cmp_val_res']
                         _nb, _na = len(_vp["bloqueantes"]), len(_vp["avisos"])
                         _v1, _v2, _v3 = st.columns(3)
                         _v1.metric("🩺 Qualidade da planilha", f"{_vp['nota']}/100")
@@ -16350,7 +17280,86 @@ if _secao == _SECOES[3]:   # tab_comparador
             _aud_c = _res_c["aud"]
             _br = _res_c["stats"]["brasil"]
             st.divider()
+
+            # [CMP-DIDATICO - 160ª geração] O VEREDITO VEM PRIMEIRO. A aba mostrava 23 KPIs e 8 painéis —
+            # uma PILHA DE FATOS, não uma resposta. O usuário tinha que montar a conclusão sozinho, a partir
+            # de números como "1.400.000 km-candidato" — unidade que a tela NUNCA explicava.
+            # Agora a ordem é a de um parecer técnico: (1) posso confiar? (2) qual a resposta? (3) qual o
+            # tamanho, em escala HUMANA?
+            _vd = _veredito_comparacao(_res_c["stats"], _aud_c, _cmp)
+
+            st.markdown(f"## {_vd['icone']} {_vd['titulo']}")
+            st.markdown(_vd["frase"])
+            if _vd["escala_humana"]:
+                st.markdown(" · ".join(_vd["escala_humana"]))
+
+            _cx = st.success if _vd["confianca"] == "ALTA" else (
+                st.warning if _vd["confianca"] == "MÉDIA" else st.error)
+            _cx(f"{_vd['icone_confianca']} **Confiança desta comparação: {_vd['confianca']}** — "
+                f"{_vd['texto_confianca']}")
+            if _vd["acao"]:
+                st.info(_vd["acao"])
+
+            with st.expander("📖 Como ler esta análise (leia uma vez, entenda para sempre)", expanded=False):
+                st.markdown("""
+                #### 🧮 O que é “km-candidato”?
+
+                É a unidade central de tudo aqui — e é simples:
+
+                > **km-candidato = quilômetros economizados × número de candidatos**
+
+                **Por quê?** Porque poupar 10 km para **5.000 candidatos** (= 50.000 km-candidato) importa
+                muito mais que poupar 200 km para **10 candidatos** (= 2.000 km-candidato). Contar
+                *municípios* trataria os dois como iguais. Contar *km-candidato* mede o que realmente
+                acontece com **gente**.
+
+                💡 **Traduza sempre:** divida o total pelo número de candidatos e você tem
+                **“quantos km a menos cada candidato anda”** — que é o número que uma pessoa entende.
+
+                #### ⚖️ Por que “empate técnico”?
+
+                Diferenças abaixo de **1 km** são **ruído de geocodificação**, não vitória. Duas coordenadas
+                do mesmo município podem variar centenas de metros só por causa do geocodificador. Um
+                comparador que anuncia vitória por 300 metros está **vendendo ilusão** — este não anuncia.
+
+                #### 🔗 O que é “conciliar”?
+
+                É casar cada município da **sua planilha de referência** com o mesmo município do **seu
+                estudo**. A plataforma tenta, nesta ordem:
+
+                | Ordem | Método | Confiança |
+                |---|---|---|
+                | 1º | **Código IBGE** | 🟢 Oficial. Inquestionável. |
+                | 2º | **Município + UF** | 🟢 Oficial. |
+                | 3º | **Município** (sem UF) | 🟡 Arriscado se houver homônimo. |
+                | 4º | **Similaridade textual** | 🔴 **Não é oficial.** Confira na Auditoria. |
+                | — | **Não conciliado** | ⚫ Fica **FORA** de todas as estatísticas. |
+
+                ⚠️ **Se muitos registros não conciliaram, os percentuais não representam o universo completo.**
+                Por isso a **Confiança** aparece antes de qualquer número.
+
+                #### 🧭 Em que ordem ler os painéis
+
+                | # | Painel | Responde |
+                |---|---|---|
+                | 1 | **Veredito** (acima) | Quem venceu, e posso confiar? |
+                | 2 | **Painel Executivo** | Qual o tamanho do ganho? |
+                | 3 | **Estatística da diferença** | O ganho é parecido em todo lugar, ou concentrado? |
+                | 4 | **Pareto** | Quais poucos municípios explicam o resultado? |
+                | 5 | **Faixas** | Onde a referência ganhou de mim, e por quanto? |
+                | 6 | **Auditoria** | O que ficou de fora, e por quê? |
+                | 7 | **Relatório Executivo** | Tudo isso, escrito para apresentar à gestão. |
+
+                #### 🔴 Números NEGATIVOS: o que significam
+
+                Sempre a mesma convenção: **negativo = a SUA aplicação levou o candidato MAIS LONGE**.
+                Nas tabelas, esses valores aparecem **em vermelho**. Não são necessariamente erro — podem ser
+                escolha logística legítima (evitar uma balsa, por exemplo). Mas **merecem uma olhada**.
+                """)
+
             st.markdown("### 📊 Painel Executivo da Comparação")
+            st.caption("Os 4 números de cima respondem **“quem venceu”**. Os 4 de baixo respondem "
+                       "**“qual o tamanho disso”**.")
             _k1, _k2, _k3, _k4 = st.columns(4)
             _k1.metric("Aplicação venceu", f"{_br['pct_venceu_app']}%",
                        help="Municípios em que o deslocamento da aplicação é MENOR (diferença ≥ 1 km).")
@@ -16370,28 +17379,51 @@ if _secao == _SECOES[3]:   # tab_comparador
                 try:
                     _gc1, _gc2 = st.columns(2)
                     with _gc1:
-                        st.markdown("**Quem venceu (por município)**")
+                        st.markdown("**Quem venceu (contagem de municípios)**")
                         _vc = _df_c["Vencedor Distancia"].value_counts()
                         st.bar_chart(_vc)
-                        st.caption(f"Interpretação: a aplicação levou o candidato mais perto em "
+                        st.caption(
+                            "📖 **Como ler:** conta **MUNICÍPIOS**, não candidatos. Um município com 5 mil "
+                            "candidatos conta o mesmo que um com 10 aqui — por isso este gráfico responde "
+                            "*“onde”*, e o KPI **Economia ponderada** responde *“quanto”*.")
+                        st.caption(f"🔎 **O que este gráfico diz:** a aplicação venceu em "
                                    f"**{int(_vc.get('Aplicação', 0))}** município(s); a referência em "
-                                   f"**{int(_vc.get('Referência', 0))}**; **{int(_vc.get('Empate', 0))}** empataram "
-                                   "(diferença < 1 km, dentro do ruído).")
+                                   f"**{int(_vc.get('Referência', 0))}**; **{int(_vc.get('Empate', 0))}** "
+                                   "**empataram** (diferença < 1 km — ruído de geocodificação, não vitória).")
                     with _gc2:
                         st.markdown("**Economia ponderada por UF (km-candidato)**")
                         _eu = (_df_c.groupby("UF")["Economia km x Inscritos"].sum().sort_values(ascending=False))
                         st.bar_chart(_eu)
                         if len(_eu):
-                            st.caption(f"Interpretação: **{_eu.index[0]}** é a UF de maior ganho "
-                                       f"(**{_fmt_num(_eu.iloc[0])} km-candidato**). Barras negativas indicam UFs onde "
-                                       "a distribuição da aplicação levou o candidato **mais longe** — revise-as.")
+                            _neg = _eu[_eu < 0]
+                            st.caption(
+                                "📖 **Como ler:** cada barra é uma UF. **Altura = km-candidato poupados** "
+                                "(km economizados × nº de candidatos). "
+                                "**Barra para CIMA = a sua aplicação ganhou** ali. "
+                                "**Barra para BAIXO = a referência ganhou** — a sua levou o candidato mais longe.")
+                            st.caption(
+                                f"🔎 **O que este gráfico diz:** **{_eu.index[0]}** é onde você mais ganha "
+                                f"(**{_fmt_num(_eu.iloc[0])} km-candidato**). "
+                                + (f"⚠️ **{len(_neg)} UF(s) com barra negativa** — comece a revisão por "
+                                   f"**{_neg.index[0]}** ({_fmt_num(abs(_neg.iloc[0]))} km-candidato a mais)."
+                                   if len(_neg) else
+                                   "✅ **Nenhuma UF com barra negativa** — você ganha ou empata em todo lugar."))
                     st.markdown("**Distribuição da diferença de distância (km) — positivo = aplicação mais curta**")
                     _hist = pd.to_numeric(_df_c["Diferenca Abs (km)"], errors="coerce").dropna()
                     if len(_hist):
                         st.bar_chart(_hist.value_counts(bins=min(20, max(3, len(_hist)))).sort_index())
-                        st.caption(f"Interpretação: mediana de **{_fmt_num(_hist.median(), 1)} km**. A massa à direita "
-                                   "de zero é o ganho da aplicação; à esquerda, a perda. Uma cauda longa negativa "
-                                   "merece revisão manual (pode ser município homônimo mal identificado).")
+                        _n_neg = int((_hist < -1).sum())
+                        st.caption(
+                            "📖 **Como ler:** o eixo horizontal é a **diferença de distância** (referência − "
+                            "sua aplicação). **Zero fica no meio.** A altura é **quantos municípios** caem "
+                            "naquela faixa. **Direita de zero = você ganhou. Esquerda = você perdeu.**")
+                        st.caption(
+                            f"🔎 **O que este gráfico diz:** a mediana é **{_fmt_num(_hist.median(), 1)} km**. "
+                            + (f"⚠️ **{_n_neg} município(s) à esquerda de zero** — nesses, a sua aplicação levou o "
+                               "candidato mais longe. Uma **cauda longa à esquerda** costuma ser sintoma de "
+                               "**município mal identificado** (homônimo), não de escolha logística."
+                               if _n_neg else
+                               "✅ Praticamente nada à esquerda de zero — você não piora quase ninguém."))
                 except Exception as _e_g:
                     logger.error(f"[COMPARADOR] Falha nos gráficos: {_e_g}")
 
@@ -16402,10 +17434,18 @@ if _secao == _SECOES[3]:   # tab_comparador
                         st.caption("Sem faixas para exibir.")
                     if _ef:
                         _df_ef = pd.DataFrame(_ef)
-                        st.dataframe(_df_ef[["faixa", "municipios", "pct_municipios", "candidatos",
-                                             "pct_candidatos", "economia_km_candidato"]],
-                                     use_container_width=True, hide_index=True)
+                        st.dataframe(_colorir_risco(_rotular_colunas(_df_ef[[
+                            "faixa", "municipios", "pct_municipios", "candidatos", "pct_candidatos",
+                            "economia_km_candidato"]]),
+                            cols_negativo_ruim=["Economia (km-candidato)"]),
+                            use_container_width=True, hide_index=True)
                         st.bar_chart(_df_ef.set_index("faixa")["candidatos"])
+                        st.caption(
+                            "📖 **Como ler:** cada linha é uma FAIXA de diferença, **com sinal**. "
+                            "“**Aplicação melhor: 20 a 50 km**” = municípios onde a SUA solução levou o "
+                            "candidato entre 20 e 50 km mais perto. “**Referência melhor**” = o contrário. "
+                            "O sinal existe de propósito: **60 km a favor e 60 km contra NÃO são a mesma coisa**, "
+                            "e uma faixa sem sinal esconderia exatamente o que interessa.")
                         _fav = [f for f in _ef if f["faixa"].startswith("Aplicação melhor")]
                         _con = [f for f in _ef if f["faixa"].startswith("Referência melhor")]
                         _c_fav = sum(f["candidatos"] for f in _fav)
@@ -16450,15 +17490,29 @@ if _secao == _SECOES[3]:   # tab_comparador
                         _e7.metric("Pior caso", f"{_sd['minimo']} km")
                         _e8.metric("Melhor caso", f"{_sd['maximo']} km")
                         _cv = _sd.get("coef_variacao") or 0
-                        _leitura = ("**ganho HOMOGÊNEO**: a aplicação melhora o deslocamento em praticamente "
-                                    "todo o país, de forma parecida. A melhoria é ESTRUTURAL."
+                        st.caption(
+                            "📖 **Como ler cada número:**\n\n"
+                            "· **Mediana** — o município **TÍPICO**. Metade ganha mais que isso, metade menos. "
+                            "É a mais honesta.\n\n"
+                            "· **Média** — pode MENTIR. Uns poucos municípios com ganho enorme puxam a média "
+                            "para cima e escondem que a maioria mudou pouco.\n\n"
+                            "· **Q1 e Q3** — a **metade do meio**. Metade dos municípios cai entre esses dois "
+                            "valores. Se estão longe um do outro, o resultado é irregular.\n\n"
+                            "· **Coeficiente de variação (CV)** — o número mais importante daqui. Ele diz se o "
+                            "ganho é **parecido em todo lugar** (CV baixo) ou **concentrado em poucos** (CV alto). "
+                            "Duas comparações com a MESMA MÉDIA podem contar histórias OPOSTAS — o CV é o que "
+                            "as separa.")
+                        _leitura = ("🟢 **Ganho HOMOGÊNEO** (CV baixo): a sua aplicação melhora o deslocamento "
+                                    "em praticamente todo o país, de forma parecida. A melhoria é "
+                                    "**ESTRUTURAL** — não depende de poucos casos."
                                     if _cv < 1.0 else
-                                    "**ganho CONCENTRADO**: poucos municípios têm ganho grande e a maioria muda "
-                                    "pouco. A melhoria é PONTUAL — veja o Pareto abaixo para saber ONDE.")
-                        st.info(f"📖 **Como ler:** a média é **{_sd['media']} km**, mas o município TÍPICO "
-                                f"(mediana) tem **{_sd['mediana']} km**. Metade dos municípios está entre "
-                                f"**{_sd['q1']}** e **{_sd['q3']} km**. O coeficiente de variação é "
-                                f"**{_cv}** → {_leitura}")
+                                    "🟡 **Ganho CONCENTRADO** (CV alto): poucos municípios têm ganho grande e a "
+                                    "maioria muda pouco. A melhoria é **PONTUAL** — vá ao **Pareto** abaixo "
+                                    "para descobrir EXATAMENTE em quais municípios ela acontece.")
+                        st.info(f"🔎 **O que estes números dizem:** a média é **{_fmt_num(_sd['media'], 1)} km**, "
+                                f"mas o município TÍPICO (mediana) tem **{_fmt_num(_sd['mediana'], 1)} km**. "
+                                f"Metade dos municípios está entre **{_fmt_num(_sd['q1'], 1)}** e "
+                                f"**{_fmt_num(_sd['q3'], 1)} km**. O CV é **{_fmt_num(_cv, 2)}**.\n\n{_leitura}")
                 except Exception as _e_sd:
                     logger.error(f"[CMP-STATS] Falha na distribuição: {_e_sd}")
 
@@ -16468,12 +17522,17 @@ if _secao == _SECOES[3]:   # tab_comparador
                     if not _pa["itens"]:
                         st.caption("Nenhum município com ganho positivo.")
                     if _pa["itens"]:
+                        st.caption(
+                            "📖 **O que é Pareto:** é a regra do “poucos vitais, muitos triviais”. A tabela "
+                            "ordena os municípios do **maior ganho para o menor** e mostra o **% acumulado**. "
+                            "A pergunta que ela responde: **quantos municípios explicam 80% de toda a economia?** "
+                            "Se forem poucos, o resultado é PONTUAL (foque neles). Se forem muitos, é ESTRUTURAL.")
                         st.success(f"🎯 **{_pa['n_para_80pct']} municípios** "
                                    f"({_pa['pct_municipios_para_80']}% dos {_pa['n_municipios_com_ganho']} com ganho) "
                                    f"concentram **80% de toda a economia** "
                                    f"({_fmt_num(_pa['total'])} km-candidato no total).")
-                        st.dataframe(pd.DataFrame(_pa["itens"]), use_container_width=True, hide_index=True,
-                                     height=280)
+                        st.dataframe(_rotular_colunas(pd.DataFrame(_pa["itens"])),
+                                     use_container_width=True, hide_index=True, height=280)
                         st.caption("**Decisão:** " + (
                             "o ganho é **PONTUAL** — concentre a atenção nesses poucos municípios; os demais "
                             "praticamente não mudam."
@@ -16494,6 +17553,12 @@ if _secao == _SECOES[3]:   # tab_comparador
                 _a3.metric("Por similaridade", _aud_c["por_fuzzy"],
                            help="Vínculos por fuzzy matching — NÃO são oficiais. Confira-os.")
                 _a4.metric("Não conciliados", len(_aud_c["nao_conciliados"]))
+                st.caption(
+                    "📖 **O que cada número significa:** **Código IBGE** e **Município+UF** são vínculos "
+                    "**OFICIAIS** — pode confiar. **Similaridade** é a plataforma ADIVINHANDO por parecença "
+                    "textual: **não é oficial**, e cada um desses merece uma conferida. **Não conciliados** "
+                    "ficam **FORA de todas as estatísticas** — se forem muitos, os percentuais do painel "
+                    "**não representam o universo completo**.")
                 if _aud_c["nao_conciliados"]:
                     st.warning(f"⚠️ **{len(_aud_c['nao_conciliados'])} registro(s) da referência ficaram FORA "
                                "de todas as estatísticas.** Nenhum foi descartado em silêncio — veja o motivo:")
@@ -16789,12 +17854,18 @@ if _secao == _SECOES[4]:   # tab_analytics
                     tooltip=['Municipio Origem', 'count()']
                 ).add_params(click_mun)
                 
-                text_bar = bar_base.mark_text(align='right', dx=-5, color='white', fontWeight='bold').encode(
-                    x=alt.X('count():Q'), 
-                    y=alt.Y('Municipio Origem:N', sort=alt.EncodingSortField(field='Municipio Origem', op='count', order='descending')), 
-                    text=alt.Text("count():Q")
-                )
-                chart_muns = alt.layer(bar_mun, text_bar).properties(height=350, title="Top 15 Municípios de Despacho Operacional")
+                # [ALTAIR-FIX - 157ª geração] CAUSA RAIZ DO StreamlitAPIException.
+                # Era: chart_muns = alt.layer(bar_mun, text_bar) → LayerChart (gráfico MULTI-VIEW).
+                # O Streamlit PROÍBE seleção (on_select) em gráfico composto — ele chama
+                # _disallow_multi_view_charts(final_spec) e levanta a exceção. Não é bug do Altair nem de
+                # versão: é uma limitação DOCUMENTADA do Streamlit. Um gráfico multi-view não tem uma
+                # "view" única onde ancorar a seleção, então não há a que associar o evento de clique.
+                #
+                # A camada `text_bar` existia SÓ para colar o número em cima da barra — e esse número JÁ
+                # ESTÁ no tooltip do bar_mun (tooltip=['Municipio Origem', 'count()']). Ou seja: a camada
+                # custava a INTERATIVIDADE INTEIRA do painel (o clique que filtra o dashboard) para exibir
+                # uma informação DUPLICADA. Removida. Zero perda de informação, e o filtro volta a funcionar.
+                chart_muns = bar_mun.properties(height=350, title="Top 15 Municípios de Origem dos Candidatos")
                 
                 chart_scatter = base_chart.mark_circle(size=80).encode(
                     x=alt.X('Distancia:Q', title='Distância Viária Oficial (km)', scale=alt.Scale(zero=False, nice=True, padding=10)),
