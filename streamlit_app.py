@@ -63,37 +63,6 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
-#   v3.8 (165ª geração) → O CONCORRENTE ANALISADO EM SI + O PLANO HÍBRIDO [CONCORRENTE]
-#     ── O VIÉS QUE VOCÊ APONTOU (e era ESTRUTURAL, não um esquecimento) ──
-#       Toda a minha análise era ASSIMÉTRICA: perguntava só **"NÓS ganhamos?"**. As vitórias do concorrente
-#       apareciam apenas como DERROTAS nossas — nunca eram analisadas EM SI. Ninguém respondia: "e nos casos
-#       em que ele ganhou, quantos ALUNOS se beneficiariam se adotássemos a escolha dele?"
-#       Isso não é só incompleto — é **ENVIESADO A NOSSO FAVOR**. Um comparador que só sabe contar as
-#       próprias vitórias não é ferramenta de decisão: é **peça de marketing**. Num estudo que fundamenta
-#       decisão pública, isso é grave. E o viés estava na arquitetura, não num detalhe.
-#     ── 1. O CONCORRENTE, COM O MESMO RIGOR (_analise_concorrente) ──
-#       Onde ele venceu · quantos CANDIDATOS ele beneficiaria · quantos km a menos CADA UM andaria ·
-#       em quais ESTADOS · POR QUE ele venceu (caso a caso, em português) · e o **Pareto dele**: quais
-#       poucos municípios explicam 80% da vantagem dele ("se for revisar só alguns, revise esses").
-#       Ordenado por IMPACTO SOBRE CANDIDATOS, não por km: 4.000 candidatos a 160 km a mais doem muito
-#       mais que 50 a 300 km.
-#     ── 2. 🏆 O PLANO HÍBRIDO — a pergunta que NINGUÉM estava fazendo ──
-#       O comparador respondia "qual estudo é melhor NO CONJUNTO?". Essa é a pergunta **ERRADA** para quem
-#       vai DECIDIR. A pergunta certa é:
-#           **"E se eu pegar, de cada município, a MELHOR das duas escolhas?"**
-#       **Ninguém é obrigado a adotar um estudo INTEIRO.** O gestor pode tomar o nosso polo onde nós
-#       vencemos e o do concorrente onde ELE vence. O resultado **DOMINA OS DOIS — por construção**.
-#       Testado: nosso puro = 2.020.000 km-cand · dele puro = 1.560.000 · **HÍBRIDO = 1.380.000**.
-#       E a recomendação sai OPERACIONAL: "mantenha o nosso polo em N municípios e migre M
-#       (X candidatos) para o polo do concorrente".
-#       Isto transforma o comparador de um **PLACAR** ("quem ganhou?") numa **DECISÃO** ("o que eu faço?").
-#     ── ONDE ISSO APARECE ──
-#       No VEREDITO (topo da tela, no diagnóstico final) · em painel próprio ("⚔️ Onde o CONCORRENTE
-#       venceu") · no RELATÓRIO EXECUTIVO (duas seções novas: §7 "Onde a Base de Referência venceu" e §8
-#       "A Recomendação que Domina as Duas") · e no export (3 abas novas: Vitórias do Concorrente,
-#       Concorrente por UF, Plano Híbrido).
-#     Export: 15 → **18 abas**. Suíte: 111 → **116 testes**.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
 #   v3.8 (164ª geração) → NADA MAIS SE PERDE + DICIONÁRIO DE DADOS + RANKINGS [LADO-A-LADO]
 #     Auditei o pedido contra o que a aba JÁ tinha, para não reimplementar o que existe (estatística,
 #     Pareto, relatório executivo, metodologia, veredito, legendas — tudo da 149ª/160ª). Achei DOIS buracos
@@ -9025,132 +8994,6 @@ def _exemplo_planilha_saida():
     ])
 
 
-
-
-def _analise_concorrente(linhas, top=15):
-    """[CONCORRENTE - 165ª geração] ANÁLISE DO CONCORRENTE, EM SI MESMO.
-
-    ── O VIÉS QUE ISTO CORRIGE (e era estrutural) ──
-    Toda a minha análise era ASSIMÉTRICA: perguntava só "NÓS ganhamos?". As vitórias do concorrente
-    apareciam apenas como DERROTAS nossas — nunca eram analisadas em si. Ninguém respondia:
-    **"e nos casos em que ele ganhou, quantos alunos se beneficiariam se adotássemos a escolha dele?"**
-
-    Isso não é só incompleto — é ENVIESADO A NOSSO FAVOR. Um comparador que só sabe contar as próprias
-    vitórias não é uma ferramenta de decisão: é uma peça de marketing. E num estudo que fundamenta decisão
-    pública, isso é grave.
-
-    Aqui o concorrente é analisado com o MESMO rigor: onde venceu, quantos candidatos ele beneficiaria,
-    quanto deslocamento pouparia, em quais estados, e QUAIS poucos municípios explicam a vantagem dele.
-    PURO."""
-    _venc = [l for l in (linhas or []) if l.get("Vencedor Distancia") == "Referência"]
-    _tot_mun = sum(1 for l in (linhas or []) if l.get("Vencedor Distancia") in
-                   ("Aplicação", "Referência", "Empate"))
-    if not _venc:
-        return {"n_municipios": 0, "candidatos_impactados": 0, "economia_km_candidato": 0.0,
-                "pct_municipios": 0.0, "por_uf": [], "top_casos": [], "pareto_n80": 0}
-
-    _cand = int(sum(float(l.get("Inscritos") or 0) for l in _venc))
-    # o ganho DELE = o que nós PERDEMOS. Sinal invertido: aqui é a economia QUE ELE PROPORCIONA.
-    _econ = round(sum(abs(float(l.get("Economia km x Inscritos") or 0)) for l in _venc), 1)
-
-    _uf = {}
-    for l in _venc:
-        _u = str(l.get("UF") or "—")
-        _a = _uf.setdefault(_u, {"UF": _u, "municipios": 0, "candidatos": 0, "economia_km_candidato": 0.0})
-        _a["municipios"] += 1
-        _a["candidatos"] += int(float(l.get("Inscritos") or 0))
-        _a["economia_km_candidato"] += abs(float(l.get("Economia km x Inscritos") or 0))
-    _por_uf = sorted(_uf.values(), key=lambda x: -x["economia_km_candidato"])
-    for _a in _por_uf:
-        _a["economia_km_candidato"] = round(_a["economia_km_candidato"], 1)
-        _a["km_por_candidato"] = (round(_a["economia_km_candidato"] / _a["candidatos"], 2)
-                                  if _a["candidatos"] else 0.0)
-
-    _ord = sorted(_venc, key=lambda l: -abs(float(l.get("Economia km x Inscritos") or 0)))
-    _top = [{"Município": l.get("Origem"), "UF": l.get("UF", ""),
-             "Candidatos": int(float(l.get("Inscritos") or 0)),
-             "Nosso polo": l.get("Destino Aplicacao"),
-             "Polo do concorrente": l.get("Destino Referencia"),
-             "Nossa distância (km)": l.get("Distancia Aplicacao"),
-             "Distância dele (km)": l.get("Distancia Referencia"),
-             "Km a mais que impomos": round(abs(float(l.get("Diferenca Abs (km)") or 0)), 1),
-             "Impacto (km-candidato)": round(abs(float(l.get("Economia km x Inscritos") or 0)), 1),
-             "Tipo de Distância": l.get("Tipo de Distancia", ""),
-             "Por que ele venceu": (
-                 f"O polo dele ({l.get('Destino Referencia')}) deixa o candidato "
-                 f"{abs(float(l.get('Diferenca Abs (km)') or 0)):.0f} km mais perto que o nosso "
-                 f"({l.get('Destino Aplicacao')})."
-                 if l.get("Mesmo Destino") == "Não" else
-                 f"Mesmo polo, mas a rota dele é {abs(float(l.get('Diferenca Abs (km)') or 0)):.0f} km "
-                 "mais curta — pode ser malha viária diferente, ou método de medição diferente.")}
-            for l in _ord[:top]]
-
-    _acum, _n80 = 0.0, 0
-    for _i, l in enumerate(_ord, start=1):
-        _acum += abs(float(l.get("Economia km x Inscritos") or 0))
-        if _acum >= 0.8 * _econ:
-            _n80 = _i
-            break
-
-    return {"n_municipios": len(_venc), "candidatos_impactados": _cand,
-            "economia_km_candidato": _econ,
-            "km_por_candidato": round(_econ / _cand, 2) if _cand else 0.0,
-            "pct_municipios": round(100.0 * len(_venc) / _tot_mun, 1) if _tot_mun else 0.0,
-            "por_uf": _por_uf[:top], "top_casos": _top, "pareto_n80": _n80}
-
-
-def _plano_hibrido(linhas):
-    """[CONCORRENTE - 165ª geração] O PLANO HÍBRIDO — a pergunta que ninguém estava fazendo.
-
-    Todo o comparador respondia "qual estudo é melhor NO CONJUNTO?". Mas essa é a pergunta ERRADA para quem
-    vai DECIDIR. A pergunta certa é:
-
-        **"E se eu pegar, de cada município, a MELHOR das duas escolhas?"**
-
-    Ninguém é obrigado a adotar um estudo INTEIRO. O gestor pode tomar o nosso polo onde nós vencemos e o
-    polo do concorrente onde ELE vence. O resultado é um plano que **domina os dois** — por construção.
-
-    Isto transforma o comparador de um "quem ganhou?" (placar) num "o que eu FAÇO?" (decisão). E o número
-    que sai é acionável: **quanto deslocamento a mais se poupa adotando o melhor dos dois, em vez de
-    escolher um lado.** PURO."""
-    _ok = [l for l in (linhas or []) if l.get("Diferenca Abs (km)") is not None]
-    if not _ok:
-        return {}
-    _so_nosso = _so_dele = _hibrido = 0.0
-    _de_nos = _de_dele = _empate = 0
-    _cand_de_dele = 0
-    for l in _ok:
-        _i = float(l.get("Inscritos") or 0)
-        _dn = float(l.get("Distancia Aplicacao") or 0)
-        _dd = float(l.get("Distancia Referencia") or 0)
-        if _dn <= 0 or _dd <= 0:
-            continue
-        _so_nosso += _dn * max(_i, 1)
-        _so_dele += _dd * max(_i, 1)
-        _hibrido += min(_dn, _dd) * max(_i, 1)
-        _v = l.get("Vencedor Distancia")
-        if _v == "Aplicação":
-            _de_nos += 1
-        elif _v == "Referência":
-            _de_dele += 1
-            _cand_de_dele += int(_i)
-        else:
-            _empate += 1
-    _ganho_vs_nosso = round(_so_nosso - _hibrido, 1)
-    _ganho_vs_dele = round(_so_dele - _hibrido, 1)
-    return {
-        "custo_so_nosso_km_candidato": round(_so_nosso, 1),
-        "custo_so_dele_km_candidato": round(_so_dele, 1),
-        "custo_hibrido_km_candidato": round(_hibrido, 1),
-        "ganho_do_hibrido_sobre_nos": _ganho_vs_nosso,
-        "ganho_do_hibrido_sobre_ele": _ganho_vs_dele,
-        "municipios_do_nosso": _de_nos, "municipios_do_concorrente": _de_dele,
-        "municipios_empate": _empate,
-        "candidatos_que_migrariam": _cand_de_dele,
-        "vale_a_pena": _ganho_vs_nosso > 0,
-    }
-
-
 def _rankings_comparacao(linhas, top=15):
     """[RANKING - 164ª geração] RANKINGS que faltavam: por ESTADO, por LOCAL DE PROVA e as maiores
     DIVERGÊNCIAS. O Pareto (149ª) já rankeava municípios pelo ganho; faltava responder:
@@ -9652,13 +9495,6 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
                 _w, index=False, sheet_name="Ranking Locais de Prova")
             pd.DataFrame(_rk_x["divergencias"] or [{"—": "sem divergência"}]).to_excel(
                 _w, index=False, sheet_name="Maiores Divergencias")
-            _ac_x = _analise_concorrente(linhas, top=500)
-            pd.DataFrame(_ac_x["top_casos"] or [{"—": "o concorrente não venceu em nenhum caso"}]).to_excel(
-                _w, index=False, sheet_name="Vitorias do Concorrente")
-            pd.DataFrame(_ac_x["por_uf"] or [{"—": "—"}]).to_excel(
-                _w, index=False, sheet_name="Concorrente por UF")
-            pd.DataFrame([_plano_hibrido(linhas) or {"—": "—"}]).to_excel(
-                _w, index=False, sheet_name="Plano Hibrido")
             pd.DataFrame(aud.get("nao_conciliados") or [{"origem_ref": "—", "motivo": "Nenhum"}]).to_excel(
                 _w, index=False, sheet_name="Nao Conciliados")
             pd.DataFrame({"Relatorio Executivo": (relatorio or "").split("\n")}).to_excel(
@@ -9783,42 +9619,9 @@ def _veredito_comparacao(stats, aud, linhas=None):
                                for p in _piores) +
                      ". Pode ser escolha logística legítima (evitar balsa) — ou município mal identificado.")
 
-    # [CONCORRENTE - 165ª geração] O CONCORRENTE ENTRA NO VEREDITO. Antes, as vitórias dele apareciam só
-    # como derrotas nossas — nunca eram analisadas em si. Um comparador que só conta as próprias vitórias
-    # não é ferramenta de decisão: é peça de marketing.
-    _conc_txt = None
-    _hib_txt = None
-    if linhas:
-        try:
-            _ac = _analise_concorrente(linhas)
-            if _ac.get("n_municipios"):
-                _conc_txt = (
-                    f"⚠️ **O CONCORRENTE venceu em {_ac['n_municipios']} município(s)** "
-                    f"({_ac['pct_municipios']}%), impactando **{_fmt_num(_ac['candidatos_impactados'])} "
-                    f"candidatos**. Se adotássemos a escolha DELE nesses casos, esses candidatos andariam "
-                    f"**{_fmt_num(_ac['km_por_candidato'], 2)} km a menos cada um** "
-                    f"(**{_fmt_num(_ac['economia_km_candidato'])} km-candidato** no total). "
-                    + (f"E **{_ac['pareto_n80']} município(s) sozinhos explicam 80% da vantagem dele** — "
-                       "comece por eles." if _ac.get("pareto_n80") else ""))
-            _hb = _plano_hibrido(linhas)
-            if _hb and _hb.get("vale_a_pena"):
-                _hib_txt = (
-                    f"🏆 **O MELHOR PLANO NÃO É NENHUM DOS DOIS — É O HÍBRIDO.** Pegando, de cada município, "
-                    f"a melhor das duas escolhas: **{_fmt_num(_hb['custo_hibrido_km_candidato'])} "
-                    f"km-candidato**, contra {_fmt_num(_hb['custo_so_nosso_km_candidato'])} do nosso estudo "
-                    f"puro e {_fmt_num(_hb['custo_so_dele_km_candidato'])} do dele. "
-                    f"São **{_fmt_num(_hb['ganho_do_hibrido_sobre_nos'])} km-candidato poupados a mais** do "
-                    f"que adotar só o nosso — bastaria migrar "
-                    f"**{_hb['municipios_do_concorrente']} município(s)** "
-                    f"(**{_fmt_num(_hb['candidatos_que_migrariam'])} candidatos**) para o polo do "
-                    "concorrente. **Ninguém é obrigado a adotar um estudo inteiro.**")
-        except Exception as _e_cc:
-            logger.error(f"[CONCORRENTE] Falha na análise espelhada: {_e_cc}")
-
     return {"confianca": _conf, "icone_confianca": _ico_c, "texto_confianca": _conf_txt,
             "icone": _ico, "titulo": _titulo, "frase": _frase,
             "escala_humana": _humano, "acao": _acao,
-            "texto_concorrente": _conc_txt, "texto_hibrido": _hib_txt,
             "km_por_candidato": _km_por_cand, "pct_conciliado": _pct_conc}
 
 
@@ -9922,59 +9725,7 @@ def _relatorio_executivo_comparacao(stats, aud, top_municipios=None):
     L.append(f"- Tiveram **redução** de deslocamento: **{_fmt_num(br.get('candidatos_beneficiados', 0))}**")
     L.append(f"- Tiveram **aumento** de deslocamento: **{_fmt_num(br.get('candidatos_prejudicados', 0))}**")
 
-    # [CONCORRENTE - 165ª geração] O CONCORRENTE GANHA SEÇÃO PRÓPRIA NO PARECER.
-    # Um relatório executivo que só narra as próprias vitórias não é um parecer — é uma peça de venda.
-    if top_municipios:
-        try:
-            _acr = _analise_concorrente(top_municipios)
-            if _acr.get("n_municipios"):
-                L.append("\n## 7. Onde a Base de Referência VENCEU (e o que isso custa aos candidatos)\n")
-                L.append(
-                    f"A base de referência levou o candidato mais perto em **{_acr['n_municipios']} "
-                    f"município(s)** ({_acr['pct_municipios']}% dos comparáveis), afetando "
-                    f"**{_fmt_num(_acr['candidatos_impactados'])} candidatos**. Adotar a escolha dela nesses "
-                    f"casos pouparia **{_fmt_num(_acr['economia_km_candidato'])} km-candidato** — ou seja, "
-                    f"cada um desses alunos andaria **{_fmt_num(_acr['km_por_candidato'], 2)} km a menos**.")
-                if _acr.get("pareto_n80"):
-                    L.append(f"\n**A vantagem dela é CONCENTRADA:** {_acr['pareto_n80']} município(s) sozinhos "
-                             "explicam 80% dela. Revisar esses poucos casos captura quase todo o ganho "
-                             "disponível.")
-                if _acr.get("por_uf"):
-                    _u0 = _acr["por_uf"][0]
-                    L.append(f"\n**Onde ela mais vence:** {_u0['UF']} "
-                             f"({_u0['municipios']} município(s), {_fmt_num(_u0['candidatos'])} candidatos, "
-                             f"{_fmt_num(_u0['economia_km_candidato'])} km-candidato).")
-                if _acr.get("top_casos"):
-                    L.append("\n**Os casos que mais pesam:**")
-                    for _t in _acr["top_casos"][:5]:
-                        L.append(f"- **{_t['Município']}/{_t['UF']}** — {_fmt_num(_t['Candidatos'])} "
-                                 f"candidatos. Nosso polo: {_t['Nosso polo']} "
-                                 f"({_t['Nossa distância (km)']} km) · polo dela: "
-                                 f"{_t['Polo do concorrente']} ({_t['Distância dele (km)']} km). "
-                                 f"Impomos **{_t['Km a mais que impomos']} km a mais**.")
-
-            _hbr = _plano_hibrido(top_municipios)
-            if _hbr and _hbr.get("vale_a_pena"):
-                L.append("\n## 8. A Recomendação que Domina as Duas: o PLANO HÍBRIDO\n")
-                L.append(
-                    "**Ninguém é obrigado a adotar um estudo inteiro.** Tomando, de cada município, a melhor "
-                    "das duas escolhas, obtém-se um plano que **supera os dois — por construção**:")
-                L.append(f"\n| Plano | Deslocamento total |\n|---|---|\n"
-                         f"| Só a nossa aplicação | {_fmt_num(_hbr['custo_so_nosso_km_candidato'])} km-candidato |\n"
-                         f"| Só a base de referência | {_fmt_num(_hbr['custo_so_dele_km_candidato'])} km-candidato |\n"
-                         f"| **HÍBRIDO (o melhor de cada)** | **{_fmt_num(_hbr['custo_hibrido_km_candidato'])} "
-                         "km-candidato** |")
-                L.append(
-                    f"\n**Recomendação operacional:** manter o polo da nossa aplicação em "
-                    f"**{_hbr['municipios_do_nosso']} município(s)** e migrar "
-                    f"**{_hbr['municipios_do_concorrente']}** "
-                    f"(**{_fmt_num(_hbr['candidatos_que_migrariam'])} candidatos**) para o polo da referência. "
-                    f"Isso poupa **{_fmt_num(_hbr['ganho_do_hibrido_sobre_nos'])} km-candidato a mais** do que "
-                    "adotar apenas a nossa solução.")
-        except Exception:
-            pass
-
-    L.append("\n## 9. Conclusões e Recomendações\n")
+    L.append("\n## 7. Conclusões e Recomendações\n")
     if top_municipios:
         _piores = [m for m in top_municipios if (m.get("Diferenca Abs (km)") or 0) < -1][:5]
         if _piores:
@@ -9990,7 +9741,7 @@ def _relatorio_executivo_comparacao(stats, aud, top_municipios=None):
                  "(homônimos) devem ser revisados antes de qualquer decisão — a divergência pode ser um "
                  "artefato de identificação, não uma escolha logística melhor.")
 
-    L.append("\n## 10. Qualidade e Confiabilidade da Comparação\n")
+    L.append("\n## 8. Qualidade e Confiabilidade da Comparação\n")
     _conf = ("Alta" if _pct_conc >= 95 and aud.get("por_fuzzy", 0) == 0 else
              ("Média" if _pct_conc >= 80 else "Baixa"))
     L.append(f"- **Correspondência entre as bases:** {_pct_conc}% ({_conc}/{_tot}).")
@@ -18205,11 +17956,6 @@ if _secao == _SECOES[3]:   # tab_comparador
                 f"{_vd['texto_confianca']}")
             if _vd["acao"]:
                 st.info(_vd["acao"])
-            # [CONCORRENTE - 165ª geração] O concorrente e o híbrido entram no DIAGNÓSTICO FINAL.
-            if _vd.get("texto_concorrente"):
-                st.warning(_vd["texto_concorrente"])
-            if _vd.get("texto_hibrido"):
-                st.success(_vd["texto_hibrido"])
 
             # [GEO-GARANTIDO - 162ª geração] AVISO quando há linhas GEODÉSICAS na comparação.
             _n_geo = sum(1 for l in _cmp if "Geodésica" in str(l.get("Tipo de Distancia", "")))
@@ -18471,75 +18217,6 @@ if _secao == _SECOES[3]:   # tab_comparador
                 except Exception as _e_pa:
                     logger.error(f"[CMP-STATS] Falha no Pareto: {_e_pa}")
 
-            with st.expander("⚔️ Onde o CONCORRENTE venceu — e o que isso custa aos candidatos",
-                             expanded=False):
-                try:
-                    _acn = _analise_concorrente(_cmp)
-                    if not _acn["n_municipios"]:
-                        st.success("✅ **O concorrente não venceu em nenhum município comparável.** A sua "
-                                   "solução domina em todo o conjunto.")
-                    if _acn["n_municipios"]:
-                        st.caption(
-                            "📖 **Por que este painel existe:** toda a análise anterior perguntava *“nós "
-                            "ganhamos?”*. As vitórias do concorrente apareciam só como **derrotas nossas** — "
-                            "nunca eram analisadas **em si**. Um comparador que só conta as próprias vitórias "
-                            "não é ferramenta de decisão: é **peça de marketing**. Aqui ele é analisado com o "
-                            "mesmo rigor.")
-                        _k1, _k2, _k3, _k4 = st.columns(4)
-                        _k1.metric("Municípios que ele venceu", _acn["n_municipios"],
-                                   help=f"{_acn['pct_municipios']}% dos comparáveis.")
-                        _k2.metric("Candidatos impactados", _fmt_num(_acn["candidatos_impactados"]),
-                                   help="Quantos alunos se beneficiariam se adotássemos a escolha dele.")
-                        _k3.metric("Deslocamento que ele pouparia",
-                                   f"{_fmt_num(_acn['economia_km_candidato'])} km-cand.")
-                        _k4.metric("Por candidato", f"{_fmt_num(_acn['km_por_candidato'], 2)} km",
-                                   help="Quantos km a menos cada um desses alunos andaria.")
-                        if _acn.get("pareto_n80"):
-                            st.info(f"🎯 **{_acn['pareto_n80']} município(s) sozinhos explicam 80% da "
-                                    "vantagem dele.** Se você for revisar só alguns casos, revise esses.")
-                        st.markdown("##### 🗺️ Onde ele vence (por estado)")
-                        if _acn["por_uf"]:
-                            st.dataframe(pd.DataFrame(_acn["por_uf"]), use_container_width=True,
-                                         hide_index=True, height=220)
-                        st.markdown("##### ⚠️ Todos os casos em que o concorrente ganhou")
-                        st.caption("Ordenados pelo **impacto sobre candidatos** — não pela diferença em km. "
-                                   "4.000 candidatos a 160 km a mais doem muito mais que 50 a 300 km.")
-                        st.dataframe(_colorir_risco(pd.DataFrame(_acn["top_casos"]),
-                                                    cols_negativo_ruim=[]),
-                                     use_container_width=True, hide_index=True, height=320)
-
-                    # ---- PLANO HÍBRIDO ----
-                    _hb = _plano_hibrido(_cmp)
-                    if _hb:
-                        st.markdown("##### 🏆 O plano HÍBRIDO — o melhor de cada município")
-                        st.caption(
-                            "📖 **A pergunta que ninguém estava fazendo.** Todo o comparador respondia *“qual "
-                            "estudo é melhor no conjunto?”*. Mas essa é a pergunta **errada** para quem vai "
-                            "**decidir**. A pergunta certa é: **“e se eu pegar, de cada município, a MELHOR "
-                            "das duas escolhas?”** — porque **ninguém é obrigado a adotar um estudo inteiro**.")
-                        _h1, _h2, _h3 = st.columns(3)
-                        _h1.metric("Só o nosso estudo",
-                                   f"{_fmt_num(_hb['custo_so_nosso_km_candidato'])} km-cand.")
-                        _h2.metric("Só o do concorrente",
-                                   f"{_fmt_num(_hb['custo_so_dele_km_candidato'])} km-cand.")
-                        _h3.metric("🏆 HÍBRIDO",
-                                   f"{_fmt_num(_hb['custo_hibrido_km_candidato'])} km-cand.",
-                                   help="Deslocamento total se você tomar, de cada município, o melhor polo.")
-                        if _hb["vale_a_pena"]:
-                            st.success(
-                                f"⚡ **O híbrido poupa {_fmt_num(_hb['ganho_do_hibrido_sobre_nos'])} "
-                                "km-candidato a MAIS** que adotar só o nosso estudo — e "
-                                f"**{_fmt_num(_hb['ganho_do_hibrido_sobre_ele'])} a mais** que só o dele.\n\n"
-                                f"**O que fazer:** manter o nosso polo em **{_hb['municipios_do_nosso']} "
-                                f"município(s)** e migrar **{_hb['municipios_do_concorrente']}** "
-                                f"(**{_fmt_num(_hb['candidatos_que_migrariam'])} candidatos**) para o polo do "
-                                "concorrente. **O híbrido domina os dois — por construção.**")
-                        if not _hb["vale_a_pena"]:
-                            st.success("✅ **O nosso estudo já é o melhor em todos os municípios.** Não há "
-                                       "nada a ganhar adotando escolhas do concorrente.")
-                except Exception as _e_ac:
-                    logger.error(f"[CONCORRENTE] Falha no painel: {_e_ac}")
-
             with st.expander("🏅 Rankings — estados, locais de prova e maiores divergências", expanded=False):
                 try:
                     _rk = _rankings_comparacao(_cmp)
@@ -18623,7 +18300,7 @@ if _secao == _SECOES[3]:   # tab_comparador
             # [PERF - 139ª geração] Bytes JÁ prontos (montados no clique). Zero CPU por rerun.
             _xb = _res_c.get("xlsx")
             if _xb:
-                st.download_button("📥 Baixar comparação completa (.xlsx — 18 abas)", data=_xb,
+                st.download_button("📥 Baixar comparação completa (.xlsx — 15 abas)", data=_xb,
                                    file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True, key="cmp_export")
