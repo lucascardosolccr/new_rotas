@@ -63,71 +63,6 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
-#   v3.8 (164ª geração) → NADA MAIS SE PERDE + DICIONÁRIO DE DADOS + RANKINGS [LADO-A-LADO]
-#     Auditei o pedido contra o que a aba JÁ tinha, para não reimplementar o que existe (estatística,
-#     Pareto, relatório executivo, metodologia, veredito, legendas — tudo da 149ª/160ª). Achei DOIS buracos
-#     reais, e um deles é PERDA DE DADO.
-#     ── 1. 🔴 EU DESCARTAVA A PLANILHA DO CONCORRENTE (item 6 do pedido) ──
-#       _conciliar_comparativo guardava **apenas as colunas MAPEADAS**. Modo de acesso, uso de balsa, score,
-#       justificativa, observações — TODA coluna extra da planilha de referência era **jogada fora EM
-#       SILÊNCIO**. Perda de dado DO USUÁRIO, sem aviso nenhum.
-#       CORRIGIDO: **toda** coluna da referência é preservada com o prefixo **"REF · "**, e o nosso estudo
-#       entra com **"APP · "** (cód. IBGE do polo, linha reta, score, integridade, risco de homônimo,
-#       justificativa da escolha, custo efetivo, coordenadas). O usuário vê os **DOIS estudos LADO A LADO,
-#       campo a campo**. Testado: nem a coluna "observacao_interna" se perde.
-#     ── 2. 📗 DICIONÁRIO DE DADOS (item 1 do pedido) ──
-#       A planilha tem ~40 colunas e **ninguém sabia o que a maioria significava**. Uma coluna que ninguém
-#       sabe ler é **PIOR que coluna nenhuma**: ela gera dúvida e às vezes é interpretada ERRADO — o pior
-#       desfecho possível num estudo que fundamenta decisão pública.
-#       Cada coluna declara: **O QUE É · DE ONDE VEM** (calculado × informado × qual API) **· QUANDO FICA
-#       VAZIA · COMO LER**. Com os avisos que mais importam: "'Empate' NÃO é derrota — abaixo de 1 km é
-#       ruído de geocodificação"; "'📐 Geodésica' significa que o município NÃO TEM ESTRADA — comparar com
-#       viária é maçã com laranja"; "Abaixo de 100, a Integridade REPROVA a rota".
-#       Mais um **EXEMPLO REALISTA** da planilha (3 linhas cobrindo os 3 casos: vitória clara, empate com
-#       geodésica, derrota com conciliação por similaridade) — **mostrado ANTES do upload**. Mostrar é
-#       melhor que descrever.
-#     ── 3. 🏅 RANKINGS QUE FALTAVAM ──
-#       O Pareto (149ª) já rankeava municípios. Faltava: **estados** (quem mais ganha e quem mais perde,
-#       ponderado por candidato), **locais de prova** (quantos candidatos cada um recebe e com que
-#       deslocamento médio) e as **MAIORES DIVERGÊNCIAS** — onde os dois estudos escolheram polos diferentes
-#       E o impacto é maior. "Comece a revisão por aqui."
-#     ── O QUE EU CONTINUO RECUSANDO (3ª vez, mesmo motivo) ──
-#       Violin plot, densidade, treemap, sunburst, radar, heatmap de pesos. Já recusei na 138ª e na 149ª:
-#       seriam **mais tinta, não mais informação**. Os gráficos atuais + distribuição + Pareto + rankings
-#       respondem às perguntas que movem a decisão. Adicionar 8 gráficos que ninguém olha é bloat com nome
-#       de ciência de dados — e contraria a sua própria regra ("apenas se agregarem valor real").
-#     Export: 11 → **15 abas** (+ Dicionário de Dados, Ranking Estados, Ranking Locais, Maiores Divergências).
-#     Suíte: 105 → **111 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (163ª geração) → EU TINHA MATADO O VISUAL. Restaurei a vida da 126ª — e fui além. [UX-VIVO]
-#     "O visual está feio. A 126ª era bem mais atraente." Fui comparar, sem me defender.
-#     ── O DIAGNÓSTICO (e a culpa é minha) ──
-#       Não deletei NADA da 126ª. Empilhei **13.500 caracteres de CSS por cima**, com **71 `!important`**
-#       (contra 7 da 126ª). E na 159ª cometi o erro central: medi "138 caixas coloridas = parede" e
-#       **SOBRECORRIGI**. Pus `background: transparent !important` nas caixas e fundos a **7% de opacidade**.
-#       Achatei tudo.
-#       **O resultado não ficou elegante — ficou LAVADO, SEM VIDA.**
-#       **Profissional NÃO é sem cor.** Stripe, Linear e Vercel têm cor RICA — só a usam com hierarquia.
-#       Eu confundi "calmo" com "apagado", e você sentiu na hora.
-#     ── O QUE A 126ª TINHA E EU MATEI ──
-#       • Métricas com **barra azul de 4px** + hover que **LEVANTA 3px** com a sombra crescendo → eu troquei
-#         por uma borda cinza de 1px. Matei o cartão.
-#       • Botão primário **azul sólido com GLOW azul** no hover → eu deixei um translateY(-1px) tímido.
-#       • Abas ativas com **fundo azul cheio** → minha navegação lateral tinha só uma barrinha.
-#     ── O QUE VOLTOU (e melhor) ──
-#       • ALERTAS com CORPO: gradiente de 20-26% (não 7%), acento de **5px**, sombra, e hover que desliza.
-#         Vermelho ganha glow próprio — ele PARA o olho, que é a função dele.
-#       • MÉTRICAS: barra de acento + gradiente na superfície + **levantar com sombra em DUAS camadas**
-#         (profundidade real, não sombra chapada). Uma delas é azul: o cartão "acende" ao toque.
-#       • BOTÃO PRIMÁRIO: gradiente azul + **glow que cresce** + levantar. Confiante, como o da 126ª.
-#       • NAVEGAÇÃO LATERAL: o item ativo ganha o **gradiente azul** que as abas da 126ª tinham.
-#       • TABELAS: cabeçalho com gradiente e **borda azul de 2px**; hover de linha em azul translúcido.
-#       • h5: em vez do rótulo cinza CLÍNICO que eu tinha feito, ganha **acento azul à esquerda**.
-#     ── DISCIPLINA MANTIDA (a cor voltou, o rigor ficou) ──
-#       **0 cores hardcoded** (122 usos de token — os rgba são derivados da paleta semântica).
-#       **WCAG AA continua passando.** **Zero componente adicionado** (77 elementos / 6,2 pesados —
-#       IDÊNTICO à 162ª): a renderização preguiçosa da 142ª, que me custou três gerações, está intacta.
-#       Mais gradiente (8 × 2), mais sombra (13 × 5) e mais resposta ao toque que a própria 126ª.
-#     Suíte: 105 testes. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
 #   v3.8 (162ª geração) → GEODÉSICA GARANTIDA: os 5 municípios SAEM no comparativo [GEO-GARANTIDO]
 #     PEDIDO: "as informações deles PRECISAM SAIR no comparativo, de forma confiável, precisa e exata".
 #     A 161ª os EXCLUÍA (barrando a mentira dos 250 km fantasma). Mas excluir não resolve — ESCONDE.
@@ -3004,132 +2939,152 @@ st.markdown("""
     }
 
     /* ================================================================================
-       [UX-VIVO - 163ª geração] EU TINHA MATADO A APLICAÇÃO.
-       Na 159ª, medi "138 caixas coloridas = parede" e SOBRECORRIGI: pus
-       `background: transparent !important` e fundos a 7% de opacidade. Achatei tudo.
-       O resultado não ficou elegante — ficou LAVADO, SEM VIDA.
-       **Profissional NÃO é sem cor.** Stripe, Linear e Vercel têm cor RICA — só usam com
-       hierarquia. Eu confundi "calmo" com "apagado", e o usuário sentiu na hora.
-       Aqui restauro a riqueza da 126ª (que ele gostava) e vou ALÉM:
-         · barra de acento GROSSA (4px) e SATURADA — presença, não sussurro
-         · fundo com corpo real (14-18%, não 7%) — a cor precisa EXISTIR
-         · hover que LEVANTA com sombra crescendo — a interface responde ao toque
-         · glow colorido no elemento ativo — profundidade, não plano
-       ================================================================================ */
+       [UX-HIERARQUIA - 159ª geração] O PROBLEMA MEDIDO: 138 caixas coloridas e 193 legendas.
+       A tela "Deslocamento do Candidato" sozinha tem 94 elementos. Isso é a parede de caixas
+       clássica do Streamlit — e o problema não é estético, é COGNITIVO:
+       **quando tudo está destacado, nada está.**
+       Cada insight virou um st.info() saturado. O olho não sabe onde pousar.
 
-    /* ---------- ALERTAS: cor com CORPO, acento GROSSO, e vida no hover ---------- */
+       A CURA (uma injeção de CSS, zero linha de lógica tocada, 138 caixas de uma vez):
+       trocar o FUNDO SATURADO por uma BARRA DE ACENTO à esquerda — o padrão de Stripe, Linear,
+       GitHub e Power BI. A cor continua comunicando a severidade, mas para de GRITAR.
+       ================================================================================ */
     div[data-testid="stAlert"],
     div[data-testid="stNotification"] {
-        border-radius: var(--r-md) !important;
+        border-radius: var(--r-sm) !important;
         border: 1px solid var(--sf-3) !important;
-        border-left-width: 5px !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,.22) !important;
+        border-left-width: 3px !important;
+        box-shadow: none !important;
         padding: var(--sp-3) var(--sp-4) !important;
         margin-bottom: var(--sp-3) !important;
-        transition: transform .16s ease, box-shadow .16s ease;
     }
-    div[data-testid="stAlert"]:hover,
-    div[data-testid="stNotification"]:hover {
-        transform: translateX(2px);
-        box-shadow: 0 6px 18px rgba(0,0,0,.30) !important;
+    /* fundo QUASE neutro: a cor vive na barra, não na área inteira */
+    div[data-testid="stAlert"] > div,
+    div[data-testid="stNotification"] > div {
+        background: transparent !important;
     }
     div[data-testid="stAlert"] p,
     div[data-testid="stNotification"] p {
         font-size: var(--fs-md) !important;
-        line-height: 1.6 !important;
+        line-height: 1.55 !important;
         color: var(--tx-2) !important;
     }
-    /* INFO — azul com corpo */
-    div[data-testid="stAlert"]:has([data-testid*="Info"]),
-    div[data-testid="stNotification"]:has([data-testid*="Info"]) {
-        background: linear-gradient(90deg, rgba(52,152,219,.20) 0%, rgba(52,152,219,.07) 100%) !important;
+    /* Streamlit distingue os 4 tipos pela cor de fundo herdada; usamos a barra para cada um. */
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentInfo"]) {
+        background: rgba(52, 152, 219, .07) !important;
         border-left-color: var(--info) !important;
-        border-color: rgba(52,152,219,.35) !important;
     }
-    /* SUCESSO — verde confiante */
-    div[data-testid="stAlert"]:has([data-testid*="Success"]),
-    div[data-testid="stNotification"]:has([data-testid*="Success"]) {
-        background: linear-gradient(90deg, rgba(46,204,113,.20) 0%, rgba(46,204,113,.07) 100%) !important;
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentSuccess"]) {
+        background: rgba(46, 204, 113, .07) !important;
         border-left-color: var(--ok) !important;
-        border-color: rgba(46,204,113,.35) !important;
     }
-    /* AVISO — âmbar que se faz notar */
-    div[data-testid="stAlert"]:has([data-testid*="Warning"]),
-    div[data-testid="stNotification"]:has([data-testid*="Warning"]) {
-        background: linear-gradient(90deg, rgba(230,126,34,.22) 0%, rgba(230,126,34,.08) 100%) !important;
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentWarning"]) {
+        background: rgba(230, 126, 34, .07) !important;
         border-left-color: var(--warn) !important;
-        border-color: rgba(230,126,34,.38) !important;
     }
-    /* ERRO — vermelho que PARA o olho */
-    div[data-testid="stAlert"]:has([data-testid*="Error"]),
-    div[data-testid="stNotification"]:has([data-testid*="Error"]) {
-        background: linear-gradient(90deg, rgba(231,76,60,.26) 0%, rgba(231,76,60,.09) 100%) !important;
+    div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]),
+    div[data-testid="stNotification"]:has([data-testid="stNotificationContentError"]) {
+        background: rgba(231, 76, 60, .09) !important;
         border-left-color: var(--danger) !important;
-        border-color: rgba(231,76,60,.42) !important;
-        box-shadow: 0 2px 12px rgba(231,76,60,.18) !important;
     }
 
-    /* ---------- LEGENDAS: discretas, mas NÃO apagadas ---------- */
+    /* ---------- LEGENDAS: recuam de verdade ----------
+       193 st.caption() competindo com o conteúdo principal. Uma legenda que grita não é legenda.
+       Aqui ela vira o que deveria ser: apoio silencioso, disponível para quem procurar. */
     div[data-testid="stCaptionContainer"] p,
     [data-testid="stCaptionContainer"] {
         font-size: var(--fs-sm) !important;
         color: var(--tx-3) !important;
-        line-height: 1.6 !important;
+        line-height: 1.5 !important;
     }
 
-    /* ---------- TIPOGRAFIA: hierarquia COM personalidade ---------- */
-    .main h1 {
-        font-size: var(--fs-2xl) !important; font-weight: 700 !important;
-        color: var(--tx-1) !important; letter-spacing: -.025em;
-    }
-    .main h2 {
-        font-size: var(--fs-xl) !important; font-weight: 700 !important;
-        color: var(--tx-1) !important; margin-top: var(--sp-6) !important;
-        letter-spacing: -.015em;
-    }
-    .main h3 {
-        font-size: var(--fs-lg) !important; font-weight: 600 !important;
-        color: var(--tx-1) !important; margin-top: var(--sp-5) !important;
-    }
+    /* ---------- ESCALA TIPOGRÁFICA REAL ----------
+       Os títulos eram quase todos h5 ("#####"). Sem escala, não há hierarquia:
+       o olho não distingue "seção" de "subseção" de "detalhe". */
+    .main h1 { font-size: var(--fs-2xl) !important; font-weight: 700 !important; color: var(--tx-1) !important;
+               letter-spacing: -.02em; }
+    .main h2 { font-size: var(--fs-xl) !important; font-weight: 600 !important; color: var(--tx-1) !important;
+               margin-top: var(--sp-6) !important; }
+    .main h3 { font-size: var(--fs-lg) !important; font-weight: 600 !important; color: var(--tx-1) !important;
+               margin-top: var(--sp-5) !important; }
     .main h4 { font-size: var(--fs-md) !important; font-weight: 600 !important; color: var(--tx-2) !important; }
-    /* h5 = subtítulo de painel: acento azul à esquerda, NÃO um rótulo cinza clínico */
+    /* h5 = o subtítulo de painel que a app mais usa: vira RÓTULO, não título */
     .main h5 {
-        font-size: var(--fs-md) !important;
+        font-size: var(--fs-sm) !important;
         font-weight: 700 !important;
-        color: var(--tx-1) !important;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+        color: var(--tx-3) !important;
         margin-top: var(--sp-5) !important;
-        margin-bottom: var(--sp-3) !important;
-        padding-left: var(--sp-3);
-        border-left: 3px solid var(--brand);
-        line-height: 1.3;
+        margin-bottom: var(--sp-2) !important;
+        padding-bottom: var(--sp-1);
+        border-bottom: 1px solid var(--sf-3);
     }
 
-    /* ---------- BOTÃO PRIMÁRIO: azul sólido com GLOW (o da 126ª, melhorado) ---------- */
+    /* ---------- BOTÃO PRIMÁRIO: um só protagonista por tela ---------- */
     button[kind="primary"] {
-        background: linear-gradient(135deg, var(--brand) 0%, var(--brand-3) 100%) !important;
-        border: none !important;
-        color: var(--on-brand) !important;
         border-radius: var(--r-sm) !important;
         font-weight: 600 !important;
-        letter-spacing: .01em;
-        box-shadow: 0 2px 8px rgba(59,130,246,.30) !important;
-        transition: transform .14s ease, box-shadow .18s ease, filter .14s ease;
+        box-shadow: var(--sh-1) !important;
+        transition: transform .08s ease, box-shadow .12s ease;
     }
     button[kind="primary"]:hover {
-        transform: translateY(-2px);
-        filter: brightness(1.08);
-        box-shadow: 0 8px 22px rgba(59,130,246,.48) !important;
+        transform: translateY(-1px);
+        box-shadow: var(--sh-2) !important;
     }
-    button[kind="primary"]:active { transform: translateY(0); }
-    button[kind="secondary"] {
-        border: 1px solid var(--sf-3) !important;
-        border-radius: var(--r-sm) !important;
-        transition: border-color .14s ease, background .14s ease;
+
+    /* ================================================================================
+       [UX-HIERARQUIA - 159ª geração] MÉTRICAS VIRAM CARTÕES.
+       Hoje são NÚMEROS FLUTUANDO NO VAZIO — sem moldura, sem agrupamento visual, competindo
+       com o texto ao redor. Em Stripe, Power BI e Azure Portal, um KPI é um CARTÃO: tem borda,
+       tem fundo, tem respiro. Isso não é enfeite — é o que permite ao olho tratar "os números"
+       como um bloco único e escanear a linha inteira de uma vez, em vez de ler item a item.
+       ================================================================================ */
+    div[data-testid="stMetric"] {
+        background: var(--sf-2);
+        border: 1px solid var(--sf-3);
+        border-radius: var(--r-md);
+        padding: var(--sp-3) var(--sp-4);
+        transition: border-color .12s ease;
     }
-    button[kind="secondary"]:hover {
-        border-color: var(--brand) !important;
+    div[data-testid="stMetric"]:hover { border-color: var(--brand); }
+
+    /* ---------- TABELAS: legíveis de verdade ----------
+       O cabeçalho precisa se separar do corpo (é a âncora do olho ao rolar), e a linha sob o
+       cursor precisa se destacar (é como se rastreia uma linha numa tabela larga sem perder-se). */
+    div[data-testid="stDataFrame"] {
+        border: 1px solid var(--sf-3);
+        border-radius: var(--r-md);
+        overflow: hidden;
+    }
+    div[data-testid="stDataFrame"] thead th {
+        background: var(--sf-3) !important;
+        color: var(--tx-1) !important;
+        font-weight: 600 !important;
+        font-size: var(--fs-sm) !important;
+        letter-spacing: .02em;
+    }
+    div[data-testid="stDataFrame"] tbody tr:hover td {
         background: var(--sf-2) !important;
     }
+
+    /* ---------- EXPANDERS: painéis, não acordeões genéricos ---------- */
+    div[data-testid="stExpander"] {
+        border: 1px solid var(--sf-3) !important;
+        border-radius: var(--r-md) !important;
+        background: var(--sf-1);
+        margin-bottom: var(--sp-3);
+    }
+    div[data-testid="stExpander"] summary {
+        font-weight: 600 !important;
+        font-size: var(--fs-md) !important;
+        color: var(--tx-2) !important;
+        padding: var(--sp-3) var(--sp-4) !important;
+    }
+    div[data-testid="stExpander"] summary:hover { color: var(--tx-1) !important; }
 
     /* ---------- MÉTRICAS: hierarquia legível ---------- */
     [data-testid="stMetricValue"] {
@@ -8812,246 +8767,6 @@ def _pareto_economia(linhas, top=20):
             "concentrado": _pct_muns <= 30.0}
 
 
-
-
-def _dicionario_colunas_comparacao():
-    """[DICIONARIO - 164ª geração] DICIONÁRIO DE DADOS da planilha exportada.
-
-    O PROBLEMA: a planilha final tem ~40 colunas e **ninguém sabe o que a maioria significa**. Um gestor
-    abre "Custo Efetivo (km-eq)" ou "Faixa de Diferenca" e não faz ideia do que fazer com aquilo. Uma coluna
-    que ninguém sabe ler é pior que coluna nenhuma: ela ocupa espaço, gera dúvida e às vezes é interpretada
-    ERRADO — o que é o pior desfecho possível num estudo que fundamenta decisão pública.
-
-    Cada coluna declara: O QUE É · DE ONDE VEM (calculado × informado × API) · QUANDO FICA VAZIA · COMO LER.
-    PURO."""
-    return [
-        # ─── IDENTIFICAÇÃO ───
-        {"Coluna": "Origem", "Grupo": "Identificação",
-         "O que é": "Município onde o candidato mora.",
-         "De onde vem": "Da SUA planilha de referência, já resolvido pela base oficial do IBGE.",
-         "Fica vazia quando": "Nunca (é obrigatória).",
-         "Como ler": "É a chave de tudo. Se estiver errada, todo o resto da linha está errado."},
-        {"Coluna": "UF", "Grupo": "Identificação",
-         "O que é": "Estado do município de origem.",
-         "De onde vem": "Base oficial do IBGE (não da sua planilha — é validado).",
-         "Fica vazia quando": "O município não pôde ser identificado.",
-         "Como ler": "Se divergir da UF que você informou, há erro de identificação — investigue."},
-        {"Coluna": "Cod IBGE Origem", "Grupo": "Identificação",
-         "O que é": "Código oficial do IBGE (7 dígitos) do município de origem.",
-         "De onde vem": "Base oficial embarcada (5.571 municípios).",
-         "Fica vazia quando": "A conciliação foi por nome e o município não bateu com a base.",
-         "Como ler": "É o identificador INQUESTIONÁVEL. Se ele está preenchido, a identidade é certa."},
-        {"Coluna": "Inscritos", "Grupo": "Identificação",
-         "O que é": "Quantidade de candidatos daquele município.",
-         "De onde vem": "Da SUA planilha (coluna que você mapeou). É dado INFORMADO, não calculado.",
-         "Fica vazia quando": "Você não mapeou a coluna. Nesse caso cada município pesa 1.",
-         "Como ler": "É o PESO de tudo. Sem ele, um município com 5.000 candidatos vale o mesmo que um com 10."},
-
-        # ─── CONCILIAÇÃO ───
-        {"Coluna": "Metodo Conciliacao", "Grupo": "Conciliação",
-         "O que é": "COMO esta linha da sua planilha foi casada com o nosso estudo.",
-         "De onde vem": "CALCULADO. Hierarquia: Código IBGE → Município+UF → Município → Similaridade.",
-         "Fica vazia quando": "Nunca (toda linha conciliada tem método).",
-         "Como ler": "🟢 'Código IBGE' e 'Município + UF' = OFICIAL, confie. 🔴 'Fuzzy' = a plataforma "
-                     "ADIVINHOU por parecença textual — CONFIRA essas linhas uma a uma."},
-        {"Coluna": "Score Conciliacao", "Grupo": "Conciliação",
-         "O que é": "Confiança do vínculo (0-100).",
-         "De onde vem": "CALCULADO. 100 = código IBGE; 98 = município+UF; 90 = município; <90 = similaridade.",
-         "Fica vazia quando": "Nunca.",
-         "Como ler": "Abaixo de 90 significa vínculo NÃO oficial. Trate como suspeito."},
-
-        # ─── AS DUAS DISTÂNCIAS ───
-        {"Coluna": "Distancia Referencia", "Grupo": "Comparação",
-         "O que é": "A distância que a SUA planilha de referência informou.",
-         "De onde vem": "INFORMADO por você. A plataforma NÃO a recalcula nem a corrige.",
-         "Fica vazia quando": "A célula estava vazia ou não era número.",
-         "Como ler": "⚠️ Você precisa saber COMO ela foi medida. Se a referência usou LINHA RETA e nós "
-                     "usamos VIÁRIA, a diferença é METODOLÓGICA, não logística."},
-        {"Coluna": "Distancia Aplicacao", "Grupo": "Comparação",
-         "O que é": "A distância que a NOSSA plataforma calculou.",
-         "De onde vem": "CALCULADO. Menor rota viária entre Google Maps e OSRM (o vencedor é registrado).",
-         "Fica vazia quando": "A rota falhou. Aí a plataforma usa a GEODÉSICA — veja 'Tipo de Distância'.",
-         "Como ler": "É a distância que o candidato de fato percorre por estrada."},
-        {"Coluna": "Tipo de Distancia", "Grupo": "Comparação",
-         "O que é": "🛣️ Viária, 📐 Geodésica ou 🚢 Fluvial.",
-         "De onde vem": "CALCULADO a partir da fonte da rota.",
-         "Fica vazia quando": "Nunca.",
-         "Como ler": "🔴 **CRÍTICO.** '📐 Geodésica' significa que o município NÃO TEM ESTRADA (ilhas do "
-                     "Marajó, calha do Solimões). A distância é a linha reta oficial — exata, mas NÃO "
-                     "viária. Comparar geodésica com viária é maçã com laranja."},
-
-        # ─── O RESULTADO ───
-        {"Coluna": "Diferenca Abs (km)", "Grupo": "Resultado",
-         "O que é": "Distância da referência MENOS a nossa.",
-         "De onde vem": "CALCULADO.",
-         "Fica vazia quando": "Falta uma das duas distâncias.",
-         "Como ler": "**POSITIVO = nós levamos o candidato MAIS PERTO. NEGATIVO = mais LONGE.** "
-                     "Negativos merecem investigação — podem ser escolha logística legítima (evitar balsa) "
-                     "ou município mal identificado."},
-        {"Coluna": "Faixa de Diferenca", "Grupo": "Resultado",
-         "O que é": "A diferença classificada em faixas, COM SINAL.",
-         "De onde vem": "CALCULADO.",
-         "Fica vazia quando": "Não há comparação possível.",
-         "Como ler": "'Aplicação melhor: 20 a 50 km' = ganhamos entre 20 e 50 km. O sinal existe porque "
-                     "**60 km a favor e 60 km contra NÃO são a mesma coisa**."},
-        {"Coluna": "Vencedor Distancia", "Grupo": "Resultado",
-         "O que é": "Quem levou o candidato mais perto.",
-         "De onde vem": "CALCULADO. **Empate técnico se |diferença| < 1 km.**",
-         "Fica vazia quando": "Não há comparação.",
-         "Como ler": "🔴 'Empate' NÃO é derrota: abaixo de 1 km a diferença é ruído de geocodificação. "
-                     "**Não se declara vitória com base em ruído.**"},
-        {"Coluna": "Economia km x Inscritos", "Grupo": "Resultado",
-         "O que é": "**O indicador que mais importa.** Km economizados × número de candidatos.",
-         "De onde vem": "CALCULADO.",
-         "Fica vazia quando": "Falta distância ou inscritos.",
-         "Como ler": "Mede impacto REAL sobre GENTE. Poupar 10 km para 5.000 candidatos (50.000) importa "
-                     "muito mais que poupar 200 km para 10 (2.000). **Divida o total pelo nº de candidatos "
-                     "e você tem 'quantos km a menos cada candidato anda'** — o número que uma pessoa entende."},
-        {"Coluna": "Mesmo Destino", "Grupo": "Resultado",
-         "O que é": "As duas soluções escolheram o MESMO local de prova?",
-         "De onde vem": "CALCULADO (comparação de nomes normalizados).",
-         "Fica vazia quando": "Falta um dos destinos.",
-         "Como ler": "'Não' não é erro — é onde as duas soluções DISCORDAM. É ali que está a decisão."},
-        {"Coluna": "Justificativa", "Grupo": "Resultado",
-         "O que é": "Explicação técnica, em português, de por que esta linha teve esse resultado.",
-         "De onde vem": "CALCULADO (texto gerado a partir dos números da própria linha).",
-         "Fica vazia quando": "Nunca.",
-         "Como ler": "É o 'porquê' da linha. Use-o para defender a decisão numa reunião."},
-
-        # ─── NOSSO ESTUDO (APP ·) ───
-        {"Coluna": "APP · Custo Efetivo (km-eq)", "Grupo": "Nosso estudo",
-         "O que é": "O ESFORÇO REAL do deslocamento, em km-equivalentes.",
-         "De onde vem": "CALCULADO: viária + lentidão da estrada + balsa + sinuosidade.",
-         "Fica vazia quando": "O modo multicritério não foi usado.",
-         "Como ler": "Uma rota de 180 km COM BALSA pode custar 330 km-eq; outra de 195 km sem balsa custa "
-                     "195. **O candidato prefere a segunda** — e o número mostra por quê."},
-        {"Coluna": "APP · Integridade", "Grupo": "Nosso estudo",
-         "O que é": "Índice de Integridade Geográfica (0-100).",
-         "De onde vem": "CALCULADO. Penaliza impossibilidade física e colisão de identidade.",
-         "Fica vazia quando": "Não aplicável.",
-         "Como ler": "🔴 **Abaixo de 100, a rota é REPROVADA** — não 'aprovada com aviso'. Investigue antes "
-                     "de usar."},
-        {"Coluna": "APP · Risco de Homônimo", "Grupo": "Nosso estudo",
-         "O que é": "Risco de o município ter sido confundido com um homônimo.",
-         "De onde vem": "CALCULADO contra a base de 241 grupos de homônimos.",
-         "Fica vazia quando": "O município não tem homônimo.",
-         "Como ler": "🔴 'Alto' = a identidade NÃO é confiável. 'São Domingos' existe em 5 estados. Sem UF "
-                     "ou código IBGE, pode ser o município errado — e toda a linha estaria errada."},
-        {"Coluna": "APP · Justificativa da Escolha", "Grupo": "Nosso estudo",
-         "O que é": "Por que a plataforma escolheu ESTE polo, e não outro.",
-         "De onde vem": "CALCULADO (explicação do motor multicritério).",
-         "Fica vazia quando": "O modo multicritério não foi usado.",
-         "Como ler": "Escrito na perspectiva do candidato. É a defesa técnica da decisão."},
-        {"Coluna": "APP · Score", "Grupo": "Nosso estudo",
-         "O que é": "Score global de qualidade da rota (0-100).",
-         "De onde vem": "CALCULADO: 0,35 × origem + 0,35 × destino + 0,30 × rota.",
-         "Fica vazia quando": "Nunca.",
-         "Como ler": "Mede a CONFIANÇA no dado, não a qualidade do deslocamento. Score baixo = geocodificação "
-                     "duvidosa."},
-
-        # ─── ESTUDO CONCORRENTE (REF ·) ───
-        {"Coluna": "REF · (qualquer coluna)", "Grupo": "Estudo concorrente",
-         "O que é": "**TODA** coluna da sua planilha de referência, preservada.",
-         "De onde vem": "INFORMADO por você. A plataforma **não altera nem descarta nada**.",
-         "Fica vazia quando": "A célula estava vazia na sua planilha.",
-         "Como ler": "Elas existem para você poder AUDITAR a comparação: se o concorrente informou 'modo de "
-                     "acesso' ou 'usa balsa', você vê o dado dele ao lado do nosso, campo a campo."},
-    ]
-
-
-def _exemplo_planilha_saida():
-    """[DICIONARIO - 164ª geração] EXEMPLO REALISTA da planilha exportada — como ela sai de verdade.
-    Mostrar é melhor que descrever: o usuário vê a tabela ANTES de processar e sabe o que esperar. PURO."""
-    import pandas as _pd
-    return _pd.DataFrame([
-        {"Origem": "Rio Verde", "UF": "GO", "Cod IBGE Origem": "5218805", "Inscritos": 3200,
-         "Metodo Conciliacao": "Código IBGE", "Score Conciliacao": 100,
-         "Tipo de Distancia": "🛣️ Viária",
-         "Destino Referencia": "Goiânia", "Destino Aplicacao": "Goiânia", "Mesmo Destino": "Sim",
-         "Distancia Referencia": 280.0, "Distancia Aplicacao": 220.0,
-         "Diferenca Abs (km)": 60.0, "Diferenca Pct (%)": 21.4,
-         "Faixa de Diferenca": "Aplicação melhor: 50 a 100 km",
-         "Vencedor Distancia": "Aplicação", "Economia km x Inscritos": 192000.0,
-         "Justificativa": "Deslocamento 21% mais curto (220 km vs 280 km); impacta 3.200 candidato(s)"},
-        {"Origem": "Melgaço", "UF": "PA", "Cod IBGE Origem": "1504505", "Inscritos": 1500,
-         "Metodo Conciliacao": "Código IBGE", "Score Conciliacao": 100,
-         "Tipo de Distancia": "📐 Geodésica (sem acesso rodoviário)",
-         "Destino Referencia": "Breves", "Destino Aplicacao": "Belém", "Mesmo Destino": "Não",
-         "Distancia Referencia": 250.0, "Distancia Aplicacao": 250.57,
-         "Diferenca Abs (km)": -0.57, "Diferenca Pct (%)": -0.2,
-         "Faixa de Diferenca": "Igual (< 1 km)",
-         "Vencedor Distancia": "Empate", "Economia km x Inscritos": -855.0,
-         "Justificativa": "Distâncias equivalentes (diferença < 1 km); local de prova diferente"},
-        {"Origem": "São Domingos", "UF": "GO", "Cod IBGE Origem": "5219753", "Inscritos": 480,
-         "Metodo Conciliacao": "Fuzzy (93%)", "Score Conciliacao": 93,
-         "Tipo de Distancia": "🛣️ Viária",
-         "Destino Referencia": "Brasília", "Destino Aplicacao": "Formosa", "Mesmo Destino": "Não",
-         "Distancia Referencia": 310.0, "Distancia Aplicacao": 340.0,
-         "Diferenca Abs (km)": -30.0, "Diferenca Pct (%)": -9.7,
-         "Faixa de Diferenca": "Referência melhor: 20 a 50 km",
-         "Vencedor Distancia": "Referência", "Economia km x Inscritos": -14400.0,
-         "Justificativa": "Deslocamento 10% mais longo (340 km vs 310 km); local de prova diferente"},
-    ])
-
-
-def _rankings_comparacao(linhas, top=15):
-    """[RANKING - 164ª geração] RANKINGS que faltavam: por ESTADO, por LOCAL DE PROVA e as maiores
-    DIVERGÊNCIAS. O Pareto (149ª) já rankeava municípios pelo ganho; faltava responder:
-      · qual ESTADO mais ganha (e qual mais perde)?
-      · qual LOCAL DE PROVA recebe mais candidatos, e com que deslocamento médio?
-      · onde as duas soluções mais DISCORDAM (para revisar primeiro)?
-    Tudo ponderado por CANDIDATO. PURO."""
-    _ok = [l for l in (linhas or []) if l.get("Diferenca Abs (km)") is not None]
-    if not _ok:
-        return {"estados": [], "polos": [], "divergencias": []}
-
-    _uf = {}
-    for l in _ok:
-        _u = str(l.get("UF") or "—")
-        _a = _uf.setdefault(_u, {"UF": _u, "municipios": 0, "candidatos": 0,
-                                 "economia_km_candidato": 0.0, "venceu_app": 0, "venceu_ref": 0})
-        _a["municipios"] += 1
-        _a["candidatos"] += int(float(l.get("Inscritos") or 0))
-        _a["economia_km_candidato"] += float(l.get("Economia km x Inscritos") or 0)
-        if l.get("Vencedor Distancia") == "Aplicação":
-            _a["venceu_app"] += 1
-        elif l.get("Vencedor Distancia") == "Referência":
-            _a["venceu_ref"] += 1
-    _est = sorted(_uf.values(), key=lambda x: -x["economia_km_candidato"])
-    for _a in _est:
-        _a["economia_km_candidato"] = round(_a["economia_km_candidato"], 1)
-        _a["km_por_candidato"] = round(_a["economia_km_candidato"] / _a["candidatos"], 2) if _a["candidatos"] else 0.0
-
-    _pl = {}
-    for l in _ok:
-        _p = str(l.get("Destino Aplicacao") or "—")
-        _a = _pl.setdefault(_p, {"Local de Prova": _p, "candidatos": 0, "municipios": 0, "_km": 0.0, "_w": 0.0})
-        _i = float(l.get("Inscritos") or 0)
-        _d = float(l.get("Distancia Aplicacao") or 0)
-        _a["candidatos"] += int(_i)
-        _a["municipios"] += 1
-        if _d > 0:
-            _a["_km"] += _d * max(_i, 1)
-            _a["_w"] += max(_i, 1)
-    _polos = []
-    for _a in _pl.values():
-        _a["dist_media_km"] = round(_a["_km"] / _a["_w"], 1) if _a["_w"] else 0.0
-        _a.pop("_km", None)
-        _a.pop("_w", None)
-        _polos.append(_a)
-    _polos.sort(key=lambda x: -x["candidatos"])
-
-    _div = sorted([l for l in _ok if l.get("Mesmo Destino") == "Não"],
-                  key=lambda l: -abs(float(l.get("Economia km x Inscritos") or 0)))
-    _divs = [{"Município": l.get("Origem"), "UF": l.get("UF", ""),
-              "Candidatos": int(float(l.get("Inscritos") or 0)),
-              "Nosso polo": l.get("Destino Aplicacao"), "Polo da referência": l.get("Destino Referencia"),
-              "Diferença (km)": l.get("Diferenca Abs (km)"),
-              "Impacto (km-candidato)": round(float(l.get("Economia km x Inscritos") or 0), 1)}
-             for l in _div[:top]]
-    return {"estados": _est[:top], "polos": _polos[:top], "divergencias": _divs}
-
-
 def _metodologia_indicadores():
     """[CMP-VALID - 149ª geração] METODOLOGIA EXPLÍCITA — anti-caixa-preta. Cada indicador declara COMO é
     calculado, de QUAIS colunas, e QUAIS registros participam. Requisito de auditoria governamental: um
@@ -9291,32 +9006,6 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
             # [GEO-GARANTIDO - 162ª geração] o tipo de distância vai JUNTO, sempre visível.
             "Tipo de Distancia": _tipo_de_distancia(a),
         })
-        # [LADO-A-LADO - 164ª geração] NADA DA PLANILHA DO CONCORRENTE É DESCARTADO.
-        # A versão anterior guardava SÓ as colunas mapeadas — modo de acesso, balsa, score,
-        # justificativa e qualquer outra coluna que a referência trouxesse eram jogadas fora EM
-        # SILÊNCIO. Perda de dado do usuário, sem aviso. Agora TODA coluna extra da referência é
-        # preservada com o prefixo "REF · ", e todo o nosso estudo entra com o prefixo "APP · ".
-        # O usuário vê os DOIS estudos LADO A LADO, campo a campo — e nada se perde no caminho.
-        _mapeadas = {c for c in mapa.values() if c}
-        for _ck, _cv in r.items():
-            if _ck in _mapeadas or _ck is None:
-                continue
-            if _cv is None or (isinstance(_cv, float) and _cv != _cv):
-                _cv = ""
-            linhas[-1][f"REF · {_ck}"] = _cv
-        # ---- o NOSSO estudo, campo a campo (o que a plataforma produziu) ----
-        for _ak, _rot in (("Cod IBGE Destino", "Cód IBGE do Polo"), ("UF Destino", "UF do Polo"),
-                          ("Linha Reta", "Linha Reta (km)"), ("Score Final Global", "Score"),
-                          ("Fonte Rota", "Fonte da Rota"), ("Integridade Geográfica", "Integridade"),
-                          ("Alerta de Integridade", "Alerta de Integridade"),
-                          ("Confiança Identificação", "Confiança da Identificação"),
-                          ("Risco de Confusão", "Risco de Homônimo"),
-                          ("Justificativa Hub", "Justificativa da Escolha"),
-                          ("Custo Efetivo Hub (km-eq)", "Custo Efetivo (km-eq)"),
-                          ("Lat/Lon Origem", "Coordenadas da Origem"),
-                          ("Lat/Lon Destino", "Coordenadas do Polo")):
-            if _ak in a and a.get(_ak) not in (None, ""):
-                linhas[-1][f"APP · {_rot}"] = a.get(_ak)
     return linhas, aud
 
 
@@ -9486,15 +9175,6 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
             _pa_x = _pareto_economia(linhas, top=100)
             pd.DataFrame(_pa_x["itens"] or [{"—": "sem ganho"}]).to_excel(_w, index=False, sheet_name="Pareto")
             pd.DataFrame(_metodologia_indicadores()).to_excel(_w, index=False, sheet_name="Metodologia")
-            pd.DataFrame(_dicionario_colunas_comparacao()).to_excel(
-                _w, index=False, sheet_name="Dicionario de Dados")
-            _rk_x = _rankings_comparacao(linhas, top=100)
-            pd.DataFrame(_rk_x["estados"] or [{"—": "sem dados"}]).to_excel(
-                _w, index=False, sheet_name="Ranking Estados")
-            pd.DataFrame(_rk_x["polos"] or [{"—": "sem dados"}]).to_excel(
-                _w, index=False, sheet_name="Ranking Locais de Prova")
-            pd.DataFrame(_rk_x["divergencias"] or [{"—": "sem divergência"}]).to_excel(
-                _w, index=False, sheet_name="Maiores Divergencias")
             pd.DataFrame(aud.get("nao_conciliados") or [{"origem_ref": "—", "motivo": "Nenhum"}]).to_excel(
                 _w, index=False, sheet_name="Nao Conciliados")
             pd.DataFrame({"Relatorio Executivo": (relatorio or "").split("\n")}).to_excel(
@@ -17781,30 +17461,6 @@ if _secao == _SECOES[3]:   # tab_comparador
         > 💡 **A coluna que mais aumenta a confiabilidade é a UF.** Se você só puder adicionar uma, adicione essa.
         """)
 
-    # [DICIONARIO - 164ª geração] O QUE VAI SAIR — antes de você processar qualquer coisa.
-    # A planilha final tem ~40 colunas e ninguém sabia o que a maioria significava. Uma coluna que ninguém
-    # sabe ler é PIOR que coluna nenhuma: ela gera dúvida e às vezes é interpretada ERRADO — o pior desfecho
-    # possível num estudo que fundamenta decisão pública.
-    with st.expander("📗 Dicionário de Dados — o que sai na planilha, coluna por coluna", expanded=False):
-        st.markdown("##### 👀 Assim é a planilha exportada (exemplo real)")
-        st.caption("Três linhas que cobrem os três casos que você vai encontrar: vitória clara, "
-                   "empate técnico com distância geodésica, e derrota com conciliação por similaridade.")
-        try:
-            st.dataframe(_exemplo_planilha_saida(), use_container_width=True, hide_index=True)
-        except Exception as _e_ex:
-            logger.error(f"[DICIONARIO] Falha no exemplo: {_e_ex}")
-        st.markdown("##### 📖 O que cada coluna significa")
-        st.caption("Para cada coluna: **o que é** · **de onde vem** (calculado × informado × API) · "
-                   "**quando fica vazia** · **como ler**.")
-        try:
-            _dic = pd.DataFrame(_dicionario_colunas_comparacao())
-            for _g in _dic["Grupo"].unique():
-                st.markdown(f"**{_g}**")
-                st.dataframe(_dic[_dic["Grupo"] == _g].drop(columns=["Grupo"]),
-                             use_container_width=True, hide_index=True)
-        except Exception as _e_d:
-            logger.error(f"[DICIONARIO] Falha no dicionário: {_e_d}")
-
     _file_ref = st.file_uploader("📄 Planilha de referência (base comparativa)", type=["xlsx", "xls", "csv"],
                                  key="cmp_file",
                                  help="A base externa com a distribuição que você quer comparar: município de "
@@ -18217,38 +17873,6 @@ if _secao == _SECOES[3]:   # tab_comparador
                 except Exception as _e_pa:
                     logger.error(f"[CMP-STATS] Falha no Pareto: {_e_pa}")
 
-            with st.expander("🏅 Rankings — estados, locais de prova e maiores divergências", expanded=False):
-                try:
-                    _rk = _rankings_comparacao(_cmp)
-                    _r1, _r2 = st.columns(2)
-                    with _r1:
-                        st.markdown("##### 🗺️ Estados — quem mais ganha")
-                        st.caption("Ordenado por **economia ponderada** (km × candidatos). Negativo = "
-                                   "a nossa solução leva o candidato mais longe ali.")
-                        if _rk["estados"]:
-                            st.dataframe(_colorir_risco(pd.DataFrame(_rk["estados"]),
-                                                        cols_negativo_ruim=["economia_km_candidato"]),
-                                         use_container_width=True, hide_index=True, height=280)
-                    with _r2:
-                        st.markdown("##### 🏫 Locais de prova — quem recebe mais")
-                        st.caption("Quantos candidatos cada polo recebe, e com que deslocamento médio. "
-                                   "Um polo lotado pode não caber numa escola.")
-                        if _rk["polos"]:
-                            st.dataframe(pd.DataFrame(_rk["polos"]), use_container_width=True,
-                                         hide_index=True, height=280)
-                    st.markdown("##### ⚡ Maiores divergências — onde as duas soluções mais discordam")
-                    st.caption("**Comece a revisão por aqui.** São os municípios em que os dois estudos "
-                               "escolheram polos diferentes E o impacto sobre candidatos é maior.")
-                    if _rk["divergencias"]:
-                        st.dataframe(_colorir_risco(pd.DataFrame(_rk["divergencias"]),
-                                                    cols_negativo_ruim=["Impacto (km-candidato)"]),
-                                     use_container_width=True, hide_index=True, height=300)
-                    if not _rk["divergencias"]:
-                        st.success("✅ Nenhuma divergência de destino: as duas soluções concordam em todos "
-                                   "os municípios comparáveis.")
-                except Exception as _e_rk:
-                    logger.error(f"[RANKING] Falha nos rankings: {_e_rk}")
-
             with st.expander("📖 Metodologia — como cada indicador é calculado", expanded=False):
                 st.caption("Nenhum número aqui é caixa-preta. Um indicador que ninguém sabe explicar não pode "
                            "fundamentar decisão pública.")
@@ -18300,7 +17924,7 @@ if _secao == _SECOES[3]:   # tab_comparador
             # [PERF - 139ª geração] Bytes JÁ prontos (montados no clique). Zero CPU por rerun.
             _xb = _res_c.get("xlsx")
             if _xb:
-                st.download_button("📥 Baixar comparação completa (.xlsx — 15 abas)", data=_xb,
+                st.download_button("📥 Baixar comparação completa (.xlsx — 11 abas)", data=_xb,
                                    file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True, key="cmp_export")
