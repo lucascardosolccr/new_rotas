@@ -63,6 +63,136 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (166ª geração) → OS DOIS ESTUDOS, COM O MESMO RIGOR (diagnóstico imparcial) [PERFIL]
+#     A 165ª analisou onde o concorrente VENCEU. Mas ele ainda só existia EM RELAÇÃO A NÓS — nunca ganhava
+#     um **perfil PRÓPRIO**. E sem perfil, perguntas centrais ficavam SEM RESPOSTA: "qual estudo evita mais
+#     balsas?", "qual usa menos locais de prova?", "qual tem menor sinuosidade?". Não dá para responder isso
+#     comparando linha a linha — só olhando cada estudo **como um TODO**.
+#     ── 1. PERFIL AUTÔNOMO DE CADA ESTUDO (_perfil_estudo) ──
+#       Municípios · candidatos · locais de prova usados · distância média/mediana/mín/máx/desvio ·
+#       deslocamento total em km-candidato · tempo médio/máx · % com balsa · % só rodoviário · sinuosidade
+#       média · distribuição por faixa e por UF. **Lado a lado, os dois.**
+#     ── 2. 🔒 A HONESTIDADE QUE ISTO EXIGIU (e é o coração desta geração) ──
+#       Do NOSSO estudo eu sei tudo. Do CONCORRENTE eu só sei **o que a planilha dele trouxe**. Se ela não
+#       tem coluna de balsa, **eu NÃO POSSO inventar uma taxa de balsa para ele** — e não invento.
+#       Os campos ausentes saem como **"❓ não informado"**, NUNCA como zero.
+#       **Zero e "não sei" são coisas DIFERENTES. Confundi-las seria MENTIR COM NÚMEROS** — e num
+#       comparador, mentir com números é o pecado capital. A app responde "❓ NÃO DÁ PARA RESPONDER — a
+#       planilha do concorrente não informa uso de balsa" em vez de dar a ele 0% e fingir que ganhou.
+#     ── 3. 🔬 A PERGUNTA MAIS AFIADA: PONTUAL ou SISTEMÁTICA? ──
+#       "O concorrente é melhor de forma consistente, ou só em casos específicos?" Isso NÃO é opinião — é
+#       **medível**. Se as vitórias dele estão CONCENTRADAS, a vantagem é PONTUAL ("revise esses poucos
+#       casos e o problema some"). Se estão ESPALHADAS, é SISTEMÁTICA ("**há algo no MÉTODO dele que
+#       funciona melhor**, e ignorar isso é teimosia").
+#       CRITÉRIO CORRIGIDO NO TESTE: o percentual sozinho falhava com n pequeno (1 vitória de 3 = 33% →
+#       classificava como "sistemática" um caso em que UM município explicava 99,95% do ganho). O sinal
+#       decisivo é **se UM caso DOMINA** (≥50% do ganho dele). Testado nos dois sentidos: o mesmo motor dá
+#       respostas OPOSTAS, e ambas MEDIDAS.
+#     ── 4. 🌎 PADRÃO GEOGRÁFICO ──
+#       As vitórias dele se concentram numa região muito além do peso dela no estudo? Se sim, **não é
+#       acaso**: naquela região o método dele lida melhor com alguma coisa (malha viária, balsa, relevo).
+#       A app diz isso — ou diz que NÃO há padrão, quando não há.
+#     ── 5. O PLACAR, SEM MAQUIAGEM ──
+#       "Nossa aplicação venceu em X% · O concorrente em Y% · Empates Z%" — no topo do painel, os três
+#       juntos. E quando o concorrente reduz mais o deslocamento, **a app DIZ que ele reduz mais**.
+#     Export: 18 → **21 abas**. Suíte: 116 → **123 testes**.
+#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (165ª geração) → O CONCORRENTE ANALISADO EM SI + O PLANO HÍBRIDO [CONCORRENTE]
+#     ── O VIÉS QUE VOCÊ APONTOU (e era ESTRUTURAL, não um esquecimento) ──
+#       Toda a minha análise era ASSIMÉTRICA: perguntava só **"NÓS ganhamos?"**. As vitórias do concorrente
+#       apareciam apenas como DERROTAS nossas — nunca eram analisadas EM SI. Ninguém respondia: "e nos casos
+#       em que ele ganhou, quantos ALUNOS se beneficiariam se adotássemos a escolha dele?"
+#       Isso não é só incompleto — é **ENVIESADO A NOSSO FAVOR**. Um comparador que só sabe contar as
+#       próprias vitórias não é ferramenta de decisão: é **peça de marketing**. Num estudo que fundamenta
+#       decisão pública, isso é grave. E o viés estava na arquitetura, não num detalhe.
+#     ── 1. O CONCORRENTE, COM O MESMO RIGOR (_analise_concorrente) ──
+#       Onde ele venceu · quantos CANDIDATOS ele beneficiaria · quantos km a menos CADA UM andaria ·
+#       em quais ESTADOS · POR QUE ele venceu (caso a caso, em português) · e o **Pareto dele**: quais
+#       poucos municípios explicam 80% da vantagem dele ("se for revisar só alguns, revise esses").
+#       Ordenado por IMPACTO SOBRE CANDIDATOS, não por km: 4.000 candidatos a 160 km a mais doem muito
+#       mais que 50 a 300 km.
+#     ── 2. 🏆 O PLANO HÍBRIDO — a pergunta que NINGUÉM estava fazendo ──
+#       O comparador respondia "qual estudo é melhor NO CONJUNTO?". Essa é a pergunta **ERRADA** para quem
+#       vai DECIDIR. A pergunta certa é:
+#           **"E se eu pegar, de cada município, a MELHOR das duas escolhas?"**
+#       **Ninguém é obrigado a adotar um estudo INTEIRO.** O gestor pode tomar o nosso polo onde nós
+#       vencemos e o do concorrente onde ELE vence. O resultado **DOMINA OS DOIS — por construção**.
+#       Testado: nosso puro = 2.020.000 km-cand · dele puro = 1.560.000 · **HÍBRIDO = 1.380.000**.
+#       E a recomendação sai OPERACIONAL: "mantenha o nosso polo em N municípios e migre M
+#       (X candidatos) para o polo do concorrente".
+#       Isto transforma o comparador de um **PLACAR** ("quem ganhou?") numa **DECISÃO** ("o que eu faço?").
+#     ── ONDE ISSO APARECE ──
+#       No VEREDITO (topo da tela, no diagnóstico final) · em painel próprio ("⚔️ Onde o CONCORRENTE
+#       venceu") · no RELATÓRIO EXECUTIVO (duas seções novas: §7 "Onde a Base de Referência venceu" e §8
+#       "A Recomendação que Domina as Duas") · e no export (3 abas novas: Vitórias do Concorrente,
+#       Concorrente por UF, Plano Híbrido).
+#     Export: 15 → **18 abas**. Suíte: 111 → **116 testes**.
+#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (164ª geração) → NADA MAIS SE PERDE + DICIONÁRIO DE DADOS + RANKINGS [LADO-A-LADO]
+#     Auditei o pedido contra o que a aba JÁ tinha, para não reimplementar o que existe (estatística,
+#     Pareto, relatório executivo, metodologia, veredito, legendas — tudo da 149ª/160ª). Achei DOIS buracos
+#     reais, e um deles é PERDA DE DADO.
+#     ── 1. 🔴 EU DESCARTAVA A PLANILHA DO CONCORRENTE (item 6 do pedido) ──
+#       _conciliar_comparativo guardava **apenas as colunas MAPEADAS**. Modo de acesso, uso de balsa, score,
+#       justificativa, observações — TODA coluna extra da planilha de referência era **jogada fora EM
+#       SILÊNCIO**. Perda de dado DO USUÁRIO, sem aviso nenhum.
+#       CORRIGIDO: **toda** coluna da referência é preservada com o prefixo **"REF · "**, e o nosso estudo
+#       entra com **"APP · "** (cód. IBGE do polo, linha reta, score, integridade, risco de homônimo,
+#       justificativa da escolha, custo efetivo, coordenadas). O usuário vê os **DOIS estudos LADO A LADO,
+#       campo a campo**. Testado: nem a coluna "observacao_interna" se perde.
+#     ── 2. 📗 DICIONÁRIO DE DADOS (item 1 do pedido) ──
+#       A planilha tem ~40 colunas e **ninguém sabia o que a maioria significava**. Uma coluna que ninguém
+#       sabe ler é **PIOR que coluna nenhuma**: ela gera dúvida e às vezes é interpretada ERRADO — o pior
+#       desfecho possível num estudo que fundamenta decisão pública.
+#       Cada coluna declara: **O QUE É · DE ONDE VEM** (calculado × informado × qual API) **· QUANDO FICA
+#       VAZIA · COMO LER**. Com os avisos que mais importam: "'Empate' NÃO é derrota — abaixo de 1 km é
+#       ruído de geocodificação"; "'📐 Geodésica' significa que o município NÃO TEM ESTRADA — comparar com
+#       viária é maçã com laranja"; "Abaixo de 100, a Integridade REPROVA a rota".
+#       Mais um **EXEMPLO REALISTA** da planilha (3 linhas cobrindo os 3 casos: vitória clara, empate com
+#       geodésica, derrota com conciliação por similaridade) — **mostrado ANTES do upload**. Mostrar é
+#       melhor que descrever.
+#     ── 3. 🏅 RANKINGS QUE FALTAVAM ──
+#       O Pareto (149ª) já rankeava municípios. Faltava: **estados** (quem mais ganha e quem mais perde,
+#       ponderado por candidato), **locais de prova** (quantos candidatos cada um recebe e com que
+#       deslocamento médio) e as **MAIORES DIVERGÊNCIAS** — onde os dois estudos escolheram polos diferentes
+#       E o impacto é maior. "Comece a revisão por aqui."
+#     ── O QUE EU CONTINUO RECUSANDO (3ª vez, mesmo motivo) ──
+#       Violin plot, densidade, treemap, sunburst, radar, heatmap de pesos. Já recusei na 138ª e na 149ª:
+#       seriam **mais tinta, não mais informação**. Os gráficos atuais + distribuição + Pareto + rankings
+#       respondem às perguntas que movem a decisão. Adicionar 8 gráficos que ninguém olha é bloat com nome
+#       de ciência de dados — e contraria a sua própria regra ("apenas se agregarem valor real").
+#     Export: 11 → **15 abas** (+ Dicionário de Dados, Ranking Estados, Ranking Locais, Maiores Divergências).
+#     Suíte: 105 → **111 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
+#   v3.8 (163ª geração) → EU TINHA MATADO O VISUAL. Restaurei a vida da 126ª — e fui além. [UX-VIVO]
+#     "O visual está feio. A 126ª era bem mais atraente." Fui comparar, sem me defender.
+#     ── O DIAGNÓSTICO (e a culpa é minha) ──
+#       Não deletei NADA da 126ª. Empilhei **13.500 caracteres de CSS por cima**, com **71 `!important`**
+#       (contra 7 da 126ª). E na 159ª cometi o erro central: medi "138 caixas coloridas = parede" e
+#       **SOBRECORRIGI**. Pus `background: transparent !important` nas caixas e fundos a **7% de opacidade**.
+#       Achatei tudo.
+#       **O resultado não ficou elegante — ficou LAVADO, SEM VIDA.**
+#       **Profissional NÃO é sem cor.** Stripe, Linear e Vercel têm cor RICA — só a usam com hierarquia.
+#       Eu confundi "calmo" com "apagado", e você sentiu na hora.
+#     ── O QUE A 126ª TINHA E EU MATEI ──
+#       • Métricas com **barra azul de 4px** + hover que **LEVANTA 3px** com a sombra crescendo → eu troquei
+#         por uma borda cinza de 1px. Matei o cartão.
+#       • Botão primário **azul sólido com GLOW azul** no hover → eu deixei um translateY(-1px) tímido.
+#       • Abas ativas com **fundo azul cheio** → minha navegação lateral tinha só uma barrinha.
+#     ── O QUE VOLTOU (e melhor) ──
+#       • ALERTAS com CORPO: gradiente de 20-26% (não 7%), acento de **5px**, sombra, e hover que desliza.
+#         Vermelho ganha glow próprio — ele PARA o olho, que é a função dele.
+#       • MÉTRICAS: barra de acento + gradiente na superfície + **levantar com sombra em DUAS camadas**
+#         (profundidade real, não sombra chapada). Uma delas é azul: o cartão "acende" ao toque.
+#       • BOTÃO PRIMÁRIO: gradiente azul + **glow que cresce** + levantar. Confiante, como o da 126ª.
+#       • NAVEGAÇÃO LATERAL: o item ativo ganha o **gradiente azul** que as abas da 126ª tinham.
+#       • TABELAS: cabeçalho com gradiente e **borda azul de 2px**; hover de linha em azul translúcido.
+#       • h5: em vez do rótulo cinza CLÍNICO que eu tinha feito, ganha **acento azul à esquerda**.
+#     ── DISCIPLINA MANTIDA (a cor voltou, o rigor ficou) ──
+#       **0 cores hardcoded** (122 usos de token — os rgba são derivados da paleta semântica).
+#       **WCAG AA continua passando.** **Zero componente adicionado** (77 elementos / 6,2 pesados —
+#       IDÊNTICO à 162ª): a renderização preguiçosa da 142ª, que me custou três gerações, está intacta.
+#       Mais gradiente (8 × 2), mais sombra (13 × 5) e mais resposta ao toque que a própria 126ª.
+#     Suíte: 105 testes. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
 #   v3.8 (162ª geração) → GEODÉSICA GARANTIDA: os 5 municípios SAEM no comparativo [GEO-GARANTIDO]
 #     PEDIDO: "as informações deles PRECISAM SAIR no comparativo, de forma confiável, precisa e exata".
 #     A 161ª os EXCLUÍA (barrando a mentira dos 250 km fantasma). Mas excluir não resolve — ESCONDE.
@@ -2939,152 +3069,132 @@ st.markdown("""
     }
 
     /* ================================================================================
-       [UX-HIERARQUIA - 159ª geração] O PROBLEMA MEDIDO: 138 caixas coloridas e 193 legendas.
-       A tela "Deslocamento do Candidato" sozinha tem 94 elementos. Isso é a parede de caixas
-       clássica do Streamlit — e o problema não é estético, é COGNITIVO:
-       **quando tudo está destacado, nada está.**
-       Cada insight virou um st.info() saturado. O olho não sabe onde pousar.
-
-       A CURA (uma injeção de CSS, zero linha de lógica tocada, 138 caixas de uma vez):
-       trocar o FUNDO SATURADO por uma BARRA DE ACENTO à esquerda — o padrão de Stripe, Linear,
-       GitHub e Power BI. A cor continua comunicando a severidade, mas para de GRITAR.
+       [UX-VIVO - 163ª geração] EU TINHA MATADO A APLICAÇÃO.
+       Na 159ª, medi "138 caixas coloridas = parede" e SOBRECORRIGI: pus
+       `background: transparent !important` e fundos a 7% de opacidade. Achatei tudo.
+       O resultado não ficou elegante — ficou LAVADO, SEM VIDA.
+       **Profissional NÃO é sem cor.** Stripe, Linear e Vercel têm cor RICA — só usam com
+       hierarquia. Eu confundi "calmo" com "apagado", e o usuário sentiu na hora.
+       Aqui restauro a riqueza da 126ª (que ele gostava) e vou ALÉM:
+         · barra de acento GROSSA (4px) e SATURADA — presença, não sussurro
+         · fundo com corpo real (14-18%, não 7%) — a cor precisa EXISTIR
+         · hover que LEVANTA com sombra crescendo — a interface responde ao toque
+         · glow colorido no elemento ativo — profundidade, não plano
        ================================================================================ */
+
+    /* ---------- ALERTAS: cor com CORPO, acento GROSSO, e vida no hover ---------- */
     div[data-testid="stAlert"],
     div[data-testid="stNotification"] {
-        border-radius: var(--r-sm) !important;
+        border-radius: var(--r-md) !important;
         border: 1px solid var(--sf-3) !important;
-        border-left-width: 3px !important;
-        box-shadow: none !important;
+        border-left-width: 5px !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,.22) !important;
         padding: var(--sp-3) var(--sp-4) !important;
         margin-bottom: var(--sp-3) !important;
+        transition: transform .16s ease, box-shadow .16s ease;
     }
-    /* fundo QUASE neutro: a cor vive na barra, não na área inteira */
-    div[data-testid="stAlert"] > div,
-    div[data-testid="stNotification"] > div {
-        background: transparent !important;
+    div[data-testid="stAlert"]:hover,
+    div[data-testid="stNotification"]:hover {
+        transform: translateX(2px);
+        box-shadow: 0 6px 18px rgba(0,0,0,.30) !important;
     }
     div[data-testid="stAlert"] p,
     div[data-testid="stNotification"] p {
         font-size: var(--fs-md) !important;
-        line-height: 1.55 !important;
+        line-height: 1.6 !important;
         color: var(--tx-2) !important;
     }
-    /* Streamlit distingue os 4 tipos pela cor de fundo herdada; usamos a barra para cada um. */
-    div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]),
-    div[data-testid="stNotification"]:has([data-testid="stNotificationContentInfo"]) {
-        background: rgba(52, 152, 219, .07) !important;
+    /* INFO — azul com corpo */
+    div[data-testid="stAlert"]:has([data-testid*="Info"]),
+    div[data-testid="stNotification"]:has([data-testid*="Info"]) {
+        background: linear-gradient(90deg, rgba(52,152,219,.20) 0%, rgba(52,152,219,.07) 100%) !important;
         border-left-color: var(--info) !important;
+        border-color: rgba(52,152,219,.35) !important;
     }
-    div[data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]),
-    div[data-testid="stNotification"]:has([data-testid="stNotificationContentSuccess"]) {
-        background: rgba(46, 204, 113, .07) !important;
+    /* SUCESSO — verde confiante */
+    div[data-testid="stAlert"]:has([data-testid*="Success"]),
+    div[data-testid="stNotification"]:has([data-testid*="Success"]) {
+        background: linear-gradient(90deg, rgba(46,204,113,.20) 0%, rgba(46,204,113,.07) 100%) !important;
         border-left-color: var(--ok) !important;
+        border-color: rgba(46,204,113,.35) !important;
     }
-    div[data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]),
-    div[data-testid="stNotification"]:has([data-testid="stNotificationContentWarning"]) {
-        background: rgba(230, 126, 34, .07) !important;
+    /* AVISO — âmbar que se faz notar */
+    div[data-testid="stAlert"]:has([data-testid*="Warning"]),
+    div[data-testid="stNotification"]:has([data-testid*="Warning"]) {
+        background: linear-gradient(90deg, rgba(230,126,34,.22) 0%, rgba(230,126,34,.08) 100%) !important;
         border-left-color: var(--warn) !important;
+        border-color: rgba(230,126,34,.38) !important;
     }
-    div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]),
-    div[data-testid="stNotification"]:has([data-testid="stNotificationContentError"]) {
-        background: rgba(231, 76, 60, .09) !important;
+    /* ERRO — vermelho que PARA o olho */
+    div[data-testid="stAlert"]:has([data-testid*="Error"]),
+    div[data-testid="stNotification"]:has([data-testid*="Error"]) {
+        background: linear-gradient(90deg, rgba(231,76,60,.26) 0%, rgba(231,76,60,.09) 100%) !important;
         border-left-color: var(--danger) !important;
+        border-color: rgba(231,76,60,.42) !important;
+        box-shadow: 0 2px 12px rgba(231,76,60,.18) !important;
     }
 
-    /* ---------- LEGENDAS: recuam de verdade ----------
-       193 st.caption() competindo com o conteúdo principal. Uma legenda que grita não é legenda.
-       Aqui ela vira o que deveria ser: apoio silencioso, disponível para quem procurar. */
+    /* ---------- LEGENDAS: discretas, mas NÃO apagadas ---------- */
     div[data-testid="stCaptionContainer"] p,
     [data-testid="stCaptionContainer"] {
         font-size: var(--fs-sm) !important;
         color: var(--tx-3) !important;
-        line-height: 1.5 !important;
+        line-height: 1.6 !important;
     }
 
-    /* ---------- ESCALA TIPOGRÁFICA REAL ----------
-       Os títulos eram quase todos h5 ("#####"). Sem escala, não há hierarquia:
-       o olho não distingue "seção" de "subseção" de "detalhe". */
-    .main h1 { font-size: var(--fs-2xl) !important; font-weight: 700 !important; color: var(--tx-1) !important;
-               letter-spacing: -.02em; }
-    .main h2 { font-size: var(--fs-xl) !important; font-weight: 600 !important; color: var(--tx-1) !important;
-               margin-top: var(--sp-6) !important; }
-    .main h3 { font-size: var(--fs-lg) !important; font-weight: 600 !important; color: var(--tx-1) !important;
-               margin-top: var(--sp-5) !important; }
+    /* ---------- TIPOGRAFIA: hierarquia COM personalidade ---------- */
+    .main h1 {
+        font-size: var(--fs-2xl) !important; font-weight: 700 !important;
+        color: var(--tx-1) !important; letter-spacing: -.025em;
+    }
+    .main h2 {
+        font-size: var(--fs-xl) !important; font-weight: 700 !important;
+        color: var(--tx-1) !important; margin-top: var(--sp-6) !important;
+        letter-spacing: -.015em;
+    }
+    .main h3 {
+        font-size: var(--fs-lg) !important; font-weight: 600 !important;
+        color: var(--tx-1) !important; margin-top: var(--sp-5) !important;
+    }
     .main h4 { font-size: var(--fs-md) !important; font-weight: 600 !important; color: var(--tx-2) !important; }
-    /* h5 = o subtítulo de painel que a app mais usa: vira RÓTULO, não título */
+    /* h5 = subtítulo de painel: acento azul à esquerda, NÃO um rótulo cinza clínico */
     .main h5 {
-        font-size: var(--fs-sm) !important;
+        font-size: var(--fs-md) !important;
         font-weight: 700 !important;
-        letter-spacing: .06em;
-        text-transform: uppercase;
-        color: var(--tx-3) !important;
+        color: var(--tx-1) !important;
         margin-top: var(--sp-5) !important;
-        margin-bottom: var(--sp-2) !important;
-        padding-bottom: var(--sp-1);
-        border-bottom: 1px solid var(--sf-3);
+        margin-bottom: var(--sp-3) !important;
+        padding-left: var(--sp-3);
+        border-left: 3px solid var(--brand);
+        line-height: 1.3;
     }
 
-    /* ---------- BOTÃO PRIMÁRIO: um só protagonista por tela ---------- */
+    /* ---------- BOTÃO PRIMÁRIO: azul sólido com GLOW (o da 126ª, melhorado) ---------- */
     button[kind="primary"] {
+        background: linear-gradient(135deg, var(--brand) 0%, var(--brand-3) 100%) !important;
+        border: none !important;
+        color: var(--on-brand) !important;
         border-radius: var(--r-sm) !important;
         font-weight: 600 !important;
-        box-shadow: var(--sh-1) !important;
-        transition: transform .08s ease, box-shadow .12s ease;
+        letter-spacing: .01em;
+        box-shadow: 0 2px 8px rgba(59,130,246,.30) !important;
+        transition: transform .14s ease, box-shadow .18s ease, filter .14s ease;
     }
     button[kind="primary"]:hover {
-        transform: translateY(-1px);
-        box-shadow: var(--sh-2) !important;
+        transform: translateY(-2px);
+        filter: brightness(1.08);
+        box-shadow: 0 8px 22px rgba(59,130,246,.48) !important;
     }
-
-    /* ================================================================================
-       [UX-HIERARQUIA - 159ª geração] MÉTRICAS VIRAM CARTÕES.
-       Hoje são NÚMEROS FLUTUANDO NO VAZIO — sem moldura, sem agrupamento visual, competindo
-       com o texto ao redor. Em Stripe, Power BI e Azure Portal, um KPI é um CARTÃO: tem borda,
-       tem fundo, tem respiro. Isso não é enfeite — é o que permite ao olho tratar "os números"
-       como um bloco único e escanear a linha inteira de uma vez, em vez de ler item a item.
-       ================================================================================ */
-    div[data-testid="stMetric"] {
-        background: var(--sf-2);
-        border: 1px solid var(--sf-3);
-        border-radius: var(--r-md);
-        padding: var(--sp-3) var(--sp-4);
-        transition: border-color .12s ease;
+    button[kind="primary"]:active { transform: translateY(0); }
+    button[kind="secondary"] {
+        border: 1px solid var(--sf-3) !important;
+        border-radius: var(--r-sm) !important;
+        transition: border-color .14s ease, background .14s ease;
     }
-    div[data-testid="stMetric"]:hover { border-color: var(--brand); }
-
-    /* ---------- TABELAS: legíveis de verdade ----------
-       O cabeçalho precisa se separar do corpo (é a âncora do olho ao rolar), e a linha sob o
-       cursor precisa se destacar (é como se rastreia uma linha numa tabela larga sem perder-se). */
-    div[data-testid="stDataFrame"] {
-        border: 1px solid var(--sf-3);
-        border-radius: var(--r-md);
-        overflow: hidden;
-    }
-    div[data-testid="stDataFrame"] thead th {
-        background: var(--sf-3) !important;
-        color: var(--tx-1) !important;
-        font-weight: 600 !important;
-        font-size: var(--fs-sm) !important;
-        letter-spacing: .02em;
-    }
-    div[data-testid="stDataFrame"] tbody tr:hover td {
+    button[kind="secondary"]:hover {
+        border-color: var(--brand) !important;
         background: var(--sf-2) !important;
     }
-
-    /* ---------- EXPANDERS: painéis, não acordeões genéricos ---------- */
-    div[data-testid="stExpander"] {
-        border: 1px solid var(--sf-3) !important;
-        border-radius: var(--r-md) !important;
-        background: var(--sf-1);
-        margin-bottom: var(--sp-3);
-    }
-    div[data-testid="stExpander"] summary {
-        font-weight: 600 !important;
-        font-size: var(--fs-md) !important;
-        color: var(--tx-2) !important;
-        padding: var(--sp-3) var(--sp-4) !important;
-    }
-    div[data-testid="stExpander"] summary:hover { color: var(--tx-1) !important; }
 
     /* ---------- MÉTRICAS: hierarquia legível ---------- */
     [data-testid="stMetricValue"] {
@@ -8767,6 +8877,633 @@ def _pareto_economia(linhas, top=20):
             "concentrado": _pct_muns <= 30.0}
 
 
+
+
+def _dicionario_colunas_comparacao():
+    """[DICIONARIO - 164ª geração] DICIONÁRIO DE DADOS da planilha exportada.
+
+    O PROBLEMA: a planilha final tem ~40 colunas e **ninguém sabe o que a maioria significa**. Um gestor
+    abre "Custo Efetivo (km-eq)" ou "Faixa de Diferenca" e não faz ideia do que fazer com aquilo. Uma coluna
+    que ninguém sabe ler é pior que coluna nenhuma: ela ocupa espaço, gera dúvida e às vezes é interpretada
+    ERRADO — o que é o pior desfecho possível num estudo que fundamenta decisão pública.
+
+    Cada coluna declara: O QUE É · DE ONDE VEM (calculado × informado × API) · QUANDO FICA VAZIA · COMO LER.
+    PURO."""
+    return [
+        # ─── IDENTIFICAÇÃO ───
+        {"Coluna": "Origem", "Grupo": "Identificação",
+         "O que é": "Município onde o candidato mora.",
+         "De onde vem": "Da SUA planilha de referência, já resolvido pela base oficial do IBGE.",
+         "Fica vazia quando": "Nunca (é obrigatória).",
+         "Como ler": "É a chave de tudo. Se estiver errada, todo o resto da linha está errado."},
+        {"Coluna": "UF", "Grupo": "Identificação",
+         "O que é": "Estado do município de origem.",
+         "De onde vem": "Base oficial do IBGE (não da sua planilha — é validado).",
+         "Fica vazia quando": "O município não pôde ser identificado.",
+         "Como ler": "Se divergir da UF que você informou, há erro de identificação — investigue."},
+        {"Coluna": "Cod IBGE Origem", "Grupo": "Identificação",
+         "O que é": "Código oficial do IBGE (7 dígitos) do município de origem.",
+         "De onde vem": "Base oficial embarcada (5.571 municípios).",
+         "Fica vazia quando": "A conciliação foi por nome e o município não bateu com a base.",
+         "Como ler": "É o identificador INQUESTIONÁVEL. Se ele está preenchido, a identidade é certa."},
+        {"Coluna": "Inscritos", "Grupo": "Identificação",
+         "O que é": "Quantidade de candidatos daquele município.",
+         "De onde vem": "Da SUA planilha (coluna que você mapeou). É dado INFORMADO, não calculado.",
+         "Fica vazia quando": "Você não mapeou a coluna. Nesse caso cada município pesa 1.",
+         "Como ler": "É o PESO de tudo. Sem ele, um município com 5.000 candidatos vale o mesmo que um com 10."},
+
+        # ─── CONCILIAÇÃO ───
+        {"Coluna": "Metodo Conciliacao", "Grupo": "Conciliação",
+         "O que é": "COMO esta linha da sua planilha foi casada com o nosso estudo.",
+         "De onde vem": "CALCULADO. Hierarquia: Código IBGE → Município+UF → Município → Similaridade.",
+         "Fica vazia quando": "Nunca (toda linha conciliada tem método).",
+         "Como ler": "🟢 'Código IBGE' e 'Município + UF' = OFICIAL, confie. 🔴 'Fuzzy' = a plataforma "
+                     "ADIVINHOU por parecença textual — CONFIRA essas linhas uma a uma."},
+        {"Coluna": "Score Conciliacao", "Grupo": "Conciliação",
+         "O que é": "Confiança do vínculo (0-100).",
+         "De onde vem": "CALCULADO. 100 = código IBGE; 98 = município+UF; 90 = município; <90 = similaridade.",
+         "Fica vazia quando": "Nunca.",
+         "Como ler": "Abaixo de 90 significa vínculo NÃO oficial. Trate como suspeito."},
+
+        # ─── AS DUAS DISTÂNCIAS ───
+        {"Coluna": "Distancia Referencia", "Grupo": "Comparação",
+         "O que é": "A distância que a SUA planilha de referência informou.",
+         "De onde vem": "INFORMADO por você. A plataforma NÃO a recalcula nem a corrige.",
+         "Fica vazia quando": "A célula estava vazia ou não era número.",
+         "Como ler": "⚠️ Você precisa saber COMO ela foi medida. Se a referência usou LINHA RETA e nós "
+                     "usamos VIÁRIA, a diferença é METODOLÓGICA, não logística."},
+        {"Coluna": "Distancia Aplicacao", "Grupo": "Comparação",
+         "O que é": "A distância que a NOSSA plataforma calculou.",
+         "De onde vem": "CALCULADO. Menor rota viária entre Google Maps e OSRM (o vencedor é registrado).",
+         "Fica vazia quando": "A rota falhou. Aí a plataforma usa a GEODÉSICA — veja 'Tipo de Distância'.",
+         "Como ler": "É a distância que o candidato de fato percorre por estrada."},
+        {"Coluna": "Tipo de Distancia", "Grupo": "Comparação",
+         "O que é": "🛣️ Viária, 📐 Geodésica ou 🚢 Fluvial.",
+         "De onde vem": "CALCULADO a partir da fonte da rota.",
+         "Fica vazia quando": "Nunca.",
+         "Como ler": "🔴 **CRÍTICO.** '📐 Geodésica' significa que o município NÃO TEM ESTRADA (ilhas do "
+                     "Marajó, calha do Solimões). A distância é a linha reta oficial — exata, mas NÃO "
+                     "viária. Comparar geodésica com viária é maçã com laranja."},
+
+        # ─── O RESULTADO ───
+        {"Coluna": "Diferenca Abs (km)", "Grupo": "Resultado",
+         "O que é": "Distância da referência MENOS a nossa.",
+         "De onde vem": "CALCULADO.",
+         "Fica vazia quando": "Falta uma das duas distâncias.",
+         "Como ler": "**POSITIVO = nós levamos o candidato MAIS PERTO. NEGATIVO = mais LONGE.** "
+                     "Negativos merecem investigação — podem ser escolha logística legítima (evitar balsa) "
+                     "ou município mal identificado."},
+        {"Coluna": "Faixa de Diferenca", "Grupo": "Resultado",
+         "O que é": "A diferença classificada em faixas, COM SINAL.",
+         "De onde vem": "CALCULADO.",
+         "Fica vazia quando": "Não há comparação possível.",
+         "Como ler": "'Aplicação melhor: 20 a 50 km' = ganhamos entre 20 e 50 km. O sinal existe porque "
+                     "**60 km a favor e 60 km contra NÃO são a mesma coisa**."},
+        {"Coluna": "Vencedor Distancia", "Grupo": "Resultado",
+         "O que é": "Quem levou o candidato mais perto.",
+         "De onde vem": "CALCULADO. **Empate técnico se |diferença| < 1 km.**",
+         "Fica vazia quando": "Não há comparação.",
+         "Como ler": "🔴 'Empate' NÃO é derrota: abaixo de 1 km a diferença é ruído de geocodificação. "
+                     "**Não se declara vitória com base em ruído.**"},
+        {"Coluna": "Economia km x Inscritos", "Grupo": "Resultado",
+         "O que é": "**O indicador que mais importa.** Km economizados × número de candidatos.",
+         "De onde vem": "CALCULADO.",
+         "Fica vazia quando": "Falta distância ou inscritos.",
+         "Como ler": "Mede impacto REAL sobre GENTE. Poupar 10 km para 5.000 candidatos (50.000) importa "
+                     "muito mais que poupar 200 km para 10 (2.000). **Divida o total pelo nº de candidatos "
+                     "e você tem 'quantos km a menos cada candidato anda'** — o número que uma pessoa entende."},
+        {"Coluna": "Mesmo Destino", "Grupo": "Resultado",
+         "O que é": "As duas soluções escolheram o MESMO local de prova?",
+         "De onde vem": "CALCULADO (comparação de nomes normalizados).",
+         "Fica vazia quando": "Falta um dos destinos.",
+         "Como ler": "'Não' não é erro — é onde as duas soluções DISCORDAM. É ali que está a decisão."},
+        {"Coluna": "Justificativa", "Grupo": "Resultado",
+         "O que é": "Explicação técnica, em português, de por que esta linha teve esse resultado.",
+         "De onde vem": "CALCULADO (texto gerado a partir dos números da própria linha).",
+         "Fica vazia quando": "Nunca.",
+         "Como ler": "É o 'porquê' da linha. Use-o para defender a decisão numa reunião."},
+
+        # ─── NOSSO ESTUDO (APP ·) ───
+        {"Coluna": "APP · Custo Efetivo (km-eq)", "Grupo": "Nosso estudo",
+         "O que é": "O ESFORÇO REAL do deslocamento, em km-equivalentes.",
+         "De onde vem": "CALCULADO: viária + lentidão da estrada + balsa + sinuosidade.",
+         "Fica vazia quando": "O modo multicritério não foi usado.",
+         "Como ler": "Uma rota de 180 km COM BALSA pode custar 330 km-eq; outra de 195 km sem balsa custa "
+                     "195. **O candidato prefere a segunda** — e o número mostra por quê."},
+        {"Coluna": "APP · Integridade", "Grupo": "Nosso estudo",
+         "O que é": "Índice de Integridade Geográfica (0-100).",
+         "De onde vem": "CALCULADO. Penaliza impossibilidade física e colisão de identidade.",
+         "Fica vazia quando": "Não aplicável.",
+         "Como ler": "🔴 **Abaixo de 100, a rota é REPROVADA** — não 'aprovada com aviso'. Investigue antes "
+                     "de usar."},
+        {"Coluna": "APP · Risco de Homônimo", "Grupo": "Nosso estudo",
+         "O que é": "Risco de o município ter sido confundido com um homônimo.",
+         "De onde vem": "CALCULADO contra a base de 241 grupos de homônimos.",
+         "Fica vazia quando": "O município não tem homônimo.",
+         "Como ler": "🔴 'Alto' = a identidade NÃO é confiável. 'São Domingos' existe em 5 estados. Sem UF "
+                     "ou código IBGE, pode ser o município errado — e toda a linha estaria errada."},
+        {"Coluna": "APP · Justificativa da Escolha", "Grupo": "Nosso estudo",
+         "O que é": "Por que a plataforma escolheu ESTE polo, e não outro.",
+         "De onde vem": "CALCULADO (explicação do motor multicritério).",
+         "Fica vazia quando": "O modo multicritério não foi usado.",
+         "Como ler": "Escrito na perspectiva do candidato. É a defesa técnica da decisão."},
+        {"Coluna": "APP · Score", "Grupo": "Nosso estudo",
+         "O que é": "Score global de qualidade da rota (0-100).",
+         "De onde vem": "CALCULADO: 0,35 × origem + 0,35 × destino + 0,30 × rota.",
+         "Fica vazia quando": "Nunca.",
+         "Como ler": "Mede a CONFIANÇA no dado, não a qualidade do deslocamento. Score baixo = geocodificação "
+                     "duvidosa."},
+
+        # ─── ESTUDO CONCORRENTE (REF ·) ───
+        {"Coluna": "REF · (qualquer coluna)", "Grupo": "Estudo concorrente",
+         "O que é": "**TODA** coluna da sua planilha de referência, preservada.",
+         "De onde vem": "INFORMADO por você. A plataforma **não altera nem descarta nada**.",
+         "Fica vazia quando": "A célula estava vazia na sua planilha.",
+         "Como ler": "Elas existem para você poder AUDITAR a comparação: se o concorrente informou 'modo de "
+                     "acesso' ou 'usa balsa', você vê o dado dele ao lado do nosso, campo a campo."},
+    ]
+
+
+def _exemplo_planilha_saida():
+    """[DICIONARIO - 164ª geração] EXEMPLO REALISTA da planilha exportada — como ela sai de verdade.
+    Mostrar é melhor que descrever: o usuário vê a tabela ANTES de processar e sabe o que esperar. PURO."""
+    import pandas as _pd
+    return _pd.DataFrame([
+        {"Origem": "Rio Verde", "UF": "GO", "Cod IBGE Origem": "5218805", "Inscritos": 3200,
+         "Metodo Conciliacao": "Código IBGE", "Score Conciliacao": 100,
+         "Tipo de Distancia": "🛣️ Viária",
+         "Destino Referencia": "Goiânia", "Destino Aplicacao": "Goiânia", "Mesmo Destino": "Sim",
+         "Distancia Referencia": 280.0, "Distancia Aplicacao": 220.0,
+         "Diferenca Abs (km)": 60.0, "Diferenca Pct (%)": 21.4,
+         "Faixa de Diferenca": "Aplicação melhor: 50 a 100 km",
+         "Vencedor Distancia": "Aplicação", "Economia km x Inscritos": 192000.0,
+         "Justificativa": "Deslocamento 21% mais curto (220 km vs 280 km); impacta 3.200 candidato(s)"},
+        {"Origem": "Melgaço", "UF": "PA", "Cod IBGE Origem": "1504505", "Inscritos": 1500,
+         "Metodo Conciliacao": "Código IBGE", "Score Conciliacao": 100,
+         "Tipo de Distancia": "📐 Geodésica (sem acesso rodoviário)",
+         "Destino Referencia": "Breves", "Destino Aplicacao": "Belém", "Mesmo Destino": "Não",
+         "Distancia Referencia": 250.0, "Distancia Aplicacao": 250.57,
+         "Diferenca Abs (km)": -0.57, "Diferenca Pct (%)": -0.2,
+         "Faixa de Diferenca": "Igual (< 1 km)",
+         "Vencedor Distancia": "Empate", "Economia km x Inscritos": -855.0,
+         "Justificativa": "Distâncias equivalentes (diferença < 1 km); local de prova diferente"},
+        {"Origem": "São Domingos", "UF": "GO", "Cod IBGE Origem": "5219753", "Inscritos": 480,
+         "Metodo Conciliacao": "Fuzzy (93%)", "Score Conciliacao": 93,
+         "Tipo de Distancia": "🛣️ Viária",
+         "Destino Referencia": "Brasília", "Destino Aplicacao": "Formosa", "Mesmo Destino": "Não",
+         "Distancia Referencia": 310.0, "Distancia Aplicacao": 340.0,
+         "Diferenca Abs (km)": -30.0, "Diferenca Pct (%)": -9.7,
+         "Faixa de Diferenca": "Referência melhor: 20 a 50 km",
+         "Vencedor Distancia": "Referência", "Economia km x Inscritos": -14400.0,
+         "Justificativa": "Deslocamento 10% mais longo (340 km vs 310 km); local de prova diferente"},
+    ])
+
+
+
+
+
+
+def _perfil_estudo(linhas, lado="app", parse_tempo=None):
+    """[PERFIL - 166ª geração] PERFIL AUTÔNOMO de um estudo — como se ele existisse sozinho.
+
+    ── O BURACO QUE ISTO FECHA ──
+    Até a 165ª o concorrente só existia EM RELAÇÃO A NÓS ("onde ele venceu"). Ele nunca ganhava um perfil
+    PRÓPRIO. E sem perfil, perguntas centrais ficavam sem resposta: **qual estudo evita mais balsas? qual
+    tem a menor sinuosidade média? qual usa menos locais de prova?** Não dá para responder isso comparando
+    linha a linha — só olhando cada estudo como um TODO.
+
+    ── LIMITE HONESTO (e ele importa) ──
+    Do NOSSO estudo eu sei tudo (balsa, sinuosidade, modo de acesso, tempo, coordenadas). Do CONCORRENTE eu
+    só sei **o que a planilha dele trouxe**. Se ela não tem coluna de balsa, **eu NÃO POSSO inventar uma
+    taxa de balsa para ele** — e não vou. Os campos indisponíveis vêm marcados como "não informado", nunca
+    como zero. Zero e "não sei" são coisas DIFERENTES, e confundi-los seria mentir com números.
+
+    lado: "app" (nosso estudo) ou "ref" (concorrente). PURO."""
+    parse_tempo = parse_tempo or _parse_tempo_min
+    _p = "Aplicacao" if lado == "app" else "Referencia"
+    _dados = []
+    for l in (linhas or []):
+        try:
+            _d = float(l.get(f"Distancia {_p}"))
+        except (TypeError, ValueError):
+            continue
+        if _d <= 0:
+            continue
+        _dados.append({
+            "dist": _d, "insc": float(l.get("Inscritos") or 0),
+            "uf": str(l.get("UF") or "—"),
+            "polo": str(l.get(f"Destino {_p}") or "—"),
+            "tempo": parse_tempo(l.get(f"Tempo {_p}")) if l.get(f"Tempo {_p}") not in (None, "") else None,
+            "balsa": (str(l.get("Balsa Aplicacao", "")).strip().lower() in ("sim", "yes", "true", "1")
+                      if lado == "app" else None),
+            "sinu": (float(l["Sinuosidade Aplicacao"])
+                     if lado == "app" and l.get("Sinuosidade Aplicacao") not in (None, "") else None),
+            "tipo": str(l.get("Tipo de Distancia", "")) if lado == "app" else "",
+        })
+    if not _dados:
+        return {}
+
+    import numpy as np
+    _dd = np.array([x["dist"] for x in _dados], dtype=float)
+    _ww = np.array([max(x["insc"], 1.0) for x in _dados], dtype=float)
+    _cand = int(sum(x["insc"] for x in _dados))
+    _polos = {x["polo"] for x in _dados if x["polo"] and x["polo"] != "—"}
+
+    # mediana PONDERADA por candidato (não por linha — é gente que importa)
+    _ordem = np.argsort(_dd)
+    _acum = np.cumsum(_ww[_ordem])
+    _med = float(_dd[_ordem][np.searchsorted(_acum, _acum[-1] / 2.0)]) if len(_dd) else 0.0
+
+    _tempos = [x["tempo"] for x in _dados if x["tempo"] is not None]
+    _balsas = [x["balsa"] for x in _dados if x["balsa"] is not None]
+    _sinus = [x["sinu"] for x in _dados if x["sinu"] is not None]
+
+    _faixas = {}
+    for _lim, _rot in ((50, "≤50 km"), (100, "50-100 km"), (200, "100-200 km"),
+                       (400, "200-400 km"), (10 ** 9, ">400 km")):
+        _sel = [x for x in _dados if x["dist"] <= _lim]
+        _faixas[_rot] = int(sum(x["insc"] for x in _sel))
+    _ant = 0
+    for _k in list(_faixas):
+        _v = _faixas[_k]
+        _faixas[_k] = _v - _ant
+        _ant = _v
+
+    _por_uf = {}
+    for x in _dados:
+        _a = _por_uf.setdefault(x["uf"], {"UF": x["uf"], "municipios": 0, "candidatos": 0, "_km": 0.0, "_w": 0.0})
+        _a["municipios"] += 1
+        _a["candidatos"] += int(x["insc"])
+        _a["_km"] += x["dist"] * max(x["insc"], 1)
+        _a["_w"] += max(x["insc"], 1)
+    _ufs = []
+    for _a in _por_uf.values():
+        _a["dist_media_km"] = round(_a["_km"] / _a["_w"], 1) if _a["_w"] else 0.0
+        _a.pop("_km", None)
+        _a.pop("_w", None)
+        _ufs.append(_a)
+    _ufs.sort(key=lambda x: -x["candidatos"])
+
+    return {
+        "estudo": "Nossa aplicação" if lado == "app" else "Estudo concorrente",
+        "municipios": len(_dados), "candidatos": _cand,
+        "locais_de_prova": len(_polos),
+        "dist_media_km": round(float(np.average(_dd, weights=_ww)), 1),
+        "dist_mediana_km": round(_med, 1),
+        "dist_minima_km": round(float(_dd.min()), 1),
+        "dist_maxima_km": round(float(_dd.max()), 1),
+        "dist_desvio_km": round(float(_dd.std(ddof=1)), 1) if len(_dd) > 1 else 0.0,
+        "km_candidato_total": round(float((_dd * _ww).sum()), 1),
+        "tempo_medio_min": round(sum(_tempos) / len(_tempos), 1) if _tempos else None,
+        "tempo_minimo_min": round(min(_tempos), 1) if _tempos else None,
+        "tempo_maximo_min": round(max(_tempos), 1) if _tempos else None,
+        "pct_com_balsa": (round(100.0 * sum(_balsas) / len(_balsas), 1) if _balsas else None),
+        "pct_so_rodoviario": (round(100.0 * (len(_balsas) - sum(_balsas)) / len(_balsas), 1)
+                              if _balsas else None),
+        "sinuosidade_media": (round(sum(_sinus) / len(_sinus), 2) if _sinus else None),
+        "faixas_candidatos": _faixas,
+        "por_uf": _ufs[:20],
+        # o que NÃO foi informado — dito na cara, nunca como zero
+        "campos_indisponiveis": [_c for _c, _v in (("uso de balsa", _balsas), ("sinuosidade", _sinus),
+                                                   ("tempo", _tempos)) if not _v],
+    }
+
+
+def _diagnostico_imparcial(linhas):
+    """[PERFIL - 166ª geração] O PARECER IMPARCIAL: responde as perguntas que decidem, com o mesmo rigor
+    para os dois estudos. E responde a MAIS AFIADA delas:
+
+        **"O concorrente é melhor de forma CONSISTENTE, ou só em casos específicos?"**
+
+    Isso não é opinião — é medível. Se as vitórias dele estão CONCENTRADAS em poucos municípios (Pareto
+    curto), a vantagem é PONTUAL: revise aqueles casos e o problema some. Se estão ESPALHADAS, a vantagem é
+    SISTEMÁTICA: há algo no MÉTODO dele que é melhor, e ignorar isso é teimosia.
+
+    E também: **existe padrão GEOGRÁFICO?** Se as vitórias dele se concentram numa região muito além do peso
+    dela no estudo, não é acaso — é sinal de que naquela região o método dele funciona melhor (malha viária,
+    balsa, relevo). PURO."""
+    _ok = [l for l in (linhas or []) if l.get("Vencedor Distancia") in ("Aplicação", "Referência", "Empate")]
+    if not _ok:
+        return {}
+    _app = _perfil_estudo(_ok, "app")
+    _ref = _perfil_estudo(_ok, "ref")
+
+    _v_app = [l for l in _ok if l.get("Vencedor Distancia") == "Aplicação"]
+    _v_ref = [l for l in _ok if l.get("Vencedor Distancia") == "Referência"]
+    _emp = [l for l in _ok if l.get("Vencedor Distancia") == "Empate"]
+
+    # ---- consistência da vantagem do concorrente: Pareto das vitórias dele ----
+    _consist = None
+    if _v_ref:
+        _g = sorted((abs(float(l.get("Economia km x Inscritos") or 0)) for l in _v_ref), reverse=True)
+        _tot = sum(_g) or 1.0
+        _acum, _n80 = 0.0, len(_g)
+        for _i, _x in enumerate(_g, start=1):
+            _acum += _x
+            if _acum >= 0.8 * _tot:
+                _n80 = _i
+                break
+        _pct_para_80 = 100.0 * _n80 / len(_g)
+        # [PERFIL - 166ª geração] CRITÉRIO CORRIGIDO. O percentual sozinho falha com n pequeno: com 3
+        # vitórias, 1 delas = 33% — e o teste classificava como "sistemática" um caso em que UM único
+        # município explicava 99,95% do ganho. O sinal decisivo não é só a porcentagem: é **se UM caso
+        # DOMINA**. Se a maior vitória sozinha vale metade ou mais do ganho dele, a vantagem é PONTUAL,
+        # não importa quantas vitórias existam.
+        _share_maior = (_g[0] / _tot) if _g else 0.0
+        _e_pontual = (_share_maior >= 0.5) or (_pct_para_80 <= 30)
+        _consist = {
+            "n_vitorias": len(_v_ref), "n_para_80pct": _n80,
+            "pct_das_vitorias_para_80": round(_pct_para_80, 1),
+            "share_maior_vitoria_pct": round(100.0 * _share_maior, 1),
+            "veredito": ("PONTUAL" if _e_pontual else "SISTEMÁTICA"),
+            "leitura": (
+                f"A vantagem do concorrente é **PONTUAL**: apenas **{_n80} das {len(_g)} vitórias dele** "
+                f"({_pct_para_80:.0f}%) concentram 80% do ganho — e a MAIOR delas sozinha vale "
+                f"**{100 * _share_maior:.0f}%** do total. **Revise esses poucos casos e o problema "
+                "praticamente some** — não há nada de estrutural no método dele."
+                if _e_pontual else
+                f"A vantagem do concorrente é **SISTEMÁTICA**: o ganho dele está ESPALHADO por "
+                f"{len(_g)} vitórias (são precisas {_n80} — {_pct_para_80:.0f}% delas — para chegar a 80%). "
+                "Isso não é sorte pontual: **há algo no MÉTODO dele que funciona melhor**, e vale entender "
+                "o quê antes de descartá-lo."),
+        }
+
+    # ---- padrão geográfico: as vitórias dele se concentram em alguma região? ----
+    _geo = None
+    if _v_ref:
+        _reg_tot, _reg_ref = {}, {}
+        for l in _ok:
+            _r = _UF_PARA_REGIAO.get(str(l.get("UF") or "").upper(), "Indefinido")
+            _reg_tot[_r] = _reg_tot.get(_r, 0) + 1
+        for l in _v_ref:
+            _r = _UF_PARA_REGIAO.get(str(l.get("UF") or "").upper(), "Indefinido")
+            _reg_ref[_r] = _reg_ref.get(_r, 0) + 1
+        _linhas_geo = []
+        for _r, _n in sorted(_reg_tot.items(), key=lambda kv: -kv[1]):
+            _vr = _reg_ref.get(_r, 0)
+            _taxa = 100.0 * _vr / _n if _n else 0.0
+            _linhas_geo.append({"Região": _r, "Municípios comparados": _n,
+                                "Vitórias do concorrente": _vr,
+                                "Taxa de vitória dele (%)": round(_taxa, 1)})
+        _taxa_geral = 100.0 * len(_v_ref) / len(_ok)
+        _destaque = max(_linhas_geo, key=lambda x: x["Taxa de vitória dele (%)"]) if _linhas_geo else None
+        _tem_padrao = bool(_destaque and _destaque["Municípios comparados"] >= 5
+                           and _destaque["Taxa de vitória dele (%)"] > _taxa_geral * 1.5)
+        _geo = {
+            "por_regiao": _linhas_geo, "taxa_geral_pct": round(_taxa_geral, 1),
+            "tem_padrao": _tem_padrao,
+            "leitura": (
+                f"🌎 **Há um PADRÃO GEOGRÁFICO.** O concorrente vence em "
+                f"**{_destaque['Taxa de vitória dele (%)']}% dos municípios do {_destaque['Região']}**, "
+                f"contra {_taxa_geral:.0f}% no país. Isso não é acaso: naquela região o método dele lida "
+                "melhor com alguma coisa — malha viária, balsa, relevo. **Vale investigar o quê.**"
+                if _tem_padrao else
+                "🌎 **Não há padrão geográfico claro:** as vitórias do concorrente se distribuem de forma "
+                "parecida com o peso de cada região no estudo. A diferença entre os estudos não é regional.")
+        }
+
+    # ---- quem reduz mais o quê ----
+    _resp = []
+    if _app and _ref:
+        _q1 = ("A NOSSA aplicação" if _app["km_candidato_total"] < _ref["km_candidato_total"]
+               else "O ESTUDO CONCORRENTE")
+        _dif = abs(_app["km_candidato_total"] - _ref["km_candidato_total"])
+        _resp.append({"Pergunta": "Qual estudo reduz mais o DESLOCAMENTO total?",
+                      "Resposta": f"{_q1} — diferença de {_dif:,.0f} km-candidato.".replace(",", "."),
+                      "Base": "Soma de (distância × candidatos) nos municípios comparáveis."})
+        if _app.get("tempo_medio_min") and _ref.get("tempo_medio_min"):
+            _q2 = ("A NOSSA aplicação" if _app["tempo_medio_min"] < _ref["tempo_medio_min"]
+                   else "O ESTUDO CONCORRENTE")
+            _resp.append({"Pergunta": "Qual estudo reduz mais o TEMPO médio?",
+                          "Resposta": f"{_q2} ({_app['tempo_medio_min']:.0f} min × "
+                                      f"{_ref['tempo_medio_min']:.0f} min).",
+                          "Base": "Média dos tempos informados por cada estudo."})
+        else:
+            _resp.append({"Pergunta": "Qual estudo reduz mais o TEMPO médio?",
+                          "Resposta": "❓ **NÃO DÁ PARA RESPONDER** — a planilha do concorrente não trouxe "
+                                      "tempo. Não vou inventar um número.",
+                          "Base": "Coluna de tempo ausente na referência."})
+        if _app.get("pct_com_balsa") is not None and _ref.get("pct_com_balsa") is not None:
+            _q3 = ("A NOSSA aplicação" if _app["pct_com_balsa"] < _ref["pct_com_balsa"]
+                   else "O ESTUDO CONCORRENTE")
+            _resp.append({"Pergunta": "Qual estudo EVITA MAIS BALSAS?",
+                          "Resposta": f"{_q3} ({_app['pct_com_balsa']}% × {_ref['pct_com_balsa']}% das rotas).",
+                          "Base": "Percentual de rotas com travessia."})
+        else:
+            _resp.append({"Pergunta": "Qual estudo EVITA MAIS BALSAS?",
+                          "Resposta": "❓ **NÃO DÁ PARA RESPONDER** — a planilha do concorrente não informa "
+                                      "uso de balsa. **Zero e 'não sei' são coisas diferentes**, e eu não vou "
+                                      "confundi-las.",
+                          "Base": "Coluna de balsa ausente na referência."})
+        if _app.get("sinuosidade_media") is not None and _ref.get("sinuosidade_media") is not None:
+            _q4 = ("A NOSSA aplicação" if _app["sinuosidade_media"] < _ref["sinuosidade_media"]
+                   else "O ESTUDO CONCORRENTE")
+            _resp.append({"Pergunta": "Qual estudo tem a MENOR SINUOSIDADE média?",
+                          "Resposta": f"{_q4} ({_app['sinuosidade_media']} × {_ref['sinuosidade_media']}).",
+                          "Base": "Razão média entre rota viária e linha reta."})
+        else:
+            _resp.append({"Pergunta": "Qual estudo tem a MENOR SINUOSIDADE média?",
+                          "Resposta": "❓ **NÃO DÁ PARA RESPONDER** — a referência não traz sinuosidade.",
+                          "Base": "Coluna ausente na referência."})
+        _q5 = ("A NOSSA aplicação" if _app["locais_de_prova"] <= _ref["locais_de_prova"]
+               else "O ESTUDO CONCORRENTE")
+        _resp.append({"Pergunta": "Qual estudo usa MENOS locais de prova (menor custo operacional)?",
+                      "Resposta": f"{_q5} ({_app['locais_de_prova']} × {_ref['locais_de_prova']} polos).",
+                      "Base": "Contagem de polos distintos utilizados."})
+
+    return {
+        "perfil_app": _app, "perfil_ref": _ref,
+        "placar": {"aplicacao": len(_v_app), "concorrente": len(_v_ref), "empates": len(_emp),
+                   "total": len(_ok),
+                   "pct_aplicacao": round(100.0 * len(_v_app) / len(_ok), 1),
+                   "pct_concorrente": round(100.0 * len(_v_ref) / len(_ok), 1),
+                   "pct_empate": round(100.0 * len(_emp) / len(_ok), 1)},
+        "consistencia": _consist, "geografia": _geo, "perguntas": _resp,
+    }
+
+
+def _analise_concorrente(linhas, top=15):
+    """[CONCORRENTE - 165ª geração] ANÁLISE DO CONCORRENTE, EM SI MESMO.
+
+    ── O VIÉS QUE ISTO CORRIGE (e era estrutural) ──
+    Toda a minha análise era ASSIMÉTRICA: perguntava só "NÓS ganhamos?". As vitórias do concorrente
+    apareciam apenas como DERROTAS nossas — nunca eram analisadas em si. Ninguém respondia:
+    **"e nos casos em que ele ganhou, quantos alunos se beneficiariam se adotássemos a escolha dele?"**
+
+    Isso não é só incompleto — é ENVIESADO A NOSSO FAVOR. Um comparador que só sabe contar as próprias
+    vitórias não é uma ferramenta de decisão: é uma peça de marketing. E num estudo que fundamenta decisão
+    pública, isso é grave.
+
+    Aqui o concorrente é analisado com o MESMO rigor: onde venceu, quantos candidatos ele beneficiaria,
+    quanto deslocamento pouparia, em quais estados, e QUAIS poucos municípios explicam a vantagem dele.
+    PURO."""
+    _venc = [l for l in (linhas or []) if l.get("Vencedor Distancia") == "Referência"]
+    _tot_mun = sum(1 for l in (linhas or []) if l.get("Vencedor Distancia") in
+                   ("Aplicação", "Referência", "Empate"))
+    if not _venc:
+        return {"n_municipios": 0, "candidatos_impactados": 0, "economia_km_candidato": 0.0,
+                "pct_municipios": 0.0, "por_uf": [], "top_casos": [], "pareto_n80": 0}
+
+    _cand = int(sum(float(l.get("Inscritos") or 0) for l in _venc))
+    # o ganho DELE = o que nós PERDEMOS. Sinal invertido: aqui é a economia QUE ELE PROPORCIONA.
+    _econ = round(sum(abs(float(l.get("Economia km x Inscritos") or 0)) for l in _venc), 1)
+
+    _uf = {}
+    for l in _venc:
+        _u = str(l.get("UF") or "—")
+        _a = _uf.setdefault(_u, {"UF": _u, "municipios": 0, "candidatos": 0, "economia_km_candidato": 0.0})
+        _a["municipios"] += 1
+        _a["candidatos"] += int(float(l.get("Inscritos") or 0))
+        _a["economia_km_candidato"] += abs(float(l.get("Economia km x Inscritos") or 0))
+    _por_uf = sorted(_uf.values(), key=lambda x: -x["economia_km_candidato"])
+    for _a in _por_uf:
+        _a["economia_km_candidato"] = round(_a["economia_km_candidato"], 1)
+        _a["km_por_candidato"] = (round(_a["economia_km_candidato"] / _a["candidatos"], 2)
+                                  if _a["candidatos"] else 0.0)
+
+    _ord = sorted(_venc, key=lambda l: -abs(float(l.get("Economia km x Inscritos") or 0)))
+    _top = [{"Município": l.get("Origem"), "UF": l.get("UF", ""),
+             "Candidatos": int(float(l.get("Inscritos") or 0)),
+             "Nosso polo": l.get("Destino Aplicacao"),
+             "Polo do concorrente": l.get("Destino Referencia"),
+             "Nossa distância (km)": l.get("Distancia Aplicacao"),
+             "Distância dele (km)": l.get("Distancia Referencia"),
+             "Km a mais que impomos": round(abs(float(l.get("Diferenca Abs (km)") or 0)), 1),
+             "Impacto (km-candidato)": round(abs(float(l.get("Economia km x Inscritos") or 0)), 1),
+             "Tipo de Distância": l.get("Tipo de Distancia", ""),
+             "Por que ele venceu": (
+                 f"O polo dele ({l.get('Destino Referencia')}) deixa o candidato "
+                 f"{abs(float(l.get('Diferenca Abs (km)') or 0)):.0f} km mais perto que o nosso "
+                 f"({l.get('Destino Aplicacao')})."
+                 if l.get("Mesmo Destino") == "Não" else
+                 f"Mesmo polo, mas a rota dele é {abs(float(l.get('Diferenca Abs (km)') or 0)):.0f} km "
+                 "mais curta — pode ser malha viária diferente, ou método de medição diferente.")}
+            for l in _ord[:top]]
+
+    _acum, _n80 = 0.0, 0
+    for _i, l in enumerate(_ord, start=1):
+        _acum += abs(float(l.get("Economia km x Inscritos") or 0))
+        if _acum >= 0.8 * _econ:
+            _n80 = _i
+            break
+
+    return {"n_municipios": len(_venc), "candidatos_impactados": _cand,
+            "economia_km_candidato": _econ,
+            "km_por_candidato": round(_econ / _cand, 2) if _cand else 0.0,
+            "pct_municipios": round(100.0 * len(_venc) / _tot_mun, 1) if _tot_mun else 0.0,
+            "por_uf": _por_uf[:top], "top_casos": _top, "pareto_n80": _n80}
+
+
+def _plano_hibrido(linhas):
+    """[CONCORRENTE - 165ª geração] O PLANO HÍBRIDO — a pergunta que ninguém estava fazendo.
+
+    Todo o comparador respondia "qual estudo é melhor NO CONJUNTO?". Mas essa é a pergunta ERRADA para quem
+    vai DECIDIR. A pergunta certa é:
+
+        **"E se eu pegar, de cada município, a MELHOR das duas escolhas?"**
+
+    Ninguém é obrigado a adotar um estudo INTEIRO. O gestor pode tomar o nosso polo onde nós vencemos e o
+    polo do concorrente onde ELE vence. O resultado é um plano que **domina os dois** — por construção.
+
+    Isto transforma o comparador de um "quem ganhou?" (placar) num "o que eu FAÇO?" (decisão). E o número
+    que sai é acionável: **quanto deslocamento a mais se poupa adotando o melhor dos dois, em vez de
+    escolher um lado.** PURO."""
+    _ok = [l for l in (linhas or []) if l.get("Diferenca Abs (km)") is not None]
+    if not _ok:
+        return {}
+    _so_nosso = _so_dele = _hibrido = 0.0
+    _de_nos = _de_dele = _empate = 0
+    _cand_de_dele = 0
+    for l in _ok:
+        _i = float(l.get("Inscritos") or 0)
+        _dn = float(l.get("Distancia Aplicacao") or 0)
+        _dd = float(l.get("Distancia Referencia") or 0)
+        if _dn <= 0 or _dd <= 0:
+            continue
+        _so_nosso += _dn * max(_i, 1)
+        _so_dele += _dd * max(_i, 1)
+        _hibrido += min(_dn, _dd) * max(_i, 1)
+        _v = l.get("Vencedor Distancia")
+        if _v == "Aplicação":
+            _de_nos += 1
+        elif _v == "Referência":
+            _de_dele += 1
+            _cand_de_dele += int(_i)
+        else:
+            _empate += 1
+    _ganho_vs_nosso = round(_so_nosso - _hibrido, 1)
+    _ganho_vs_dele = round(_so_dele - _hibrido, 1)
+    return {
+        "custo_so_nosso_km_candidato": round(_so_nosso, 1),
+        "custo_so_dele_km_candidato": round(_so_dele, 1),
+        "custo_hibrido_km_candidato": round(_hibrido, 1),
+        "ganho_do_hibrido_sobre_nos": _ganho_vs_nosso,
+        "ganho_do_hibrido_sobre_ele": _ganho_vs_dele,
+        "municipios_do_nosso": _de_nos, "municipios_do_concorrente": _de_dele,
+        "municipios_empate": _empate,
+        "candidatos_que_migrariam": _cand_de_dele,
+        "vale_a_pena": _ganho_vs_nosso > 0,
+    }
+
+
+def _rankings_comparacao(linhas, top=15):
+    """[RANKING - 164ª geração] RANKINGS que faltavam: por ESTADO, por LOCAL DE PROVA e as maiores
+    DIVERGÊNCIAS. O Pareto (149ª) já rankeava municípios pelo ganho; faltava responder:
+      · qual ESTADO mais ganha (e qual mais perde)?
+      · qual LOCAL DE PROVA recebe mais candidatos, e com que deslocamento médio?
+      · onde as duas soluções mais DISCORDAM (para revisar primeiro)?
+    Tudo ponderado por CANDIDATO. PURO."""
+    _ok = [l for l in (linhas or []) if l.get("Diferenca Abs (km)") is not None]
+    if not _ok:
+        return {"estados": [], "polos": [], "divergencias": []}
+
+    _uf = {}
+    for l in _ok:
+        _u = str(l.get("UF") or "—")
+        _a = _uf.setdefault(_u, {"UF": _u, "municipios": 0, "candidatos": 0,
+                                 "economia_km_candidato": 0.0, "venceu_app": 0, "venceu_ref": 0})
+        _a["municipios"] += 1
+        _a["candidatos"] += int(float(l.get("Inscritos") or 0))
+        _a["economia_km_candidato"] += float(l.get("Economia km x Inscritos") or 0)
+        if l.get("Vencedor Distancia") == "Aplicação":
+            _a["venceu_app"] += 1
+        elif l.get("Vencedor Distancia") == "Referência":
+            _a["venceu_ref"] += 1
+    _est = sorted(_uf.values(), key=lambda x: -x["economia_km_candidato"])
+    for _a in _est:
+        _a["economia_km_candidato"] = round(_a["economia_km_candidato"], 1)
+        _a["km_por_candidato"] = round(_a["economia_km_candidato"] / _a["candidatos"], 2) if _a["candidatos"] else 0.0
+
+    _pl = {}
+    for l in _ok:
+        _p = str(l.get("Destino Aplicacao") or "—")
+        _a = _pl.setdefault(_p, {"Local de Prova": _p, "candidatos": 0, "municipios": 0, "_km": 0.0, "_w": 0.0})
+        _i = float(l.get("Inscritos") or 0)
+        _d = float(l.get("Distancia Aplicacao") or 0)
+        _a["candidatos"] += int(_i)
+        _a["municipios"] += 1
+        if _d > 0:
+            _a["_km"] += _d * max(_i, 1)
+            _a["_w"] += max(_i, 1)
+    _polos = []
+    for _a in _pl.values():
+        _a["dist_media_km"] = round(_a["_km"] / _a["_w"], 1) if _a["_w"] else 0.0
+        _a.pop("_km", None)
+        _a.pop("_w", None)
+        _polos.append(_a)
+    _polos.sort(key=lambda x: -x["candidatos"])
+
+    _div = sorted([l for l in _ok if l.get("Mesmo Destino") == "Não"],
+                  key=lambda l: -abs(float(l.get("Economia km x Inscritos") or 0)))
+    _divs = [{"Município": l.get("Origem"), "UF": l.get("UF", ""),
+              "Candidatos": int(float(l.get("Inscritos") or 0)),
+              "Nosso polo": l.get("Destino Aplicacao"), "Polo da referência": l.get("Destino Referencia"),
+              "Diferença (km)": l.get("Diferenca Abs (km)"),
+              "Impacto (km-candidato)": round(float(l.get("Economia km x Inscritos") or 0), 1)}
+             for l in _div[:top]]
+    return {"estados": _est[:top], "polos": _polos[:top], "divergencias": _divs}
+
+
 def _metodologia_indicadores():
     """[CMP-VALID - 149ª geração] METODOLOGIA EXPLÍCITA — anti-caixa-preta. Cada indicador declara COMO é
     calculado, de QUAIS colunas, e QUAIS registros participam. Requisito de auditoria governamental: um
@@ -9006,6 +9743,32 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
             # [GEO-GARANTIDO - 162ª geração] o tipo de distância vai JUNTO, sempre visível.
             "Tipo de Distancia": _tipo_de_distancia(a),
         })
+        # [LADO-A-LADO - 164ª geração] NADA DA PLANILHA DO CONCORRENTE É DESCARTADO.
+        # A versão anterior guardava SÓ as colunas mapeadas — modo de acesso, balsa, score,
+        # justificativa e qualquer outra coluna que a referência trouxesse eram jogadas fora EM
+        # SILÊNCIO. Perda de dado do usuário, sem aviso. Agora TODA coluna extra da referência é
+        # preservada com o prefixo "REF · ", e todo o nosso estudo entra com o prefixo "APP · ".
+        # O usuário vê os DOIS estudos LADO A LADO, campo a campo — e nada se perde no caminho.
+        _mapeadas = {c for c in mapa.values() if c}
+        for _ck, _cv in r.items():
+            if _ck in _mapeadas or _ck is None:
+                continue
+            if _cv is None or (isinstance(_cv, float) and _cv != _cv):
+                _cv = ""
+            linhas[-1][f"REF · {_ck}"] = _cv
+        # ---- o NOSSO estudo, campo a campo (o que a plataforma produziu) ----
+        for _ak, _rot in (("Cod IBGE Destino", "Cód IBGE do Polo"), ("UF Destino", "UF do Polo"),
+                          ("Linha Reta", "Linha Reta (km)"), ("Score Final Global", "Score"),
+                          ("Fonte Rota", "Fonte da Rota"), ("Integridade Geográfica", "Integridade"),
+                          ("Alerta de Integridade", "Alerta de Integridade"),
+                          ("Confiança Identificação", "Confiança da Identificação"),
+                          ("Risco de Confusão", "Risco de Homônimo"),
+                          ("Justificativa Hub", "Justificativa da Escolha"),
+                          ("Custo Efetivo Hub (km-eq)", "Custo Efetivo (km-eq)"),
+                          ("Lat/Lon Origem", "Coordenadas da Origem"),
+                          ("Lat/Lon Destino", "Coordenadas do Polo")):
+            if _ak in a and a.get(_ak) not in (None, ""):
+                linhas[-1][f"APP · {_rot}"] = a.get(_ak)
     return linhas, aud
 
 
@@ -9175,6 +9938,31 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
             _pa_x = _pareto_economia(linhas, top=100)
             pd.DataFrame(_pa_x["itens"] or [{"—": "sem ganho"}]).to_excel(_w, index=False, sheet_name="Pareto")
             pd.DataFrame(_metodologia_indicadores()).to_excel(_w, index=False, sheet_name="Metodologia")
+            pd.DataFrame(_dicionario_colunas_comparacao()).to_excel(
+                _w, index=False, sheet_name="Dicionario de Dados")
+            _rk_x = _rankings_comparacao(linhas, top=100)
+            pd.DataFrame(_rk_x["estados"] or [{"—": "sem dados"}]).to_excel(
+                _w, index=False, sheet_name="Ranking Estados")
+            pd.DataFrame(_rk_x["polos"] or [{"—": "sem dados"}]).to_excel(
+                _w, index=False, sheet_name="Ranking Locais de Prova")
+            pd.DataFrame(_rk_x["divergencias"] or [{"—": "sem divergência"}]).to_excel(
+                _w, index=False, sheet_name="Maiores Divergencias")
+            _ac_x = _analise_concorrente(linhas, top=500)
+            pd.DataFrame(_ac_x["top_casos"] or [{"—": "o concorrente não venceu em nenhum caso"}]).to_excel(
+                _w, index=False, sheet_name="Vitorias do Concorrente")
+            pd.DataFrame(_ac_x["por_uf"] or [{"—": "—"}]).to_excel(
+                _w, index=False, sheet_name="Concorrente por UF")
+            pd.DataFrame([_plano_hibrido(linhas) or {"—": "—"}]).to_excel(
+                _w, index=False, sheet_name="Plano Hibrido")
+            _di_x = _diagnostico_imparcial(linhas)
+            if _di_x:
+                pd.DataFrame([_di_x.get("perfil_app") or {}, _di_x.get("perfil_ref") or {}]).to_excel(
+                    _w, index=False, sheet_name="Perfil dos Dois Estudos")
+                pd.DataFrame(_di_x.get("perguntas") or [{"—": "—"}]).to_excel(
+                    _w, index=False, sheet_name="Perguntas que Decidem")
+                _gg_x = _di_x.get("geografia") or {}
+                pd.DataFrame(_gg_x.get("por_regiao") or [{"—": "—"}]).to_excel(
+                    _w, index=False, sheet_name="Padrao Geografico")
             pd.DataFrame(aud.get("nao_conciliados") or [{"origem_ref": "—", "motivo": "Nenhum"}]).to_excel(
                 _w, index=False, sheet_name="Nao Conciliados")
             pd.DataFrame({"Relatorio Executivo": (relatorio or "").split("\n")}).to_excel(
@@ -9299,9 +10087,42 @@ def _veredito_comparacao(stats, aud, linhas=None):
                                for p in _piores) +
                      ". Pode ser escolha logística legítima (evitar balsa) — ou município mal identificado.")
 
+    # [CONCORRENTE - 165ª geração] O CONCORRENTE ENTRA NO VEREDITO. Antes, as vitórias dele apareciam só
+    # como derrotas nossas — nunca eram analisadas em si. Um comparador que só conta as próprias vitórias
+    # não é ferramenta de decisão: é peça de marketing.
+    _conc_txt = None
+    _hib_txt = None
+    if linhas:
+        try:
+            _ac = _analise_concorrente(linhas)
+            if _ac.get("n_municipios"):
+                _conc_txt = (
+                    f"⚠️ **O CONCORRENTE venceu em {_ac['n_municipios']} município(s)** "
+                    f"({_ac['pct_municipios']}%), impactando **{_fmt_num(_ac['candidatos_impactados'])} "
+                    f"candidatos**. Se adotássemos a escolha DELE nesses casos, esses candidatos andariam "
+                    f"**{_fmt_num(_ac['km_por_candidato'], 2)} km a menos cada um** "
+                    f"(**{_fmt_num(_ac['economia_km_candidato'])} km-candidato** no total). "
+                    + (f"E **{_ac['pareto_n80']} município(s) sozinhos explicam 80% da vantagem dele** — "
+                       "comece por eles." if _ac.get("pareto_n80") else ""))
+            _hb = _plano_hibrido(linhas)
+            if _hb and _hb.get("vale_a_pena"):
+                _hib_txt = (
+                    f"🏆 **O MELHOR PLANO NÃO É NENHUM DOS DOIS — É O HÍBRIDO.** Pegando, de cada município, "
+                    f"a melhor das duas escolhas: **{_fmt_num(_hb['custo_hibrido_km_candidato'])} "
+                    f"km-candidato**, contra {_fmt_num(_hb['custo_so_nosso_km_candidato'])} do nosso estudo "
+                    f"puro e {_fmt_num(_hb['custo_so_dele_km_candidato'])} do dele. "
+                    f"São **{_fmt_num(_hb['ganho_do_hibrido_sobre_nos'])} km-candidato poupados a mais** do "
+                    f"que adotar só o nosso — bastaria migrar "
+                    f"**{_hb['municipios_do_concorrente']} município(s)** "
+                    f"(**{_fmt_num(_hb['candidatos_que_migrariam'])} candidatos**) para o polo do "
+                    "concorrente. **Ninguém é obrigado a adotar um estudo inteiro.**")
+        except Exception as _e_cc:
+            logger.error(f"[CONCORRENTE] Falha na análise espelhada: {_e_cc}")
+
     return {"confianca": _conf, "icone_confianca": _ico_c, "texto_confianca": _conf_txt,
             "icone": _ico, "titulo": _titulo, "frase": _frase,
             "escala_humana": _humano, "acao": _acao,
+            "texto_concorrente": _conc_txt, "texto_hibrido": _hib_txt,
             "km_por_candidato": _km_por_cand, "pct_conciliado": _pct_conc}
 
 
@@ -9405,7 +10226,59 @@ def _relatorio_executivo_comparacao(stats, aud, top_municipios=None):
     L.append(f"- Tiveram **redução** de deslocamento: **{_fmt_num(br.get('candidatos_beneficiados', 0))}**")
     L.append(f"- Tiveram **aumento** de deslocamento: **{_fmt_num(br.get('candidatos_prejudicados', 0))}**")
 
-    L.append("\n## 7. Conclusões e Recomendações\n")
+    # [CONCORRENTE - 165ª geração] O CONCORRENTE GANHA SEÇÃO PRÓPRIA NO PARECER.
+    # Um relatório executivo que só narra as próprias vitórias não é um parecer — é uma peça de venda.
+    if top_municipios:
+        try:
+            _acr = _analise_concorrente(top_municipios)
+            if _acr.get("n_municipios"):
+                L.append("\n## 7. Onde a Base de Referência VENCEU (e o que isso custa aos candidatos)\n")
+                L.append(
+                    f"A base de referência levou o candidato mais perto em **{_acr['n_municipios']} "
+                    f"município(s)** ({_acr['pct_municipios']}% dos comparáveis), afetando "
+                    f"**{_fmt_num(_acr['candidatos_impactados'])} candidatos**. Adotar a escolha dela nesses "
+                    f"casos pouparia **{_fmt_num(_acr['economia_km_candidato'])} km-candidato** — ou seja, "
+                    f"cada um desses alunos andaria **{_fmt_num(_acr['km_por_candidato'], 2)} km a menos**.")
+                if _acr.get("pareto_n80"):
+                    L.append(f"\n**A vantagem dela é CONCENTRADA:** {_acr['pareto_n80']} município(s) sozinhos "
+                             "explicam 80% dela. Revisar esses poucos casos captura quase todo o ganho "
+                             "disponível.")
+                if _acr.get("por_uf"):
+                    _u0 = _acr["por_uf"][0]
+                    L.append(f"\n**Onde ela mais vence:** {_u0['UF']} "
+                             f"({_u0['municipios']} município(s), {_fmt_num(_u0['candidatos'])} candidatos, "
+                             f"{_fmt_num(_u0['economia_km_candidato'])} km-candidato).")
+                if _acr.get("top_casos"):
+                    L.append("\n**Os casos que mais pesam:**")
+                    for _t in _acr["top_casos"][:5]:
+                        L.append(f"- **{_t['Município']}/{_t['UF']}** — {_fmt_num(_t['Candidatos'])} "
+                                 f"candidatos. Nosso polo: {_t['Nosso polo']} "
+                                 f"({_t['Nossa distância (km)']} km) · polo dela: "
+                                 f"{_t['Polo do concorrente']} ({_t['Distância dele (km)']} km). "
+                                 f"Impomos **{_t['Km a mais que impomos']} km a mais**.")
+
+            _hbr = _plano_hibrido(top_municipios)
+            if _hbr and _hbr.get("vale_a_pena"):
+                L.append("\n## 8. A Recomendação que Domina as Duas: o PLANO HÍBRIDO\n")
+                L.append(
+                    "**Ninguém é obrigado a adotar um estudo inteiro.** Tomando, de cada município, a melhor "
+                    "das duas escolhas, obtém-se um plano que **supera os dois — por construção**:")
+                L.append(f"\n| Plano | Deslocamento total |\n|---|---|\n"
+                         f"| Só a nossa aplicação | {_fmt_num(_hbr['custo_so_nosso_km_candidato'])} km-candidato |\n"
+                         f"| Só a base de referência | {_fmt_num(_hbr['custo_so_dele_km_candidato'])} km-candidato |\n"
+                         f"| **HÍBRIDO (o melhor de cada)** | **{_fmt_num(_hbr['custo_hibrido_km_candidato'])} "
+                         "km-candidato** |")
+                L.append(
+                    f"\n**Recomendação operacional:** manter o polo da nossa aplicação em "
+                    f"**{_hbr['municipios_do_nosso']} município(s)** e migrar "
+                    f"**{_hbr['municipios_do_concorrente']}** "
+                    f"(**{_fmt_num(_hbr['candidatos_que_migrariam'])} candidatos**) para o polo da referência. "
+                    f"Isso poupa **{_fmt_num(_hbr['ganho_do_hibrido_sobre_nos'])} km-candidato a mais** do que "
+                    "adotar apenas a nossa solução.")
+        except Exception:
+            pass
+
+    L.append("\n## 9. Conclusões e Recomendações\n")
     if top_municipios:
         _piores = [m for m in top_municipios if (m.get("Diferenca Abs (km)") or 0) < -1][:5]
         if _piores:
@@ -9421,7 +10294,7 @@ def _relatorio_executivo_comparacao(stats, aud, top_municipios=None):
                  "(homônimos) devem ser revisados antes de qualquer decisão — a divergência pode ser um "
                  "artefato de identificação, não uma escolha logística melhor.")
 
-    L.append("\n## 8. Qualidade e Confiabilidade da Comparação\n")
+    L.append("\n## 10. Qualidade e Confiabilidade da Comparação\n")
     _conf = ("Alta" if _pct_conc >= 95 and aud.get("por_fuzzy", 0) == 0 else
              ("Média" if _pct_conc >= 80 else "Baixa"))
     L.append(f"- **Correspondência entre as bases:** {_pct_conc}% ({_conc}/{_tot}).")
@@ -17461,6 +18334,30 @@ if _secao == _SECOES[3]:   # tab_comparador
         > 💡 **A coluna que mais aumenta a confiabilidade é a UF.** Se você só puder adicionar uma, adicione essa.
         """)
 
+    # [DICIONARIO - 164ª geração] O QUE VAI SAIR — antes de você processar qualquer coisa.
+    # A planilha final tem ~40 colunas e ninguém sabia o que a maioria significava. Uma coluna que ninguém
+    # sabe ler é PIOR que coluna nenhuma: ela gera dúvida e às vezes é interpretada ERRADO — o pior desfecho
+    # possível num estudo que fundamenta decisão pública.
+    with st.expander("📗 Dicionário de Dados — o que sai na planilha, coluna por coluna", expanded=False):
+        st.markdown("##### 👀 Assim é a planilha exportada (exemplo real)")
+        st.caption("Três linhas que cobrem os três casos que você vai encontrar: vitória clara, "
+                   "empate técnico com distância geodésica, e derrota com conciliação por similaridade.")
+        try:
+            st.dataframe(_exemplo_planilha_saida(), use_container_width=True, hide_index=True)
+        except Exception as _e_ex:
+            logger.error(f"[DICIONARIO] Falha no exemplo: {_e_ex}")
+        st.markdown("##### 📖 O que cada coluna significa")
+        st.caption("Para cada coluna: **o que é** · **de onde vem** (calculado × informado × API) · "
+                   "**quando fica vazia** · **como ler**.")
+        try:
+            _dic = pd.DataFrame(_dicionario_colunas_comparacao())
+            for _g in _dic["Grupo"].unique():
+                st.markdown(f"**{_g}**")
+                st.dataframe(_dic[_dic["Grupo"] == _g].drop(columns=["Grupo"]),
+                             use_container_width=True, hide_index=True)
+        except Exception as _e_d:
+            logger.error(f"[DICIONARIO] Falha no dicionário: {_e_d}")
+
     _file_ref = st.file_uploader("📄 Planilha de referência (base comparativa)", type=["xlsx", "xls", "csv"],
                                  key="cmp_file",
                                  help="A base externa com a distribuição que você quer comparar: município de "
@@ -17612,6 +18509,11 @@ if _secao == _SECOES[3]:   # tab_comparador
                 f"{_vd['texto_confianca']}")
             if _vd["acao"]:
                 st.info(_vd["acao"])
+            # [CONCORRENTE - 165ª geração] O concorrente e o híbrido entram no DIAGNÓSTICO FINAL.
+            if _vd.get("texto_concorrente"):
+                st.warning(_vd["texto_concorrente"])
+            if _vd.get("texto_hibrido"):
+                st.success(_vd["texto_hibrido"])
 
             # [GEO-GARANTIDO - 162ª geração] AVISO quando há linhas GEODÉSICAS na comparação.
             _n_geo = sum(1 for l in _cmp if "Geodésica" in str(l.get("Tipo de Distancia", "")))
@@ -17873,6 +18775,188 @@ if _secao == _SECOES[3]:   # tab_comparador
                 except Exception as _e_pa:
                     logger.error(f"[CMP-STATS] Falha no Pareto: {_e_pa}")
 
+            with st.expander("⚖️ Diagnóstico IMPARCIAL — os dois estudos, lado a lado", expanded=False):
+                try:
+                    _di = _diagnostico_imparcial(_cmp)
+                    if not _di:
+                        st.caption("Sem dados comparáveis suficientes.")
+                    if _di:
+                        st.caption(
+                            "📖 **Por que este painel existe:** até aqui o concorrente só existia EM RELAÇÃO "
+                            "A NÓS. Ele nunca ganhava um **perfil próprio**. E sem perfil, perguntas centrais "
+                            "ficavam sem resposta: *qual estudo evita mais balsas? qual usa menos locais de "
+                            "prova?* Aqui os dois são tratados como **estudos autônomos**, com o mesmo rigor.")
+
+                        _pl = _di["placar"]
+                        _s1, _s2, _s3, _s4 = st.columns(4)
+                        _s1.metric("🏢 Nossa aplicação venceu", f"{_pl['pct_aplicacao']}%",
+                                   f"{_pl['aplicacao']} municípios")
+                        _s2.metric("⚔️ Concorrente venceu", f"{_pl['pct_concorrente']}%",
+                                   f"{_pl['concorrente']} municípios")
+                        _s3.metric("🤝 Empates", f"{_pl['pct_empate']}%", f"{_pl['empates']} municípios")
+                        _s4.metric("Total comparável", _pl["total"])
+
+                        st.markdown("##### 📋 Perfil dos DOIS estudos, lado a lado")
+                        _pa, _pr = _di["perfil_app"], _di["perfil_ref"]
+                        if _pa and _pr:
+                            _rows = []
+                            for _k, _rot in (("municipios", "Municípios atendidos"),
+                                             ("candidatos", "Candidatos atendidos"),
+                                             ("locais_de_prova", "Locais de prova utilizados"),
+                                             ("dist_media_km", "Distância média (km)"),
+                                             ("dist_mediana_km", "Distância mediana (km)"),
+                                             ("dist_minima_km", "Distância mínima (km)"),
+                                             ("dist_maxima_km", "Distância máxima (km)"),
+                                             ("dist_desvio_km", "Desvio-padrão (km)"),
+                                             ("km_candidato_total", "Deslocamento total (km-candidato)"),
+                                             ("tempo_medio_min", "Tempo médio (min)"),
+                                             ("tempo_maximo_min", "Tempo máximo (min)"),
+                                             ("pct_com_balsa", "% de rotas com BALSA"),
+                                             ("pct_so_rodoviario", "% só rodoviário"),
+                                             ("sinuosidade_media", "Sinuosidade média")):
+                                _va, _vr = _pa.get(_k), _pr.get(_k)
+                                _rows.append({
+                                    "Indicador": _rot,
+                                    "🏢 Nossa aplicação": _va if _va is not None else "❓ não disponível",
+                                    "⚔️ Estudo concorrente": _vr if _vr is not None else "❓ não informado",
+                                })
+                            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+                                         height=520)
+                            if _pr.get("campos_indisponiveis"):
+                                st.warning(
+                                    "❓ **A planilha do concorrente não informa: "
+                                    + ", ".join(_pr["campos_indisponiveis"]) + ".** "
+                                    "Esses campos aparecem como **“não informado”**, NUNCA como zero. "
+                                    "**Zero e “não sei” são coisas diferentes** — confundi-las seria mentir "
+                                    "com números. Se a planilha dele trouxer essas colunas, a comparação "
+                                    "fica completa automaticamente.")
+
+                        st.markdown("##### ❓ As perguntas que decidem")
+                        if _di.get("perguntas"):
+                            st.dataframe(pd.DataFrame(_di["perguntas"]), use_container_width=True,
+                                         hide_index=True)
+
+                        _cs = _di.get("consistencia")
+                        if _cs:
+                            st.markdown("##### 🔬 A vantagem do concorrente é PONTUAL ou SISTEMÁTICA?")
+                            st.caption(
+                                "📖 **A pergunta mais afiada de todas — e ela é MEDÍVEL, não opinável.** Se as "
+                                "vitórias dele estão CONCENTRADAS em poucos municípios, a vantagem é PONTUAL: "
+                                "revise aqueles casos e o problema some. Se estão ESPALHADAS, é SISTEMÁTICA: "
+                                "**há algo no método dele que funciona melhor** — e ignorar isso é teimosia.")
+                            (st.info if _cs["veredito"] == "PONTUAL" else st.warning)(_cs["leitura"])
+
+                        _gg = _di.get("geografia")
+                        if _gg:
+                            st.markdown("##### 🌎 Existe padrão GEOGRÁFICO nas diferenças?")
+                            (st.warning if _gg["tem_padrao"] else st.success)(_gg["leitura"])
+                            if _gg.get("por_regiao"):
+                                st.dataframe(pd.DataFrame(_gg["por_regiao"]), use_container_width=True,
+                                             hide_index=True)
+                except Exception as _e_di:
+                    logger.error(f"[PERFIL] Falha no diagnóstico imparcial: {_e_di}")
+
+            with st.expander("⚔️ Onde o CONCORRENTE venceu — e o que isso custa aos candidatos",
+                             expanded=False):
+                try:
+                    _acn = _analise_concorrente(_cmp)
+                    if not _acn["n_municipios"]:
+                        st.success("✅ **O concorrente não venceu em nenhum município comparável.** A sua "
+                                   "solução domina em todo o conjunto.")
+                    if _acn["n_municipios"]:
+                        st.caption(
+                            "📖 **Por que este painel existe:** toda a análise anterior perguntava *“nós "
+                            "ganhamos?”*. As vitórias do concorrente apareciam só como **derrotas nossas** — "
+                            "nunca eram analisadas **em si**. Um comparador que só conta as próprias vitórias "
+                            "não é ferramenta de decisão: é **peça de marketing**. Aqui ele é analisado com o "
+                            "mesmo rigor.")
+                        _k1, _k2, _k3, _k4 = st.columns(4)
+                        _k1.metric("Municípios que ele venceu", _acn["n_municipios"],
+                                   help=f"{_acn['pct_municipios']}% dos comparáveis.")
+                        _k2.metric("Candidatos impactados", _fmt_num(_acn["candidatos_impactados"]),
+                                   help="Quantos alunos se beneficiariam se adotássemos a escolha dele.")
+                        _k3.metric("Deslocamento que ele pouparia",
+                                   f"{_fmt_num(_acn['economia_km_candidato'])} km-cand.")
+                        _k4.metric("Por candidato", f"{_fmt_num(_acn['km_por_candidato'], 2)} km",
+                                   help="Quantos km a menos cada um desses alunos andaria.")
+                        if _acn.get("pareto_n80"):
+                            st.info(f"🎯 **{_acn['pareto_n80']} município(s) sozinhos explicam 80% da "
+                                    "vantagem dele.** Se você for revisar só alguns casos, revise esses.")
+                        st.markdown("##### 🗺️ Onde ele vence (por estado)")
+                        if _acn["por_uf"]:
+                            st.dataframe(pd.DataFrame(_acn["por_uf"]), use_container_width=True,
+                                         hide_index=True, height=220)
+                        st.markdown("##### ⚠️ Todos os casos em que o concorrente ganhou")
+                        st.caption("Ordenados pelo **impacto sobre candidatos** — não pela diferença em km. "
+                                   "4.000 candidatos a 160 km a mais doem muito mais que 50 a 300 km.")
+                        st.dataframe(_colorir_risco(pd.DataFrame(_acn["top_casos"]),
+                                                    cols_negativo_ruim=[]),
+                                     use_container_width=True, hide_index=True, height=320)
+
+                    # ---- PLANO HÍBRIDO ----
+                    _hb = _plano_hibrido(_cmp)
+                    if _hb:
+                        st.markdown("##### 🏆 O plano HÍBRIDO — o melhor de cada município")
+                        st.caption(
+                            "📖 **A pergunta que ninguém estava fazendo.** Todo o comparador respondia *“qual "
+                            "estudo é melhor no conjunto?”*. Mas essa é a pergunta **errada** para quem vai "
+                            "**decidir**. A pergunta certa é: **“e se eu pegar, de cada município, a MELHOR "
+                            "das duas escolhas?”** — porque **ninguém é obrigado a adotar um estudo inteiro**.")
+                        _h1, _h2, _h3 = st.columns(3)
+                        _h1.metric("Só o nosso estudo",
+                                   f"{_fmt_num(_hb['custo_so_nosso_km_candidato'])} km-cand.")
+                        _h2.metric("Só o do concorrente",
+                                   f"{_fmt_num(_hb['custo_so_dele_km_candidato'])} km-cand.")
+                        _h3.metric("🏆 HÍBRIDO",
+                                   f"{_fmt_num(_hb['custo_hibrido_km_candidato'])} km-cand.",
+                                   help="Deslocamento total se você tomar, de cada município, o melhor polo.")
+                        if _hb["vale_a_pena"]:
+                            st.success(
+                                f"⚡ **O híbrido poupa {_fmt_num(_hb['ganho_do_hibrido_sobre_nos'])} "
+                                "km-candidato a MAIS** que adotar só o nosso estudo — e "
+                                f"**{_fmt_num(_hb['ganho_do_hibrido_sobre_ele'])} a mais** que só o dele.\n\n"
+                                f"**O que fazer:** manter o nosso polo em **{_hb['municipios_do_nosso']} "
+                                f"município(s)** e migrar **{_hb['municipios_do_concorrente']}** "
+                                f"(**{_fmt_num(_hb['candidatos_que_migrariam'])} candidatos**) para o polo do "
+                                "concorrente. **O híbrido domina os dois — por construção.**")
+                        if not _hb["vale_a_pena"]:
+                            st.success("✅ **O nosso estudo já é o melhor em todos os municípios.** Não há "
+                                       "nada a ganhar adotando escolhas do concorrente.")
+                except Exception as _e_ac:
+                    logger.error(f"[CONCORRENTE] Falha no painel: {_e_ac}")
+
+            with st.expander("🏅 Rankings — estados, locais de prova e maiores divergências", expanded=False):
+                try:
+                    _rk = _rankings_comparacao(_cmp)
+                    _r1, _r2 = st.columns(2)
+                    with _r1:
+                        st.markdown("##### 🗺️ Estados — quem mais ganha")
+                        st.caption("Ordenado por **economia ponderada** (km × candidatos). Negativo = "
+                                   "a nossa solução leva o candidato mais longe ali.")
+                        if _rk["estados"]:
+                            st.dataframe(_colorir_risco(pd.DataFrame(_rk["estados"]),
+                                                        cols_negativo_ruim=["economia_km_candidato"]),
+                                         use_container_width=True, hide_index=True, height=280)
+                    with _r2:
+                        st.markdown("##### 🏫 Locais de prova — quem recebe mais")
+                        st.caption("Quantos candidatos cada polo recebe, e com que deslocamento médio. "
+                                   "Um polo lotado pode não caber numa escola.")
+                        if _rk["polos"]:
+                            st.dataframe(pd.DataFrame(_rk["polos"]), use_container_width=True,
+                                         hide_index=True, height=280)
+                    st.markdown("##### ⚡ Maiores divergências — onde as duas soluções mais discordam")
+                    st.caption("**Comece a revisão por aqui.** São os municípios em que os dois estudos "
+                               "escolheram polos diferentes E o impacto sobre candidatos é maior.")
+                    if _rk["divergencias"]:
+                        st.dataframe(_colorir_risco(pd.DataFrame(_rk["divergencias"]),
+                                                    cols_negativo_ruim=["Impacto (km-candidato)"]),
+                                     use_container_width=True, hide_index=True, height=300)
+                    if not _rk["divergencias"]:
+                        st.success("✅ Nenhuma divergência de destino: as duas soluções concordam em todos "
+                                   "os municípios comparáveis.")
+                except Exception as _e_rk:
+                    logger.error(f"[RANKING] Falha nos rankings: {_e_rk}")
+
             with st.expander("📖 Metodologia — como cada indicador é calculado", expanded=False):
                 st.caption("Nenhum número aqui é caixa-preta. Um indicador que ninguém sabe explicar não pode "
                            "fundamentar decisão pública.")
@@ -17924,7 +19008,7 @@ if _secao == _SECOES[3]:   # tab_comparador
             # [PERF - 139ª geração] Bytes JÁ prontos (montados no clique). Zero CPU por rerun.
             _xb = _res_c.get("xlsx")
             if _xb:
-                st.download_button("📥 Baixar comparação completa (.xlsx — 11 abas)", data=_xb,
+                st.download_button("📥 Baixar comparação completa (.xlsx — 21 abas)", data=_xb,
                                    file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True, key="cmp_export")
