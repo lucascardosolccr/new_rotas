@@ -9131,6 +9131,47 @@ def _validar_codigo_ibge(texto, indice=None):
 
 
 
+def _portao_de_exibicao(chave='df_processado'):
+    """[PORTÃO-EXIBIÇÃO - 181ª geração] O PORTÃO NA FRONTEIRA DE **EXIBIÇÃO**, não só na de produção.
+
+    ── POR QUE ISTO EXISTE (e é a lição mais dura desta série) ──
+    Eu coloquei o portão na PRODUÇÃO do DataFrame (176ª). Consertei o crash dele (180ª). E o usuário
+    **continuou vendo 958 zeros**. Eu não conseguia distinguir, do meu lado, entre:
+      (a) o portão não roda,
+      (b) o portão roda e falha,
+      (c) o usuário está rodando uma versão antiga.
+    **Essa impossibilidade de distinguir é uma falha de PROJETO minha** — o portão era uma caixa-preta.
+
+    ── A CURA: DEFESA EM PROFUNDIDADE ──
+    Este portão roda na **FRONTEIRA DE EXIBIÇÃO** — toda vez que o `df_processado` vai ser MOSTRADO ou
+    COMPARADO. Ele é **IDEMPOTENTE** (se o df já está limpo, custa ~0 e não faz nada) e **NÃO DEPENDE do
+    caminho que produziu o DataFrame**. Não importa se veio do Lote, da Alocação, de uma versão antiga
+    ainda em `session_state`, ou de um caminho que eu ainda vou escrever: **se há um zero impossível ali,
+    ele é corrigido ANTES de qualquer olho humano vê-lo.**
+
+    É a diferença entre "conserto o produtor" (e sempre sobra um produtor) e "**limpo na porta**".
+    PURO em relação ao session_state (grava o df corrigido de volta)."""
+    try:
+        _df = st.session_state.get(chave)
+        if _df is None or not hasattr(_df, "columns") or len(_df) == 0:
+            return None
+        _viol = _verificar_invariante_zero(_df)
+        if not _viol:
+            return {"linhas_zero": 0, "recuperadas": 0, "irrecuperaveis": [], "ok": True,
+                    "ja_limpo": True}
+        logger.warning(f"[PORTÃO-EXIBIÇÃO] {len(_viol)} zero(s) impossível(is) chegaram à EXIBIÇÃO. "
+                       "O portão de produção não os pegou — ou este DataFrame veio de outro caminho. "
+                       "Corrigindo AGORA, na porta.")
+        _limpo, _rel = _portao_final_distancias(_df)
+        st.session_state[chave] = _limpo
+        st.session_state['portao_exibicao_relatorio'] = _rel
+        return _rel
+    except Exception as _e:
+        logger.error(f"[PORTÃO-EXIBIÇÃO] Falha: {_e}")
+        return {"linhas_zero": -1, "recuperadas": 0, "irrecuperaveis": [], "ok": False,
+                "crash": f"{type(_e).__name__}: {_e}"}
+
+
 def _escrever_seguro(df, idx, col, valor):
     """[PORTÃO - 180ª geração] Escreve numa célula RESPEITANDO o dtype da coluna.
 
@@ -12853,6 +12894,55 @@ def obter_coordenadas_e_endereco_oficial(localidade):
                      f"({_cod_in}) → município '{_mun_c}/{_uf_c}' resolvido em O(1) pela base oficial "
                      f"embarcada (sem geocoders de rede); coordenada oficial da sede municipal adotada e "
                      f"não substituída por fallback/consenso."])
+
+    # ═══════════════════════════════════════════════════════════════════════════════════════════
+    # [OFFLINE-FIRST - 181ª geração] 🔴 O GARGALO — e ele explicava AS DUAS COISAS.
+    #
+    # ── O QUE ESTAVA ACONTECENDO ──
+    # Esta função é o PONTO ÚNICO por onde toda geocodificação passa. Ela interceptava CÓDIGOS IBGE
+    # (98ª geração) — mas quando a entrada era o **NOME do município**, ela **ia direto para a NUVEM**:
+    # TomTom + ArcGIS + Photon em paralelo, depois Nominatim (limitado a **1 requisição por segundo**).
+    #
+    # Para 2.410 municípios isso são **2.410 rodadas de rede** — quando a **base oficial embarcada
+    # resolve 98,6% deles em O(1), na memória, SEM TOCAR NA REDE**. Eu PROVEI isso na 144ª (16.713 → 228
+    # chamadas, −99%) — mas apliquei o conserto no MODO ESTRITO, e **o caminho principal, que a Alocação
+    # usa, continuou indo para a nuvem em TODOS os municípios.**
+    #
+    # ── E ISSO EXPLICA OS 958 ZEROS TAMBÉM ──
+    # Marteladas de milhares de chamadas contra APIs públicas ⇒ **rate-limit, timeout, exaustão**. As que
+    # falham viram distância zero. **Um bug, duas consequências**: a lentidão que você sente E os zeros
+    # que você vê. Resolver a rede resolve os dois.
+    #
+    # ── A ORDEM CERTA (do barato e certo para o caro e incerto) ──
+    #   1. Código IBGE      → O(1), offline, INQUESTIONÁVEL   (já existia, acima)
+    #   2. Nome do município → O(1), offline, base oficial     (👈 ESTAVA FALTANDO — é este bloco)
+    #   3. Nuvem            → só para o que a base NÃO resolve (endereços, bairros, logradouros)
+    #
+    # NUNCA CHUTA: se o nome é homônimo sem UF ("São Domingos", 5 estados), a base recusa e a nuvem é
+    # consultada — que é exatamente o que deve acontecer.
+    # ═══════════════════════════════════════════════════════════════════════════════════════════
+    _mo_off = _MODO_OFICIAL_OFFLINE.get("ativo", True)
+    if _mo_off:
+        try:
+            _off_r = _resolver_municipio_offline(str(localidade))
+        except Exception as _e_off:
+            logger.error(f"[OFFLINE-FIRST] Falha na resolução offline de '{localidade}': {_e_off}")
+            _off_r = None
+        if _off_r and _off_r.get("lat") and _off_r.get("lon"):
+            registrar_telemetria("IBGE_OFFLINE", True, 0.0)
+            _m_off = _titulo_municipio(_off_r["cidade"])
+            _u_off = _off_r["estado"]
+            return (float(_off_r["lat"]), float(_off_r["lon"]),
+                    f"{_m_off.upper()}, {_u_off}, BRASIL", "MUNICIPAL", 100, "", _m_off,
+                    "IBGE (Base Oficial — offline, O(1))",
+                    [f"⚡ **Resolvido OFFLINE pela base oficial do IBGE**: '{localidade}' → "
+                     f"**{_m_off}/{_u_off}**, em O(1), **sem tocar na rede**.",
+                     "**Por que isto importa:** a base embarcada tem os 5.571 municípios do Brasil e é "
+                     "MAIS confiável que qualquer geocoder de nuvem para identidade municipal — além de "
+                     "ser instantânea. A nuvem só é consultada para o que a base NÃO resolve (endereços, "
+                     "bairros, logradouros) ou para nomes ambíguos.",
+                     "🔒 Coordenada = **sede municipal oficial** (não centroide geométrico)."])
+
 
     lat, lon, end_f, conf, score, dist, mun, fonte, xai = _obter_coordenadas_e_endereco_oficial_core(localidade)
 
@@ -17074,6 +17164,14 @@ _SECOES = [
 # (que se auto-continua via st.rerun()) prosseguia mesmo com o usuário olhando outra aba. Agora, se ele
 # trocar de seção no meio, o laço simplesmente PARA de executar. Solução: travar a navegação enquanto
 # houver processamento em andamento — comportamento preservado, e o usuário sabe por quê.
+# [SELO - 181ª geração] O SELO DE VERSÃO, VISÍVEL.
+# Eu não conseguia distinguir, do meu lado, entre "o portão falhou" e "o usuário está rodando uma
+# versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
+# consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
+# nós dois sabemos exatamente o que está rodando.
+_VERSAO_APP = "181"
+_VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
+
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
 
 # [UX-NAV - 148ª geração] NAVEGAÇÃO LATERAL AGRUPADA — corrige uma regressão que EU criei na 142ª.
@@ -17120,6 +17218,7 @@ assert sorted(_i for _v in _GRUPOS_NAV.values() for _i in _v) == list(range(len(
 # (A suíte me pegou abrindo a div num markdown e fechando em outro — HTML DESBALANCEADO, a mesma
 # classe de bug que me custou a 137ª. O invariante existe exatamente para isso.)
 st.markdown('<div class="nav-topo"></div>', unsafe_allow_html=True)
+st.sidebar.caption(f"🏷️ **{_VERSAO_SELO}**")
 _grupo = st.radio("Grupo", list(_GRUPOS_NAV), key="nav_grupo", horizontal=True,
                   label_visibility="collapsed", disabled=_PROC_ATIVO)
 _idx_g = list(_GRUPOS_NAV).index(_grupo)
@@ -18639,6 +18738,40 @@ if _secao == _SECOES[1]:   # tab_processamento
                 st.session_state.pop('lote_preaquecido_final', None)
             st.write("---")
             # [F-NEW1] Scorecard de qualidade — indicadores agregados antes da prévia bruta
+            # [PORTÃO-EXIBIÇÃO - 181ª geração] LIMPA NA PORTA. O portão de produção pode não ter rodado
+            # (versão antiga em session_state, caminho novo, crash silencioso). Este roda SEMPRE, é
+            # IDEMPOTENTE (custa ~0 se já está limpo) e NÃO DEPENDE de quem produziu o DataFrame.
+            _rel_exib = _portao_de_exibicao('df_processado')
+            if _rel_exib and _rel_exib.get('recuperadas'):
+                st.success(
+                    f"🛟 **{_rel_exib['recuperadas']} rota(s) com distância ZERO foram RECUPERADAS agora, "
+                    "na porta.** O portão de produção não as pegou — isso acontece quando o estudo foi "
+                    "processado numa versão anterior e ficou guardado na sessão. **Elas já estão corrigidas "
+                    "abaixo**, com a geodésica oficial do IBGE.")
+            if _rel_exib and _rel_exib.get('irrecuperaveis'):
+                st.error(
+                    f"⛔ **{len(_rel_exib['irrecuperaveis'])} linha(s) NÃO puderam ser recuperadas** nem "
+                    "pela base oficial. Veja o motivo de cada uma na aba 🔍 Auditoria.")
+            if _rel_exib and _rel_exib.get('crash'):
+                st.error(f"🔴 **O PORTÃO FALHOU:** `{_rel_exib['crash']}`. **Isto é um bug — me reporte "
+                         "esta mensagem inteira.** Os zeros NÃO foram corrigidos.")
+            # [PORTÃO-EXIBIÇÃO - 181ª geração] LIMPA NA PORTA. O portão de produção pode não ter rodado
+            # (versão antiga em session_state, caminho novo, crash silencioso). Este roda SEMPRE, é
+            # IDEMPOTENTE (custa ~0 se já está limpo) e NÃO DEPENDE de quem produziu o DataFrame.
+            _rel_exib = _portao_de_exibicao('df_processado')
+            if _rel_exib and _rel_exib.get('recuperadas'):
+                st.success(
+                    f"🛟 **{_rel_exib['recuperadas']} rota(s) com distância ZERO foram RECUPERADAS agora, "
+                    "na porta.** O portão de produção não as pegou — isso acontece quando o estudo foi "
+                    "processado numa versão anterior e ficou guardado na sessão. **Elas já estão corrigidas "
+                    "abaixo**, com a geodésica oficial do IBGE.")
+            if _rel_exib and _rel_exib.get('irrecuperaveis'):
+                st.error(
+                    f"⛔ **{len(_rel_exib['irrecuperaveis'])} linha(s) NÃO puderam ser recuperadas** nem "
+                    "pela base oficial. Veja o motivo de cada uma na aba 🔍 Auditoria.")
+            if _rel_exib and _rel_exib.get('crash'):
+                st.error(f"🔴 **O PORTÃO FALHOU:** `{_rel_exib['crash']}`. **Isto é um bug — me reporte "
+                         "esta mensagem inteira.** Os zeros NÃO foram corrigidos.")
             renderizar_scorecard_qualidade(st.session_state['df_processado'])
             # [AUDIT-SUSPEITAS - 43ª geração] Auditoria automática de rotas suspeitas (razão V/R anômala)
             _susp_df, _susp_resumo = _auditar_rotas_suspeitas(st.session_state['df_processado'])
@@ -20056,8 +20189,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                             "*“Desses, **830 NÃO CONSEGUEM CHEGAR**”* é um INSIGHT: cruza duas "
                                             "dimensões e aponta uma **ação**. Cada item abaixo é derivado dos "
                                             "**seus** dados e termina com **o que fazer**.")
-                                        _viab_ins = (_viabilidade_de_chegada(_muns_v, _hora_p, _folga_p)
-                                                     if _muns_v else None)
+                                        # [PERF - 181ª geração] REUSA o cálculo do painel acima em vez
+                                        # de refazê-lo. Medido: _viabilidade_de_chegada rodava 2× por
+                                        # rerun (9,1 ms). É o MESMO padrão da 172ª — e eu reincidi.
+                                        _viab_ins = _viab if _muns_v else None
                                         for _ins in _insights_automaticos(_dash, _viab_ins, _caps):
                                             _cx = (st.error if "🔴" in _ins["tipo"] else
                                                    (st.warning if ("🟠" in _ins["tipo"]
