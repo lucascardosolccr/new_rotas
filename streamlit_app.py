@@ -8464,6 +8464,426 @@ def _colorir_risco(df, cols_risco=None, cols_pct_ruim=None, cols_negativo_ruim=N
         return df
 
 
+
+
+_HORA_PROVA_PADRAO = 13.5      # ENEM: 13h30 (portões fecham às 13h)
+_FOLGA_CHEGADA_H = 1.0         # chegar 1h antes do fechamento dos portões
+
+
+
+
+_FAIXAS_DIST_CAND = [(50, "≤ 50 km"), (100, "50–100 km"), (200, "100–200 km"),
+                     (300, "200–300 km"), (500, "300–500 km"), (1000, "500–1.000 km"),
+                     (float("inf"), "> 1.000 km")]
+_FAIXAS_TEMPO_CAND = [(30, "≤ 30 min"), (60, "30 min – 1 h"), (120, "1 – 2 h"),
+                      (240, "2 – 4 h"), (480, "4 – 8 h"), (float("inf"), "> 8 h")]
+
+
+def _dashboard_candidatos(municipios):
+    """[DASHBOARD - 177ª geração] O ESTUDO VISTO PELOS OLHOS DO CANDIDATO, não do mapa.
+
+    ── A INVERSÃO QUE ISTO FAZ ──
+    Todo o resto da aba conta MUNICÍPIOS: "300 municípios acima de 200 km". Mas município não faz prova —
+    **gente faz**. E um município com 5.000 candidatos a 250 km importa **500 vezes mais** que um com 10
+    candidatos a 400 km. Contar municípios trata os dois como iguais; contar CANDIDATOS mede o que
+    realmente acontece com **pessoas**.
+
+    Aqui cada faixa responde: **quantos CANDIDATOS estão nela** — não quantos municípios. É a mesma
+    diferença entre "300 municípios" e "quantas pessoas isso é". PURO.
+
+    ── SE NÃO HOUVER A COLUNA DE INSCRITOS ──
+    Devolve {} e a app segue funcionando exatamente como antes. A coluna é OPCIONAL e continua sendo."""
+    _m = [x for x in (municipios or []) if float(x.get("inscritos") or 0) > 0]
+    if not _m:
+        return {}
+
+    _tot_c = int(sum(float(x["inscritos"]) for x in _m))
+    _tot_m = len(_m)
+
+    def _faixear(chave, faixas, conv=1.0):
+        _out, _ant = [], 0.0
+        for _lim, _rot in faixas:
+            _sel = [x for x in _m
+                    if x.get(chave) not in (None, "")
+                    and _ant <= float(x[chave]) / conv < _lim]
+            _c = int(sum(float(x["inscritos"]) for x in _sel))
+            _out.append({"Faixa": _rot, "Candidatos": _c,
+                         "% dos candidatos": round(100.0 * _c / _tot_c, 1) if _tot_c else 0.0,
+                         "Municípios": len(_sel)})
+            _ant = _lim
+        return _out
+
+    # ---- acumulado: "80% dos candidatos viajam menos de X km" ----
+    _com_d = sorted([x for x in _m if x.get("dist_km") not in (None, "")],
+                    key=lambda x: float(x["dist_km"]))
+    _acum, _curva = 0, []
+    for x in _com_d:
+        _acum += int(float(x["inscritos"]))
+        _curva.append({"km": round(float(x["dist_km"]), 1),
+                       "candidatos_acumulados": _acum,
+                       "pct_acumulado": round(100.0 * _acum / _tot_c, 1) if _tot_c else 0.0})
+    _p80 = next((c["km"] for c in _curva if c["pct_acumulado"] >= 80), None)
+    _p95 = next((c["km"] for c in _curva if c["pct_acumulado"] >= 95), None)
+
+    # ---- balsa ----
+    _balsa = [x for x in _m if str(x.get("balsa", "")).strip().lower() in ("sim", "yes", "true", "1")]
+    _c_balsa = int(sum(float(x["inscritos"]) for x in _balsa))
+
+    # ---- concentração por polo ----
+    _polo = {}
+    for x in _m:
+        _p = str(x.get("polo") or "—")
+        _a = _polo.setdefault(_p, {"Polo": _p, "Candidatos": 0, "Municípios": 0})
+        _a["Candidatos"] += int(float(x["inscritos"]))
+        _a["Municípios"] += 1
+    _polos = sorted(_polo.values(), key=lambda x: -x["Candidatos"])
+    _ac = 0
+    for _p in _polos:
+        _ac += _p["Candidatos"]
+        _p["% dos candidatos"] = round(100.0 * _p["Candidatos"] / _tot_c, 1) if _tot_c else 0.0
+        _p["% acumulado"] = round(100.0 * _ac / _tot_c, 1) if _tot_c else 0.0
+    _n80_polos = next((i + 1 for i, _p in enumerate(_polos) if _p["% acumulado"] >= 80), len(_polos))
+
+    # ---- estatística da distribuição de candidatos ----
+    _ins = sorted(int(float(x["inscritos"])) for x in _m)
+    def _pct(_p):
+        _i = min(int(_p / 100.0 * len(_ins)), len(_ins) - 1)
+        return _ins[_i]
+
+    return {
+        "total_candidatos": _tot_c, "total_municipios": _tot_m,
+        "media_por_municipio": round(_tot_c / _tot_m, 1),
+        "mediana": _pct(50), "minimo": _ins[0], "maximo": _ins[-1],
+        "q1": _pct(25), "q3": _pct(75), "p90": _pct(90),
+        "faixas_distancia": _faixear("dist_km", _FAIXAS_DIST_CAND),
+        "faixas_tempo": _faixear("tempo_min", _FAIXAS_TEMPO_CAND),
+        "curva_acumulada": _curva[::max(1, len(_curva) // 200)],
+        "km_para_80pct": _p80, "km_para_95pct": _p95,
+        "candidatos_balsa": _c_balsa,
+        "pct_balsa": round(100.0 * _c_balsa / _tot_c, 1) if _tot_c else 0.0,
+        "municipios_balsa": len(_balsa),
+        "polos": _polos, "n_polos": len(_polos), "polos_para_80pct": _n80_polos,
+        "top_municipios": sorted(
+            [{"Município": x.get("nome"), "UF": x.get("uf", ""),
+              "Candidatos": int(float(x["inscritos"])),
+              "% do total": round(100.0 * float(x["inscritos"]) / _tot_c, 2) if _tot_c else 0.0,
+              "Polo": x.get("polo", "—"),
+              "Distância (km)": round(float(x["dist_km"]), 1) if x.get("dist_km") else None}
+             for x in _m], key=lambda x: -x["Candidatos"])[:25],
+    }
+
+
+def _insights_automaticos(dash, viabilidade=None, capacidades=None):
+    """[DASHBOARD - 177ª geração] O ANALISTA SÊNIOR. Insights que um humano experiente apontaria — e que
+    ninguém extrai olhando uma tabela de 5.571 linhas.
+
+    ── O QUE SEPARA UM INSIGHT DE UM NÚMERO ──
+    "4.200 candidatos viajam mais de 300 km" é um NÚMERO. Não diz o que fazer.
+    "**Dos 4.200 que viajam mais de 300 km, 830 NÃO CONSEGUEM CHEGAR** — eles precisariam sair de casa
+    antes das 2h" é um INSIGHT: ele cruza duas dimensões e aponta uma AÇÃO.
+
+    Cada insight aqui: (1) é DERIVADO dos dados reais do usuário, (2) tem um LIMIAR justificado, e (3)
+    termina com o que FAZER. Um painel que só descreve não ajuda ninguém a decidir. PURO."""
+    if not dash:
+        return []
+    _out = []
+    _tot = dash["total_candidatos"]
+
+    # 1. CONCENTRAÇÃO — poucos polos carregando muita gente
+    _n80 = dash["polos_para_80pct"]
+    _npol = dash["n_polos"]
+    if _npol and _n80 <= max(3, _npol * 0.2):
+        _top = dash["polos"][:_n80]
+        _out.append({
+            "tipo": "🔴 Concentração excessiva",
+            "titulo": f"{_n80} de {_npol} polos concentram 80% dos candidatos",
+            "texto": (f"Os polos **{', '.join(p['Polo'] for p in _top[:3])}**"
+                      + (f" e mais {_n80 - 3}" if _n80 > 3 else "")
+                      + f" recebem **{_fmt_num(sum(p['Candidatos'] for p in _top))} candidatos**. "
+                      "Isso é **risco operacional concentrado**: se um deles tiver problema (alagamento, "
+                      "greve, interdição), o estrago é enorme. Veja a aba **🚨 Contingência** para saber "
+                      "qual polo você NÃO pode perder."),
+            "acao": "Considere abrir polos adicionais para diluir o risco, ou garanta reserva técnica "
+                    "nesses locais.",
+        })
+
+    # 2. POLOS SUBUTILIZADOS — cada polo custa fiscais, salas, logística
+    _sub = [p for p in dash["polos"] if p["Candidatos"] < 100]
+    if _sub and len(_sub) >= 3:
+        _out.append({
+            "tipo": "🟡 Polos subutilizados",
+            "titulo": f"{len(_sub)} polos recebem menos de 100 candidatos cada",
+            "texto": (f"Juntos, eles atendem apenas **{_fmt_num(sum(p['Candidatos'] for p in _sub))} "
+                      f"candidatos** ({round(100.0 * sum(p['Candidatos'] for p in _sub) / _tot, 1)}% do "
+                      "total). **Cada polo aberto custa fiscais, salas, transporte de provas e logística "
+                      "de segurança** — independentemente de quantos candidatos recebe. Um polo com 40 "
+                      "candidatos custa quase o mesmo que um com 400."),
+            "acao": "Avalie fundir esses polos com vizinhos — MAS verifique antes o impacto no "
+                    "deslocamento (a aba de **Cobertura** mostra quanto piora).",
+        })
+
+    # 3. DESLOCAMENTO LONGO
+    _longos = [f for f in dash["faixas_distancia"] if f["Faixa"] in ("300–500 km", "500–1.000 km",
+                                                                     "> 1.000 km")]
+    _c_longo = sum(f["Candidatos"] for f in _longos)
+    if _c_longo:
+        _out.append({
+            "tipo": "🟠 Deslocamento longo",
+            "titulo": f"{_fmt_num(_c_longo)} candidatos viajam mais de 300 km",
+            "texto": (f"São **{round(100.0 * _c_longo / _tot, 1)}% do total**, distribuídos em "
+                      f"**{sum(f['Municípios'] for f in _longos)} município(s)**. "
+                      f"80% dos candidatos viajam até **{dash.get('km_para_80pct', '?')} km** — esses estão "
+                      "muito acima da curva."),
+            "acao": "Veja a **Acessibilidade Crítica** e o **Simulador de Abertura de Polos** em modo "
+                    "**⚖️ Equidade** — ele abre polos justamente para quem está pior.",
+        })
+
+    # 4. ⚡ O INSIGHT QUE CRUZA DIMENSÕES: longos QUE NÃO CONSEGUEM CHEGAR
+    if viabilidade and viabilidade.get("candidatos_inviaveis"):
+        _inv = viabilidade["candidatos_inviaveis"]
+        _out.append({
+            "tipo": "🔴 EXCLUSÃO (não é só deslocamento)",
+            "titulo": f"{_fmt_num(_inv)} candidatos NÃO CONSEGUEM chegar no dia da prova",
+            "texto": (f"Eles precisariam sair de casa **antes das 2h da madrugada** — o que significa "
+                      "**viajar na véspera e pagar hospedagem**. Isso **não é 'mais deslocamento': é "
+                      "EXCLUSÃO**. E nenhuma média de quilômetros mostra isso — a média esconde exatamente "
+                      "o que mais importa."),
+            "acao": "PRIORIDADE MÁXIMA. Reveja o polo desses municípios — mesmo que isso piore a média "
+                    "geral de km. **Km é conforto; chegar é direito.**",
+        })
+
+    # 5. BALSA
+    if dash.get("candidatos_balsa"):
+        _out.append({
+            "tipo": "🚢 Travessia de balsa",
+            "titulo": f"{_fmt_num(dash['candidatos_balsa'])} candidatos atravessam balsa",
+            "texto": (f"São **{dash['pct_balsa']}%** do total, em **{dash['municipios_balsa']} "
+                      "município(s)**. Balsa significa **fila, horário fixo e risco de cancelamento por "
+                      "maré ou manutenção** — no dia da prova, um atraso de balsa é uma reprovação."),
+            "acao": "Use o perfil **🚫 Evitar balsa a todo custo** na calibração e reprocesse: o motor "
+                    "passa a só mandar o candidato para uma travessia se não houver alternativa terrestre.",
+        })
+
+    # 6. CONCENTRAÇÃO DE CANDIDATOS EM POUCOS MUNICÍPIOS
+    _top5 = dash["top_municipios"][:5]
+    _pct5 = sum(m["% do total"] for m in _top5)
+    if _pct5 >= 30:
+        _out.append({
+            "tipo": "📍 Concentração de demanda",
+            "titulo": f"5 municípios concentram {_pct5:.0f}% de todos os candidatos",
+            "texto": ("**" + ", ".join(m["Município"] for m in _top5[:3]) + "**"
+                      + f" e mais {len(_top5) - 3} respondem por "
+                      f"**{_fmt_num(sum(m['Candidatos'] for m in _top5))} candidatos**. "
+                      "Uma decisão errada NESSES municípios pesa mais que cem decisões certas nos pequenos."),
+            "acao": "Audite o polo desses 5 municípios um a um. É o melhor retorno por hora de revisão.",
+        })
+
+    if not _out:
+        _out.append({
+            "tipo": "✅ Nenhum alerta crítico",
+            "titulo": "A distribuição está sadia",
+            "texto": "Não foram detectados: concentração excessiva, polos subutilizados, deslocamento "
+                     "extremo, exclusão por inviabilidade nem uso significativo de balsa.",
+            "acao": "Siga para a validação operacional (capacidade das escolas, infraestrutura).",
+        })
+    return _out
+
+
+def _viabilidade_de_chegada(municipios, hora_prova=None, folga_h=None):
+    """[VIABILIDADE - 175ª geração] O CANDIDATO CONSEGUE CHEGAR?
+
+    ── A PERGUNTA QUE A APLICAÇÃO NUNCA FEZ ──
+    Toda a plataforma responde **"quão longe fica?"**. Brilhantemente. Mas num exame nacional a pergunta
+    que decide não é a distância — é:
+
+        **"Ele consegue CHEGAR a tempo, saindo de casa numa hora humana?"**
+
+    A prova começa às 13h30 e os portões fecham às 13h. Um candidato a **9 horas de viagem** precisa sair
+    de casa às **3h30 da madrugada**. Um a **12 horas** precisaria sair **à meia-noite** — o que, na prática,
+    significa **dormir fora** (com custo de hospedagem que ele talvez não tenha) ou, muito mais provável,
+    **NÃO FAZER A PROVA**.
+
+    ── POR QUE ISSO MUDA TUDO ──
+    Isso **NÃO é "mais deslocamento". É EXCLUSÃO.** E a métrica de "12 km a menos por candidato" — que a
+    plataforma otimiza desde a primeira geração — **não captura isso de jeito nenhum**. Uma distribuição
+    pode ter média excelente e ainda assim **impedir 800 candidatos de fazer a prova**. A média esconde
+    exatamente o que mais importa.
+
+    Existe um limiar que não é gradual: entre "sair às 5h" (duro, mas viável) e "sair às 2h" (não existe
+    ônibus, não existe carona, não existe) há um ABISMO. E nenhuma média o atravessa.
+
+    ── AS FAIXAS ──
+      ✅ NORMAL       — sai depois das 6h. Dia comum.
+      🟡 CEDO         — sai entre 4h e 6h. Duro, mas gente faz.
+      🟠 MADRUGADA    — sai entre 2h e 4h. **Brutal**, e em muitas cidades NÃO HÁ TRANSPORTE a essa hora.
+      🔴 INVIÁVEL     — sairia antes das 2h. **Precisa viajar na véspera** — e isso custa hospedagem.
+
+    ── LIMITE HONESTO (e ele é sério) ──
+    Isto assume que o candidato **PODE** sair no horário calculado. No Brasil rural, o ônibus intermunicipal
+    muitas vezes passa **UMA VEZ POR DIA**, de manhã cedo. Se não houver linha às 4h, "sair às 4h" é ficção.
+    A plataforma **não conhece horário de ônibus** — e não vai fingir que conhece. O que ela faz é **marcar
+    o risco** para que um humano verifique. Isso já é infinitamente mais do que ignorar a questão. PURO."""
+    _hp = float(hora_prova if hora_prova is not None else _HORA_PROVA_PADRAO)
+    _fg = float(folga_h if folga_h is not None else _FOLGA_CHEGADA_H)
+    _limite_chegada = _hp - _fg          # hora em que precisa ESTAR lá
+
+    _faixas = {"normal": [], "cedo": [], "madrugada": [], "inviavel": []}
+    _sem_tempo = []
+    for m in (municipios or []):
+        _t = m.get("tempo_min")
+        if _t in (None, ""):
+            _sem_tempo.append(m)
+            continue
+        try:
+            _h = float(_t) / 60.0
+        except (TypeError, ValueError):
+            _sem_tempo.append(m)
+            continue
+        _saida = _limite_chegada - _h     # hora de sair de casa (pode ser negativa = véspera)
+        _item = {**m, "horas_viagem": round(_h, 1), "hora_saida": round(_saida, 2)}
+        if _saida >= 6.0:
+            _faixas["normal"].append(_item)
+        elif _saida >= 4.0:
+            _faixas["cedo"].append(_item)
+        elif _saida >= 2.0:
+            _faixas["madrugada"].append(_item)
+        else:
+            _faixas["inviavel"].append(_item)
+
+    def _cand(lst):
+        return int(sum(float(x.get("inscritos") or 0) for x in lst))
+
+    _tot_c = sum(_cand(v) for v in _faixas.values())
+    _tot_m = sum(len(v) for v in _faixas.values())
+    _crit = _faixas["madrugada"] + _faixas["inviavel"]
+
+    def _fmt_hora(_h):
+        _h = _h % 24
+        return f"{int(_h):02d}h{int(round((_h % 1) * 60)):02d}"
+
+    return {
+        "hora_prova": _hp, "limite_chegada": _limite_chegada,
+        "municipios": _tot_m, "candidatos": _tot_c,
+        "sem_tempo": len(_sem_tempo),
+        "faixas": {
+            _k: {"municipios": len(_v), "candidatos": _cand(_v),
+                 "pct_candidatos": round(100.0 * _cand(_v) / _tot_c, 1) if _tot_c else 0.0}
+            for _k, _v in _faixas.items()},
+        "criticos": sorted(_crit, key=lambda x: x["hora_saida"])[:60],
+        "candidatos_em_risco": _cand(_crit),
+        "pct_em_risco": round(100.0 * _cand(_crit) / _tot_c, 1) if _tot_c else 0.0,
+        "candidatos_inviaveis": _cand(_faixas["inviavel"]),
+        "pior_caso": (
+            {"municipio": _faixas["inviavel"][0].get("nome") if _faixas["inviavel"] else None}
+            if _faixas["inviavel"] else None),
+        "fmt_hora": _fmt_hora,
+        "leitura": _montar_leitura_viabilidade(_faixas, _cand, _tot_c, _fmt_hora, _limite_chegada),
+    }
+
+
+def _montar_leitura_viabilidade(faixas, cand_fn, tot_c, fmt_hora, limite):
+    """[VIABILIDADE - 175ª geração] A leitura em português — porque um número sem interpretação não decide
+    nada. PURA."""
+    _inv = cand_fn(faixas["inviavel"])
+    _mad = cand_fn(faixas["madrugada"])
+    _partes = []
+    if _inv:
+        _pior = min(faixas["inviavel"], key=lambda x: x["hora_saida"])
+        _partes.append(
+            f"🔴 **{_fmt_num(_inv)} candidato(s) NÃO CONSEGUEM chegar no dia da prova.** Eles precisariam sair de "
+            "casa antes das 2h da madrugada — o que na prática significa **viajar na véspera e pagar "
+            f"hospedagem**. O pior caso é **{_pior.get('nome', '?')}**: "
+            f"{_pior['horas_viagem']}h de viagem, saída às {fmt_hora(_pior['hora_saida'])}. "
+            "**Isso não é 'mais deslocamento' — é EXCLUSÃO.**")
+    if _mad:
+        _partes.append(
+            f"🟠 **{_fmt_num(_mad)} candidato(s) teriam que sair entre 2h e 4h da madrugada.** É brutal — "
+            "e em muitas cidades do interior **não existe transporte público a essa hora**. Verifique se "
+            "há linha de ônibus; se não houver, esses candidatos estão de fato **inviabilizados**, e a "
+            "plataforma não tem como saber isso sozinha.")
+    if not _partes:
+        _partes.append(
+            "✅ **Todos os candidatos conseguem chegar saindo depois das 4h da manhã.** Nenhum precisa "
+            "viajar na véspera. Do ponto de vista de VIABILIDADE (que é diferente de conforto), a "
+            "distribuição está sadia.")
+    _partes.append(
+        f"📖 **Como este número foi calculado:** o candidato precisa ESTAR no local às {fmt_hora(limite)} "
+        "(com folga antes do fechamento dos portões). A hora de saída é isso MENOS o tempo de viagem que a "
+        "plataforma calculou para a rota dele. ⚠️ **Limite honesto:** isto assume que EXISTE transporte no "
+        "horário calculado. No interior, o ônibus intermunicipal muitas vezes passa **uma vez por dia**. A "
+        "plataforma **não conhece horário de ônibus** e não vai fingir que conhece — ela marca o risco para "
+        "que um humano verifique.")
+    return _partes
+
+
+def _comparar_viabilidade(linhas, hora_prova=None, folga_h=None):
+    """[VIABILIDADE - 175ª geração] O COMPARADOR GANHA A MÉTRICA QUE DECIDE.
+
+    ── POR QUE ISTO É MAIS IMPORTANTE QUE TODA A ANÁLISE DE KM ──
+    O Comparador diz "a nossa aplicação poupa 12,4 km por candidato". Ótimo. Mas ele **nunca disse**:
+
+        **"a nossa distribuição deixa 830 candidatos SEM CONSEGUIR CHEGAR — a da referência deixa 2.100."**
+
+    Esse número **domina** a comparação de quilometragem. Um estudo que poupa 12 km na média mas impede
+    830 pessoas de fazer a prova **é pior** que um estudo que poupa 8 km e não impede ninguém. **Km é
+    conforto. Chegar é DIREITO.**
+
+    E o inverso também vale, e é ainda mais desconfortável: se a NOSSA solução inviabiliza MAIS candidatos
+    que a referência, precisamos saber — mesmo vencendo em quilometragem. **Especialmente vencendo.**
+
+    Compara os dois estudos pela ÚNICA métrica que é binária: o candidato consegue ou não consegue. PURO."""
+    def _extrair(lado):
+        _p = "Aplicacao" if lado == "app" else "Referencia"
+        _out = []
+        for l in (linhas or []):
+            _t = l.get(f"Tempo {_p}")
+            if _t in (None, ""):
+                continue
+            _min = _parse_tempo_min(_t)
+            if _min is None:
+                continue
+            _out.append({"nome": l.get("Origem"), "uf": l.get("UF", ""),
+                         "inscritos": float(l.get("Inscritos") or 0), "tempo_min": _min,
+                         "polo": l.get(f"Destino {_p}")})
+        return _out
+
+    _ma, _mr = _extrair("app"), _extrair("ref")
+    if not _ma or not _mr:
+        return {"comparavel": False,
+                "motivo": ("Falta a coluna de **TEMPO** em um dos estudos. Sem tempo, é IMPOSSÍVEL saber se "
+                           "o candidato consegue chegar — e essa é a pergunta que mais importa. "
+                           "**Peça a coluna de tempo à sua base de referência.**")}
+
+    _va = _viabilidade_de_chegada(_ma, hora_prova, folga_h)
+    _vr = _viabilidade_de_chegada(_mr, hora_prova, folga_h)
+    _dif_inv = _va["candidatos_inviaveis"] - _vr["candidatos_inviaveis"]
+    _dif_risco = _va["candidatos_em_risco"] - _vr["candidatos_em_risco"]
+
+    if _dif_inv < 0:
+        _ver = (f"🏆 **A NOSSA aplicação viabiliza {_fmt_num(abs(_dif_inv))} candidato(s) A MAIS** que a "
+                "referência. Eles conseguem chegar no dia — com a distribuição dela, não conseguiriam. "
+                "**Esse ganho vale mais que qualquer quilômetro poupado.**")
+    elif _dif_inv > 0:
+        _ver = (f"🔴 **ATENÇÃO: a NOSSA aplicação INVIABILIZA {_fmt_num(_dif_inv)} candidato(s) A MAIS** que "
+                "a referência. Mesmo que a gente vença em quilometragem, **isso pesa mais**: km é conforto, "
+                "**chegar é direito**. Revise os municípios da lista de críticos ANTES de adotar a nossa "
+                "distribuição.")
+    else:
+        _ver = ("⚖️ **Os dois estudos inviabilizam o mesmo número de candidatos.** Neste critério — o mais "
+                "importante de todos — eles empatam. A decisão volta para a quilometragem.")
+
+    return {
+        "comparavel": True,
+        "app": {"inviaveis": _va["candidatos_inviaveis"], "em_risco": _va["candidatos_em_risco"],
+                "pct_risco": _va["pct_em_risco"], "faixas": _va["faixas"]},
+        "ref": {"inviaveis": _vr["candidatos_inviaveis"], "em_risco": _vr["candidatos_em_risco"],
+                "pct_risco": _vr["pct_em_risco"], "faixas": _vr["faixas"]},
+        "diferenca_inviaveis": _dif_inv, "diferenca_em_risco": _dif_risco,
+        "veredito": _ver,
+        "criticos_app": _va["criticos"][:40],
+    }
+
+
 def _carga_por_polo(municipios):
     """[INSCRITOS - 141ª geração] CARGA POR LOCAL DE PROVA: quantos candidatos cada polo vai receber, e de
     quantos municípios. É AQUI que a quantidade de inscritos muda uma decisão de verdade.
@@ -8666,6 +9086,272 @@ def _validar_codigo_ibge(texto, indice=None):
     return {"valido": True, "codigo": _so_num, "municipio": _titulo_municipio(_it["municipio"]), "uf": _it["uf"],
             "lat": _it["lat"], "lon": _it["lon"], "fonte": "IBGE Oficial (base embarcada)",
             "motivo": "Confirmada.", "sugestao": "", "confianca": 100}
+
+
+# =============================================================================================
+# [MEMORIA - 174ª geração] ⛔ OTIMIZAÇÃO TESTADA E **REJEITADA**. Registro aqui porque o resultado
+# NEGATIVO é tão útil quanto o positivo — e porque, sem este registro, algum futuro eu (ou você)
+# vai tentar de novo.
+#
+# A IDEIA: colunas de TEXTO com POUCOS valores únicos (`Balsas` = 2, `Modo/Acesso` = 3,
+# `Tipo de Distancia` = 3) guardam 5.571 strings COMPLETAS em vez de 5.571 ponteiros para 3 strings.
+# Converter para dtype `category` parecia dinheiro no chão.
+#
+# O GANHO MEDIDO: **15,6 MB → 12,7 MB por DataFrame (−18%).**
+# (E medi ERRADO DUAS VEZES antes de acertar: primeiro com np.random.choice, que devolve array de
+#  largura fixa e mostrou 0% de ganho; depois com a MESMA string de XAI repetida 5.571 vezes, o que
+#  deu um ganho FALSO de 66%. Só com XAI ÚNICO por município — como o app realmente faz — o número
+#  honesto apareceu. **Um benchmark que mente a seu favor é pior que benchmark nenhum.**)
+#
+# ── POR QUE FOI REJEITADA ──
+# Com dtype `category`, o `value_counts()` de uma coluna **FILTRADA** devolve as categorias ausentes
+# **com contagem ZERO**. Testado: filtrando só GO, o resultado vira {GO: 500, MG: 0, SP: 0}.
+# O dashboard FILTRA o tempo todo (o usuário clica numa UF no gráfico interativo e tudo se filtra).
+# ⇒ **BARRAS FANTASMA em todo gráfico filtrado.**
+#
+# ── A CONTA ──
+#   Ganho: 2,9 MB por DataFrame.
+#   Risco: bug VISUAL em todos os gráficos do dashboard.
+#   **Não vale. Rejeitada.**
+#
+# ── E A MEMÓRIA NÃO É PROBLEMA MESMO ──
+# Medido: **~376 MB para 1 usuário** em escala nacional (5.571 municípios × 95 colunas), contra o
+# limite de ~1 GB do Streamlit Cloud. Folga confortável até ~5 usuários simultâneos — que é o caso
+# real de uma ferramenta interna de planejamento de exame. Só a partir de ~10 simultâneos ficaria
+# apertado, e aí a resposta certa é escalar o plano, não introduzir um bug visual para economizar
+# 2,9 MB.
+#
+# ── O ACHADO QUE INCOMODA (e é honesto registrar) ──
+# O maior consumidor de memória do DataFrame são **as colunas de XAI que EU adicionei na 167ª**:
+# "Por Que o Vencedor Venceu" (3,5 MB) + os três "Motivo" (2,2 MB) = **38% do DataFrame inteiro**.
+# É o preço da explicação — e eu o pagaria de novo, porque um sistema de decisão sem explicação é
+# uma caixa-preta. Mas é honesto dizer de onde vem o peso.
+# =============================================================================================
+
+
+
+
+def _portao_final_distancias(df, col_dist="Distancia", col_o="Origem", col_d="Destino"):
+    """[PORTÃO - 176ª geração] A GARANTIA ESTRUTURAL: nenhum ZERO IMPOSSÍVEL sai do pipeline.
+
+    ── POR QUE UM "CONSERTO" NÃO ERA SUFICIENTE ──
+    Nas gerações 162, 168 e 169 eu consertei os caminhos que geravam zero — e **na 168ª eu declarei
+    resolvido um bug que ainda estava lá**, porque consertei o caminho ERRADO. Aprendi a lição: um conserto
+    que não foi VERIFICADO no lugar onde o bug ocorre não é conserto, é esperança.
+    A resposta certa não é consertar MAIS caminhos. É construir um **PORTÃO que NENHUMA linha atravessa sem
+    ser examinada** — independentemente de por qual caminho ela veio, inclusive por caminhos que ainda não
+    existem.
+
+    ── A LEI FÍSICA QUE TORNA ISSO POSSÍVEL ──
+    **Dois municípios DIFERENTES não podem estar a 0,0 km de distância.** Isso não é convenção nem
+    heurística: é geometria. Se `Origem ≠ Destino` e `Distância = 0`, **é bug — sempre, sem exceção**.
+    (E o contrário também importa: `Distância = 0` com `Origem == Destino` é PERFEITAMENTE VÁLIDO — o
+    candidato faz prova na própria cidade. Confundir os dois casos foi o pecado original: usar zero como
+    SENTINELA DE ERRO num campo onde zero é um valor legítimo.)
+
+    ── O QUE O PORTÃO FAZ, EM ORDEM ──
+      1. Encontra toda linha com **zero impossível** (origem ≠ destino, distância ≤ 0).
+      2. **TENTA RESGATAR** cada uma: resolve as duas pontas pela base oficial do IBGE (offline, O(1)) e
+         calcula a **geodésica de Karney** — que é o PISO FÍSICO e sempre existe se as coordenadas existem.
+      3. As que resgatou, **CORRIGE** — com a fonte marcada como geodésica (nunca disfarçada de viária).
+      4. As que NÃO conseguiu, marca com o **MOTIVO EXPLÍCITO** — nunca mais um zero mudo.
+      5. **RELATA** ao usuário: quantas tinham zero, quantas foram recuperadas, quantas restaram e POR QUÊ.
+
+    Devolve (df_corrigido, relatorio). PURO (não muta o df de entrada)."""
+    _rel = {"linhas_zero": 0, "recuperadas": 0, "irrecuperaveis": [], "ok": True}
+    try:
+        if df is None or len(df) == 0 or col_dist not in df.columns:
+            return df, _rel
+        _d = df.copy()
+        _dist = pd.to_numeric(_d[col_dist], errors="coerce")
+
+        _o = _d[col_o].astype(str).str.strip() if col_o in _d.columns else pd.Series([""] * len(_d))
+        _dd = _d[col_d].astype(str).str.strip() if col_d in _d.columns else pd.Series([""] * len(_d))
+        # ⚠️ ARMADILHA QUE O MEU PRÓPRIO TESTE PEGOU: quando o pipeline falha, ele grava "Erro" em
+        # AMBOS os municípios. Comparar "Erro" == "Erro" faria o portão concluir que são a MESMA
+        # cidade — e PULAR exatamente as linhas que ele existe para pegar. O sentinela de falha
+        # estava disfarçando o bug do próprio detector.
+        # CURA: quando o município identificado é um SENTINELA, use o TEXTO CRU da entrada.
+        def _limpo(_serie_mun, _serie_txt):
+            _m = _serie_mun.astype(str).str.strip()
+            _ruim = _m.str.lower().isin(_SENTINELAS_FALHA) | (_m.str.len() == 0)
+            return _m.where(~_ruim, _serie_txt.astype(str).str.strip())
+
+        _mun_o = _limpo(_d["Municipio Origem"], _o) if "Municipio Origem" in _d.columns else _o
+        _mun_d = _limpo(_d["Municipio Destino"], _dd) if "Municipio Destino" in _d.columns else _dd
+
+        # a mesma cidade? (agora comparando identidades REAIS, nunca sentinelas)
+        _mesma = (_mun_o.str.upper() == _mun_d.str.upper()) & (_mun_o.str.len() > 0)
+        _zero_impossivel = (_dist.isna() | (_dist <= 0)) & (~_mesma)
+        _idx = _d.index[_zero_impossivel].tolist()
+        _rel["linhas_zero"] = len(_idx)
+        if not _idx:
+            return _d, _rel
+
+        logger.warning(f"[PORTÃO] {len(_idx)} linha(s) com ZERO IMPOSSÍVEL (origem ≠ destino, "
+                       "distância ≤ 0). Tentando resgate pela base oficial do IBGE...")
+
+        for _i in _idx:
+            _txt_o = str(_d.at[_i, col_o]) if col_o in _d.columns else ""
+            _txt_d = str(_d.at[_i, col_d]) if col_d in _d.columns else ""
+            _rg_o = _resgatar_coordenadas_oficiais(_txt_o)
+            _rg_d = _resgatar_coordenadas_oficiais(_txt_d)
+            if not (_rg_o and _rg_d):
+                _falta = []
+                if not _rg_o:
+                    _falta.append(f"origem (`{_txt_o}`)")
+                if not _rg_d:
+                    _falta.append(f"destino (`{_txt_d}`)")
+                _rel["irrecuperaveis"].append({
+                    "linha": int(_i) + 2,   # +2 = cabeçalho + base 1 (como o Excel mostra)
+                    "origem": _txt_o, "destino": _txt_d,
+                    "motivo": ("Nem a nuvem nem a BASE OFICIAL do IBGE reconheceram: "
+                               + " e ".join(_falta) +
+                               ". Provavelmente não é um município brasileiro — confira a grafia."),
+                })
+                # NUNCA um zero mudo: marca o motivo na própria linha
+                if "Status da Rota" in _d.columns:
+                    _d.at[_i, "Status da Rota"] = "⛔ NÃO RECUPERÁVEL (município não reconhecido)"
+                _d.at[_i, col_dist] = None      # None, não 0 — zero é um valor VÁLIDO
+                continue
+
+            _lat_o, _lon_o, _m_o, _u_o, _c_o, _met_o = _rg_o
+            _lat_d, _lon_d, _m_d, _u_d, _c_d, _met_d = _rg_d
+            try:
+                _geo, _st = calcular_distancia_linha_reta(
+                    _lat_o, _lon_o, _lat_d, _lon_d, contexto=f"PORTÃO FINAL: {_txt_o} → {_txt_d}")
+            except Exception as _e_g:
+                logger.error(f"[PORTÃO] Falha geodésica na linha {_i}: {_e_g}")
+                _geo = 0.0
+            if not _geo or _geo <= 0:
+                _rel["irrecuperaveis"].append({
+                    "linha": int(_i) + 2, "origem": _txt_o, "destino": _txt_d,
+                    "motivo": "Municípios reconhecidos, mas a geodésica não pôde ser calculada "
+                              "(coordenadas oficiais ausentes na base).",
+                })
+                _d.at[_i, col_dist] = None
+                continue
+
+            # ✅ RESGATADA
+            _d.at[_i, col_dist] = round(float(_geo), 2)
+            for _c, _v in (("Linha Reta", round(float(_geo), 2)),
+                           ("Municipio Origem", _m_o), ("Municipio Destino", _m_d),
+                           ("Lat Origem", _lat_o), ("Lon Origem", _lon_o),
+                           ("Lat Destino", _lat_d), ("Lon Destino", _lon_d),
+                           ("Cod IBGE Origem", _c_o), ("Cod IBGE Destino", _c_d),
+                           ("Fonte Rota", "Geodésica de Karney (PORTÃO FINAL — rota indisponível)"),
+                           ("Status da Rota", "🛟 RECUPERADA no portão final (geodésica oficial)"),
+                           ("Modo/Acesso", "📐 Geodésica (rota rodoviária indisponível)")):
+                if _c in _d.columns:
+                    _d.at[_i, _c] = _v
+            _rel["recuperadas"] += 1
+            logger.warning(f"[PORTÃO] Linha {_i} RECUPERADA: {_m_o}/{_u_o} → {_m_d}/{_u_d} = "
+                           f"{_geo:.2f} km (geodésica). Via {_met_o} / {_met_d}.")
+
+        _rel["ok"] = not _rel["irrecuperaveis"]
+        return _d, _rel
+    except Exception as _e:
+        logger.error(f"[PORTÃO] Falha no portão final: {_e}")
+        return df, _rel
+
+
+def _verificar_invariante_zero(df, col_dist="Distancia", col_o="Origem", col_d="Destino"):
+    """[PORTÃO - 176ª geração] O INVARIANTE, verificado. Devolve as linhas que VIOLAM a lei física:
+    origem ≠ destino E distância ≤ 0. Se o portão fez o trabalho, esta lista vem VAZIA — e uma lista vazia
+    é a única prova aceitável de que o bug não voltou. PURA."""
+    try:
+        if df is None or len(df) == 0 or col_dist not in df.columns:
+            return []
+        _dist = pd.to_numeric(df[col_dist], errors="coerce")
+        # mesma armadilha do portão: "Erro" == "Erro" NÃO significa "mesma cidade"
+        def _id(_c_mun, _c_txt):
+            _t = df[_c_txt].astype(str).str.strip()
+            if _c_mun not in df.columns:
+                return _t.str.upper()
+            _m = df[_c_mun].astype(str).str.strip()
+            _ruim = _m.str.lower().isin(_SENTINELAS_FALHA) | (_m.str.len() == 0)
+            return _m.where(~_ruim, _t).str.upper()
+
+        _mo = _id("Municipio Origem", col_o)
+        _md = _id("Municipio Destino", col_d)
+        _mesma = (_mo == _md) & (_mo.str.len() > 0)
+        # ZERO explícito (não None) com municípios diferentes = violação da lei física
+        _viol = (_dist.notna()) & (_dist <= 0) & (~_mesma)
+        return df.index[_viol].tolist()
+    except Exception as _e:
+        logger.error(f"[PORTÃO] Falha ao verificar o invariante: {_e}")
+        return []
+
+
+def _humanizar_identificadores(df):
+    """[HUMANIZAR - 173ª geração] O CÓDIGO IBGE SAI DA COLUNA "Origem". O NOME DO MUNICÍPIO ENTRA.
+
+    ── O PROBLEMA ──
+    Quando o usuário processa por Código IBGE, a planilha final mostra **"1100023"** na coluna Origem.
+    Nos gráficos: "1100023". Nos rankings: "1100023". No relatório executivo: "1100023".
+    **Ninguém consegue analisar assim.** Um gestor abre o estudo e vê uma parede de números de 7 dígitos.
+    O código é um IDENTIFICADOR DE MÁQUINA; o nome é o identificador de GENTE.
+
+    ── POR QUE ISSO NÃO FOI CORRIGIDO ANTES (e por que agora dá) ──
+    A 146ª ADICIONAVA "Origem (Identificada)" mas **NUNCA reescrevia "Origem"** — e com razão: o código
+    INTERNO usa 'Origem' como CHAVE (conciliação, mapas de MCDA, joins). Reescrevê-la no meio do pipeline
+    quebraria tudo.
+    A solução é a mesma arquitetura da 134ª: **traduzir na FRONTEIRA DE APRESENTAÇÃO.** O DataFrame interno
+    segue com o que tem; só a EXIBIÇÃO e a EXPORTAÇÃO trocam o código pelo nome. E o código NÃO se perde:
+    ele vai para a coluna própria (Cod IBGE Origem), onde ele pertence.
+
+    ── LIMITE HONESTO (acentuação) ──
+    A base embarcada NÃO tem acentos (MELGACO, não Melgaço). Por isso a função **PREFERE o nome que o
+    PIPELINE identificou** — que vem ACENTUADO das APIs de geocodificação — e só cai na base oficial quando
+    o pipeline falhou naquela linha. Na prática: rota OK ⇒ nome acentuado; rota falhou ⇒ nome sem acento,
+    mas **correto e presente** (que é infinitamente melhor que "1100023" ou "Erro").
+    Se você me passar a lista oficial ACENTUADA do IBGE, eu a embarco e o problema some.
+
+    Idempotente: se 'Origem' já é um nome, não mexe. PURO (não muta o df de entrada)."""
+    try:
+        if df is None or len(df) == 0:
+            return df
+        _d = df.copy()
+        for _c_txt, _c_mun, _c_cod in (("Origem", "Municipio Origem", "Cod IBGE Origem"),
+                                       ("Destino", "Municipio Destino", "Cod IBGE Destino")):
+            if _c_txt not in _d.columns:
+                continue
+            _vals = _d[_c_txt].astype(str)
+            _mask = _vals.map(lambda v: bool(_e_codigo_ibge(v)))
+            if not _mask.any():
+                continue
+
+            # 1) preserva o código na coluna PRÓPRIA (nunca se perde)
+            _codigos = _vals.map(lambda v: _e_codigo_ibge(v) or "")
+            if _c_cod not in _d.columns:
+                _d[_c_cod] = ""
+            _atual = _d[_c_cod].astype(str).str.strip()
+            _d[_c_cod] = _atual.where(_atual.str.len() > 0, _codigos)
+
+            # 2) o NOME entra no lugar do código — preferindo o que o pipeline já identificou,
+            #    e caindo na base oficial se preciso (nunca fica sem nome)
+            def _nome(_v):
+                _cod = _e_codigo_ibge(_v)
+                if not _cod:
+                    return None
+                _it = _indice_ibge_por_codigo().get(_cod)
+                if not _it:
+                    return None
+                return _titulo_municipio(_it["municipio"])
+
+            _da_base = _vals.map(_nome)
+            if _c_mun in _d.columns:
+                _do_pipe = _d[_c_mun].astype(str).str.strip()
+                _bom = _do_pipe.str.len().gt(0) & ~_do_pipe.str.lower().isin(
+                    ["erro", "n/a", "nan", "none", "não identificado", "nao identificado"])
+                _nomes = _do_pipe.where(_bom, _da_base)
+            else:
+                _nomes = _da_base
+            _d[_c_txt] = _nomes.where(_mask & _nomes.notna(), _d[_c_txt])
+        return _d
+    except Exception as _e:
+        logger.error(f"[HUMANIZAR] Falha ao humanizar identificadores: {_e}")
+        return df
 
 
 def _enriquecer_rotulos_ibge(df):
@@ -10590,6 +11276,16 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
                 _w, index=False, sheet_name="Concorrente por UF")
             _escrever_aba_com_guia(_w, pd.DataFrame([_plano_hibrido(linhas) or {"—": "—"}]),
                                    "Plano Hibrido")
+            _tp_x = _comparacao_tripla(linhas)
+            _vb_x = _comparar_viabilidade(linhas)
+            _escrever_aba_com_guia(
+                _w, pd.DataFrame(_vb_x.get("criticos_app") or
+                                 [{"—": "todos os candidatos conseguem chegar"}]),
+                "Candidatos Sem Chegar")
+            _escrever_aba_com_guia(
+                _w, pd.DataFrame(_tp_x.get("segundo_seria_o_melhor") or
+                                 [{"—": "o 2º colocado nunca teria sido a melhor das três escolhas"}]),
+                "2o Colocado Seria Melhor")
             _di_x = _diagnostico_imparcial(linhas)
             if _di_x:
                 _escrever_aba_com_guia(
@@ -10627,6 +11323,160 @@ def _fmt_num(x, casas=0):
     return _t.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
+
+
+
+
+def _comparacao_tripla(linhas):
+    """[TRIPLA - 173ª geração] TRÊS ESTUDOS, NÃO DOIS: vencedor × 2º colocado × referência.
+
+    ── A PERGUNTA QUE NINGUÉM ESTAVA FAZENDO ──
+    O motor multicritério calcula o 2º colocado de cada município — e desde a 167ª esse dado é PRESERVADO
+    (distância, tempo, balsa, sinuosidade). Mas o Comparador o ignorava completamente. E ele responde uma
+    pergunta que muda a decisão:
+
+        **"E se a nossa aplicação tivesse escolhido o 2º colocado — ele teria vencido a referência?"**
+
+    Isso não é curiosidade acadêmica. Se o 2º colocado bate a referência em municípios onde o NOSSO
+    VENCEDOR perde, então existe uma escolha melhor **DENTRO DA NOSSA PRÓPRIA SOLUÇÃO** — e nós não a
+    tomamos. É o tipo de coisa que só aparece quando você compara os três.
+
+    ── OS TRÊS CENÁRIOS ──
+      🥇 VENCEDOR   — o polo que a aplicação escolheu
+      🥈 2º COLOCADO — o polo que ela quase escolheu (e cujo dado ela já tinha)
+      📋 REFERÊNCIA  — o polo do estudo externo
+
+    Devolve o placar de cada um contra os outros, o impacto sobre candidatos, e — o mais importante — os
+    municípios onde **o 2º colocado teria sido a MELHOR das três escolhas**. PURO."""
+    _ok = []
+    for l in (linhas or []):
+        try:
+            _dv = float(l.get("Distancia Aplicacao"))
+            _dr = float(l.get("Distancia Referencia"))
+            _d2 = l.get("2º Polo - Distancia Viaria (km)")
+            _d2 = float(_d2) if _d2 not in (None, "") else None
+        except (TypeError, ValueError):
+            continue
+        if _dv <= 0 or _dr <= 0 or _d2 is None or _d2 <= 0:
+            continue
+        _ok.append({**l, "_dv": _dv, "_dr": _dr, "_d2": _d2,
+                    "_ins": float(l.get("Inscritos") or 0)})
+    if not _ok:
+        return {"comparaveis": 0, "motivo": "Nenhuma linha tem os TRÊS estudos (falta o 2º colocado). "
+                                            "Rode a Alocação em modo MULTICRITÉRIO — é ele que calcula o "
+                                            "ranking de polos."}
+
+    _placar = {"vencedor": 0, "segundo": 0, "referencia": 0, "empate": 0}
+    _cand = {"vencedor": 0, "segundo": 0, "referencia": 0}
+    _seg_bate_ref, _seg_seria_melhor = [], []
+    _km_v = _km_2 = _km_r = _km_best = 0.0
+
+    for l in _ok:
+        _dv, _dr, _d2, _ins = l["_dv"], l["_dr"], l["_d2"], l["_ins"]
+        _w = max(_ins, 1.0)
+        _km_v += _dv * _w
+        _km_2 += _d2 * _w
+        _km_r += _dr * _w
+        _km_best += min(_dv, _d2, _dr) * _w
+
+        _melhor = min((_dv, "vencedor"), (_d2, "segundo"), (_dr, "referencia"))
+        _ordenados = sorted([_dv, _d2, _dr])
+        if _ordenados[1] - _ordenados[0] < 1.0:
+            _placar["empate"] += 1
+        else:
+            _placar[_melhor[1]] += 1
+            _cand[_melhor[1]] += int(_ins)
+
+        # o 2º colocado bateria a REFERÊNCIA?
+        if _d2 < _dr - 1.0:
+            _seg_bate_ref.append(l)
+        # ⚡ O CASO QUE IMPORTA: o 2º seria a MELHOR das três — e nós escolhemos o vencedor
+        if _d2 < _dv - 1.0 and _d2 < _dr - 1.0:
+            _seg_seria_melhor.append({
+                "Município": l.get("Origem"), "UF": l.get("UF", ""),
+                "Candidatos": int(_ins),
+                "Polo que escolhemos (1º)": l.get("Destino Aplicacao"),
+                "Distância do 1º (km)": round(_dv, 1),
+                "Polo que quase escolhemos (2º)": l.get("2º Polo"),
+                "Distância do 2º (km)": round(_d2, 1),
+                "Polo da referência": l.get("Destino Referencia"),
+                "Distância da referência (km)": round(_dr, 1),
+                "Km que o 2º pouparia": round(_dv - _d2, 1),
+                "Impacto (km-candidato)": round((_dv - _d2) * _ins, 1),
+                "2º usa balsa?": l.get("2º Polo - Usa Balsa", "—"),
+                "1º usa balsa?": l.get("Balsa Aplicacao", "—"),
+            })
+
+    _n = len(_ok)
+    _seg_seria_melhor.sort(key=lambda x: -x["Impacto (km-candidato)"])
+    _perda = round(sum(x["Impacto (km-candidato)"] for x in _seg_seria_melhor), 1)
+    _cand_perdidos = int(sum(x["Candidatos"] for x in _seg_seria_melhor))
+
+    return {
+        "comparaveis": _n,
+        "placar": {k: {"municipios": v, "pct": round(100.0 * v / _n, 1),
+                       "candidatos": _cand.get(k, 0)} for k, v in _placar.items()},
+        "km_candidato": {"vencedor": round(_km_v, 1), "segundo": round(_km_2, 1),
+                         "referencia": round(_km_r, 1),
+                         "melhor_dos_tres": round(_km_best, 1)},
+        "segundo_bate_referencia": len(_seg_bate_ref),
+        "pct_segundo_bate_ref": round(100.0 * len(_seg_bate_ref) / _n, 1),
+        "segundo_seria_o_melhor": _seg_seria_melhor[:50],
+        "n_segundo_seria_o_melhor": len(_seg_seria_melhor),
+        "economia_perdida_km_candidato": _perda,
+        "candidatos_afetados": _cand_perdidos,
+        "ganho_do_melhor_dos_tres": round(_km_v - _km_best, 1),
+        "leitura": (
+            # ⚠️ NÃO usar .replace(",", ".") aqui: ele DESTRÓI as vírgulas da PROSA. Cometi esse
+            # bug na 170ª, corrigi, e o reintroduzi agora. _fmt_num formata o NÚMERO sem tocar no TEXTO.
+            f"⚡ **Em {len(_seg_seria_melhor)} município(s), o 2º COLOCADO teria sido a MELHOR das três "
+            f"escolhas** — melhor que o nosso vencedor E melhor que a referência. Isso afeta "
+            f"**{_fmt_num(_cand_perdidos)} candidatos** e custa **{_fmt_num(_perda)} km-candidato** de "
+            "economia que **deixamos na mesa, dentro da nossa própria solução**. Vale entender por que o "
+            "motor não o escolheu: pode ser balsa, tempo ou sinuosidade — critérios que o custo efetivo "
+            "considera e a distância pura NÃO vê."
+            if _seg_seria_melhor else
+            "✅ **Em nenhum município o 2º colocado teria sido melhor que o nosso vencedor E que a "
+            "referência.** O motor multicritério escolheu bem: não há economia deixada na mesa dentro da "
+            "nossa própria solução."),
+    }
+
+
+def _analise_completa_comparacao(linhas, stats, aud):
+    """[PERF - 172ª geração] UM CÁLCULO, UMA VEZ. O painel do Comparador recalculava tudo a cada rerun.
+
+    ── O DESPERDÍCIO MEDIDO ──
+    Instrumentei o painel e contei as EXECUÇÕES REAIS de cada função pesada num único rerun, em escala
+    nacional (5.571 municípios):
+        _analise_concorrente ... **2×**   🔴
+        _plano_hibrido ........ **2×**   🔴
+        TOTAL: **137,9 ms de CPU bloqueante — A CADA CLIQUE na seção.**
+
+    ── A CAUSA ──
+    `_veredito_comparacao` chama `_analise_concorrente` e `_plano_hibrido` **POR DENTRO** (para montar o
+    texto do veredito). E aí os PAINÉIS abaixo chamam **as mesmas funções DE NOVO**, sobre **os mesmos
+    dados**, para montar as tabelas. Contar as chamadas no código não revelava isso — só instrumentar
+    revelou. **Esse é o tipo de desperdício que se esconde atrás de uma leitura casual.**
+
+    ── E O PIOR: NADA DISSO MUDA ENTRE RERUNS ──
+    As linhas da comparação são FIXAS até o usuário rodar outra comparação. Recalcular a análise inteira
+    porque alguém mexeu num selectbox é trabalho jogado fora — 100% dele.
+
+    Aqui tudo é calculado UMA VEZ e devolvido junto. O painel lê do resultado. PURO."""
+    return {
+        "veredito": _veredito_comparacao(stats, aud, linhas),
+        "concorrente": _analise_concorrente(linhas),
+        "hibrido": _plano_hibrido(linhas),
+        "imparcial": _diagnostico_imparcial(linhas),
+        "rankings": _rankings_comparacao(linhas),
+        "faixas": _estatisticas_por_faixa(linhas),
+        "pareto": _pareto_economia(linhas),
+        "tripla": _comparacao_tripla(linhas),
+        "viabilidade": _comparar_viabilidade(linhas),
+        "distribuicao": _estatisticas_distribuicao(
+            [l.get("Diferenca Abs (km)") for l in (linhas or [])
+             if l.get("Diferenca Abs (km)") is not None]),
+    }
 
 
 def _veredito_comparacao(stats, aud, linhas=None):
@@ -17521,6 +18371,24 @@ if _secao == _SECOES[1]:   # tab_processamento
                     df_final = _enriquecer_integridade_geografica(df_final)
                     # [IBGE-ROTULO - 146ª geração] Rótulos legíveis + retroalimentação Município/UF.
                     df_final = _enriquecer_rotulos_ibge(df_final)
+                    # [HUMANIZAR - 173ª geração] O CÓDIGO IBGE SAI da coluna Origem/Destino; o NOME entra.
+                    # O código NÃO se perde: vai para a coluna própria. Ninguém analisa uma planilha com
+                    # '1100023' na coluna Origem — código é identificador de MÁQUINA, nome é de GENTE.
+                    # ═══════════════════════════════════════════════════════════════════════════════
+                    # [PORTÃO - 176ª geração] A GARANTIA: nenhum ZERO IMPOSSÍVEL sai daqui.
+                    #
+                    # Consertar MAIS caminhos não é garantia — na 168ª eu declarei resolvido um bug que
+                    # ainda estava lá, porque consertei o caminho ERRADO. A resposta certa é um PORTÃO
+                    # que NENHUMA linha atravessa sem ser examinada — venha ela de onde vier, inclusive
+                    # de caminhos que ainda não existem.
+                    #
+                    # A LEI FÍSICA: dois municípios DIFERENTES não podem estar a 0,0 km. É geometria.
+                    # (E zero com origem == destino é VÁLIDO: prova na própria cidade. Confundir os dois
+                    #  foi o pecado original — usar zero como SENTINELA num campo onde ele é legítimo.)
+                    # ═══════════════════════════════════════════════════════════════════════════════
+                    df_final, _rel_portao = _portao_final_distancias(df_final)
+                    st.session_state['portao_relatorio'] = _rel_portao
+                    df_final = _humanizar_identificadores(df_final)
                     
                     # Recalcula Linha Reta vetorizada (Haversine IUGG)
                     lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
@@ -18534,6 +19402,24 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 df_final_alo = _enriquecer_integridade_geografica(df_final_alo)
                 # [IBGE-ROTULO - 146ª geração] Rótulos legíveis + retroalimentação Município/UF.
                 df_final_alo = _enriquecer_rotulos_ibge(df_final_alo)
+                # [HUMANIZAR - 173ª geração] O CÓDIGO IBGE SAI da coluna Origem/Destino; o NOME entra.
+                # O código NÃO se perde: vai para a coluna própria. Ninguém analisa uma planilha com
+                # '1100023' na coluna Origem — código é identificador de MÁQUINA, nome é de GENTE.
+                # ═══════════════════════════════════════════════════════════════════════════════
+                # [PORTÃO - 176ª geração] A GARANTIA: nenhum ZERO IMPOSSÍVEL sai daqui.
+                #
+                # Consertar MAIS caminhos não é garantia — na 168ª eu declarei resolvido um bug que
+                # ainda estava lá, porque consertei o caminho ERRADO. A resposta certa é um PORTÃO
+                # que NENHUMA linha atravessa sem ser examinada — venha ela de onde vier, inclusive
+                # de caminhos que ainda não existem.
+                #
+                # A LEI FÍSICA: dois municípios DIFERENTES não podem estar a 0,0 km. É geometria.
+                # (E zero com origem == destino é VÁLIDO: prova na própria cidade. Confundir os dois
+                #  foi o pecado original — usar zero como SENTINELA num campo onde ele é legítimo.)
+                # ═══════════════════════════════════════════════════════════════════════════════
+                df_final_alo, _rel_portao = _portao_final_distancias(df_final_alo)
+                st.session_state['portao_relatorio'] = _rel_portao
+                df_final_alo = _humanizar_identificadores(df_final_alo)
                 # [HUB-MCDA - 130ª geração] Colunas da decisão multicritério (quando o modo está ativo): IGQ,
                 # custo efetivo do vencedor e do 2º, diferença % e justificativa XAI — por cliente (Origem).
                 # O tempo/balsa/modo/sinuosidade do vencedor já saem nas colunas de rota padrão do hub eleito.
@@ -18658,7 +19544,43 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
                     # [EXAMES - 134ª geração] Cabeçalhos traduzidos para o contexto de exames APENAS na exportação
                     # (sobre cópia). As chaves internas do df permanecem — renomeá-las quebraria a app inteira.
-                    _renomear_colunas_exame(df_final_alo).to_excel(writer, index=False)
+                    _renomear_colunas_exame(df_final_alo).to_excel(writer, index=False,
+                                                                  sheet_name="Locais de Aplicacao")
+                    # [DASHBOARD - 177ª geração] AS ANÁLISES DO CANDIDATO vão para a planilha.
+                    # Só quando há a coluna de INSCRITOS — sem ela, a planilha sai como sempre saiu.
+                    try:
+                        _mun_x = []
+                        for _r in df_final_alo.to_dict("records"):
+                            _i = _r.get("Inscritos") or _r.get("Quantidade de Inscritos")
+                            if not _i:
+                                continue
+                            _mun_x.append({
+                                "nome": _r.get("Municipio Origem") or _r.get("Origem"),
+                                "uf": _r.get("UF Origem", ""), "inscritos": float(_i),
+                                "dist_km": _r.get("Distancia"),
+                                "tempo_min": _parse_tempo_min(_r.get("Tempo")),
+                                "polo": _r.get("Municipio Destino") or _r.get("Destino"),
+                                "balsa": _r.get("Balsas", "Não")})
+                        if _mun_x:
+                            _dx = _dashboard_candidatos(_mun_x)
+                            _vx = _viabilidade_de_chegada(
+                                [m for m in _mun_x if m.get("tempo_min")])
+                            if _dx:
+                                pd.DataFrame(_dx["faixas_distancia"]).to_excel(
+                                    writer, index=False, sheet_name="Candidatos por Distancia")
+                                pd.DataFrame(_dx["faixas_tempo"]).to_excel(
+                                    writer, index=False, sheet_name="Candidatos por Tempo")
+                                pd.DataFrame(_dx["polos"]).to_excel(
+                                    writer, index=False, sheet_name="Concentracao por Polo")
+                                pd.DataFrame(_dx["top_municipios"]).to_excel(
+                                    writer, index=False, sheet_name="Maiores Municipios")
+                                pd.DataFrame(_insights_automaticos(_dx, _vx)).to_excel(
+                                    writer, index=False, sheet_name="Insights Automaticos")
+                                if _vx and _vx.get("criticos"):
+                                    pd.DataFrame(_vx["criticos"]).to_excel(
+                                        writer, index=False, sheet_name="Nao Conseguem Chegar")
+                    except Exception as _e_dx:
+                        logger.error(f"[DASHBOARD] Falha ao exportar as análises do candidato: {_e_dx}")
                 st.session_state['df_processado'] = df_final_alo
                 st.session_state['alo_planilha_pronta'] = output_buffer.getvalue()
                 st.session_state['alo_tempo_total'] = tempo_alo_segundos
@@ -18853,6 +19775,137 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                             st.caption(f"🔴 **{len(_lot)} polo(s) 100% lotados** — são eles que estão "
                                                        "empurrando candidatos para longe. Ampliá-los é a intervenção "
                                                        "de maior retorno.")
+                                    # [DASHBOARD - 177ª geração] O ESTUDO PELOS OLHOS DO CANDIDATO.
+                                    # Todo o resto conta MUNICÍPIOS. Mas município não faz prova — GENTE faz.
+                                    # Um município com 5.000 candidatos a 250 km importa 500× mais que um
+                                    # com 10 candidatos a 400 km. Aqui cada faixa conta CANDIDATOS.
+                                    _dash = _dashboard_candidatos(_mun_cap)
+                                    if not _dash:
+                                        st.info("ℹ️ **Mapeie a coluna de INSCRITOS** para desbloquear esta "
+                                                "análise. Sem ela, a plataforma conta MUNICÍPIOS — e um "
+                                                "município com 5.000 candidatos pesa o mesmo que um com 10. "
+                                                "A coluna continua **opcional**: sem ela, tudo funciona "
+                                                "normalmente.")
+                                    if _dash:
+                                        st.markdown("###### 👥 O estudo pelos olhos do CANDIDATO")
+                                        st.caption(
+                                            "📖 Todo o resto desta aba conta **municípios**. Mas município "
+                                            "não faz prova — **gente faz**. Um município com 5.000 candidatos "
+                                            "a 250 km importa **500× mais** que um com 10 candidatos a 400 km. "
+                                            "Aqui **cada faixa conta CANDIDATOS**.")
+                                        _d1, _d2, _d3, _d4 = st.columns(4)
+                                        _d1.metric("Total de candidatos",
+                                                   _fmt_num(_dash["total_candidatos"]))
+                                        _d2.metric("Média por município",
+                                                   _fmt_num(_dash["media_por_municipio"], 1),
+                                                   help=f"Mediana: {_fmt_num(_dash['mediana'])} · "
+                                                        f"Máximo: {_fmt_num(_dash['maximo'])}")
+                                        _d3.metric("80% viajam até",
+                                                   f"{_fmt_num(_dash['km_para_80pct'], 1)} km"
+                                                   if _dash.get("km_para_80pct") else "—",
+                                                   help="Quem está muito acima disso é exceção — e merece "
+                                                        "revisão.")
+                                        _d4.metric("🚢 Usam balsa",
+                                                   _fmt_num(_dash["candidatos_balsa"]),
+                                                   f"{_dash['pct_balsa']}%", delta_color="inverse")
+
+                                        _e1, _e2 = st.columns(2)
+                                        with _e1:
+                                            st.markdown("**Candidatos por faixa de DISTÂNCIA**")
+                                            _fd = pd.DataFrame(_dash["faixas_distancia"])
+                                            st.dataframe(_fd[_fd["Candidatos"] > 0],
+                                                         use_container_width=True, hide_index=True)
+                                        with _e2:
+                                            st.markdown("**Candidatos por faixa de TEMPO**")
+                                            _ft = pd.DataFrame(_dash["faixas_tempo"])
+                                            st.dataframe(_ft[_ft["Candidatos"] > 0],
+                                                         use_container_width=True, hide_index=True)
+
+                                        st.markdown("**Concentração: quais polos carregam a maior parte**")
+                                        st.caption(f"**{_dash['polos_para_80pct']} de {_dash['n_polos']} "
+                                                   "polos** concentram 80% dos candidatos.")
+                                        st.dataframe(pd.DataFrame(_dash["polos"][:20]),
+                                                     use_container_width=True, hide_index=True, height=240)
+
+                                    # [VIABILIDADE - 175ª geração] O CANDIDATO CONSEGUE CHEGAR?
+                                    st.markdown("###### ⏰ O candidato consegue CHEGAR a tempo?")
+                                    st.caption(
+                                        "📖 **A pergunta que esta plataforma nunca fez.** Tudo aqui responde "
+                                        "*“quão longe fica?”*. Mas num exame nacional o que decide é: "
+                                        "**“ele consegue CHEGAR, saindo de casa numa hora humana?”** Um "
+                                        "candidato a 12h de viagem precisaria sair à meia-noite. Isso **não é "
+                                        "mais deslocamento — é EXCLUSÃO**, e nenhuma média de quilômetros "
+                                        "mostra isso.")
+                                    _vc1, _vc2 = st.columns(2)
+                                    _hora_p = _vc1.number_input(
+                                        "Hora de início da prova", 6.0, 22.0, 13.5, 0.5, key="viab_hora",
+                                        help="ENEM: 13h30 (portões fecham às 13h).")
+                                    _folga_p = _vc2.number_input(
+                                        "Folga para chegar (horas)", 0.5, 4.0, 1.0, 0.5, key="viab_folga",
+                                        help="Quanto antes do fechamento dos portões o candidato deve estar lá.")
+                                    _muns_v = [m for m in _mun_cap
+                                               if m.get("tempo_min") not in (None, "")]
+                                    if not _muns_v:
+                                        st.info("ℹ️ **Falta o TEMPO de viagem.** Rode a alocação em modo "
+                                                "**multicritério** — é ele que calcula o tempo de cada rota. "
+                                                "Sem tempo, é impossível saber se o candidato chega.")
+                                    if _muns_v:
+                                        _viab = _viabilidade_de_chegada(_muns_v, _hora_p, _folga_p)
+                                        _f = _viab["faixas"]
+                                        _q1, _q2, _q3, _q4 = st.columns(4)
+                                        _q1.metric("✅ Normal", _fmt_num(_f["normal"]["candidatos"]),
+                                                   f"{_f['normal']['pct_candidatos']}% · sai após 6h")
+                                        _q2.metric("🟡 Cedo", _fmt_num(_f["cedo"]["candidatos"]),
+                                                   f"{_f['cedo']['pct_candidatos']}% · sai 4h-6h")
+                                        _q3.metric("🟠 Madrugada", _fmt_num(_f["madrugada"]["candidatos"]),
+                                                   f"{_f['madrugada']['pct_candidatos']}% · sai 2h-4h")
+                                        _q4.metric("🔴 INVIÁVEL", _fmt_num(_f["inviavel"]["candidatos"]),
+                                                   f"{_f['inviavel']['pct_candidatos']}% · véspera",
+                                                   delta_color="inverse")
+                                        for _lin in _viab["leitura"]:
+                                            (_st_box := (st.error if "🔴" in _lin else
+                                                         (st.warning if "🟠" in _lin else
+                                                          (st.success if "✅" in _lin else st.caption))))(_lin)
+                                        if _viab["criticos"]:
+                                            st.markdown("**Os municípios críticos (revise um a um):**")
+                                            _fh = _viab["fmt_hora"]
+                                            _df_cr = pd.DataFrame([{
+                                                "Município": _c.get("nome"), "UF": _c.get("uf", ""),
+                                                "Candidatos": int(_c.get("inscritos") or 0),
+                                                "Polo": _c.get("polo", "—"),
+                                                "Viagem (h)": _c["horas_viagem"],
+                                                "Sai de casa às": _fh(_c["hora_saida"]),
+                                                "Situação": ("🔴 Precisa viajar na VÉSPERA"
+                                                             if _c["hora_saida"] < 2 else
+                                                             "🟠 Madrugada (verifique se há ônibus)"),
+                                            } for _c in _viab["criticos"]])
+                                            st.dataframe(
+                                                _colorir_risco(_df_cr, cols_risco=["Situação"]),
+                                                use_container_width=True, hide_index=True, height=300)
+
+                                    # [DASHBOARD - 177ª geração] 🧠 O ANALISTA SÊNIOR.
+                                    # Vem DEPOIS da viabilidade de propósito: assim ele pode CRUZAR as
+                                    # dimensões. "4.200 viajam mais de 300 km" é um NÚMERO. "Desses, 830
+                                    # NÃO CONSEGUEM CHEGAR" é um INSIGHT — ele aponta uma AÇÃO.
+                                    if _dash:
+                                        st.markdown("###### 🧠 Insights automáticos")
+                                        st.caption(
+                                            "📖 **O que separa um insight de um número:** *“4.200 candidatos "
+                                            "viajam mais de 300 km”* é um NÚMERO — não diz o que fazer. "
+                                            "*“Desses, **830 NÃO CONSEGUEM CHEGAR**”* é um INSIGHT: cruza duas "
+                                            "dimensões e aponta uma **ação**. Cada item abaixo é derivado dos "
+                                            "**seus** dados e termina com **o que fazer**.")
+                                        _viab_ins = (_viabilidade_de_chegada(_muns_v, _hora_p, _folga_p)
+                                                     if _muns_v else None)
+                                        for _ins in _insights_automaticos(_dash, _viab_ins, _caps):
+                                            _cx = (st.error if "🔴" in _ins["tipo"] else
+                                                   (st.warning if ("🟠" in _ins["tipo"]
+                                                                   or "🟡" in _ins["tipo"]
+                                                                   or "🚢" in _ins["tipo"]) else
+                                                    (st.success if "✅" in _ins["tipo"] else st.info)))
+                                            _cx(f"**{_ins['tipo']} — {_ins['titulo']}**\n\n{_ins['texto']}"
+                                                f"\n\n➡️ **O que fazer:** {_ins['acao']}")
+
                                     # [CONTINGENCIA - 154ª geração] E SE UM POLO CAIR? Escola alagada, greve,
                                     # interdição — acontece, e às vezes a duas semanas da prova.
                                     st.markdown("###### 🚨 Contingência: qual polo você NÃO pode perder?")
@@ -19082,7 +20135,13 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                                        key="rk_mun")
                                 _mm = _mdr.get(_sel_rk) or {}
                                 _pcx = st.session_state.get('alo_params_custo')
-                                _rk_full = _preservar_ranking_polos(_mm, top=5, params=_pcx)
+                                # 1 município só (o selecionado) → barato, mas memoizo mesmo assim:
+                                # o painel roda a cada rerun e não há razão para recalcular.
+                                if st.session_state.get('rk_mun_cache') != _sel_rk:
+                                    st.session_state['rk_full'] = _preservar_ranking_polos(
+                                        _mm, top=5, params=_pcx)
+                                    st.session_state['rk_mun_cache'] = _sel_rk
+                                _rk_full = st.session_state['rk_full']
                                 if _rk_full:
                                     st.dataframe(_rotular_colunas(pd.DataFrame(_rk_full)),
                                                  use_container_width=True, hide_index=True)
@@ -19528,6 +20587,29 @@ if _secao == _SECOES[3]:   # tab_comparador
             # Se linhas do SEU estudo falharam (rota impossível: ilha do Marajó, calha do Solimões), elas
             # NÃO podem entrar na comparação — e você precisa saber disso ANTES de ler um percentual.
             _dg = _diagnostico_estudo_app(_df_alo_cmp)
+            # [PORTÃO - 176ª geração] O RELATÓRIO DO PORTÃO. O usuário PRECISA ver isto — é a prova de
+            # que o bug do zero não voltou, e de que as linhas que sobraram foram EXAMINADAS, não ignoradas.
+            _rp = st.session_state.get('portao_relatorio') or {}
+            if _rp.get("linhas_zero"):
+                if _rp.get("recuperadas"):
+                    st.success(
+                        f"🛟 **PORTÃO FINAL: {_rp['recuperadas']} linha(s) com distância ZERO foram "
+                        "RECUPERADAS** antes de sair do pipeline.\n\n"
+                        "**Como:** a plataforma detectou o **zero impossível** (dois municípios DIFERENTES "
+                        "não podem estar a 0,0 km — é geometria, não convenção), resolveu as duas pontas "
+                        "pela **base oficial do IBGE** (offline, O(1)) e calculou a **geodésica de Karney**. "
+                        "O dado é **exato e oficial**, e está rotulado como geodésico — nunca disfarçado de "
+                        "viário.")
+                if _rp.get("irrecuperaveis"):
+                    st.error(
+                        f"⛔ **{len(_rp['irrecuperaveis'])} linha(s) NÃO puderam ser recuperadas** — nem a "
+                        "nuvem nem a base oficial do IBGE reconheceram o município. Elas receberam "
+                        "**valor NULO** (nunca mais um zero mudo) e o **motivo explícito**. "
+                        "**Provavelmente é erro de grafia na sua planilha.**")
+                    with st.expander("🔎 Quais linhas, e por quê", expanded=False):
+                        st.dataframe(pd.DataFrame(_rp["irrecuperaveis"]), use_container_width=True,
+                                     hide_index=True)
+
             # [RESGATE - 168ª geração] INDICADORES DE QUALIDADE — quantos foram RECUPERADOS.
             try:
                 _st_col = ("Status Linha Reta" if "Status Linha Reta" in _df_alo_cmp.columns
@@ -19778,7 +20860,29 @@ if _secao == _SECOES[3]:   # tab_comparador
             # de números como "1.400.000 km-candidato" — unidade que a tela NUNCA explicava.
             # Agora a ordem é a de um parecer técnico: (1) posso confiar? (2) qual a resposta? (3) qual o
             # tamanho, em escala HUMANA?
-            _vd = _veredito_comparacao(_res_c["stats"], _aud_c, _cmp)
+            # [PERF - 172ª geração] UM cálculo, memoizado. Antes: 137,9 ms a CADA rerun, com
+            # _analise_concorrente e _plano_hibrido rodando 2× cada (o veredito chamava por dentro, e os
+            # painéis chamavam de novo). Os dados NÃO MUDAM entre reruns — recalcular porque alguém mexeu
+            # num selectbox é 100% trabalho jogado fora.
+            # ⚠️ A assinatura NÃO pode usar id(): é o ENDEREÇO DE MEMÓRIA, e o Python REUTILIZA endereços
+            # após coleta de lixo. Uma lista nova poderia herdar o mesmo id e o cache serviria DADO VELHO —
+            # o pior tipo de bug de cache, porque é silencioso e intermitente. Assinatura derivada dos
+            # DADOS: tamanho + soma da economia + primeira e última origem. Barato e correto.
+            try:
+                _assin_an = (
+                    len(_cmp),
+                    round(sum(float(l.get("Economia km x Inscritos") or 0) for l in _cmp), 2),
+                    str((_cmp[0] or {}).get("Origem", "")) if _cmp else "",
+                    str((_cmp[-1] or {}).get("Origem", "")) if _cmp else "",
+                )
+            except (TypeError, ValueError, IndexError):
+                _assin_an = (len(_cmp), "fallback")
+            if st.session_state.get('cmp_analise_assin') != _assin_an:
+                st.session_state['cmp_analise'] = _analise_completa_comparacao(
+                    _cmp, _res_c["stats"], _aud_c)
+                st.session_state['cmp_analise_assin'] = _assin_an
+            _AN = st.session_state['cmp_analise']
+            _vd = _AN["veredito"]
 
             st.markdown(f"## {_vd['icone']} {_vd['titulo']}")
             st.markdown(_vd["frase"])
@@ -19944,7 +21048,7 @@ if _secao == _SECOES[3]:   # tab_comparador
 
             with st.expander("📊 Faixas de diferença — quem ganhou, e por quanto", expanded=False):
                 try:
-                    _ef = _estatisticas_por_faixa(_cmp)
+                    _ef = _AN["faixas"]
                     if not _ef:
                         st.caption("Sem faixas para exibir.")
                     if _ef:
@@ -20034,7 +21138,7 @@ if _secao == _SECOES[3]:   # tab_comparador
 
             with st.expander("🎯 Pareto — onde o ganho se concentra", expanded=False):
                 try:
-                    _pa = _pareto_economia(_cmp)
+                    _pa = _AN["pareto"]
                     if not _pa["itens"]:
                         st.caption("Nenhum município com ganho positivo.")
                     if _pa["itens"]:
@@ -20057,9 +21161,107 @@ if _secao == _SECOES[3]:   # tab_comparador
                 except Exception as _e_pa:
                     logger.error(f"[CMP-STATS] Falha no Pareto: {_e_pa}")
 
+            with st.expander("⏰ Quantos candidatos NÃO CONSEGUEM CHEGAR? (a métrica que domina)",
+                             expanded=True):
+                try:
+                    _vb = _AN.get("viabilidade") or {}
+                    if not _vb.get("comparavel"):
+                        st.warning("⏰ " + _vb.get("motivo", "Sem dados de tempo."))
+                    if _vb.get("comparavel"):
+                        st.caption(
+                            "📖 **Por que este painel abre por padrão, e os outros não.** Todo o resto desta "
+                            "aba compara **quilômetros**. Mas um estudo que poupa 12 km na média e **impede "
+                            "830 pessoas de fazer a prova** é PIOR que um que poupa 8 km e não impede "
+                            "ninguém.\n\n**Km é conforto. CHEGAR é direito.** Esta é a única métrica binária "
+                            "da aba: o candidato consegue, ou não consegue.")
+                        _b1, _b2 = st.columns(2)
+                        with _b1:
+                            st.markdown("**🏢 Nossa aplicação**")
+                            st.metric("🔴 Candidatos INVIABILIZADOS",
+                                      _fmt_num(_vb["app"]["inviaveis"]),
+                                      f"{_vb['app']['pct_risco']}% em risco", delta_color="inverse")
+                        with _b2:
+                            st.markdown("**📋 Estudo de referência**")
+                            st.metric("🔴 Candidatos INVIABILIZADOS",
+                                      _fmt_num(_vb["ref"]["inviaveis"]),
+                                      f"{_vb['ref']['pct_risco']}% em risco", delta_color="inverse")
+                        _dif = _vb["diferenca_inviaveis"]
+                        (st.error if _dif > 0 else (st.success if _dif < 0 else st.info))(_vb["veredito"])
+                        if _vb.get("criticos_app"):
+                            st.markdown("**Os municípios em que a NOSSA distribuição falha:**")
+                            st.dataframe(pd.DataFrame([{
+                                "Município": _c.get("nome"), "UF": _c.get("uf", ""),
+                                "Candidatos": int(_c.get("inscritos") or 0),
+                                "Nosso polo": _c.get("polo", "—"),
+                                "Viagem (h)": _c["horas_viagem"],
+                            } for _c in _vb["criticos_app"]]), use_container_width=True,
+                                hide_index=True, height=260)
+                except Exception as _e_vb:
+                    logger.error(f"[VIABILIDADE] Falha no painel: {_e_vb}")
+
+            with st.expander("🥈 E se tivéssemos escolhido o 2º COLOCADO? (os TRÊS estudos)",
+                             expanded=False):
+                try:
+                    _tp = _AN.get("tripla") or {}
+                    if not _tp.get("comparaveis"):
+                        st.info("ℹ️ " + _tp.get("motivo", "Sem dados do 2º colocado.") +
+                                "\n\n**Por que isso importa:** o motor multicritério calcula o 2º colocado "
+                                "de cada município — distância, tempo, balsa, sinuosidade. Esse dado JÁ "
+                                "EXISTE e custou chamadas de API. Com ele, dá para responder uma pergunta "
+                                "que muda a decisão: **e se tivéssemos escolhido o 2º?**")
+                    if _tp.get("comparaveis"):
+                        st.caption(
+                            "📖 **A pergunta que ninguém estava fazendo.** O Comparador olhava só dois "
+                            "estudos: o nosso vencedor e a referência. Mas existe um **terceiro**: o polo "
+                            "que a nossa aplicação **quase escolheu** — o 2º colocado. E se ele bate a "
+                            "referência em municípios onde o NOSSO VENCEDOR perde, então há uma escolha "
+                            "melhor **dentro da nossa própria solução** — e não a tomamos.")
+                        _p = _tp["placar"]
+                        _t1, _t2, _t3, _t4 = st.columns(4)
+                        _t1.metric("🥇 Nosso vencedor", f"{_p['vencedor']['pct']}%",
+                                   f"{_p['vencedor']['municipios']} municípios")
+                        _t2.metric("🥈 Nosso 2º colocado", f"{_p['segundo']['pct']}%",
+                                   f"{_p['segundo']['municipios']} municípios")
+                        _t3.metric("📋 Referência", f"{_p['referencia']['pct']}%",
+                                   f"{_p['referencia']['municipios']} municípios")
+                        _t4.metric("🤝 Empates", f"{_p['empate']['pct']}%",
+                                   f"{_p['empate']['municipios']} municípios")
+
+                        st.markdown("##### 📏 Deslocamento total de cada cenário")
+                        _km = _tp["km_candidato"]
+                        st.dataframe(pd.DataFrame([
+                            {"Cenário": "🥇 Só o nosso VENCEDOR", "km-candidato": _km["vencedor"]},
+                            {"Cenário": "🥈 Só o nosso 2º COLOCADO", "km-candidato": _km["segundo"]},
+                            {"Cenário": "📋 Só a REFERÊNCIA", "km-candidato": _km["referencia"]},
+                            {"Cenário": "🏆 O MELHOR dos três (por município)",
+                             "km-candidato": _km["melhor_dos_tres"]},
+                        ]), use_container_width=True, hide_index=True)
+
+                        st.info(f"⚡ **O 2º colocado bateria a REFERÊNCIA em "
+                                f"{_tp['segundo_bate_referencia']} município(s) "
+                                f"({_tp['pct_segundo_bate_ref']}%).** Ou seja: mesmo o polo que quase "
+                                "escolhemos já seria melhor que o estudo externo em boa parte dos casos.")
+
+                        (st.warning if _tp["n_segundo_seria_o_melhor"] else st.success)(_tp["leitura"])
+
+                        if _tp.get("segundo_seria_o_melhor"):
+                            st.markdown("##### ⚡ Onde deixamos economia na mesa (dentro da nossa solução)")
+                            st.caption(
+                                "Municípios em que o **2º colocado teria sido a MELHOR das três escolhas**. "
+                                "⚠️ **Antes de mudar qualquer coisa, olhe a coluna de BALSA:** se o 2º é mais "
+                                "curto mas tem travessia, o motor **fez certo** em não escolhê-lo — a "
+                                "distância pura não vê a balsa, o **custo efetivo** vê. Este painel mostra a "
+                                "tensão; **a decisão é sua**.")
+                            st.dataframe(_colorir_risco(
+                                pd.DataFrame(_tp["segundo_seria_o_melhor"]),
+                                cols_risco=["2º usa balsa?", "1º usa balsa?"]),
+                                use_container_width=True, hide_index=True, height=320)
+                except Exception as _e_tp:
+                    logger.error(f"[TRIPLA] Falha no painel dos três estudos: {_e_tp}")
+
             with st.expander("⚖️ Diagnóstico IMPARCIAL — os dois estudos, lado a lado", expanded=False):
                 try:
-                    _di = _diagnostico_imparcial(_cmp)
+                    _di = _AN["imparcial"]
                     if not _di:
                         st.caption("Sem dados comparáveis suficientes.")
                     if _di:
@@ -20141,7 +21343,7 @@ if _secao == _SECOES[3]:   # tab_comparador
             with st.expander("⚔️ Onde o CONCORRENTE venceu — e o que isso custa aos candidatos",
                              expanded=False):
                 try:
-                    _acn = _analise_concorrente(_cmp)
+                    _acn = _AN["concorrente"]
                     if not _acn["n_municipios"]:
                         st.success("✅ **O concorrente não venceu em nenhum município comparável.** A sua "
                                    "solução domina em todo o conjunto.")
@@ -20176,7 +21378,7 @@ if _secao == _SECOES[3]:   # tab_comparador
                                      use_container_width=True, hide_index=True, height=320)
 
                     # ---- PLANO HÍBRIDO ----
-                    _hb = _plano_hibrido(_cmp)
+                    _hb = _AN["hibrido"]
                     if _hb:
                         st.markdown("##### 🏆 O plano HÍBRIDO — o melhor de cada município")
                         st.caption(
@@ -20209,7 +21411,7 @@ if _secao == _SECOES[3]:   # tab_comparador
 
             with st.expander("🏅 Rankings — estados, locais de prova e maiores divergências", expanded=False):
                 try:
-                    _rk = _rankings_comparacao(_cmp)
+                    _rk = _AN["rankings"]
                     _r1, _r2 = st.columns(2)
                     with _r1:
                         st.markdown("##### 🗺️ Estados — quem mais ganha")
