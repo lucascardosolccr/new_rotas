@@ -9131,6 +9131,54 @@ def _validar_codigo_ibge(texto, indice=None):
 
 
 
+def _escrever_seguro(df, idx, col, valor):
+    """[PORTÃO - 180ª geração] Escreve numa célula RESPEITANDO o dtype da coluna.
+
+    ── POR QUE ISTO EXISTE (e é a causa raiz de 958 zeros) ──
+    `df.at[i, col] = valor` parece a coisa mais inocente do mundo. Mas o **pandas 3.x é ESTRITO com
+    dtype**: escrever um `int` numa coluna `str` levanta
+        `Invalid value '1100023' for dtype 'str'`
+    E o código IBGE chega como int em alguns caminhos da base.
+
+    Resultado: o PORTÃO FINAL — a função que eu criei justamente para GARANTIR que o zero não voltasse —
+    **crashava na primeira linha**, o try/except engolia a exceção, e ele devolvia o **DataFrame SUJO**.
+    **O guardião era exatamente o que deixava o bug passar.**
+
+    Aqui a escrita CONVERTE o valor para o tipo da coluna. Se a coluna resistir, converte a COLUNA para
+    object e escreve — nunca desiste, e nunca deixa a exceção derrubar o portão inteiro."""
+    try:
+        if col not in df.columns:
+            return False
+        _dt = str(df[col].dtype)
+        if valor is None:
+            if "float" in _dt or "int" in _dt:
+                df.at[idx, col] = float("nan")
+            else:
+                df[col] = df[col].astype(object)
+                df.at[idx, col] = None
+            return True
+        if _dt in ("object", "str", "string") or "str" in _dt:
+            df.at[idx, col] = str(valor)
+        elif "float" in _dt:
+            df.at[idx, col] = float(valor)
+        elif "int" in _dt:
+            df[col] = df[col].astype(float)      # a geodésica é fracionária
+            df.at[idx, col] = float(valor)
+        else:
+            df.at[idx, col] = valor
+        return True
+    except Exception:
+        # último recurso: a coluna vira object e aceita qualquer coisa. NUNCA deixamos a escrita
+        # derrubar o portão — foi exatamente isso que causou os 958 zeros.
+        try:
+            df[col] = df[col].astype(object)
+            df.at[idx, col] = valor
+            return True
+        except Exception as _e2:
+            logger.error(f"[PORTÃO] Nem com object consegui escrever em '{col}': {_e2}")
+            return False
+
+
 def _portao_final_distancias(df, col_dist="Distancia", col_o="Origem", col_d="Destino"):
     """[PORTÃO - 176ª geração] A GARANTIA ESTRUTURAL: nenhum ZERO IMPOSSÍVEL sai do pipeline.
 
@@ -9191,11 +9239,55 @@ def _portao_final_distancias(df, col_dist="Distancia", col_o="Origem", col_d="De
         logger.warning(f"[PORTÃO] {len(_idx)} linha(s) com ZERO IMPOSSÍVEL (origem ≠ destino, "
                        "distância ≤ 0). Tentando resgate pela base oficial do IBGE...")
 
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        # 🔴 O SEGUNDO BUG (Tailândia → Belém): o portão só tentava o TEXTO da coluna.
+        #
+        # "Belém" é HOMÔNIMO — existem TRÊS (PA, PB, AL). O resgate CORRETAMENTE se recusa a chutar
+        # (chutar errado seria pior que falhar). Resultado: a linha ficava irrecuperável.
+        #
+        # **MAS O CÓDIGO IBGE DO DESTINO ESTAVA NA PRÓPRIA LINHA** (`Cod IBGE Destino` = 1501402), e o
+        # portão simplesmente **NÃO OLHAVA PARA ELE**. É o MESMO pecado do bug original: a informação
+        # estava ali, ao alcance da mão, e a app não usou.
+        #
+        # Agora o portão usa TODAS as pistas da linha, na ordem de autoridade:
+        #   1. Código IBGE da coluna própria  (INQUESTIONÁVEL — desempata homônimo)
+        #   2. Município identificado + UF     (oficial)
+        #   3. Texto cru da entrada + UF       (desambigua "Belém" → "Belém, PA")
+        #   4. Texto cru sozinho               (só se for nome único no país)
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        def _resgatar_com_pistas(_i, _c_txt, _c_cod, _c_mun, _c_uf):
+            """Tenta TODAS as pistas da linha, do mais forte ao mais fraco."""
+            _tentativas = []
+            # 1. o CÓDIGO IBGE da coluna própria — a autoridade máxima
+            if _c_cod in _d.columns:
+                _cd = str(_d.at[_i, _c_cod] or "").strip()
+                if _cd and _cd.lower() not in ("nan", "none", ""):
+                    _tentativas.append(_cd)
+            # 2. município identificado + UF
+            _uf = ""
+            if _c_uf in _d.columns:
+                _uf = str(_d.at[_i, _c_uf] or "").strip().upper()
+            if _c_mun in _d.columns:
+                _mn = str(_d.at[_i, _c_mun] or "").strip()
+                if _mn and _mn.lower() not in _SENTINELAS_FALHA:
+                    _tentativas.append(f"{_mn}, {_uf}" if len(_uf) == 2 else _mn)
+            # 3. texto cru + UF (desambigua homônimo: "Belém" → "Belém, PA")
+            _tx = str(_d.at[_i, _c_txt] or "").strip() if _c_txt in _d.columns else ""
+            if _tx:
+                if len(_uf) == 2:
+                    _tentativas.append(f"{_tx}, {_uf}")
+                _tentativas.append(_tx)          # 4. texto sozinho (só se for nome único)
+            for _t in _tentativas:
+                _r = _resgatar_coordenadas_oficiais(_t)
+                if _r:
+                    return _r
+            return None
+
         for _i in _idx:
             _txt_o = str(_d.at[_i, col_o]) if col_o in _d.columns else ""
             _txt_d = str(_d.at[_i, col_d]) if col_d in _d.columns else ""
-            _rg_o = _resgatar_coordenadas_oficiais(_txt_o)
-            _rg_d = _resgatar_coordenadas_oficiais(_txt_d)
+            _rg_o = _resgatar_com_pistas(_i, col_o, "Cod IBGE Origem", "Municipio Origem", "UF Origem")
+            _rg_d = _resgatar_com_pistas(_i, col_d, "Cod IBGE Destino", "Municipio Destino", "UF Destino")
             if not (_rg_o and _rg_d):
                 _falta = []
                 if not _rg_o:
@@ -9210,9 +9302,9 @@ def _portao_final_distancias(df, col_dist="Distancia", col_o="Origem", col_d="De
                                ". Provavelmente não é um município brasileiro — confira a grafia."),
                 })
                 # NUNCA um zero mudo: marca o motivo na própria linha
-                if "Status da Rota" in _d.columns:
-                    _d.at[_i, "Status da Rota"] = "⛔ NÃO RECUPERÁVEL (município não reconhecido)"
-                _d.at[_i, col_dist] = None      # None, não 0 — zero é um valor VÁLIDO
+                _escrever_seguro(_d, _i, "Status da Rota",
+                                 "⛔ NÃO RECUPERÁVEL (município não reconhecido)")
+                _escrever_seguro(_d, _i, col_dist, None)   # None, não 0 — zero é valor VÁLIDO
                 continue
 
             _lat_o, _lon_o, _m_o, _u_o, _c_o, _met_o = _rg_o
@@ -9229,11 +9321,22 @@ def _portao_final_distancias(df, col_dist="Distancia", col_o="Origem", col_d="De
                     "motivo": "Municípios reconhecidos, mas a geodésica não pôde ser calculada "
                               "(coordenadas oficiais ausentes na base).",
                 })
-                _d.at[_i, col_dist] = None
+                _escrever_seguro(_d, _i, col_dist, None)
                 continue
 
-            # ✅ RESGATADA
-            _d.at[_i, col_dist] = round(float(_geo), 2)
+            # ✅ RESGATADA — escrita SEGURA POR TIPO.
+            #
+            # 🔴 O BUG QUE ISTO CORRIGE (e ele DERRUBAVA O PORTÃO INTEIRO):
+            # `_d.at[_i, _c] = _v` parece inocente. Mas o pandas 3.x é ESTRITO com dtype: escrever um
+            # INT numa coluna `str` levanta `Invalid value '1100023' for dtype 'str'`. E o código do
+            # IBGE vem como int em alguns caminhos da base.
+            # Resultado: o portão CRASHAVA na PRIMEIRA linha, o try/except engolia, e ele devolvia o
+            # **DataFrame SUJO** — com todos os zeros intactos. **O portão que eu criei para GARANTIR
+            # que o zero não voltasse era exatamente o que o deixava passar.**
+            # E o meu teste da 176ª não pegou porque o DataFrame de teste **não tinha a coluna
+            # 'Cod IBGE Origem'** — a escrita que crasha nunca acontecia. **Meu teste não refletia a
+            # realidade.** Corrigido nos dois lados: a escrita E o teste.
+            _escrever_seguro(_d, _i, col_dist, round(float(_geo), 2))
             for _c, _v in (("Linha Reta", round(float(_geo), 2)),
                            ("Municipio Origem", _m_o), ("Municipio Destino", _m_d),
                            ("Lat Origem", _lat_o), ("Lon Origem", _lon_o),
@@ -9242,8 +9345,7 @@ def _portao_final_distancias(df, col_dist="Distancia", col_o="Origem", col_d="De
                            ("Fonte Rota", "Geodésica de Karney (PORTÃO FINAL — rota indisponível)"),
                            ("Status da Rota", "🛟 RECUPERADA no portão final (geodésica oficial)"),
                            ("Modo/Acesso", "📐 Geodésica (rota rodoviária indisponível)")):
-                if _c in _d.columns:
-                    _d.at[_i, _c] = _v
+                _escrever_seguro(_d, _i, _c, _v)
             _rel["recuperadas"] += 1
             logger.warning(f"[PORTÃO] Linha {_i} RECUPERADA: {_m_o}/{_u_o} → {_m_d}/{_u_d} = "
                            f"{_geo:.2f} km (geodésica). Via {_met_o} / {_met_d}.")
@@ -9251,7 +9353,16 @@ def _portao_final_distancias(df, col_dist="Distancia", col_o="Origem", col_d="De
         _rel["ok"] = not _rel["irrecuperaveis"]
         return _d, _rel
     except Exception as _e:
-        logger.error(f"[PORTÃO] Falha no portão final: {_e}")
+        # 🔴 O PORTÃO NUNCA MAIS FALHA EM SILÊNCIO.
+        # Antes: logava e devolvia o df SUJO. O usuário via os zeros e não fazia ideia de que a
+        # GARANTIA tinha morrido no caminho. **Um guardião que falha calado é pior que guardião
+        # nenhum** — ele cria a ILUSÃO de proteção.
+        # Agora o relatório carrega o CRASH, e a UI o mostra em vermelho.
+        import traceback as _tb
+        _rel["ok"] = False
+        _rel["crash"] = f"{type(_e).__name__}: {_e}"
+        _rel["stack"] = _tb.format_exc()[-900:]
+        logger.error(f"[PORTÃO] 🔴 O PORTÃO FALHOU — os zeros NÃO foram corrigidos: {_e}")
         return df, _rel
 
 
@@ -15105,11 +15216,61 @@ def _selecionar_hub_multicriterio(candidatos, params=None):
 def _justificar_escolha_hub(resultado_mcda):
     """[HUB-MCDA - 130ª geração] Justificativa explicável (XAI) da escolha por custo efetivo, em linguagem
     natural, comparando vencedor × runner-up. PURO. Retorna string (Markdown)."""
-    _rank = resultado_mcda.get('ranking', [])
-    v = next((c for c in _rank if c['hub'] == resultado_mcda.get('vencedor')), None)
+    # ── 🔴 CONTRATO DE DADOS (180ª geração) — o AttributeError que derrubava a app ──
+    #
+    # O crash era: `resultado_mcda.get('ranking', [])` → AttributeError: 'NoneType' has no 'get'.
+    # E a CAUSA RAIZ é a MESMA dos 958 zeros: o chamador fazia
+    #     `_rmc = _mcda_alo.get(_cli_sel) if _cli_sel else None`
+    # e o valor era **None** exatamente para os municípios **cuja rota FALHOU** — que não têm MCDA.
+    # O usuário selecionava um deles no selectbox e a **aplicação inteira caía**.
+    #
+    # **Os dois bugs eram o MESMO bug.** Rota falha → sem MCDA → None → crash.
+    #
+    # DESIGN BY CONTRACT: **nenhuma função deve assumir implicitamente a forma de um objeto.**
+    # Aqui validamos TIPO e ESTRUTURA e degradamos com uma mensagem ÚTIL. Uma exceção não tratada num
+    # painel derruba a APLICAÇÃO INTEIRA; um st.info explicativo, não.
+    if resultado_mcda is None:
+        return ("⚠️ **Sem justificativa para este município.** O motor multicritério **não produziu um "
+                "ranking de polos** para ele — o que normalmente significa que a **rota FALHOU** naquela "
+                "linha.\n\n🛟 **O que fazer:** reprocesse o estudo. A partir da **180ª geração** o "
+                "**portão final** recupera as rotas falhadas pela base oficial do IBGE (offline, sem rede), "
+                "e elas voltam a ter ranking.")
+    if not isinstance(resultado_mcda, dict):
+        logger.error(f"[CONTRATO] _justificar_escolha_hub recebeu {type(resultado_mcda).__name__}, "
+                     f"esperava dict. Valor: {str(resultado_mcda)[:120]}")
+        return (f"⚠️ **Estrutura inesperada** ao montar a justificativa (recebi "
+                f"`{type(resultado_mcda).__name__}`, esperava um dicionário). Registrado na auditoria. "
+                "**A escolha do polo NÃO foi afetada** — só esta explicação.")
+    _rank = resultado_mcda.get('ranking') or []
+    if not isinstance(_rank, list):
+        logger.error(f"[CONTRATO] 'ranking' veio como {type(_rank).__name__}, esperava lista.")
+        _rank = []
+    if not _rank:
+        return ("⚠️ **Nenhum polo candidato válido** para este município — o motor não encontrou nenhum "
+                "local de aplicação com deslocamento calculável. Normalmente é rota falhada. "
+                "🛟 Reprocesse: o **portão final** (180ª) recupera essas linhas.")
+    v = next((c for c in _rank if isinstance(c, dict) and c.get('hub') == resultado_mcda.get('vencedor')), None)
     if not v:
         return "Nenhum local de aplicação com deslocamento válido para justificar a escolha."
-    ru = next((c for c in _rank if c['hub'] == resultado_mcda.get('runner_up')), None)
+    ru = next((c for c in _rank if isinstance(c, dict) and c.get('hub') == resultado_mcda.get('runner_up')), None)
+
+    # ── CONTRATO (nível 2): os ITENS do ranking têm os campos que a explicação usa? ──
+    # O contrato de tipo (dict × None) não basta: um item do ranking pode existir e estar INCOMPLETO
+    # (sem 'dist_viaria', sem 'custo_efetivo'). O acesso direto `v['dist_viaria']` levantaria KeyError —
+    # o MESMO tipo de crash, só que mais fundo. Uma função não pode assumir a forma NEM do objeto NEM
+    # dos itens dentro dele.
+    _CAMPOS = ("hub", "dist_viaria", "tempo_min", "balsa", "custo_efetivo")
+    def _completo(_c):
+        return isinstance(_c, dict) and all(_k in _c and _c[_k] is not None for _k in _CAMPOS)
+    if v is not None and not _completo(v):
+        logger.error(f"[CONTRATO] O vencedor do ranking está INCOMPLETO: faltam "
+                     f"{[k for k in _CAMPOS if not (isinstance(v, dict) and k in v)]}")
+        return ("⚠️ **Justificativa indisponível:** o ranking deste município está **incompleto** "
+                "(faltam campos que a explicação precisa). Isto foi registrado na auditoria. "
+                "**A escolha do polo NÃO foi afetada** — só esta explicação.")
+    if ru is not None and not _completo(ru):
+        ru = None            # sem 2º colocado válido: a função cai no caminho "único candidato"
+
     if not ru:
         return (f"**{v['hub']}** foi o único local de aplicação com deslocamento viável "
                 f"({v['custo_efetivo']:.0f} km-equiv) — recomendado por ausência de alternativa.")
@@ -22665,6 +22826,172 @@ if _secao == _SECOES[8]:   # tab_enciclopedia
     st.markdown("# 📚 Enciclopédia Operacional e Base de Conhecimento Core")
     # [DOC-SYNC - 151ª geração] Bloco das CAMADAS NOVAS (gerações 126-150). A enciclopédia estava sincronizada
     # até a ~125ª e não conhecia metade do que a plataforma faz hoje. Container fixo, rótulo estático (132ª).
+    # [DOCS - 179ª geração] A DÍVIDA DE DOCUMENTAÇÃO, PAGA.
+    # Sincronizei a documentação na 151ª. De lá até aqui foram 28 gerações de funcionalidades novas — e
+    # MEDI: **11 de 13 estavam AUSENTES do Manual.** Isso não é detalhe: **um recurso que ninguém sabe que
+    # existe NÃO EXISTE.** Você paga o custo de manter, e não colhe o benefício de usar.
+    with st.expander("🆕 O que a plataforma aprendeu a fazer (gerações 152 → 178)", expanded=False):
+        st.markdown("""
+        Estas capacidades nasceram DEPOIS da última sincronização da documentação. Se você não sabia que
+        elas existiam, **não é culpa sua — era uma dívida minha.**
+
+        ---
+
+        ## ⏰ "O candidato consegue CHEGAR?" — a pergunta que mudou tudo
+        **Onde:** 🎯 Locais de Aplicação · **e no** ⚖️ Comparador (abre por padrão)
+
+        Por 175 gerações esta plataforma respondeu **"quão longe fica?"**. E **nunca** a pergunta que de fato
+        decide num exame nacional: **"ele consegue CHEGAR, saindo de casa numa hora humana?"**
+
+        A prova começa às 13h30. Um candidato a **13 horas de viagem** precisaria sair às **23h30 da
+        véspera**. Ele **não vai fazer a prova**.
+
+        **Isso não é "mais deslocamento". É EXCLUSÃO.** E "12 km a menos por candidato" **não captura isso**.
+        Uma distribuição pode ter média excelente e ainda assim **impedir 830 pessoas de fazer a prova**.
+
+        | Faixa | Sai de casa | Leitura |
+        |---|---|---|
+        | ✅ Normal | após 6h | Dia comum |
+        | 🟡 Cedo | 4h – 6h | Duro, mas gente faz |
+        | 🟠 Madrugada | 2h – 4h | **Brutal** — e em muita cidade **não há ônibus a essa hora** |
+        | 🔴 Inviável | antes das 2h | **Precisa viajar na véspera** e pagar hospedagem |
+
+        **⚠️ Limite honesto:** isto assume que **existe transporte** no horário calculado. No interior, o
+        ônibus intermunicipal muitas vezes passa **uma vez por dia**. A plataforma **não conhece horário de
+        ônibus e não finge que conhece** — ela **marca o risco** para um humano verificar.
+
+        ---
+
+        ## 🚨 Contingência: qual polo você NÃO pode perder?
+        **Onde:** 🎯 Locais de Aplicação → Capacidade dos Polos
+
+        Escola alagada, greve, interdição — **acontece**, às vezes a duas semanas da prova. A plataforma
+        simula a **queda de cada polo** e devolve o **ranking de criticidade**.
+
+        > 🔴 **BRASÍLIA é insubstituível.** 16.000 candidatos dependem dela. Se cair, **10.000 ficam sem
+        > vaga** — a prova **não acontece** para eles.
+
+        Sem esse ranking, você espalha reserva técnica **por igual** sobre 300 polos — sendo que a queda da
+        maioria custaria **quase nada**, e a de um punhado seria **catastrófica**.
+
+        ---
+
+        ## ⚖️ Eficiência × Equidade — agora é uma ESCOLHA sua
+        **Onde:** 🎯 Locais de Aplicação → Simulador de Abertura de Polos
+
+        - **⚡ Eficiência** — abre onde há **muita gente**. Total enorme… mas pode ser gente já bem servida.
+        - **⚖️ Equidade** — só conta quem está **acima do limiar crítico**. Um polo que economiza 1 milhão de
+          km-candidato entre gente que já andava 40 km vale **ZERO** neste modo.
+
+        Testado: com um cluster rico (27.000 candidatos a 60 km) e um isolado pobre (650 a **450 km**), a
+        Eficiência abre no cluster; a Equidade abre no isolado (450 km → **0,6 km**).
+
+        **As duas respostas são legítimas** — respondem perguntas **diferentes**. A plataforma deixa **você**
+        escolher, em vez de decidir por você **em silêncio**.
+
+        ---
+
+        ## 🏆 O Plano Híbrido
+        **Onde:** ⚖️ Comparador de Estudos
+
+        O Comparador respondia *"qual estudo é melhor no conjunto?"*. **Pergunta errada** para quem vai
+        **decidir**. A certa: **"e se eu pegar, de cada município, a MELHOR das duas escolhas?"**
+
+        **Ninguém é obrigado a adotar um estudo inteiro.** O híbrido **domina os dois — por construção**.
+
+        ---
+
+        ## 🥈 Os TRÊS estudos: vencedor × 2º colocado × referência
+        **Onde:** ⚖️ Comparador de Estudos
+
+        O motor calcula o **2º colocado** (dado **já pago** em chamadas de API) e o Comparador o **ignorava**.
+        Ele responde: **"e se tivéssemos escolhido o 2º — ele teria vencido a referência?"**
+
+        **⚠️ E mostra POR QUE o motor não o escolheu.** Exemplo: o 2º é **40 km mais curto**… mas **usa
+        balsa**. A **distância pura não vê a balsa; o custo efetivo vê.** O painel mostra a **tensão** e
+        **deixa a decisão com você**.
+
+        ---
+
+        ## ⚔️ O concorrente, com o MESMO rigor
+        **Onde:** ⚖️ Comparador de Estudos
+
+        Antes, as vitórias dele apareciam **só como derrotas nossas**.
+
+        > **Um comparador que só conta as próprias vitórias não é ferramenta de decisão: é peça de marketing.**
+
+        E a pergunta mais afiada, que é **medível**: **a vantagem dele é PONTUAL ou SISTEMÁTICA?**
+        Pontual → *"revise esses poucos casos e o problema some"*. Sistemática → *"**há algo no método dele
+        que funciona melhor**, e ignorar isso é teimosia"*.
+
+        ---
+
+        ## 🔬 Por que ESTE polo venceu — critério a critério
+        **Onde:** 🎯 Locais de Aplicação
+
+        **"Distância 54,5% · Lentidão 27,3% · Balsa 18,2%"** — e isso é **aritmética exata**, não estimativa
+        (o modelo é **aditivo**).
+
+        **E mostra os critérios em que o 2º colocado era MELHOR.**
+
+        > Mostrar só onde o vencedor ganhou seria **propaganda, não explicação**. Um sistema que **esconde os
+        > contra-argumentos** não está apoiando a decisão: está **manipulando**.
+
+        ---
+
+        ## 🛟 A rede de resgate + 🚪 o portão final
+        **Onde:** invisível — trabalha sozinha, em todo processamento
+
+        Quando a nuvem falhava (timeout, rate-limit — **esperado** com dezenas de milhares de chamadas), a
+        plataforma **desistia** e gravava **distância = 0**. Custou **958 de 2.410 municípios (39,8%)**.
+
+        **O absurdo:** a coordenada oficial de **Ariquemes/RO** estava **na memória da própria aplicação**, a
+        **uma consulta de dicionário** de distância.
+
+        1. **🛟 Rede de resgate** — no **ponto único** por onde toda geocodificação passa. **Nunca chuta**
+           ("São Domingos" sem UF continua não resgatado — errar seria pior que falhar).
+        2. **🚪 Portão final** — apoiado numa **lei física**: **dois municípios diferentes não podem estar a
+           0,0 km**. Nenhuma linha sai do pipeline sem passar por ele.
+
+        **⚠️ E o contrário importa igual:** **zero com origem = destino é VÁLIDO** (prova na própria cidade).
+        Confundir os dois foi o **pecado original**: usar zero como **sentinela de erro** num campo onde ele é
+        um **valor legítimo**.
+
+        ---
+
+        ## 📐 Municípios sem estrada (Marajó, Solimões)
+        **Não existe estrada até uma ilha do Marajó.** A distância **viária** deles **não existe** —
+        inventá-la seria **pior que o zero**.
+
+        A plataforma usa a **geodésica de Karney** (erro < 1 mm) das coordenadas oficiais do IBGE — o **piso
+        físico** de qualquer deslocamento. **E ela sai ROTULADA** (coluna "Tipo de Distância"). **Jamais
+        disfarçada de viária.**
+
+        ---
+
+        ## 👥 O estudo pelos olhos do CANDIDATO
+        **Onde:** 🎯 Locais de Aplicação (requer a coluna de **Inscritos**)
+
+        Todo o resto conta **municípios**. Mas **município não faz prova — gente faz**. Um município com
+        5.000 candidatos a 250 km importa **500× mais** que um com 10 a 400 km.
+
+        Mais os **🧠 insights automáticos**. E o que separa um **insight** de um **número**:
+
+        > *"4.200 candidatos viajam mais de 300 km"* é um **número**.
+        > *"**Desses, 830 NÃO CONSEGUEM CHEGAR**"* é um **insight** — cruza duas dimensões e aponta uma
+        > **ação**.
+
+        ---
+
+        ## 🔒 O que garante que nada disso quebre
+        **194 testes** rodam contra o código real a cada versão. Eles travam: **conservação de linhas**
+        (entram N, saem N) · **o zero não pode voltar** · **os 5.571 códigos IBGE** resolvem um por um ·
+        **nada pesado no caminho quente** · **WCAG AA** (contraste ≥ 4,5:1).
+
+        **Se algum invariante quebrar, o deploy não passa.**
+        """)
+
+
     with st.expander("🆕 As camadas que definem a plataforma hoje (o que ler primeiro)", expanded=True):
         st.markdown("""
         #### 🧭 Identidade Territorial — o erro mais caro do planejamento de exames
