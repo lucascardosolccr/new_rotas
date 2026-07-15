@@ -10077,7 +10077,1261 @@ def _texto_guia_da_aba(nome, guia=None):
     return _l
 
 
+
+
+# =============================================================================================
+# [XLSX-PRO - 182ª geração] IDENTIDADE VISUAL INSTITUCIONAL.
+# Paleta sóbria, de relatório técnico — não de dashboard colorido. A referência são publicações do
+# IBGE, do IPEA e de órgãos de pesquisa: **azul-ardósia, cinzas, e cor SÓ onde ela informa**.
+# Cor em planilha institucional não é decoração: é SEMÁFORO. Se tudo é colorido, nada é.
+# =============================================================================================
+_XP = {
+    "titulo":     "#1F3864",   # azul-marinho institucional
+    "cabecalho":  "#2F5597",   # azul-ardósia
+    "subcab":     "#8EA9DB",   # azul claro
+    "zebra":      "#F2F5FA",   # cinza-azulado quase branco
+    "borda":      "#BFBFBF",
+    "texto":      "#1A1A1A",
+    "apoio":      "#595959",
+    "ok":         "#C6EFCE",   # verde suave (fundo)
+    "ok_txt":     "#006100",
+    "alerta":     "#FFEB9C",   # âmbar suave
+    "alerta_txt": "#9C6500",
+    "erro":       "#FFC7CE",   # vermelho suave
+    "erro_txt":   "#9C0006",
+    "vazio":      "#EDEDED",   # cinza — campo ausente
+}
+
+_XP_NUM = [
+    # (padrão no nome da coluna, formato Excel, alinhamento)
+    (("km-candidato", "km-cand", "km_candidato"), '#,##0', "right"),
+    (("(km)", "distancia", "distância", "linha reta", "km a mais", "km-eq", "km-equiv"), '#,##0.0', "right"),
+    (("(%)", "pct", "percentual", "% "), '0.0"%"', "right"),
+    (("(min)", "tempo", "minutos"), '#,##0', "right"),
+    (("candidatos", "inscritos", "municípios", "municipios", "registros", "quantidade"), '#,##0', "right"),
+    (("score", "igq", "integridade", "confiança"), '0', "center"),
+    (("código ibge", "cod ibge", "codigo ibge"), '@', "center"),   # texto: preserva zeros
+    (("sinuosidade", "coef", "cv"), '0.00', "right"),
+]
+
+
+def _formato_da_coluna(nome, wb, zebra=False):
+    """[XLSX-PRO - 182ª geração] Escolhe o formato Excel pelo SIGNIFICADO da coluna, não pelo dtype.
+
+    ── POR QUE PELO NOME E NÃO PELO TIPO ──
+    O dtype diz "float". Não diz se é **quilômetro** (1 casa), **percentual** (com o sinal %),
+    **km-candidato** (milhar, sem casas) ou **código IBGE** (que é TEXTO — se virar número, o Excel come
+    o zero à esquerda e destrói o identificador oficial).
+    **O tipo é sintaxe. O nome é semântica.** E é a semântica que decide como o número deve aparecer.
+    PURO."""
+    _n = str(nome).lower()
+    _base = {"border": 1, "border_color": _XP["borda"], "valign": "vcenter",
+             "font_name": "Calibri", "font_size": 10}
+    if zebra:
+        _base["bg_color"] = _XP["zebra"]
+    for _pats, _fmt, _ali in _XP_NUM:
+        if any(_p in _n for _p in _pats):
+            return wb.add_format({**_base, "num_format": _fmt, "align": _ali})
+    return wb.add_format({**_base, "align": "left", "text_wrap": False})
+
+
+def _escrever_aba_pro(writer, df, nome, titulo=None, subtitulo=None, cols_alerta=None,
+                      cols_ok=None, cols_negativo_ruim=None, numerar=True):
+    """[XLSX-PRO - 182ª geração] Uma aba de DADOS com cara de relatório técnico.
+
+    ── O QUE ELA FAZ (e o porquê de cada coisa) ──
+      • **Título + subtítulo com data/hora** — um relatório sem carimbo de quando foi gerado é inútil
+        numa auditoria: ninguém sabe se está olhando o estudo de ontem ou o de três meses atrás.
+      • **Numeração de linhas** — para citar "linha 4.382" numa reunião sem contar no dedo.
+      • **Formato por SEMÁNTICA** — km com 1 casa, % com sinal, km-candidato com milhar, e **Código IBGE
+        como TEXTO** (senão o Excel come o zero à esquerda e destrói o identificador oficial).
+      • **Zebra** — a olho nu, uma tabela de 5.571 linhas sem faixas alternadas é ilegível: o olho pula
+        de linha.
+      • **Formatação condicional** — cor SÓ onde ela informa. Negativo (levamos o candidato mais longe)
+        em vermelho; divergência em âmbar; vazio em cinza. **Se tudo é colorido, nada é.**
+      • **AutoFiltro + painéis congelados** — sem isso, uma planilha grande não se navega.
+      • **Rodapé com metadados** — quem gerou, quando, com qual versão.
+
+    Degrada com elegância: se qualquer formatação falhar, a aba ainda é escrita com os dados."""
+    _n = (nome or "Aba")[:31]
+    try:
+        _wb = writer.book
+        _linha0 = 3 if titulo else 0        # 3 linhas reservadas para título/subtítulo
+
+        _dfx = df.copy()
+        if numerar and len(_dfx):
+            _dfx.insert(0, "#", range(1, len(_dfx) + 1))
+
+        _dfx.to_excel(writer, index=False, sheet_name=_n, startrow=_linha0)
+        _ws = writer.sheets[_n]
+        _nl, _nc = _dfx.shape
+        if _nc == 0:
+            return
+
+        # ── TÍTULO E SUBTÍTULO ──
+        if titulo:
+            _f_tit = _wb.add_format({"bold": True, "font_size": 15, "font_color": "#FFFFFF",
+                                     "bg_color": _XP["titulo"], "align": "left", "valign": "vcenter",
+                                     "font_name": "Calibri"})
+            _f_sub = _wb.add_format({"italic": True, "font_size": 9, "font_color": _XP["apoio"],
+                                     "align": "left", "valign": "vcenter", "font_name": "Calibri"})
+            _ws.merge_range(0, 0, 0, max(_nc - 1, 1), f"  {titulo}", _f_tit)
+            _ws.set_row(0, 26)
+            _sub = subtitulo or (
+                f"  Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}  ·  "
+                f"Plataforma de Análise de Deslocamento de Candidatos  ·  {_nl:,} registro(s)".replace(",", "."))
+            _ws.merge_range(1, 0, 1, max(_nc - 1, 1), _sub, _f_sub)
+            _ws.set_row(1, 14)
+
+        # ── CABEÇALHO ──
+        _f_cab = _wb.add_format({"bold": True, "bg_color": _XP["cabecalho"], "font_color": "#FFFFFF",
+                                 "border": 1, "border_color": _XP["cabecalho"], "text_wrap": True,
+                                 "valign": "vcenter", "align": "center", "font_name": "Calibri",
+                                 "font_size": 10})
+        for _c, _col in enumerate(_dfx.columns):
+            _ws.write(_linha0, _c, str(_col), _f_cab)
+        _ws.set_row(_linha0, 32)
+
+        # ── CORPO: formato por semântica + zebra ──
+        _fmts = {_c: (_formato_da_coluna(_col, _wb, False), _formato_da_coluna(_col, _wb, True))
+                 for _c, _col in enumerate(_dfx.columns)}
+        for _r in range(_nl):
+            _z = (_r % 2 == 1)
+            for _c, _col in enumerate(_dfx.columns):
+                _v = _dfx.iloc[_r, _c]
+                _f = _fmts[_c][1 if _z else 0]
+                try:
+                    if pd.isna(_v):
+                        _ws.write_blank(_linha0 + 1 + _r, _c, None, _f)
+                    else:
+                        _ws.write(_linha0 + 1 + _r, _c, _v, _f)
+                except (TypeError, ValueError):
+                    _ws.write(_linha0 + 1 + _r, _c, str(_v), _f)
+
+        # ── LARGURA: pelo conteúdo real, com teto (nada de coluna de 200 chars) ──
+        for _c, _col in enumerate(_dfx.columns):
+            try:
+                _larg = max(len(str(_col)) + 3,
+                            int(_dfx[_col].astype(str).str.len().quantile(0.9) or 10) + 2)
+            except Exception:
+                _larg = 16
+            _ws.set_column(_c, _c, max(8, min(48, _larg)))
+
+        # ── AUTOFILTRO + PAINÉIS CONGELADOS ──
+        if _nl:
+            _ws.autofilter(_linha0, 0, _linha0 + _nl, _nc - 1)
+        _ws.freeze_panes(_linha0 + 1, 1 if numerar else 0)
+
+        # ── FORMATAÇÃO CONDICIONAL: cor SÓ onde ela informa ──
+        _f_erro = _wb.add_format({"bg_color": _XP["erro"], "font_color": _XP["erro_txt"]})
+        _f_ok = _wb.add_format({"bg_color": _XP["ok"], "font_color": _XP["ok_txt"]})
+        _f_ale = _wb.add_format({"bg_color": _XP["alerta"], "font_color": _XP["alerta_txt"]})
+        _f_vaz = _wb.add_format({"bg_color": _XP["vazio"], "font_color": _XP["apoio"], "italic": True})
+
+        def _faixa(_col):
+            _i = list(_dfx.columns).index(_col)
+            return (_linha0 + 1, _i, _linha0 + _nl, _i)
+
+        for _col in (cols_negativo_ruim or []):
+            if _col in _dfx.columns and _nl:
+                _a, _b, _c2, _d2 = _faixa(_col)
+                _ws.conditional_format(_a, _b, _c2, _d2, {"type": "cell", "criteria": "<",
+                                                          "value": 0, "format": _f_erro})
+                _ws.conditional_format(_a, _b, _c2, _d2, {"type": "cell", "criteria": ">",
+                                                          "value": 0, "format": _f_ok})
+        for _col in (cols_alerta or []):
+            if _col in _dfx.columns and _nl:
+                _a, _b, _c2, _d2 = _faixa(_col)
+                for _txt, _f in (("alto", _f_erro), ("não", _f_erro), ("erro", _f_erro),
+                                 ("fuzzy", _f_ale), ("médio", _f_ale), ("sim", _f_ale),
+                                 ("baixo", _f_ok), ("exclusivo", _f_ok)):
+                    _ws.conditional_format(_a, _b, _c2, _d2,
+                                           {"type": "text", "criteria": "containing",
+                                            "value": _txt, "format": _f})
+        # campos VAZIOS ficam visíveis (um vazio silencioso é pior que um vazio marcado)
+        if _nl:
+            _ws.conditional_format(_linha0 + 1, 0, _linha0 + _nl, _nc - 1,
+                                   {"type": "blanks", "format": _f_vaz})
+
+        # ── RODAPÉ ──
+        _f_rod = _wb.add_format({"italic": True, "font_size": 8, "font_color": _XP["apoio"],
+                                 "font_name": "Calibri"})
+        _ws.write(_linha0 + _nl + 2, 0,
+                  f"Gerado automaticamente em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} · "
+                  f"{_nl} registro(s) · Consulte as abas 📘 Guia de Interpretação e 📖 Como Ler Cada Aba.",
+                  _f_rod)
+        _ws.set_landscape()
+        _ws.set_paper(9)          # A4
+        _ws.fit_to_pages(1, 0)    # 1 página de largura, quantas forem de altura
+        _ws.repeat_rows(_linha0)  # o cabeçalho se repete em toda página impressa
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha ao formatar a aba '{_n}': {_e}")
+        try:
+            df.to_excel(writer, index=False, sheet_name=_n)
+        except Exception:
+            pass
+
+
+
+
+def _aba_resumo_executivo(writer, stats, aud, linhas, tempo_proc=None, nome_ref=None):
+    """[XLSX-PRO - 182ª geração] O RESUMO EXECUTIVO — a aba que um gestor abre primeiro e talvez única.
+
+    ── POR QUE ELA EXISTE ──
+    Um relatório de 26 abas é inútil para quem tem 3 minutos antes da reunião. Esta aba responde, **numa
+    tela**: posso confiar? quem venceu? quanto isso vale em GENTE? o que eu faço?
+
+    E ela começa pela **CONFIANÇA** — não pelo resultado. Porque um percentual calculado sobre 57% do
+    universo **não é um resultado: é uma armadilha**. Quem lê primeiro o número e depois a ressalva já
+    formou opinião."""
+    try:
+        _wb = writer.book
+        _ws = _wb.add_worksheet("Resumo Executivo")
+        writer.sheets["Resumo Executivo"] = _ws
+
+        _f_tit = _wb.add_format({"bold": True, "font_size": 18, "font_color": "#FFFFFF",
+                                 "bg_color": _XP["titulo"], "align": "center", "valign": "vcenter"})
+        _f_sub = _wb.add_format({"italic": True, "font_size": 10, "font_color": _XP["apoio"],
+                                 "align": "center"})
+        _f_sec = _wb.add_format({"bold": True, "font_size": 12, "font_color": "#FFFFFF",
+                                 "bg_color": _XP["cabecalho"], "align": "left", "valign": "vcenter",
+                                 "indent": 1})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": _XP["apoio"], "align": "left",
+                                 "indent": 1, "border": 1, "border_color": _XP["borda"]})
+        _f_val = _wb.add_format({"bold": True, "font_size": 16, "font_color": _XP["titulo"],
+                                 "align": "center", "valign": "vcenter", "border": 1,
+                                 "border_color": _XP["borda"], "num_format": "#,##0"})
+        _f_val_pct = _wb.add_format({"bold": True, "font_size": 16, "font_color": _XP["titulo"],
+                                     "align": "center", "valign": "vcenter", "border": 1,
+                                     "border_color": _XP["borda"], "num_format": '0.0"%"'})
+        _f_txt = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10,
+                                 "border": 1, "border_color": _XP["borda"]})
+        _f_ok = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10, "bold": True,
+                                "bg_color": _XP["ok"], "font_color": _XP["ok_txt"], "border": 1})
+        _f_al = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10, "bold": True,
+                                "bg_color": _XP["alerta"], "font_color": _XP["alerta_txt"], "border": 1})
+        _f_er = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10, "bold": True,
+                                "bg_color": _XP["erro"], "font_color": _XP["erro_txt"], "border": 1})
+
+        _ws.set_column(0, 0, 3)
+        _ws.set_column(1, 4, 22)
+        _ws.set_column(5, 5, 3)
+
+        _ws.merge_range(1, 1, 1, 4, "RELATÓRIO COMPARATIVO DE LOCAIS DE APLICAÇÃO", _f_tit)
+        _ws.set_row(1, 34)
+        _ws.merge_range(2, 1, 2, 4,
+                        f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M:%S')}"
+                        + (f"  ·  Base de referência: {nome_ref}" if nome_ref else "")
+                        + (f"  ·  Processamento: {tempo_proc}" if tempo_proc else ""), _f_sub)
+
+        _br = (stats or {}).get("brasil", {})
+        _tot_ref = (aud or {}).get("total_ref", 0)
+        _conc = (aud or {}).get("conciliados", 0)
+        _fz = (aud or {}).get("por_fuzzy", 0)
+        _nc = len((aud or {}).get("nao_conciliados", []) or [])
+        _ncomp = len((aud or {}).get("nao_comparaveis", []) or [])
+        _pct_c = round(100.0 * _conc / _tot_ref, 1) if _tot_ref else 0.0
+
+        # ── 1. CONFIANÇA — vem PRIMEIRO. Sempre. ──
+        _l = 4
+        _ws.merge_range(_l, 1, _l, 4, "1.  POSSO CONFIAR NESTES NÚMEROS?", _f_sec)
+        _ws.set_row(_l, 22)
+        _l += 1
+        if _pct_c >= 95 and _fz == 0:
+            _cx, _msg = _f_ok, (f"✅ SIM — CONFIANÇA ALTA.  {_pct_c}% dos municípios foram conciliados, "
+                                "TODOS por vínculo oficial (Código IBGE ou Município+UF). Os percentuais "
+                                "deste relatório descrevem o universo completo.")
+        elif _pct_c >= 80:
+            _cx, _msg = _f_al, (f"🟡 COM RESSALVA — CONFIANÇA MÉDIA.  {_pct_c}% conciliados"
+                                + (f"; {_fz} vínculo(s) feitos por SIMILARIDADE TEXTUAL (não é oficial: a "
+                                   "plataforma adivinhou — confira-os)" if _fz else "")
+                                + (f"; {_nc} registro(s) ficaram FORA de todas as estatísticas." if _nc else "."))
+        else:
+            _cx, _msg = _f_er, (f"🔴 NÃO — CONFIANÇA BAIXA.  Apenas {_pct_c}% conciliados. OS PERCENTUAIS "
+                                "DESTE RELATÓRIO NÃO REPRESENTAM O UNIVERSO COMPLETO — descrevem só a parte "
+                                "que casou. Corrija a planilha de referência (adicione Código IBGE) e "
+                                "reprocesse ANTES de tirar conclusões.")
+        _ws.merge_range(_l, 1, _l + 2, 4, _msg, _cx)
+        _ws.set_row(_l, 18)
+        _l += 4
+
+        # ── 2. INDICADORES ──
+        _ws.merge_range(_l, 1, _l, 4, "2.  INDICADORES", _f_sec)
+        _ws.set_row(_l, 22)
+        _l += 1
+        _ins = _br.get("inscritos", 0)
+        _ec = _br.get("economia_ponderada_km", 0)
+        _kmc = round(_ec / _ins, 1) if _ins else 0.0
+        _cards = [
+            ("Registros analisados", _tot_ref, _f_val),
+            ("Conciliados", _conc, _f_val),
+            ("Correspondência", _pct_c, _f_val_pct),
+            ("Sem correspondência", _nc, _f_val),
+            ("Nossa aplicação venceu", _br.get("pct_venceu_app", 0), _f_val_pct),
+            ("Referência venceu", _br.get("pct_venceu_ref", 0), _f_val_pct),
+            ("Empates técnicos", _br.get("pct_empate", 0), _f_val_pct),
+            ("Candidatos analisados", _ins, _f_val),
+            ("Candidatos beneficiados", _br.get("candidatos_beneficiados", 0), _f_val),
+            ("Candidatos prejudicados", _br.get("candidatos_prejudicados", 0), _f_val),
+            ("Economia (km-candidato)", _ec, _f_val),
+            ("Km a MENOS por candidato", _kmc, _wb.add_format({
+                "bold": True, "font_size": 16, "font_color": _XP["ok_txt"], "align": "center",
+                "valign": "vcenter", "border": 1, "border_color": _XP["borda"],
+                "num_format": '#,##0.0" km"'})),
+        ]
+        for _i, (_lbl, _v, _fv) in enumerate(_cards):
+            _r = _l + (_i // 2) * 2
+            _c = 1 + (_i % 2) * 2
+            _ws.merge_range(_r, _c, _r, _c + 1, _lbl, _f_lbl)
+            _ws.merge_range(_r + 1, _c, _r + 1, _c + 1, _v, _fv)
+            _ws.set_row(_r + 1, 26)
+        _l += ((len(_cards) + 1) // 2) * 2 + 1
+
+        # ── 3. A TRADUÇÃO PARA ESCALA HUMANA ──
+        _ws.merge_range(_l, 1, _l, 4, "3.  O QUE ISSO SIGNIFICA, EM PORTUGUÊS", _f_sec)
+        _ws.set_row(_l, 22)
+        _l += 1
+        _ws.merge_range(_l, 1, _l + 2, 4,
+                        f"A economia total de {_ec:,.0f} km-candidato não significa nada para ninguém. "
+                        f"DIVIDIDA pelos {_ins:,.0f} candidatos, ela vira: cada candidato anda "
+                        f"{abs(_kmc):,.1f} km {'A MENOS' if _kmc >= 0 else 'A MAIS'}. "
+                        "É o MESMO número — mas um é dado e o outro é entendimento."
+                        .replace(",", "@").replace(".", ",").replace("@", "."), _f_txt)
+        _l += 4
+
+        # ── 4. RECOMENDAÇÃO ──
+        _ws.merge_range(_l, 1, _l, 4, "4.  RECOMENDAÇÃO", _f_sec)
+        _ws.set_row(_l, 22)
+        _l += 1
+        _rec = "Consulte a aba 📘 Guia de Interpretação para os alertas e recomendações derivados dos SEUS dados."
+        try:
+            _hb = _plano_hibrido(linhas)
+            if _hb and _hb.get("vale_a_pena"):
+                _rec = (f"🏆 ADOTE O PLANO HÍBRIDO. Ninguém é obrigado a adotar um estudo inteiro. "
+                        f"Tomando de cada município a melhor das duas escolhas, você poupa "
+                        f"{_hb['ganho_do_hibrido_sobre_nos']:,.0f} km-candidato A MAIS do que adotar só a "
+                        f"sua solução — bastaria migrar {_hb['municipios_do_concorrente']} município(s) "
+                        f"({_hb['candidatos_que_migrariam']:,.0f} candidatos) para o polo da referência. "
+                        "Veja a aba 'Plano Hibrido'.")
+        except Exception:
+            pass
+        _ws.merge_range(_l, 1, _l + 2, 4, _rec, _f_txt)
+        _ws.hide_gridlines(2)
+        return True
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha no Resumo Executivo: {_e}")
+        return False
+
+
+def _aba_graficos(writer, stats, linhas):
+    """[XLSX-PRO - 182ª geração] GRÁFICOS NATIVOS DO EXCEL — não imagens coladas.
+
+    ── A DIFERENÇA (e ela importa) ──
+    Um gráfico NATIVO do Excel é **vivo**: o usuário clica, filtra, muda o tipo, copia para o PowerPoint
+    e ele continua ligado aos dados. Uma IMAGEM colada é um cadáver — bonita e inútil.
+    Por isso os dados de cada gráfico vão numa área da própria aba: o gráfico aponta para células REAIS.
+
+    ── E POR QUE SÓ TRÊS GRÁFICOS ──
+    Recusei treemap, sunburst, rosca e mapa de densidade quatro vezes, e mantenho: **seriam mais tinta,
+    não mais informação**. Estes três respondem as três perguntas que movem a decisão: **quem venceu ·
+    onde · e o ganho é concentrado ou espalhado?**"""
+    try:
+        _wb = writer.book
+        _ws = _wb.add_worksheet("Graficos")
+        writer.sheets["Graficos"] = _ws
+        _f_t = _wb.add_format({"bold": True, "font_size": 13, "font_color": "#FFFFFF",
+                               "bg_color": _XP["titulo"], "align": "left", "indent": 1,
+                               "valign": "vcenter"})
+        _f_h = _wb.add_format({"bold": True, "bg_color": _XP["cabecalho"], "font_color": "#FFFFFF",
+                               "border": 1, "align": "center"})
+        _f_c = _wb.add_format({"border": 1, "border_color": _XP["borda"], "num_format": "#,##0"})
+        _ws.merge_range(0, 0, 0, 9, "  GRÁFICOS DA COMPARAÇÃO", _f_t)
+        _ws.set_row(0, 28)
+        _ws.set_column(0, 0, 26)
+        _ws.set_column(1, 3, 16)
+
+        _br = (stats or {}).get("brasil", {})
+        _l = 2
+
+        # ── 1. QUEM VENCEU (colunas) ──
+        _ws.write(_l, 0, "Quem venceu", _f_h)
+        _ws.write(_l, 1, "Municípios", _f_h)
+        _dados1 = [("Nossa aplicação", _br.get("municipios_venceu_app", _br.get("pct_venceu_app", 0))),
+                   ("Base de referência", _br.get("municipios_venceu_ref", _br.get("pct_venceu_ref", 0))),
+                   ("Empate técnico", _br.get("municipios_empate", _br.get("pct_empate", 0)))]
+        for _i, (_k, _v) in enumerate(_dados1):
+            _ws.write(_l + 1 + _i, 0, _k, _f_c)
+            _ws.write(_l + 1 + _i, 1, _v, _f_c)
+        _ch1 = _wb.add_chart({"type": "column"})
+        _ch1.add_series({
+            "name": "Quem venceu",
+            "categories": ["Graficos", _l + 1, 0, _l + 3, 0],
+            "values": ["Graficos", _l + 1, 1, _l + 3, 1],
+            "data_labels": {"value": True, "font": {"size": 9}},
+            "points": [{"fill": {"color": "#2F5597"}}, {"fill": {"color": "#C55A11"}},
+                       {"fill": {"color": "#A6A6A6"}}],
+            "gap": 60,
+        })
+        _ch1.set_title({"name": "Quem levou o candidato mais perto",
+                        "name_font": {"size": 12, "color": _XP["titulo"]}})
+        _ch1.set_y_axis({"name": "Municípios", "major_gridlines": {"visible": True}})
+        _ch1.set_legend({"none": True})
+        _ch1.set_size({"width": 460, "height": 280})
+        _ws.insert_chart(_l, 4, _ch1)
+        _l += 18
+
+        # ── 2. ECONOMIA POR UF (barras horizontais — nome longo cabe) ──
+        _ufs = ((stats or {}).get("por_uf") or [])[:12]
+        if _ufs:
+            _ws.write(_l, 0, "UF", _f_h)
+            _ws.write(_l, 1, "km-candidato", _f_h)
+            for _i, _u in enumerate(_ufs):
+                _ws.write(_l + 1 + _i, 0, str(_u.get("uf") or _u.get("UF") or "—"), _f_c)
+                _ws.write(_l + 1 + _i, 1, float(_u.get("economia_ponderada_km") or 0), _f_c)
+            _ch2 = _wb.add_chart({"type": "bar"})
+            _ch2.add_series({
+                "name": "Economia (km-candidato)",
+                "categories": ["Graficos", _l + 1, 0, _l + len(_ufs), 0],
+                "values": ["Graficos", _l + 1, 1, _l + len(_ufs), 1],
+                "data_labels": {"value": True, "font": {"size": 8}},
+                "fill": {"color": "#2F5597"},
+                "gap": 50,
+            })
+            _ch2.set_title({"name": "Economia por estado (barra para a esquerda = perdemos ali)",
+                            "name_font": {"size": 12, "color": _XP["titulo"]}})
+            _ch2.set_legend({"none": True})
+            _ch2.set_size({"width": 460, "height": 320})
+            _ws.insert_chart(_l, 4, _ch2)
+            _l += max(20, len(_ufs) + 4)
+
+        # ── 3. PARETO: o ganho é concentrado ou espalhado? ──
+        try:
+            _pa = (_pareto_economia(linhas, top=20) or {}).get("itens") or []
+        except Exception:
+            _pa = []
+        if _pa:
+            _ws.write(_l, 0, "Município", _f_h)
+            _ws.write(_l, 1, "Economia", _f_h)
+            _ws.write(_l, 2, "% acumulado", _f_h)
+            for _i, _p in enumerate(_pa):
+                _ws.write(_l + 1 + _i, 0, str(_p.get("municipio") or _p.get("Município") or "—"), _f_c)
+                _ws.write(_l + 1 + _i, 1, float(_p.get("economia_km_candidato") or 0), _f_c)
+                _ws.write(_l + 1 + _i, 2, float(_p.get("pct_acumulado") or 0), _f_c)
+            _ch3 = _wb.add_chart({"type": "column"})
+            _ch3.add_series({
+                "name": "Economia (km-candidato)",
+                "categories": ["Graficos", _l + 1, 0, _l + len(_pa), 0],
+                "values": ["Graficos", _l + 1, 1, _l + len(_pa), 1],
+                "fill": {"color": "#2F5597"},
+            })
+            _ln = _wb.add_chart({"type": "line"})
+            _ln.add_series({
+                "name": "% acumulado",
+                "categories": ["Graficos", _l + 1, 0, _l + len(_pa), 0],
+                "values": ["Graficos", _l + 1, 2, _l + len(_pa), 2],
+                "y2_axis": True,
+                "line": {"color": "#C55A11", "width": 2.0},
+                "marker": {"type": "circle", "size": 4},
+            })
+            _ch3.combine(_ln)
+            _ch3.set_title({"name": "Pareto: poucos municípios explicam o resultado?",
+                            "name_font": {"size": 12, "color": _XP["titulo"]}})
+            _ch3.set_y_axis({"name": "km-candidato"})
+            _ch3.set_y2_axis({"name": "% acumulado", "max": 100})
+            _ch3.set_legend({"position": "bottom", "font": {"size": 9}})
+            _ch3.set_size({"width": 620, "height": 320})
+            _ws.insert_chart(_l, 4, _ch3)
+        _ws.hide_gridlines(2)
+        return True
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha na aba de Gráficos: {_e}")
+        return False
+
+
+
+
+_PALETA_XLSX = {
+    "titulo":     "#1F4E79",   # azul institucional escuro
+    "sub":        "#2E75B6",
+    "cabecalho":  "#1F4E79",
+    "cab_txt":    "#FFFFFF",
+    "zebra":      "#F2F7FB",
+    "borda":      "#BDD7EE",
+    "ok":         "#C6EFCE",   # verde discreto (Excel padrão)
+    "ok_txt":     "#006100",
+    "alerta":     "#FFEB9C",   # âmbar
+    "alerta_txt": "#9C5700",
+    "ruim":       "#FFC7CE",   # vermelho discreto
+    "ruim_txt":   "#9C0006",
+    "vazio":      "#EDEDED",
+    "neutro":     "#404040",
+}
+
+
+def _fmts_xlsx(wb):
+    """[XLSX-PRO - 182ª geração] O conjunto de formatos do relatório. Cores DISCRETAS e institucionais —
+    a paleta padrão do Excel para formatação condicional, que é a que gestores públicos reconhecem.
+    Nada de neon: um relatório que parece um dashboard de startup perde autoridade numa auditoria."""
+    return {
+        "titulo": wb.add_format({"bold": True, "font_size": 18, "font_color": _PALETA_XLSX["titulo"],
+                                 "font_name": "Calibri", "valign": "vcenter"}),
+        "subtitulo": wb.add_format({"font_size": 11, "font_color": _PALETA_XLSX["sub"],
+                                    "font_name": "Calibri", "italic": True}),
+        "secao": wb.add_format({"bold": True, "font_size": 13, "font_color": _PALETA_XLSX["titulo"],
+                                "bottom": 2, "border_color": _PALETA_XLSX["sub"]}),
+        "cab": wb.add_format({"bold": True, "bg_color": _PALETA_XLSX["cabecalho"],
+                              "font_color": _PALETA_XLSX["cab_txt"], "border": 1,
+                              "border_color": _PALETA_XLSX["borda"], "text_wrap": True,
+                              "valign": "vcenter", "align": "center", "font_size": 10}),
+        "txt": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "valign": "top",
+                              "text_wrap": True, "font_size": 10}),
+        "num": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
+                              "num_format": "#,##0.0", "font_size": 10}),
+        "int": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
+                              "num_format": "#,##0", "font_size": 10}),
+        "pct": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
+                              "num_format": "0.0%", "font_size": 10}),
+        "km": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
+                             "num_format": '#,##0.0 "km"', "font_size": 10}),
+        "kpi_rot": wb.add_format({"bold": True, "font_size": 10, "font_color": _PALETA_XLSX["neutro"],
+                                  "align": "center", "bg_color": _PALETA_XLSX["zebra"],
+                                  "border": 1, "border_color": _PALETA_XLSX["borda"]}),
+        "kpi_val": wb.add_format({"bold": True, "font_size": 22, "font_color": _PALETA_XLSX["titulo"],
+                                  "align": "center", "valign": "vcenter", "border": 1,
+                                  "border_color": _PALETA_XLSX["borda"]}),
+        "kpi_ruim": wb.add_format({"bold": True, "font_size": 22, "font_color": _PALETA_XLSX["ruim_txt"],
+                                   "align": "center", "valign": "vcenter", "bg_color": _PALETA_XLSX["ruim"],
+                                   "border": 1, "border_color": _PALETA_XLSX["borda"]}),
+        "kpi_ok": wb.add_format({"bold": True, "font_size": 22, "font_color": _PALETA_XLSX["ok_txt"],
+                                 "align": "center", "valign": "vcenter", "bg_color": _PALETA_XLSX["ok"],
+                                 "border": 1, "border_color": _PALETA_XLSX["borda"]}),
+        "nota": wb.add_format({"font_size": 9, "italic": True, "font_color": "#808080",
+                               "text_wrap": True, "valign": "top"}),
+        "rodape": wb.add_format({"font_size": 8, "font_color": "#909090", "italic": True}),
+    }
+
+
+def _tipo_da_coluna(nome, serie):
+    """[XLSX-PRO - 182ª geração] Descobre o formato do dado pelo NOME e pelo CONTEÚDO.
+    Um relatório profissional não mostra "220.0" quando quer dizer "220,0 km" — e não mostra
+    "0.214" quando quer dizer "21,4%". O formato É parte da informação."""
+    _n = str(nome).lower()
+    try:
+        _num = pd.api.types.is_numeric_dtype(serie)
+    except Exception:
+        _num = False
+    if not _num:
+        return "txt"
+    if "%" in _n or "pct" in _n or "percentual" in _n:
+        return "pct_ja"          # já está em 0-100, não multiplicar
+    if "km" in _n or "distância" in _n or "distancia" in _n or "linha reta" in _n:
+        return "km"
+    if ("candidatos" in _n or "inscritos" in _n or "municípios" in _n or "municipios" in _n
+            or "posição" in _n or "posicao" in _n or "ordem" in _n or "quantidade" in _n):
+        return "int"
+    return "num"
+
+
+def _formatar_aba_profissional(writer, df, nome, titulo=None, nota=None):
+    """[XLSX-PRO - 182ª geração] A ABA DE DADOS COM CARA DE RELATÓRIO TÉCNICO.
+
+    ── O QUE MUDA (e por que cada coisa importa) ──
+    · **Tabela do Excel** (`add_table`) — não é enfeite: dá **filtro nativo, linhas zebradas, referências
+      estruturadas e expansão automática**. É o que separa "um dump de dados" de "uma tabela".
+    · **Formato por TIPO de dado** — "220,0 km" em vez de "220.0"; "21,4%" em vez de "0.214". O formato
+      **É parte da informação**: um número sem unidade obriga o leitor a adivinhar.
+    · **Formatação condicional** — a divergência fica VERMELHA, a coincidência VERDE, o vazio CINZA.
+      Num relatório de 5.571 linhas, **a cor é o único canal que chega ao olho antes da leitura consciente**.
+    · **Congelamento + largura automática** — o que torna 5.571 linhas realmente navegáveis.
+    · **Cores DISCRETAS e institucionais** (a paleta padrão do Excel) — um relatório que parece dashboard
+      de startup **perde autoridade numa auditoria**.
+
+    ⚠️ O CABEÇALHO CONTINUA NA LINHA 1. Aprendi isso na 171ª: pôr título acima da tabela quebra o
+    AutoFiltro, a ordenação, a tabela dinâmica e o `read_excel()`. **O título vive na CAPA**, não aqui.
+    A aba de dados é **DADO PURO** — filtrável, ordenável e legível por máquina."""
+    _n = (nome or "Dados")[:31]
+    try:
+        if df is None or len(df) == 0:
+            df = pd.DataFrame([{"—": "sem dados para esta seção"}])
+        df.to_excel(writer, index=False, sheet_name=_n, startrow=0)
+        _ws = writer.sheets[_n]
+        _wb = writer.book
+        _F = _fmts_xlsx(_wb)
+        _nl, _nc = len(df), len(df.columns)
+
+        # ---- Tabela do Excel: filtro nativo + zebra + referências estruturadas ----
+        _ws.add_table(0, 0, _nl, _nc - 1, {
+            "columns": [{"header": str(c), "header_format": _F["cab"]} for c in df.columns],
+            "style": "Table Style Light 9",     # azul institucional, discreto
+            "banded_rows": True,
+            "autofilter": True,
+            "name": re.sub(r"\W+", "_", _n)[:30] or "Tabela",
+        })
+
+        # ---- formato e largura por coluna, conforme o TIPO do dado ----
+        for _i, _c in enumerate(df.columns):
+            _t = _tipo_da_coluna(_c, df[_c])
+            _fmt = {"km": _F["km"], "int": _F["int"], "num": _F["num"],
+                    "pct_ja": _F["num"], "txt": _F["txt"]}[_t]
+            try:
+                _larg = int(df[_c].astype(str).str.len().quantile(0.9) or 12)
+            except Exception:
+                _larg = 14
+            _larg = max(11, min(48, max(_larg, len(str(_c)) + 2)))
+            _ws.set_column(_i, _i, _larg, _fmt)
+
+        _ws.freeze_panes(1, 0)
+        _ws.set_row(0, 32)
+
+        # ---- FORMATAÇÃO CONDICIONAL: o perigo chega ao olho antes da leitura ----
+        _cf = {
+            "divergente": _wb.add_format({"bg_color": _PALETA_XLSX["ruim"],
+                                          "font_color": _PALETA_XLSX["ruim_txt"]}),
+            "coincidente": _wb.add_format({"bg_color": _PALETA_XLSX["ok"],
+                                           "font_color": _PALETA_XLSX["ok_txt"]}),
+            "atencao": _wb.add_format({"bg_color": _PALETA_XLSX["alerta"],
+                                       "font_color": _PALETA_XLSX["alerta_txt"]}),
+            "vazio": _wb.add_format({"bg_color": _PALETA_XLSX["vazio"]}),
+        }
+        for _i, _c in enumerate(df.columns):
+            _cn = str(_c).lower()
+            _rng = (1, _i, _nl, _i)
+            # negativo = a aplicação levou o candidato MAIS LONGE
+            if any(_k in _cn for _k in ("economia", "diferenca", "diferença", "impacto", "ganho")):
+                _ws.conditional_format(*_rng, {"type": "cell", "criteria": "<", "value": 0,
+                                               "format": _cf["divergente"]})
+                _ws.conditional_format(*_rng, {"type": "cell", "criteria": ">", "value": 0,
+                                               "format": _cf["coincidente"]})
+            # vencedor
+            if "vencedor" in _cn:
+                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
+                                               "value": "Referência", "format": _cf["divergente"]})
+                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
+                                               "value": "Aplicação", "format": _cf["coincidente"]})
+            # conciliação por similaridade = NÃO é oficial
+            if "metodo" in _cn or "método" in _cn:
+                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
+                                               "value": "Fuzzy", "format": _cf["atencao"]})
+            # geodésica = município SEM ESTRADA
+            if "tipo de dist" in _cn:
+                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
+                                               "value": "Geodésica", "format": _cf["atencao"]})
+            # mesmo destino
+            if "mesmo destino" in _cn:
+                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
+                                               "value": "Não", "format": _cf["atencao"]})
+            # ocupação ≥ 100% = polo ESTOURADO
+            if "ocupa" in _cn:
+                _ws.conditional_format(*_rng, {"type": "cell", "criteria": ">=", "value": 100,
+                                               "format": _cf["divergente"]})
+            # células VAZIAS ficam cinzas — o vazio é uma informação
+            _ws.conditional_format(*_rng, {"type": "blanks", "format": _cf["vazio"]})
+
+        # ---- rodapé de impressão ----
+        _ws.set_footer("&L&8Comparador de Estudos — Motor Nacional de Roteirização"
+                       "&C&8Página &P de &N&R&8&D &T")
+        _ws.set_landscape()
+        _ws.fit_to_pages(1, 0)
+        _ws.repeat_rows(0)          # o cabeçalho se repete em toda página impressa
+        if nota:
+            _ws.write(_nl + 2, 0, nota, _F["nota"])
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha ao formatar a aba '{_n}': {_e}")
+        try:
+            df.to_excel(writer, index=False, sheet_name=_n)
+        except Exception:
+            pass
+
+
+
+
+def _capa_relatorio(writer, meta):
+    """[XLSX-PRO - 182ª geração] A CAPA — a primeira impressão de um relatório técnico.
+
+    ── POR QUE ELA VIVE NUMA ABA PRÓPRIA ──
+    Aprendi na 171ª: pôr título e prosa ACIMA da tabela quebra o AutoFiltro, a ordenação, a tabela
+    dinâmica e o `read_excel()`. **A aba de dados tem que ser DADO PURO.**
+    Então o título, o timestamp e os metadados vivem AQUI — onde não atrapalham ninguém e onde um gestor
+    que abre o arquivo vê primeiro **o que é isto, quando foi gerado, e o que ele NÃO diz.**"""
+    _wb = writer.book
+    _ws = _wb.add_worksheet("Capa")
+    writer.sheets["Capa"] = _ws
+    _F = _fmts_xlsx(_wb)
+    _ws.hide_gridlines(2)
+    _ws.set_column(0, 0, 3)
+    _ws.set_column(1, 1, 34)
+    _ws.set_column(2, 2, 66)
+
+    _ws.set_row(2, 34)
+    _ws.write(2, 1, "RELATÓRIO COMPARATIVO DE ESTUDOS", _F["titulo"])
+    _ws.write(3, 1, "Definição dos Locais de Aplicação de Provas — Exames Nacionais", _F["subtitulo"])
+    _ws.write(4, 1, f"Gerado em {meta.get('gerado_em', '—')}", _F["subtitulo"])
+
+    _ws.write(6, 1, "IDENTIFICAÇÃO DO PROCESSAMENTO", _F["secao"])
+    _linhas = [
+        ("Estudo analisado", meta.get("arquivo_app", "Resultado da aba Locais de Aplicação")),
+        ("Base de referência", meta.get("arquivo_ref", "—")),
+        ("Municípios no estudo", _fmt_num(meta.get("n_app", 0))),
+        ("Registros na referência", _fmt_num(meta.get("n_ref", 0))),
+        ("Conciliados", f"{_fmt_num(meta.get('conciliados', 0))} "
+                        f"({_fmt_num(meta.get('pct_conciliado', 0), 1)}%)"),
+        ("Comparáveis", _fmt_num(meta.get("comparaveis", 0))),
+        ("Tempo de processamento", meta.get("tempo", "—")),
+        ("Versão da plataforma", meta.get("versao", "—")),
+    ]
+    for _i, (_r, _v) in enumerate(_linhas, start=7):
+        _ws.write(_i, 1, _r, _F["kpi_rot"])
+        _ws.write(_i, 2, str(_v), _F["txt"])
+
+    _ws.write(len(_linhas) + 8, 1, "O QUE ESTE RELATÓRIO **NÃO** DIZ", _F["secao"])
+    _limites = [
+        "Capacidade das escolas — a comparação mede DESLOCAMENTO, não se o local CABE os candidatos.",
+        "Qualidade da infraestrutura — carteiras, banheiros, acessibilidade. Nenhum modelo sabe isso.",
+        "COMO a base de referência mediu a distância — se ela usou LINHA RETA e nós usamos VIÁRIA, a "
+        "diferença é METODOLÓGICA, não logística. Só você pode verificar isso.",
+        "Horário de transporte público — a plataforma calcula quando o candidato precisa SAIR, mas não "
+        "sabe se existe ônibus àquela hora.",
+    ]
+    for _i, _t in enumerate(_limites, start=len(_linhas) + 9):
+        _ws.write(_i, 1, "⚠️", _F["nota"])
+        _ws.write(_i, 2, _t, _F["nota"])
+        _ws.set_row(_i, 28)
+
+    _fim = len(_linhas) + 9 + len(_limites) + 1
+    _ws.write(_fim, 1, "COMECE POR AQUI", _F["secao"])
+    _ordem = [
+        ("1º", "Resumo Executivo — os indicadores e a CONFIANÇA da comparação."),
+        ("2º", "Guia de Interpretação — o que você PODE e o que NÃO PODE concluir."),
+        ("3º", "Gráficos — a visão geral em 10 segundos."),
+        ("4º", "Vitórias do Concorrente + Plano Híbrido — é AQUI que a decisão acontece."),
+        ("5º", "Comparacao — o detalhe município a município, quando precisar auditar."),
+    ]
+    for _i, (_o, _t) in enumerate(_ordem, start=_fim + 1):
+        _ws.write(_i, 1, _o, _F["kpi_rot"])
+        _ws.write(_i, 2, _t, _F["txt"])
+    _ws.set_footer("&L&8Motor Nacional de Roteirização Inteligente&R&8&D &T")
+
+
+def _resumo_executivo_xlsx(writer, stats, aud, veredito=None):
+    """[XLSX-PRO - 182ª geração] O RESUMO EXECUTIVO — um DASHBOARD, não uma tabela.
+
+    Uma linha de dados brutos ("pct_venceu_app: 62") não é um resumo executivo. Um resumo executivo é o
+    que um gestor lê em **10 segundos** antes de uma reunião: **cartões grandes, cores que significam
+    algo, e o veredito em português**. Aqui os KPIs viram CARTÕES, e o número que importa vem traduzido
+    para escala humana ("cada candidato anda 12,4 km a menos")."""
+    _wb = writer.book
+    _ws = _wb.add_worksheet("Resumo Executivo")
+    writer.sheets["Resumo Executivo"] = _ws
+    _F = _fmts_xlsx(_wb)
+    _ws.hide_gridlines(2)
+    for _c in range(1, 9):
+        _ws.set_column(_c, _c, 16)
+
+    _br = (stats or {}).get("brasil", {})
+    _ws.set_row(1, 30)
+    _ws.merge_range(1, 1, 1, 8, "RESUMO EXECUTIVO", _F["titulo"])
+    _ws.merge_range(2, 1, 2, 8, "Comparação entre o estudo da aplicação e a base de referência",
+                    _F["subtitulo"])
+
+    # ---- CONFIANÇA primeiro: se não dá para confiar, nada mais importa ----
+    _tot = (aud or {}).get("total_ref", 0)
+    _conc = (aud or {}).get("conciliados", 0)
+    _pct_c = round(100.0 * _conc / _tot, 1) if _tot else 0.0
+    _f_conf = _F["kpi_ok"] if _pct_c >= 95 else (_F["kpi_val"] if _pct_c >= 80 else _F["kpi_ruim"])
+    _ws.merge_range(4, 1, 4, 8, "CONFIANÇA DA COMPARAÇÃO", _F["secao"])
+    _ws.merge_range(5, 1, 6, 2, f"{_pct_c}%", _f_conf)
+    _ws.merge_range(5, 3, 6, 8,
+                    ("Conciliação ALTA — pode confiar nos números abaixo."
+                     if _pct_c >= 95 else
+                     ("Conciliação MÉDIA — leia com ressalva; confira os vínculos por similaridade."
+                      if _pct_c >= 80 else
+                      "⚠️ CONCILIAÇÃO BAIXA — os percentuais abaixo NÃO representam o universo completo. "
+                      "Corrija a planilha de referência (adicione o Código IBGE) e reprocesse.")),
+                    _F["txt"])
+    _ws.write(7, 1, "dos registros da referência foram casados com o estudo", _F["nota"])
+
+    # ---- os KPIs, em CARTÕES ----
+    _ws.merge_range(9, 1, 9, 8, "O RESULTADO", _F["secao"])
+    _kpis = [
+        ("Nossa aplicação venceu", f"{_br.get('pct_venceu_app', 0)}%", "ok"),
+        ("Referência venceu", f"{_br.get('pct_venceu_ref', 0)}%", "ruim"),
+        ("Empates técnicos", f"{_br.get('pct_empate', 0)}%", "normal"),
+        ("Candidatos analisados", _fmt_num(_br.get("inscritos", 0)), "normal"),
+    ]
+    for _i, (_rot, _val, _cor) in enumerate(_kpis):
+        _c0 = 1 + _i * 2
+        _f = {"ok": _F["kpi_ok"], "ruim": _F["kpi_ruim"], "normal": _F["kpi_val"]}[_cor]
+        _ws.merge_range(10, _c0, 11, _c0 + 1, _val, _f)
+        _ws.merge_range(12, _c0, 12, _c0 + 1, _rot, _F["kpi_rot"])
+    _ws.set_row(10, 26)
+    _ws.set_row(11, 26)
+
+    # ---- ESCALA HUMANA: o número que uma pessoa entende ----
+    _ec = _br.get("economia_ponderada_km", 0)
+    _in = _br.get("inscritos", 0)
+    _km = round(_ec / _in, 1) if _in else 0.0
+    _ws.merge_range(14, 1, 14, 8, "EM ESCALA HUMANA", _F["secao"])
+    _ws.merge_range(15, 1, 16, 3, f"{_fmt_num(abs(_km), 1)} km", _F["kpi_ok"] if _km >= 0 else _F["kpi_ruim"])
+    _ws.merge_range(15, 4, 16, 8,
+                    (f"É quanto cada candidato anda {'A MENOS' if _km >= 0 else 'A MAIS'}, em média.\n\n"
+                     f"O total ({_fmt_num(_ec)} km-candidato) não significa nada para ninguém. "
+                     "DIVIDIDO pelo número de candidatos, ele vira este número — que é o mesmo dado, "
+                     "mas é a diferença entre um DADO e um ENTENDIMENTO."), _F["txt"])
+    _ws.set_row(15, 30)
+    _ws.set_row(16, 30)
+
+    # ---- o veredito, em português ----
+    if veredito:
+        _ws.merge_range(18, 1, 18, 8, "VEREDITO", _F["secao"])
+        _ws.merge_range(19, 1, 21, 8,
+                        f"{veredito.get('icone', '')} {veredito.get('titulo', '')}\n\n"
+                        + re.sub(r"\*\*", "", veredito.get("frase", "")), _F["txt"])
+    _ws.set_footer("&L&8Resumo Executivo — Comparador de Estudos&R&8&D &T")
+
+
+def _graficos_xlsx(writer, stats, faixas, por_uf):
+    """[XLSX-PRO - 182ª geração] GRÁFICOS NATIVOS DO EXCEL — não imagens coladas.
+
+    Gráfico nativo é VIVO: o gestor clica, filtra, muda a série, copia para o PowerPoint e ele continua
+    ligado aos dados. Uma imagem colada é um cadáver bonito.
+
+    ⚠️ E aqui eu mantenho a linha que sustento desde a 138ª: **só os gráficos que INFORMAM.** Nada de
+    pizza com 12 fatias (ninguém compara ângulos), nada de treemap (bonito e ilegível). Três gráficos que
+    respondem três perguntas: **quem venceu · onde ganhamos e onde perdemos · como as diferenças se
+    distribuem.**"""
+    _wb = writer.book
+    _ws = _wb.add_worksheet("Graficos")
+    writer.sheets["Graficos"] = _ws
+    _F = _fmts_xlsx(_wb)
+    _ws.hide_gridlines(2)
+    _ws.merge_range(1, 1, 1, 8, "GRÁFICOS", _F["titulo"])
+    _ws.merge_range(2, 1, 2, 8,
+                    "Três perguntas: quem venceu · onde ganhamos e perdemos · como as diferenças se "
+                    "distribuem. Só entram gráficos que INFORMAM.", _F["subtitulo"])
+
+    _br = (stats or {}).get("brasil", {})
+    # dados auxiliares numa aba oculta (o Excel precisa deles em células)
+    _dw = _wb.add_worksheet("_dados_graficos")
+    writer.sheets["_dados_graficos"] = _dw
+    _dw.hide()
+
+    # 1) QUEM VENCEU (barras)
+    _dw.write_column("A1", ["Vencedor", "Nossa aplicação", "Referência", "Empate"])
+    _dw.write_column("B1", ["%", _br.get("pct_venceu_app", 0), _br.get("pct_venceu_ref", 0),
+                            _br.get("pct_empate", 0)])
+    _c1 = _wb.add_chart({"type": "column"})
+    _c1.add_series({
+        "name": "% dos municípios",
+        "categories": ["_dados_graficos", 1, 0, 3, 0],
+        "values": ["_dados_graficos", 1, 1, 3, 1],
+        "data_labels": {"value": True, "num_format": '0.0"%"'},
+        "points": [{"fill": {"color": _PALETA_XLSX["ok"]}},
+                   {"fill": {"color": _PALETA_XLSX["ruim"]}},
+                   {"fill": {"color": _PALETA_XLSX["alerta"]}}],
+    })
+    _c1.set_title({"name": "Quem levou o candidato mais perto (% dos municípios)"})
+    _c1.set_y_axis({"name": "% dos municípios", "major_gridlines": {"visible": True}})
+    _c1.set_legend({"none": True})
+    _c1.set_size({"width": 520, "height": 300})
+    _ws.insert_chart("B5", _c1)
+
+    # 2) ECONOMIA POR UF (barras — onde ganhamos e onde PERDEMOS)
+    if por_uf:
+        _uf = sorted(por_uf, key=lambda x: -abs(float(x.get("economia_km_candidato") or 0)))[:15]
+        _dw.write_column("D1", ["UF"] + [str(x.get("UF", "")) for x in _uf])
+        _dw.write_column("E1", ["km-candidato"] + [float(x.get("economia_km_candidato") or 0)
+                                                   for x in _uf])
+        _c2 = _wb.add_chart({"type": "bar"})
+        _c2.add_series({
+            "name": "Economia (km-candidato)",
+            "categories": ["_dados_graficos", 1, 3, len(_uf), 3],
+            "values": ["_dados_graficos", 1, 4, len(_uf), 4],
+            "data_labels": {"value": True, "num_format": "#,##0"},
+            "fill": {"color": _PALETA_XLSX["sub"]},
+            "invert_if_negative": True,      # 🔴 o negativo aparece INVERTIDO: perdemos ali
+        })
+        _c2.set_title({"name": "Economia por UF — barras NEGATIVAS = levamos o candidato mais LONGE"})
+        _c2.set_x_axis({"name": "km-candidato"})
+        _c2.set_legend({"none": True})
+        _c2.set_size({"width": 520, "height": 420})
+        _ws.insert_chart("B22", _c2)
+
+    # 3) FAIXAS DE DIFERENÇA (distribuição, COM SINAL)
+    if faixas:
+        _fx = [f for f in faixas if int(f.get("candidatos") or 0) > 0][:14]
+        _dw.write_column("G1", ["Faixa"] + [str(f.get("faixa", "")) for f in _fx])
+        _dw.write_column("H1", ["Candidatos"] + [int(f.get("candidatos") or 0) for f in _fx])
+        _c3 = _wb.add_chart({"type": "column"})
+        _c3.add_series({
+            "name": "Candidatos",
+            "categories": ["_dados_graficos", 1, 6, len(_fx), 6],
+            "values": ["_dados_graficos", 1, 7, len(_fx), 7],
+            "data_labels": {"value": True, "num_format": "#,##0"},
+            "fill": {"color": _PALETA_XLSX["cabecalho"]},
+        })
+        _c3.set_title({"name": "Candidatos por faixa de diferença (COM SINAL)"})
+        _c3.set_y_axis({"name": "Candidatos"})
+        _c3.set_legend({"none": True})
+        _c3.set_size({"width": 900, "height": 340})
+        _ws.insert_chart("K5", _c3)
+
+    _ws.write(1, 10, "Como ler:", _F["kpi_rot"])
+    _ws.write(2, 10, "Barra NEGATIVA em 'Economia por UF' = a nossa aplicação levou o candidato MAIS "
+                     "LONGE naquele estado. É por ali que a revisão começa.", _F["nota"])
+    _ws.set_footer("&L&8Gráficos — Comparador de Estudos&R&8&D &T")
+
+
+
+
+_NUM_FMT_XLSX = [
+    (("km-candidato", "km-cand", "km_candidato"), '#,##0 "km-cand"'),
+    (("(km)", "distancia", "distância", "km_a_mais", "linha reta"), '#,##0.0 "km"'),
+    (("(min)", "tempo", "minutos"), '#,##0 "min"'),
+    (("(%)", "pct", "percentual", "%"), '0.0"%"'),
+    (("candidatos", "inscritos", "municípios", "municipios", "alunos"), '#,##0'),
+    (("score", "igq", "confiança", "integridade"), '0'),
+    (("sinuosidade", "coef", "cv"), '0.00'),
+    (("data", "hora", "gerado"), 'dd/mm/yyyy hh:mm'),
+]
+
+
+def _fmt_para_coluna(nome, wb):
+    """[XLSX-PRO - 182ª geração] Formato numérico DERIVADO DO NOME da coluna.
+
+    Uma planilha profissional não mostra `192000.0` — mostra **192.000 km-cand**. O tipo do dado tem que
+    ser LEGÍVEL na célula, não inferido pelo leitor. Isto casa o nome da coluna com o formato certo. PURO."""
+    _n = str(nome).lower()
+    for _chaves, _f in _NUM_FMT_XLSX:
+        if any(_k in _n for _k in _chaves):
+            return wb.add_format({"num_format": _f, "border": 1, "border_color": "#D9D9D9",
+                                  "valign": "vcenter"})
+    return wb.add_format({"border": 1, "border_color": "#D9D9D9", "valign": "vcenter",
+                          "text_wrap": True})
+
+
+def _escrever_aba_profissional(writer, df, nome, destaques=None):
+    """[XLSX-PRO - 182ª geração] Aba de DADOS com apresentação de RELATÓRIO TÉCNICO.
+
+    ── A RESTRIÇÃO QUE MANDA AQUI (a lição da 171ª) ──
+    Na 170ª eu pus título e prosa ANTES da tabela, e **quebrei quatro coisas de uma vez**: o AutoFiltro, a
+    ordenação, a tabela dinâmica e o `pandas.read_excel()` — todos esperam o cabeçalho na PRIMEIRA linha.
+    **Uma aba de DADOS tem que ser DADO PURO.**
+
+    Então a beleza vem de onde ela NÃO atrapalha:
+      · **Tabela do Excel nativa** (`add_table`) → dá **zebra + filtros + cabeçalho estilizado** de graça,
+        e o Excel a reconhece como TABELA (dá para usar em tabela dinâmica com um clique);
+      · **formato numérico por tipo** (192.000 km-cand, não 192000.0);
+      · **formatação condicional** nas colunas que importam (divergência, vazio, risco);
+      · **congelamento** do cabeçalho e **largura calculada** por conteúdo.
+    Título, data e metadados vivem em abas PRÓPRIAS — onde eles pertencem."""
+    _n = (nome or "Aba")[:31]
+    try:
+        if df is None or len(df) == 0:
+            df = pd.DataFrame([{"—": "sem dados"}])
+        df.to_excel(writer, index=False, sheet_name=_n, startrow=0)
+        _ws = writer.sheets[_n]
+        _wb = writer.book
+
+        _n_lin, _n_col = len(df), len(df.columns)
+
+        # ── TABELA DO EXCEL: zebra + filtro + cabeçalho, tudo nativo ──
+        _f_cab = _wb.add_format({"bold": True, "bg_color": "#1F3864", "font_color": "#FFFFFF",
+                                 "border": 1, "border_color": "#1F3864", "text_wrap": True,
+                                 "valign": "vcenter", "align": "center"})
+        _ws.add_table(0, 0, _n_lin, _n_col - 1, {
+            "columns": [{"header": str(c), "header_format": _f_cab} for c in df.columns],
+            "style": "Table Style Light 15",     # discreto, institucional
+            "autofilter": True,
+            "name": re.sub(r"[^A-Za-z0-9_]", "_", _n)[:28] or "Tabela",
+        })
+
+        # ── formato + largura por coluna ──
+        for _c, _col in enumerate(df.columns):
+            _fmt = _fmt_para_coluna(_col, _wb)
+            try:
+                _larg = max(len(str(_col)) + 4,
+                            int(df[_col].astype(str).str.len().quantile(0.9) or 10) + 3)
+            except Exception:
+                _larg = 18
+            _ws.set_column(_c, _c, max(11, min(52, _larg)), _fmt)
+        _ws.set_row(0, 34)
+        _ws.freeze_panes(1, 0)
+
+        # ── FORMATAÇÃO CONDICIONAL: o perigo e a divergência saltam aos olhos ──
+        _v_ruim = _wb.add_format({"bg_color": "#FCE4E4", "font_color": "#9C0006"})
+        _v_bom = _wb.add_format({"bg_color": "#E2EFDA", "font_color": "#1F6F3D"})
+        _v_vazio = _wb.add_format({"bg_color": "#F2F2F2", "italic": True, "font_color": "#808080"})
+        for _c, _col in enumerate(df.columns):
+            _cl = str(_col).lower()
+            _rng = (1, _c, _n_lin, _c)
+            # números onde NEGATIVO é ruim (economia, diferença, ganho)
+            if any(_k in _cl for _k in ("economia", "diferenca", "diferença", "ganho", "km a mais")):
+                _ws.conditional_format(*_rng, {"type": "cell", "criteria": "<", "value": 0,
+                                               "format": _v_ruim})
+                _ws.conditional_format(*_rng, {"type": "cell", "criteria": ">", "value": 0,
+                                               "format": _v_bom})
+            # ocupação ≥ 100% = polo estourado
+            if "ocupa" in _cl:
+                _ws.conditional_format(*_rng, {"type": "cell", "criteria": ">=", "value": 100,
+                                               "format": _v_ruim})
+            # texto de risco / divergência
+            if any(_k in _cl for _k in ("risco", "vencedor", "situação", "situacao", "sobrevive",
+                                        "mesmo destino", "tipo de dist")):
+                for _t, _f in (("Alto", _v_ruim), ("Não", _v_ruim), ("⛔", _v_ruim), ("🔴", _v_ruim),
+                               ("Referência", _v_ruim), ("Geodésica", _v_ruim),
+                               ("Baixo", _v_bom), ("Sim", _v_bom), ("Aplicação", _v_bom)):
+                    _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
+                                                   "value": _t, "format": _f})
+            # células VAZIAS — o pedido explícito
+            _ws.conditional_format(*_rng, {"type": "blanks", "format": _v_vazio})
+
+        # destaques extras vindos do chamador
+        for _col, _regra in (destaques or {}).items():
+            if _col in df.columns:
+                _c = list(df.columns).index(_col)
+                _ws.conditional_format(1, _c, _n_lin, _c, _regra)
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha ao formatar a aba '{_n}': {_e}")
+        try:
+            df.to_excel(writer, index=False, sheet_name=_n)
+        except Exception:
+            pass
+
+
+def _aba_capa(writer, stats, aud, linhas, meta=None):
+    """[XLSX-PRO - 182ª geração] A CAPA / RESUMO EXECUTIVO — a aba que abre o relatório.
+
+    É **AQUI** que vivem o título, a data, os KPIs e a identidade visual — **não nas abas de dados**, onde
+    quebrariam filtro e ordenação. Esta aba é um PAINEL: quem abrir o arquivo numa reunião vê, em cinco
+    segundos, o que precisa saber."""
+    try:
+        _wb = writer.book
+        _ws = _wb.add_worksheet("Resumo Executivo")
+        writer.sheets["Resumo Executivo"] = _ws
+        _ws.hide_gridlines(2)
+        _ws.set_column(0, 0, 3)
+        _ws.set_column(1, 1, 38)
+        _ws.set_column(2, 4, 22)
+
+        _f_tit = _wb.add_format({"bold": True, "font_size": 22, "font_color": "#1F3864",
+                                 "valign": "vcenter"})
+        _f_sub = _wb.add_format({"font_size": 11, "font_color": "#7F7F7F", "italic": True})
+        _f_sec = _wb.add_format({"bold": True, "font_size": 13, "font_color": "#FFFFFF",
+                                 "bg_color": "#1F3864", "align": "left", "valign": "vcenter",
+                                 "indent": 1})
+        _f_kpi_r = _wb.add_format({"bold": True, "font_size": 20, "font_color": "#1F3864",
+                                   "align": "center", "valign": "vcenter", "bg_color": "#EAF0F8",
+                                   "border": 1, "border_color": "#B4C7E7"})
+        _f_kpi_l = _wb.add_format({"font_size": 9, "font_color": "#44546A", "align": "center",
+                                   "valign": "top", "bg_color": "#EAF0F8", "border": 1,
+                                   "border_color": "#B4C7E7", "text_wrap": True})
+        _f_txt = _wb.add_format({"font_size": 10, "text_wrap": True, "valign": "top",
+                                 "font_color": "#404040"})
+        _f_alerta = _wb.add_format({"font_size": 10, "text_wrap": True, "valign": "top",
+                                    "font_color": "#9C0006", "bg_color": "#FCE4E4", "border": 1,
+                                    "border_color": "#E8B4B4"})
+
+        _ws.merge_range("B2:E2", "COMPARAÇÃO DE ESTUDOS DE ALOCAÇÃO", _f_tit)
+        _ws.set_row(1, 32)
+        _mt = meta or {}
+        _ws.merge_range(
+            "B3:E3",
+            f"Relatório gerado em {_mt.get('gerado_em', datetime.now().strftime('%d/%m/%Y às %H:%M'))}"
+            + (f" · Processamento: {_mt.get('tempo_processamento')}"
+               if _mt.get("tempo_processamento") else ""), _f_sub)
+
+        _br = (stats or {}).get("brasil", {})
+        _tot_ref = (aud or {}).get("total_ref", 0)
+        _conc = (aud or {}).get("conciliados", 0)
+        _pct_c = round(100.0 * _conc / _tot_ref, 1) if _tot_ref else 0.0
+        _ins = _br.get("inscritos", 0)
+        _eco = _br.get("economia_ponderada_km", 0)
+        _kmc = round(_eco / _ins, 1) if _ins else 0.0
+
+        _ws.merge_range("B5:E5", "  INDICADORES", _f_sec)
+        _ws.set_row(4, 22)
+        _KPIS = [
+            ("Municípios analisados", f"{_tot_ref:,}".replace(",", ".")),
+            ("Taxa de conciliação", f"{_pct_c}%"),
+            ("Nossa aplicação venceu", f"{_br.get('pct_venceu_app', 0)}%"),
+            ("Estudo de referência venceu", f"{_br.get('pct_venceu_ref', 0)}%"),
+            ("Empates técnicos (< 1 km)", f"{_br.get('pct_empate', 0)}%"),
+            ("Candidatos analisados", f"{int(_ins):,}".replace(",", ".")),
+            ("Km a MENOS por candidato", f"{_kmc}".replace(".", ",")),
+            ("Candidatos beneficiados", f"{int(_br.get('candidatos_beneficiados', 0)):,}".replace(",", ".")),
+        ]
+        _r = 6
+        for _i, (_lbl, _val) in enumerate(_KPIS):
+            _c = 1 + (_i % 4)
+            if _i % 4 == 0 and _i:
+                _r += 3
+            _ws.write(_r, _c, _val, _f_kpi_r)
+            _ws.write(_r + 1, _c, _lbl, _f_kpi_l)
+            _ws.set_row(_r, 30)
+            _ws.set_row(_r + 1, 26)
+
+        _r += 4
+        _ws.merge_range(_r, 1, _r, 4, "  O QUE ESTES NÚMEROS SIGNIFICAM", _f_sec)
+        _ws.set_row(_r, 22)
+        _r += 1
+        _ws.merge_range(
+            _r, 1, _r + 3, 4,
+            f"A economia total de {_eco:,.0f} km-candidato não significa nada isolada. DIVIDIDA pelos "
+            f"{int(_ins):,} candidatos, ela vira: cada candidato anda {_kmc} km A MENOS. É o mesmo número — "
+            "mas um é dado e o outro é entendimento.\n\n"
+            "'Empate' NÃO é derrota: abaixo de 1 km a diferença é ruído de geocodificação. Não se declara "
+            "vitória com base em ruído.".replace(",", "."), _f_txt)
+        _ws.set_row(_r, 16)
+
+        _r += 5
+        if _pct_c < 95:
+            _ws.merge_range(
+                _r, 1, _r + 2, 4,
+                f"⚠️ ATENÇÃO: apenas {_pct_c}% dos municípios foram conciliados. Os percentuais deste "
+                "relatório NÃO representam o universo completo — descrevem só a parte que casou. Adicione a "
+                "coluna de CÓDIGO IBGE à planilha de referência e reprocesse antes de tirar conclusões.",
+                _f_alerta)
+            _r += 4
+
+        _ws.merge_range(_r, 1, _r, 4, "  COMO NAVEGAR ESTE ARQUIVO", _f_sec)
+        _ws.set_row(_r, 22)
+        _r += 1
+        _ws.merge_range(
+            _r, 1, _r + 4, 4,
+            "1º  Guia de Interpretação — diz se você PODE confiar nestes números (leia primeiro).\n"
+            "2º  Como Ler Cada Aba — o manual de todas as abas, em texto corrido.\n"
+            "3º  Vitórias do Concorrente + Plano Híbrido — é AQUI que a decisão acontece.\n"
+            "4º  Comparacao — o detalhe município a município, para auditar um caso.\n"
+            "5º  Dicionario de Dados — o significado de cada coluna.", _f_txt)
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha na capa: {_e}")
+
+
+def _aba_graficos(writer, stats, linhas):
+    """[XLSX-PRO - 182ª geração] GRÁFICOS NATIVOS DO EXCEL — não imagens coladas.
+
+    Gráfico nativo é VIVO: o usuário clica, filtra, muda o tipo, copia para o PowerPoint. Uma imagem é um
+    cadáver bonito. O xlsxwriter cria gráficos nativos de verdade — e é isso que separa um export de um
+    RELATÓRIO."""
+    try:
+        _wb = writer.book
+        _ws = _wb.add_worksheet("Graficos")
+        writer.sheets["Graficos"] = _ws
+        _ws.hide_gridlines(2)
+
+        # dados de apoio (numa aba oculta, para os gráficos referenciarem)
+        _dados = _wb.add_worksheet("_dados_graficos")
+        writer.sheets["_dados_graficos"] = _dados
+        _dados.hide()
+
+        _br = (stats or {}).get("brasil", {})
+        _placar = [("Nossa aplicação", _br.get("pct_venceu_app", 0)),
+                   ("Referência", _br.get("pct_venceu_ref", 0)),
+                   ("Empate técnico", _br.get("pct_empate", 0))]
+        _dados.write_column("A1", [x[0] for x in _placar])
+        _dados.write_column("B1", [x[1] for x in _placar])
+
+        _f_t = _wb.add_format({"bold": True, "font_size": 14, "font_color": "#1F3864"})
+        _ws.write("B2", "GRÁFICOS DA COMPARAÇÃO", _f_t)
+
+        _g1 = _wb.add_chart({"type": "column"})
+        _g1.add_series({
+            "name": "% de municípios",
+            "categories": ["_dados_graficos", 0, 0, len(_placar) - 1, 0],
+            "values": ["_dados_graficos", 0, 1, len(_placar) - 1, 1],
+            "data_labels": {"value": True, "num_format": '0.0"%"'},
+            "points": [{"fill": {"color": "#2E75B6"}}, {"fill": {"color": "#C00000"}},
+                       {"fill": {"color": "#A6A6A6"}}],
+        })
+        _g1.set_title({"name": "Quem levou o candidato mais perto (% de municípios)"})
+        _g1.set_y_axis({"name": "% dos municípios", "max": 100})
+        _g1.set_legend({"none": True})
+        _g1.set_size({"width": 560, "height": 330})
+        _ws.insert_chart("B4", _g1)
+
+        # por UF (top 12) — barras horizontais, que é o que se lê melhor
+        _uf = {}
+        for _l in (linhas or []):
+            _u = str(_l.get("UF") or "—")
+            _uf[_u] = _uf.get(_u, 0.0) + float(_l.get("Economia km x Inscritos") or 0)
+        _top = sorted(_uf.items(), key=lambda x: -abs(x[1]))[:12]
+        if _top:
+            _dados.write_column("D1", [x[0] for x in _top])
+            _dados.write_column("E1", [round(x[1], 1) for x in _top])
+            _g2 = _wb.add_chart({"type": "bar"})
+            _g2.add_series({
+                "name": "km-candidato",
+                "categories": ["_dados_graficos", 0, 3, len(_top) - 1, 3],
+                "values": ["_dados_graficos", 0, 4, len(_top) - 1, 4],
+                "fill": {"color": "#2E75B6"},
+                "data_labels": {"value": True, "num_format": "#,##0"},
+            })
+            _g2.set_title({"name": "Economia por estado (km-candidato) — barra para a ESQUERDA = perdemos"})
+            _g2.set_legend({"none": True})
+            _g2.set_size({"width": 560, "height": 400})
+            _ws.insert_chart("B23", _g2)
+
+        # distribuição por faixa
+        _fx = _estatisticas_por_faixa(linhas) if linhas else []
+        _fx = [f for f in _fx if f.get("candidatos")]
+        if _fx:
+            _dados.write_column("G1", [f["faixa"] for f in _fx])
+            _dados.write_column("H1", [f["candidatos"] for f in _fx])
+            _g3 = _wb.add_chart({"type": "column"})
+            _g3.add_series({
+                "name": "candidatos",
+                "categories": ["_dados_graficos", 0, 6, len(_fx) - 1, 6],
+                "values": ["_dados_graficos", 0, 7, len(_fx) - 1, 7],
+                "fill": {"color": "#548235"},
+                "data_labels": {"value": True, "num_format": "#,##0"},
+            })
+            _g3.set_title({"name": "Candidatos por faixa de diferença (com sinal)"})
+            _g3.set_legend({"none": True})
+            _g3.set_size({"width": 720, "height": 360})
+            _ws.insert_chart("L4", _g3)
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha nos gráficos: {_e}")
+
+
+def _aba_metadados(writer, meta):
+    """[XLSX-PRO - 182ª geração] METADADOS DO PROCESSAMENTO — a rastreabilidade que um relatório técnico
+    exige. Quem gerou, quando, com que versão, de que arquivos, com quantas linhas. Sem isso, o relatório
+    não é auditável: é um PDF bonito."""
+    try:
+        _m = meta or {}
+        _linhas = [
+            {"Campo": "Relatório", "Valor": "Comparação de Estudos de Alocação de Locais de Prova"},
+            {"Campo": "Gerado em", "Valor": _m.get("gerado_em",
+                                                   datetime.now().strftime("%d/%m/%Y %H:%M:%S"))},
+            {"Campo": "Versão da plataforma", "Valor": _m.get("versao", "—")},
+            {"Campo": "Planilha de referência", "Valor": _m.get("arquivo_ref", "—")},
+            {"Campo": "Registros na referência", "Valor": _m.get("total_ref", "—")},
+            {"Campo": "Municípios do estudo da aplicação", "Valor": _m.get("total_app", "—")},
+            {"Campo": "Conciliados", "Valor": _m.get("conciliados", "—")},
+            {"Campo": "Conciliados por Código IBGE", "Valor": _m.get("por_ibge", "—")},
+            {"Campo": "Conciliados por Município + UF", "Valor": _m.get("por_mun_uf", "—")},
+            {"Campo": "Conciliados por SIMILARIDADE (não oficial)", "Valor": _m.get("por_fuzzy", "—")},
+            {"Campo": "NÃO conciliados (fora das estatísticas)", "Valor": _m.get("nao_conciliados", "—")},
+            {"Campo": "Conciliados mas NÃO comparáveis", "Valor": _m.get("nao_comparaveis", "—")},
+            {"Campo": "Base municipal", "Valor": "IBGE — 5.571 municípios, embarcada (offline)"},
+            {"Campo": "Cálculo geodésico", "Valor": "GeographicLib / Karney (WGS-84, erro < 1 mm)"},
+            {"Campo": "Roteamento", "Valor": "Consenso OSRM × Google (menor distância física válida)"},
+        ]
+        _escrever_aba_profissional(writer, pd.DataFrame(_linhas), "Metadados")
+    except Exception as _e:
+        logger.error(f"[XLSX-PRO] Falha nos metadados: {_e}")
+
+
 def _escrever_aba_com_guia(writer, df, nome, guia=None):
+    """[XLSX-PRO - 182ª geração] DELEGA ao escritor PROFISSIONAL.
+
+    Manter DUAS implementações seria pedir para elas divergirem. Um único escritor, e **toda aba que passar
+    por aqui — inclusive as que eu ainda vou escrever — ganha a formatação de relatório automaticamente.**
+    É a mesma lógica do PONTO ÚNICO da 169ª: **conserte a fonte, não os chamadores.**"""
+    return _escrever_aba_profissional(writer, df, nome)
+
+
+def _escrever_aba_com_guia_LEGADO(writer, df, nome, guia=None):
     """[GUIA-PLANILHA - 171ª geração] Escreve a aba de DADOS — **limpa, do jeito que o Excel precisa**.
 
     ── EU TINHA ERRADO, E O USUÁRIO PERCEBEU ──
@@ -11053,6 +12307,327 @@ def _diagnostico_estudo_app(df_app):
             "pct_falhas": round(100.0 * len(_falhas) / _tot, 1) if _tot else 0.0}
 
 
+
+
+def _conciliar_multiplos(df_app, estudos):
+    """[N-ESTUDOS - 183ª geração] CONCILIAÇÃO GENÉRICA DE N ESTUDOS.
+
+    ── A GENERALIZAÇÃO CERTA (e ela não é óbvia) ──
+    A tentação é fazer "N estudos, todos iguais". **Errado para este domínio.** A nossa aplicação **sempre
+    existe** — ela é quem PRODUZ o estudo. Os outros são REFERÊNCIAS externas (o estudo de 2025, o cenário
+    base, a simulação do fornecedor). Então a estrutura certa é:
+
+        **1 estudo da APLICAÇÃO  +  N estudos de REFERÊNCIA**
+
+    Isso preserva TUDO que já existe (todas as análises são app-cêntricas) e generaliza de graça: com N=1
+    referência, é exatamente o comparador de hoje. **Uma generalização que quebra o caso antigo é uma
+    regressão com nome bonito.**
+
+    ── ESTRUTURA DE SAÍDA (uma linha por município, N colunas por estudo) ──
+        {"Origem": ..., "UF": ..., "Inscritos": ..., "Cod IBGE Origem": ...,
+         "estudos": {"Nossa aplicação": {...}, "Estudo 2025": {...}, "Cenário Base": {...}}}
+
+    `estudos` é uma lista de dicts: [{"nome": str, "df": DataFrame, "mapa": dict}, ...]
+    Retorna (linhas, auditoria_por_estudo). PURO."""
+    if df_app is None or len(df_app) == 0 or not estudos:
+        return [], {}
+
+    _app_rows = df_app.to_dict("records")
+    # índice do estudo da aplicação: por código IBGE e por (município, uf)
+    _idx_cod, _idx_mun = {}, {}
+    for _i, _r in enumerate(_app_rows):
+        _c = str(_r.get("Cod IBGE Origem") or "").strip()
+        if _c:
+            _idx_cod[_c] = _i
+        _m = semantica.normalizar(str(_r.get("Municipio Origem") or _r.get("Origem") or ""))
+        _u = str(_r.get("UF Origem") or "").strip().upper()
+        if _m:
+            _idx_mun[(_m, _u)] = _i
+            _idx_mun.setdefault((_m, ""), _i)
+
+    # a base: uma linha por município do NOSSO estudo
+    _linhas = []
+    for _i, _a in enumerate(_app_rows):
+        _val, _mot = _linha_app_valida(_a)
+        _linhas.append({
+            "_i": _i,
+            "Origem": _a.get("Municipio Origem") or _a.get("Origem"),
+            "UF": _a.get("UF Origem", ""),
+            "Cod IBGE Origem": str(_a.get("Cod IBGE Origem") or ""),
+            "Inscritos": float(_a.get("Inscritos") or 0),
+            "estudos": {},
+            "_app_valida": _val, "_app_motivo": _mot,
+        })
+
+    # o NOSSO estudo entra como o primeiro
+    for _i, _a in enumerate(_app_rows):
+        if not _linhas[_i]["_app_valida"]:
+            continue
+        try:
+            _d = float(_a.get("Distancia"))
+        except (TypeError, ValueError):
+            continue
+        _linhas[_i]["estudos"]["🏢 Nossa aplicação"] = {
+            "destino": _a.get("Municipio Destino") or _a.get("Destino"),
+            "distancia": _d,
+            "tempo_min": _parse_tempo_min(_a.get("Tempo")) if _a.get("Tempo") else None,
+            "balsa": str(_a.get("Balsas", "")).strip().lower() in ("sim", "yes", "true", "1"),
+            "tipo": _tipo_de_distancia(_a),
+            "metodo": "—", "score": 100,
+        }
+
+    # cada estudo de REFERÊNCIA
+    _aud = {}
+    for _e in estudos:
+        _nome = str(_e.get("nome") or "Estudo").strip()[:40]
+        _df = _e.get("df")
+        _mapa = _e.get("mapa") or {}
+        if _df is None or len(_df) == 0:
+            continue
+        _a_e = {"nome": _nome, "total": len(_df), "conciliados": 0, "por_ibge": 0,
+                "por_mun_uf": 0, "por_mun": 0, "nao_conciliados": []}
+
+        def _v(_r, _k):
+            _c = _mapa.get(_k)
+            return _r.get(_c) if _c else None
+
+        for _r in _df.to_dict("records"):
+            _cod = _e_codigo_ibge(str(_v(_r, "ibge_origem") or ""))
+            _i_app = None
+            _met, _sc = "", 0
+            if _cod and _cod in _idx_cod:
+                _i_app, _met, _sc = _idx_cod[_cod], "Código IBGE", 100
+                _a_e["por_ibge"] += 1
+            if _i_app is None:
+                _m = semantica.normalizar(str(_v(_r, "origem") or ""))
+                _u = str(_v(_r, "uf_origem") or "").strip().upper()
+                if (_m, _u) in _idx_mun:
+                    _i_app, _met, _sc = _idx_mun[(_m, _u)], "Município + UF", 98
+                    _a_e["por_mun_uf"] += 1
+                elif (_m, "") in _idx_mun:
+                    _i_app, _met, _sc = _idx_mun[(_m, "")], "Município", 90
+                    _a_e["por_mun"] += 1
+            if _i_app is None:
+                _a_e["nao_conciliados"].append({
+                    "estudo": _nome, "origem": _v(_r, "origem"), "uf": _v(_r, "uf_origem"),
+                    "motivo": "Não casou com nenhum município do estudo da aplicação."})
+                continue
+            try:
+                _dist = float(_v(_r, "distancia"))
+            except (TypeError, ValueError):
+                _dist = None
+            if _dist is None or _dist <= 0:
+                continue
+            _a_e["conciliados"] += 1
+            _linhas[_i_app]["estudos"][_nome] = {
+                "destino": _v(_r, "destino"),
+                "distancia": _dist,
+                "tempo_min": (_parse_tempo_min(_v(_r, "tempo"))
+                              if _mapa.get("tempo") and _v(_r, "tempo") else None),
+                "balsa": None,          # a referência não informa: NÃO INVENTAMOS
+                "tipo": "🛣️ Viária (informado)",
+                "metodo": _met, "score": _sc,
+            }
+            # os inscritos: se a referência trouxer e a app não tiver, aproveita
+            if not _linhas[_i_app]["Inscritos"] and _mapa.get("inscritos"):
+                try:
+                    _linhas[_i_app]["Inscritos"] = float(_v(_r, "inscritos") or 0)
+                except (TypeError, ValueError):
+                    pass
+        _aud[_nome] = _a_e
+
+    # só as linhas com pelo menos 2 estudos são COMPARÁVEIS
+    _comp = [l for l in _linhas if len(l["estudos"]) >= 2]
+    return _comp, _aud
+
+
+def _comparar_n_estudos(linhas, nomes=None):
+    """[N-ESTUDOS - 183ª geração] A ANÁLISE QUE **SÓ EXISTE COM N**.
+
+    ── AS PERGUNTAS NOVAS (e elas mudam a decisão) ──
+    Com dois estudos você pergunta "quem ganhou?". Com N, aparecem perguntas melhores:
+
+      🎯 **Onde TODOS concordam** → confiança alta. **Não precisa revisar.** É onde você economiza tempo.
+      ⚡ **Onde TODOS divergem** → é **ali** que a decisão é difícil, e é **ali** que o humano precisa
+         olhar. Um município em que 4 estudos escolheram 4 polos diferentes está te dizendo algo:
+         **não há resposta óbvia, e o modelo sozinho não vai encontrá-la.**
+      🏆 **O híbrido de N** → o melhor de CADA município entre TODOS os estudos. Domina todos, por
+         construção. Com N estudos, o ganho do híbrido cresce — porque há mais alternativas para escolher.
+
+    ── E O CONSENSO É UM SINAL DE QUALIDADE ──
+    Se 4 metodologias INDEPENDENTES chegam ao mesmo polo, esse polo é provavelmente certo. Se elas se
+    espalham, é sinal de que o problema ali é genuinamente ambíguo (empate de distâncias, malha viária
+    complicada) — e nenhum estudo isolado "está certo". **O consenso mede a DIFICULDADE do problema, não
+    só a concordância dos métodos.** PURO."""
+    if not linhas:
+        return {}
+    _nomes = nomes or sorted({n for l in linhas for n in l["estudos"]})
+    _tot_c = int(sum(l.get("Inscritos") or 0 for l in linhas))
+
+    _placar = {n: {"municipios": 0, "candidatos": 0} for n in _nomes}
+    _km_por_estudo = {n: 0.0 for n in _nomes}
+    _km_hibrido = 0.0
+    _consenso_total, _divergencia_total = [], []
+    _detalhe = []
+
+    for l in linhas:
+        _e = l["estudos"]
+        _ins = float(l.get("Inscritos") or 0)
+        _w = max(_ins, 1.0)
+        _validos = {n: v for n, v in _e.items() if v.get("distancia") and v["distancia"] > 0}
+        if len(_validos) < 2:
+            continue
+        for _n, _v in _validos.items():
+            _km_por_estudo[_n] += _v["distancia"] * _w
+
+        _melhor_n = min(_validos, key=lambda n: _validos[n]["distancia"])
+        _melhor_d = _validos[_melhor_n]["distancia"]
+        _km_hibrido += _melhor_d * _w
+
+        # EMPATE TÉCNICO: diferença < 1 km é ruído de geocodificação (a regra da 138ª)
+        _ordenados = sorted(_validos.items(), key=lambda kv: kv[1]["distancia"])
+        _empate = (len(_ordenados) > 1
+                   and _ordenados[1][1]["distancia"] - _ordenados[0][1]["distancia"] < 1.0)
+        if not _empate:
+            _placar[_melhor_n]["municipios"] += 1
+            _placar[_melhor_n]["candidatos"] += int(_ins)
+
+        # CONSENSO: todos escolheram o MESMO polo?
+        _polos = {str(v.get("destino") or "").strip().upper() for v in _validos.values()}
+        _polos.discard("")
+        _n_polos = len(_polos)
+        if _n_polos == 1:
+            _consenso_total.append(l)
+        elif _n_polos == len(_validos):
+            _divergencia_total.append(l)
+
+        _pior_d = max(v["distancia"] for v in _validos.values())
+        _detalhe.append({
+            "Município": l.get("Origem"), "UF": l.get("UF", ""),
+            "Candidatos": int(_ins),
+            "Estudos comparados": len(_validos),
+            "Polos distintos escolhidos": _n_polos,
+            "🏆 Melhor estudo": _melhor_n if not _empate else "Empate técnico",
+            "Melhor distância (km)": round(_melhor_d, 1),
+            "Pior distância (km)": round(_pior_d, 1),
+            "Amplitude (km)": round(_pior_d - _melhor_d, 1),
+            "Impacto da escolha (km-cand)": round((_pior_d - _melhor_d) * _ins, 1),
+            "Consenso": ("🎯 TOTAL" if _n_polos == 1 else
+                         ("⚡ DIVERGÊNCIA TOTAL" if _n_polos == len(_validos) else "🟡 Parcial")),
+            **{f"{n} (km)": round(_validos[n]["distancia"], 1) if n in _validos else None
+               for n in _nomes},
+            **{f"{n} → polo": (_validos[n].get("destino") if n in _validos else None)
+               for n in _nomes},
+        })
+
+    _n_comp = len(_detalhe)
+    for _n in _nomes:
+        _placar[_n]["pct_municipios"] = (round(100.0 * _placar[_n]["municipios"] / _n_comp, 1)
+                                         if _n_comp else 0.0)
+        _placar[_n]["pct_candidatos"] = (round(100.0 * _placar[_n]["candidatos"] / _tot_c, 1)
+                                         if _tot_c else 0.0)
+        _km_por_estudo[_n] = round(_km_por_estudo[_n], 1)
+
+    _melhor_geral = min(_km_por_estudo, key=lambda n: _km_por_estudo[n]) if _km_por_estudo else None
+    _ganho_hib = (round(_km_por_estudo[_melhor_geral] - _km_hibrido, 1)
+                  if _melhor_geral else 0.0)
+
+    _divergencia_total.sort(key=lambda l: -float(l.get("Inscritos") or 0))
+    return {
+        "estudos": _nomes, "n_estudos": len(_nomes), "municipios_comparaveis": _n_comp,
+        "candidatos": _tot_c,
+        "placar": _placar,
+        "km_candidato_por_estudo": _km_por_estudo,
+        "km_candidato_hibrido": round(_km_hibrido, 1),
+        "melhor_estudo_geral": _melhor_geral,
+        "ganho_do_hibrido": _ganho_hib,
+        "consenso_total": len(_consenso_total),
+        "pct_consenso": round(100.0 * len(_consenso_total) / _n_comp, 1) if _n_comp else 0.0,
+        "divergencia_total": len(_divergencia_total),
+        "pct_divergencia": round(100.0 * len(_divergencia_total) / _n_comp, 1) if _n_comp else 0.0,
+        "municipios_divergentes": [
+            {"Município": l.get("Origem"), "UF": l.get("UF", ""),
+             "Candidatos": int(l.get("Inscritos") or 0),
+             **{n: (l["estudos"][n].get("destino") if n in l["estudos"] else "—") for n in _nomes}}
+            for l in _divergencia_total[:60]],
+        "detalhe": _detalhe,
+    }
+
+
+def _matriz_similaridade(linhas, nomes=None):
+    """[N-ESTUDOS - 183ª geração] MATRIZ DE SIMILARIDADE — quais estudos "pensam parecido"?
+
+    Para cada PAR de estudos: em que % dos municípios eles escolheram o MESMO polo?
+
+    ── POR QUE ISTO IMPORTA (e não é enfeite) ──
+    Se dois estudos concordam em 97%, **um deles é redundante** — você está pagando por duas metodologias
+    que dizem a mesma coisa. Se concordam em 40%, **eles enxergam o problema de formas fundamentalmente
+    diferentes**, e vale entender POR QUÊ antes de escolher um.
+    É a diferença entre ter **N opiniões** e ter **N cópias da mesma opinião**. PURO."""
+    if not linhas:
+        return {}
+    _nomes = nomes or sorted({n for l in linhas for n in l["estudos"]})
+    _m = []
+    for _a in _nomes:
+        _linha = {"Estudo": _a}
+        for _b in _nomes:
+            if _a == _b:
+                _linha[_b] = 100.0
+                continue
+            _comuns = [l for l in linhas if _a in l["estudos"] and _b in l["estudos"]]
+            if not _comuns:
+                _linha[_b] = None
+                continue
+            _iguais = sum(
+                1 for l in _comuns
+                if str(l["estudos"][_a].get("destino") or "").strip().upper()
+                == str(l["estudos"][_b].get("destino") or "").strip().upper()
+                and str(l["estudos"][_a].get("destino") or "").strip())
+            _linha[_b] = round(100.0 * _iguais / len(_comuns), 1)
+        _m.append(_linha)
+
+    # o par mais parecido e o mais diferente (que é onde mora a informação)
+    _pares = []
+    for _i, _a in enumerate(_nomes):
+        for _b in _nomes[_i + 1:]:
+            _v = next((r[_b] for r in _m if r["Estudo"] == _a), None)
+            if _v is not None:
+                _pares.append((_a, _b, _v))
+    _pares.sort(key=lambda x: -x[2])
+    return {
+        "matriz": _m, "nomes": _nomes,
+        "par_mais_parecido": _pares[0] if _pares else None,
+        "par_mais_diferente": _pares[-1] if _pares else None,
+        "leitura": _montar_leitura_similaridade(_pares),
+    }
+
+
+def _montar_leitura_similaridade(pares):
+    """[N-ESTUDOS - 183ª geração] A leitura da matriz, em português. PURA."""
+    if not pares:
+        return []
+    _out = []
+    _a, _b, _v = pares[0]
+    if _v >= 95:
+        _out.append(
+            f"🔁 **{_a}** e **{_b}** concordam em **{_v}%** dos municípios. Nesse nível, **um deles é "
+            "praticamente REDUNDANTE** — você está pagando (em tempo e em atenção) por duas metodologias "
+            "que dizem a mesma coisa. Considere manter só uma.")
+    _a2, _b2, _v2 = pares[-1]
+    if _v2 <= 60 and len(pares) > 1:
+        _out.append(
+            f"⚡ **{_a2}** e **{_b2}** concordam em apenas **{_v2}%**. Eles enxergam o problema de formas "
+            "**fundamentalmente diferentes** — e é exatamente aí que está a informação. **Vale entender POR "
+            "QUÊ** antes de escolher um: pode ser critério diferente (distância × tempo), base de dados "
+            "diferente, ou um deles simplesmente errado.")
+    if not _out:
+        _out.append(
+            "⚖️ Os estudos têm concordância intermediária entre si — nem redundantes, nem radicalmente "
+            "divergentes. É o cenário mais comum, e o mais útil: cada um traz alguma informação que os "
+            "outros não têm.")
+    return _out
+
+
 def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
     """[COMPARADOR - 138ª geração] Concilia a saída da aba Locais de Aplicação (df_app) com a base externa
     de referência (df_ref), pela ORIGEM (município de candidatos). HIERARQUIA, do mais forte ao mais fraco:
@@ -11364,6 +12939,23 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
         _df = pd.DataFrame(linhas)
         _buf = io.BytesIO()
         with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
+            # [XLSX-PRO - 182ª geração] A CAPA ABRE O RELATÓRIO — numa aba PRÓPRIA.
+            # Título, data, KPIs e navegação vivem AQUI. NUNCA nas abas de dados, onde quebrariam o
+            # AutoFiltro, a ordenação, a tabela dinâmica e o read_excel() (a lição da 171ª, que me custou
+            # uma geração para aprender).
+            _meta_x = {
+                "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                "versao": f"v{_VERSAO_APP}",
+                "arquivo_ref": st.session_state.get('cmp_nome_arquivo', '—'),
+                "total_ref": aud.get("total_ref", 0), "total_app": len(linhas),
+                "conciliados": aud.get("conciliados", 0), "por_ibge": aud.get("por_ibge", 0),
+                "por_mun_uf": aud.get("por_mun_uf", 0), "por_fuzzy": aud.get("por_fuzzy", 0),
+                "nao_conciliados": len(aud.get("nao_conciliados", []) or []),
+                "nao_comparaveis": len(aud.get("nao_comparaveis", []) or []),
+            }
+            _aba_capa(_w, stats, aud, linhas, _meta_x)
+            _aba_graficos(_w, stats, linhas)
+
             # [GUIA-PLANILHA - 170ª geração] O GUIA VEM PRIMEIRO. A planilha tinha 22 abas e NENHUMA se
             # explicava. O usuário abria "Ranking Estados" e não havia nada dizendo o que aquilo era.
             # Agora: o Guia de Interpretação é a PRIMEIRA aba, e cada tabela carrega seu próprio guia
@@ -11381,6 +12973,7 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
             for _ab in _todas_abas:
                 _linhas_guia.extend(_texto_guia_da_aba(_ab))
             _escrever_aba_com_guia(_w, pd.DataFrame(_linhas_guia), "📖 Como Ler Cada Aba")
+            _aba_metadados(_w, _meta_x)   # [XLSX-PRO] rastreabilidade: sem ela, não é auditável
 
             _escrever_aba_com_guia(
                 _w, pd.DataFrame(_guia_interpretacao_completo(stats, aud, linhas)),
@@ -21017,6 +22610,200 @@ if _secao == _SECOES[3]:   # tab_comparador
                              use_container_width=True, hide_index=True)
         except Exception as _e_d:
             logger.error(f"[DICIONARIO] Falha no dicionário: {_e_d}")
+
+    # ═══════════════════════════════════════════════════════════════════════════════════════════
+    # [N-ESTUDOS - 183ª geração] COMPARAÇÃO DE MÚLTIPLOS ESTUDOS.
+    #
+    # ── A DECISÃO DE ARQUITETURA (e ela protege o que já funciona) ──
+    # Eu poderia ter REESCRITO o comparador de 2 estudos para ser genérico. Seria elegante — e seria
+    # **risco puro**: o fluxo de 2 estudos tem 214 testes o protegendo e é o que você usa todo dia.
+    # **Uma generalização que quebra o caso antigo é uma regressão com nome bonito.**
+    # Então: o modo N-estudos vive AO LADO, com motor próprio (_conciliar_multiplos), e o de 2 segue
+    # intocado. Quem quiser N usa N; quem quiser 2 continua com toda a profundidade que já existe
+    # (concorrente, híbrido, tripla, viabilidade — tudo isso é app-cêntrico e não generaliza de graça).
+    # ═══════════════════════════════════════════════════════════════════════════════════════════
+    with st.expander("🔢 Comparar MÚLTIPLOS estudos (3, 4, 5...) — modo N-estudos", expanded=False):
+        st.caption(
+            "📖 **O que muda com N estudos.** Com dois, você pergunta *“quem ganhou?”*. Com N, aparecem "
+            "perguntas **melhores**:\n\n"
+            "🎯 **Onde TODOS concordam** → confiança alta. **Não precisa revisar** — é onde você economiza "
+            "tempo.\n\n"
+            "⚡ **Onde TODOS divergem** → é **ali** que a decisão é difícil. Um município em que 4 estudos "
+            "escolheram **4 polos diferentes** está te dizendo: **não há resposta óbvia, e nenhum modelo "
+            "sozinho vai encontrá-la.** É exatamente aí que o humano precisa olhar.\n\n"
+            "🏆 **O híbrido de N** → o melhor de cada município entre TODOS. Domina todos, **por "
+            "construção** — e com mais estudos, o ganho **cresce**.")
+
+        if not _tem_alo:
+            st.warning("⚠️ Rode primeiro a aba **🎯 Locais de Aplicação**. É o estudo dela que serve de base.")
+
+        if _tem_alo:
+            _n_est = st.number_input(
+                "Quantos estudos de REFERÊNCIA você quer comparar?", 1, 8, 2, 1, key="nw_qtd",
+                help="A sua aplicação já entra como um dos estudos. Aqui você diz quantas planilhas "
+                     "EXTERNAS quer confrontar com ela.")
+            st.caption(f"Total a comparar: **1 (a sua aplicação) + {int(_n_est)} referência(s) = "
+                       f"{int(_n_est) + 1} estudos**.")
+
+            _estudos_nw = []
+            _nomes_usados = set()
+            _erros_nw = []
+            for _k in range(int(_n_est)):
+                _c1, _c2 = st.columns([1, 2])
+                _nm = _c1.text_input(f"Nome do estudo {_k + 1}", value=f"Estudo {chr(65 + _k)}",
+                                     key=f"nw_nome_{_k}",
+                                     help="Ex.: 'Estudo 2025', 'Cenário Base', 'Simulação do fornecedor'.")
+                _fl = _c2.file_uploader(f"Planilha do estudo {_k + 1}", type=["xlsx", "xls", "csv"],
+                                        key=f"nw_file_{_k}")
+                if not _fl:
+                    continue
+                # ── VALIDAÇÕES (mensagens claras, nunca um traceback na cara do usuário) ──
+                if _nm.strip() in _nomes_usados:
+                    _erros_nw.append(f"⛔ **Nome duplicado:** '{_nm}'. Cada estudo precisa de um nome único "
+                                     "— senão as colunas do relatório colidem.")
+                    continue
+                _nomes_usados.add(_nm.strip())
+                try:
+                    _df_nw = (pd.read_csv(_fl) if _fl.name.lower().endswith(".csv")
+                              else pd.read_excel(_fl))
+                except Exception as _e_nw:
+                    _erros_nw.append(f"⛔ **'{_nm}' não pôde ser lido:** {type(_e_nw).__name__}. "
+                                     "O arquivo pode estar corrompido ou num formato inesperado.")
+                    continue
+                if _df_nw is None or len(_df_nw) == 0:
+                    _erros_nw.append(f"⛔ **'{_nm}' está VAZIO** (zero linhas).")
+                    continue
+                _cols_nw = ["—"] + list(_df_nw.columns)
+                _m1, _m2, _m3, _m4 = st.columns(4)
+                _mapa_nw = {
+                    "origem": _m1.selectbox(f"Município de origem · {_nm}", _cols_nw,
+                                            key=f"nw_o_{_k}"),
+                    "uf_origem": _m2.selectbox(f"UF · {_nm}", _cols_nw, key=f"nw_u_{_k}"),
+                    "ibge_origem": _m3.selectbox(f"Código IBGE · {_nm}", _cols_nw, key=f"nw_i_{_k}"),
+                    "destino": _m4.selectbox(f"Local de prova · {_nm}", _cols_nw, key=f"nw_d_{_k}"),
+                }
+                _m5, _m6, _m7 = st.columns(3)
+                _mapa_nw["distancia"] = _m5.selectbox(f"Distância (km) · {_nm}", _cols_nw,
+                                                      key=f"nw_dist_{_k}")
+                _mapa_nw["inscritos"] = _m6.selectbox(f"Inscritos · {_nm}", _cols_nw, key=f"nw_ins_{_k}")
+                _mapa_nw["tempo"] = _m7.selectbox(f"Tempo · {_nm}", _cols_nw, key=f"nw_t_{_k}")
+                _mapa_nw = {_a: (_b if _b != "—" else None) for _a, _b in _mapa_nw.items()}
+
+                if not _mapa_nw.get("destino") or not _mapa_nw.get("distancia"):
+                    _erros_nw.append(f"⚠️ **'{_nm}':** mapeie ao menos o **local de prova** e a "
+                                     "**distância** — sem eles não há o que comparar.")
+                    continue
+                if not (_mapa_nw.get("ibge_origem") or _mapa_nw.get("origem")):
+                    _erros_nw.append(f"⚠️ **'{_nm}':** mapeie o **município de origem** (ou o **Código "
+                                     "IBGE**) — é a chave de conciliação.")
+                    continue
+                _estudos_nw.append({"nome": _nm.strip(), "df": _df_nw, "mapa": _mapa_nw})
+                st.success(f"✅ **{_nm}** carregado: {len(_df_nw):,} linhas.".replace(",", "."))
+
+            for _e in _erros_nw:
+                st.error(_e)
+
+            if _estudos_nw and st.button(f"🔢 Comparar os {len(_estudos_nw) + 1} estudos",
+                                         type="primary", key="nw_run"):
+                with st.spinner("Conciliando e comparando..."):
+                    try:
+                        _lin_nw, _aud_nw = _conciliar_multiplos(_df_alo_cmp, _estudos_nw)
+                        st.session_state['nw_linhas'] = _lin_nw
+                        st.session_state['nw_aud'] = _aud_nw
+                        st.session_state['nw_res'] = _comparar_n_estudos(_lin_nw)
+                        st.session_state['nw_sim'] = _matriz_similaridade(_lin_nw)
+                    except Exception as _e_run:
+                        logger.error(f"[N-ESTUDOS] Falha: {_e_run}")
+                        st.error(f"⛔ **Falha na comparação:** {type(_e_run).__name__}. "
+                                 "Confira o mapeamento das colunas.")
+
+            _rn = st.session_state.get('nw_res')
+            if _rn and _rn.get("municipios_comparaveis"):
+                st.divider()
+                st.markdown(f"## 🔢 {_rn['n_estudos']} estudos · "
+                            f"{_fmt_num(_rn['municipios_comparaveis'])} municípios · "
+                            f"{_fmt_num(_rn['candidatos'])} candidatos")
+
+                _k1, _k2, _k3, _k4 = st.columns(4)
+                _k1.metric("🏆 Melhor estudo isolado", str(_rn['melhor_estudo_geral'])[:18])
+                _k2.metric("🎯 Consenso total", f"{_rn['pct_consenso']}%",
+                           f"{_rn['consenso_total']} municípios",
+                           help="Todos os estudos escolheram o MESMO polo. Confiança alta — não precisa "
+                                "revisar.")
+                _k3.metric("⚡ Divergência total", f"{_rn['pct_divergencia']}%",
+                           f"{_rn['divergencia_total']} municípios", delta_color="inverse",
+                           help="CADA estudo escolheu um polo DIFERENTE. É aqui que o humano precisa olhar.")
+                _k4.metric("🏆 Ganho do HÍBRIDO", f"{_fmt_num(_rn['ganho_do_hibrido'])} km-cand",
+                           help="Quanto o melhor-de-cada poupa a mais que o melhor estudo isolado.")
+
+                st.markdown("##### 📊 Placar e deslocamento total")
+                _df_pl = pd.DataFrame([
+                    {"Estudo": _n,
+                     "Municípios vencidos": _p["municipios"],
+                     "% dos municípios": _p["pct_municipios"],
+                     "Candidatos beneficiados": _p["candidatos"],
+                     "Deslocamento total (km-candidato)": _rn["km_candidato_por_estudo"].get(_n)}
+                    for _n, _p in _rn["placar"].items()]
+                    + [{"Estudo": "🏆 HÍBRIDO (o melhor de cada município)", "Municípios vencidos": "—",
+                        "% dos municípios": "—", "Candidatos beneficiados": "—",
+                        "Deslocamento total (km-candidato)": _rn["km_candidato_hibrido"]}])
+                st.dataframe(_df_pl.sort_values("Deslocamento total (km-candidato)"),
+                             use_container_width=True, hide_index=True)
+                st.success(
+                    f"🏆 **O HÍBRIDO poupa {_fmt_num(_rn['ganho_do_hibrido'])} km-candidato a MAIS** que o "
+                    f"melhor estudo isolado ({_rn['melhor_estudo_geral']}). **Ninguém é obrigado a adotar um "
+                    "estudo inteiro** — e com mais estudos na mesa, o ganho do híbrido **cresce**.")
+
+                if _rn.get("municipios_divergentes"):
+                    st.markdown("##### ⚡ Onde TODOS os estudos divergem (revise ESTES)")
+                    st.caption(
+                        "Municípios em que **cada estudo escolheu um polo diferente**. Isso não é ruído: é "
+                        "o problema te dizendo que **não há resposta óbvia ali**. Nenhum modelo sozinho vai "
+                        "encontrá-la — **é aqui que o humano decide**.")
+                    st.dataframe(pd.DataFrame(_rn["municipios_divergentes"]),
+                                 use_container_width=True, hide_index=True, height=280)
+
+                _sn = st.session_state.get('nw_sim')
+                if _sn and _sn.get("matriz"):
+                    st.markdown("##### 🔁 Matriz de similaridade — quais estudos “pensam parecido”")
+                    st.caption(
+                        "Para cada PAR: em quantos % dos municípios eles escolheram o **mesmo polo**. "
+                        "**Se dois concordam em 97%, um deles é redundante** — você paga por duas "
+                        "metodologias que dizem a mesma coisa. **Se concordam em 40%, eles enxergam o "
+                        "problema de formas fundamentalmente diferentes** — e é aí que mora a informação.")
+                    st.dataframe(pd.DataFrame(_sn["matriz"]), use_container_width=True, hide_index=True)
+                    for _l in _sn.get("leitura", []):
+                        st.info(_l)
+
+                st.markdown("##### 🔎 Detalhe município a município")
+                _df_det = pd.DataFrame(_rn["detalhe"])
+                st.dataframe(_colorir_risco(_df_det, cols_risco=["Consenso"]),
+                             use_container_width=True, hide_index=True, height=340)
+
+                try:
+                    _buf_nw = io.BytesIO()
+                    with pd.ExcelWriter(_buf_nw, engine="xlsxwriter") as _wnw:
+                        _escrever_aba_profissional(_wnw, _df_pl, "Placar dos Estudos")
+                        _escrever_aba_profissional(_wnw, _df_det, "Detalhe por Municipio")
+                        if _rn.get("municipios_divergentes"):
+                            _escrever_aba_profissional(
+                                _wnw, pd.DataFrame(_rn["municipios_divergentes"]),
+                                "Divergencia Total")
+                        if _sn and _sn.get("matriz"):
+                            _escrever_aba_profissional(_wnw, pd.DataFrame(_sn["matriz"]),
+                                                       "Matriz de Similaridade")
+                    st.download_button(
+                        f"📥 Baixar comparação dos {_rn['n_estudos']} estudos (.xlsx)",
+                        data=_buf_nw.getvalue(),
+                        file_name=f"comparacao_{_rn['n_estudos']}_estudos.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                except Exception as _e_x:
+                    logger.error(f"[N-ESTUDOS] Falha no export: {_e_x}")
+
+    st.divider()
+    st.markdown("#### ⚖️ Comparação de DOIS estudos (análise profunda)")
+    st.caption("O modo clássico: a sua aplicação × **uma** base de referência. É aqui que vivem as análises "
+               "mais profundas — concorrente, plano híbrido, os três estudos, viabilidade de chegada.")
 
     _file_ref = st.file_uploader("📄 Planilha de referência (base comparativa)", type=["xlsx", "xls", "csv"],
                                  key="cmp_file",
