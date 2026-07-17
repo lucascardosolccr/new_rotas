@@ -6325,6 +6325,84 @@ def _aplicar_correcoes_coordenada(base):
 
 IBGE_MUNICIPIOS = _aplicar_correcoes_coordenada(IBGE_MUNICIPIOS)
 
+# [BASE-OFICIAL - 184ª geração] CONSUMIDOR DA BASE OFICIAL DO IBGE (Fase 1 offline).
+# A fonte MAIS autoritativa da coordenada é a SEDE OFICIAL do IBGE (a cidade — alvo correto de rota; o
+# centroide geométrico cai no mato em municípios grandes). Ela é produzida FORA do app, na máquina do dev,
+# por `construir_base_oficial_ibge.py` (que usa geobr/malha/DTB — cadeia geoespacial que NÃO pode rodar no
+# Streamlit Cloud). Aqui só CONSUMIMOS o resultado tabular (leve, sem GDAL): coordenadas de sede por código
+# IBGE, lidas de (1) arquivo 'sedes_oficiais_ibge.csv' ao lado do app OU (2) blob embutido _SEDES_OFICIAIS_B64.
+# Enquanto a base oficial não existir, isto é NO-OP: o app segue com a base atual + a tabela curada + a
+# validação por geometria. Quando existir, a sede oficial tem PRECEDÊNCIA (roda depois da curada, antes da
+# validação por geometria — que então nada terá a corrigir). É a "camada única oficial" da pesquisa, com
+# fallback: oficial → comunitária corrigida → validação por geometria.
+_SEDES_OFICIAIS_B64 = ""   # (vazio) preenchível pela Fase 1 se você preferir arquivo único a arquivo companheiro
+
+
+@_lru_cache(maxsize=1)
+def _carregar_sedes_oficiais():
+    """[BASE-OFICIAL - 184ª geração] {codigo_ibge(str): (lat, lon)} da SEDE OFICIAL do IBGE, de:
+    (1) 'sedes_oficiais_ibge.csv' na pasta do app; senão (2) blob _SEDES_OFICIAIS_B64. {} se nada houver.
+    Defensivo: qualquer erro → {} (o app segue com a base atual + validação por geometria)."""
+    _ref = {}
+    try:
+        import os as _os, csv as _csv
+        _p = os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "sedes_oficiais_ibge.csv")
+        if _os.path.exists(_p):
+            with open(_p, encoding="utf-8") as _f:
+                for _row in _csv.DictReader(_f):
+                    _cod = str(_row.get("codigo_ibge") or "").strip()
+                    try:
+                        _ref[_cod] = (float(_row["lat"]), float(_row["lon"]))
+                    except (TypeError, ValueError, KeyError):
+                        continue
+            if _ref:
+                return _ref
+    except Exception:
+        _ref = {}
+    try:
+        if _SEDES_OFICIAIS_B64:
+            import gzip as _gz, base64 as _b64
+            _txt = _gz.decompress(_b64.b64decode(_SEDES_OFICIAIS_B64)).decode("utf-8")
+            for _ln in _txt.splitlines():
+                _pp = _ln.split(",")
+                if len(_pp) == 3:
+                    try:
+                        _ref[_pp[0]] = (float(_pp[1]), float(_pp[2]))
+                    except (TypeError, ValueError):
+                        continue
+    except Exception:
+        return {}
+    return _ref
+
+
+def _aplicar_sedes_oficiais(base):
+    """[BASE-OFICIAL - 184ª geração] Sobrescreve as coordenadas da base pela SEDE OFICIAL do IBGE quando
+    disponível (Fase 1). Fonte mais autoritativa → precedência sobre a base comunitária e a tabela curada.
+    NO-OP se a base oficial não estiver presente. Defensivo: em erro, devolve a base intacta."""
+    try:
+        _sedes = _carregar_sedes_oficiais()
+        if not isinstance(base, dict) or not _sedes:
+            return base
+        _idx = {}
+        for _nome, _itens in base.items():
+            for _it in _itens:
+                _cod = str(_it.get("codigo_ibge") or "").strip()
+                if _cod:
+                    _idx.setdefault(_cod, []).append(_it)
+        _n = 0
+        for _cod, _ll in _sedes.items():
+            for _it in _idx.get(str(_cod).strip(), []):
+                _it["lat"], _it["lon"] = _ll[0], _ll[1]
+                _n += 1
+        if _n:
+            logger.warning("[BASE-OFICIAL] %d coordenada(s) substituída(s) pela SEDE OFICIAL do IBGE (Fase 1).", _n)
+        return base
+    except Exception:
+        return base
+
+
+IBGE_MUNICIPIOS = _aplicar_sedes_oficiais(IBGE_MUNICIPIOS)
+
 # [IBGE-GEO-VALIDACAO - 184ª geracao] REDE SISTEMICA CONTRA COORDENADAS ERRADAS.
 # A unica autoridade INDEPENDENTE das bases de lat/lon (que clonam os mesmos erros entre si) e a GEOMETRIA
 # oficial do IBGE (malha municipal). Aqui vai uma referencia COMPACTA embutida (offline, O(1), SEM rede):
