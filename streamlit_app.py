@@ -3950,6 +3950,153 @@ def _prevoo_higienizar_texto(s):
     return re.sub(r"\s+", " ", _prevoo_corrigir_mojibake(s)).strip()
 
 
+def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
+    """[RELATORIO-HTML - 184ª geração] Relatório HTML AUTOCONTIDO (abre offline em qualquer navegador) do
+    estudo: KPIs + distribuição de distâncias + mapa espacial (scatter_geo — usa contornos embutidos, SEM
+    tiles → funciona offline) + tabela das rotas mais longas. Para compartilhar com quem DECIDE e não roda a
+    app. Defensivo: cada bloco só aparece se a coluna existir; erro em um bloco não derruba o relatório.
+    Retorna string HTML (ou None em falha)."""
+    import html as _he
+    try:
+        _n = len(df)
+        _dist = pd.to_numeric(df['Distancia'], errors='coerce') if 'Distancia' in df.columns else None
+        _integ = pd.to_numeric(df['Integridade Geográfica'], errors='coerce') if 'Integridade Geográfica' in df.columns else None
+        _kpis = [("Rotas", f"{_n:,}")]
+        if _dist is not None:
+            _kpis += [("Distância média", f"{_dist.mean():.1f} km"), ("Distância total", f"{_dist.sum():,.0f} km"),
+                      ("Maior deslocamento", f"{_dist.max():.1f} km")]
+        if _integ is not None:
+            _kpis.append(("Integridade média", f"{_integ.mean():.0f}/100"))
+        _kpi_html = "".join(f'<div class="kpi"><div class="kpi-v">{_he.escape(str(v))}</div>'
+                            f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in _kpis)
+        _figs, _st = [], {"first": True}
+
+        def _emb(fig):
+            _h = fig.to_html(full_html=False, include_plotlyjs=(True if _st["first"] else False),
+                             config={"displayModeBar": False})
+            _st["first"] = False
+            return _h
+        if _dist is not None and _dist.notna().any():
+            _labs = ["0–50", "50–100", "100–150", "150–200", "200–300", "300–500", "500+"]
+            _cat = pd.cut(_dist.dropna(), bins=[0, 50, 100, 150, 200, 300, 500, 10**9], labels=_labs, right=False)
+            _cnt = _cat.value_counts().reindex(_labs, fill_value=0)
+            _fig_d = go.Figure(go.Bar(x=list(_labs), y=[int(x) for x in _cnt.values], marker_color="#2563eb"))
+            _fig_d.update_layout(title="Distribuição de distâncias (km viária)", height=340,
+                                 margin=dict(l=40, r=20, t=50, b=40), template="plotly_white")
+            _figs.append(_emb(_fig_d))
+        if {'Lat Origem', 'Lon Origem'}.issubset(df.columns):
+            _dm = df.copy()
+            _dm['_la'] = pd.to_numeric(_dm['Lat Origem'], errors='coerce')
+            _dm['_lo'] = pd.to_numeric(_dm['Lon Origem'], errors='coerce')
+            _dm = _dm[_dm['_la'].notna() & _dm['_lo'].notna()]
+            if not _dm.empty:
+                _fig_m = px.scatter_geo(_dm, lat='_la', lon='_lo',
+                                        color=('Distancia' if 'Distancia' in _dm.columns else None),
+                                        hover_name=('Municipio Origem' if 'Municipio Origem' in _dm.columns else None),
+                                        scope='south america', color_continuous_scale="Turbo")
+                _fig_m.update_layout(title="Origens dos candidatos", height=430, margin=dict(l=0, r=0, t=50, b=0))
+                _fig_m.update_geos(fitbounds="locations", showcountries=True, countrycolor="#94a3b8")
+                _figs.append(_emb(_fig_m))
+        _figs_html = "".join(f'<section><div class="fig">{_h}</div></section>' for _h in _figs)
+        _tab_html = ""
+        if _dist is not None and {'Municipio Origem', 'Municipio Destino'}.issubset(df.columns):
+            _top = df.assign(_d=_dist).nlargest(10, '_d')
+            _rows = "".join(f"<tr><td>{_he.escape(str(r['Municipio Origem']))}</td>"
+                            f"<td>{_he.escape(str(r['Municipio Destino']))}</td>"
+                            f"<td style='text-align:right'>{r['_d']:.1f}</td></tr>" for _, r in _top.iterrows())
+            _tab_html = ('<section><h2>10 maiores deslocamentos</h2><table><thead><tr><th>Origem</th>'
+                         f'<th>Destino</th><th>km viária</th></tr></thead><tbody>{_rows}</tbody></table></section>')
+        _css = ("body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f8fafc;"
+                "color:#0f172a}header{background:#0f172a;color:#fff;padding:28px 32px}header h1{margin:0;"
+                "font-size:22px}header p{margin:4px 0 0;color:#cbd5e1;font-size:13px}main{max-width:960px;"
+                "margin:0 auto;padding:24px 32px}.kpis{display:flex;flex-wrap:wrap;gap:14px}.kpi{flex:1;"
+                "min-width:150px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px}"
+                ".kpi-v{font-size:24px;font-weight:700;color:#2563eb}.kpi-l{font-size:12px;color:#64748b;"
+                "margin-top:2px}section{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;"
+                "margin-top:16px}h2{font-size:15px;margin:0 0 10px}table{width:100%;border-collapse:collapse;"
+                "font-size:13px}th,td{padding:8px 10px;border-bottom:1px solid #eef2f7;text-align:left}"
+                "thead th{background:#f1f5f9;color:#475569;font-size:12px}.fig{overflow:auto}footer{"
+                "max-width:960px;margin:0 auto;padding:16px 32px 40px;color:#94a3b8;font-size:11px}")
+        return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                f'<title>{_he.escape(titulo)}</title><style>{_css}</style></head><body>'
+                f'<header><h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_n:,} rota(s)</p></header>'
+                f'<main><div class="kpis">{_kpi_html}</div>{_figs_html}{_tab_html}</main>'
+                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer></body></html>')
+    except Exception:
+        logger.error("[RELATORIO-HTML] Falha ao gerar relatório", exc_info=True)
+        return None
+
+
+def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str=""):
+    """[RELATORIO-HTML - 184ª geração] Relatório HTML AUTOCONTIDO (offline) da COMPARAÇÃO entre estudos:
+    KPIs de conciliação e vitória + distribuição de vitórias + candidatos por faixa de economia + veredito.
+    Para compartilhar o parecer com quem DECIDE. Reusa os agregados de stats['brasil']/aud (chaves conhecidas
+    do relatório executivo). Defensivo. Retorna string HTML (ou None)."""
+    import html as _he
+    try:
+        br = (stats or {}).get("brasil", {})
+        aud = aud or {}
+        _tot = aud.get("total_ref", 0) or 0
+        _conc = aud.get("conciliados", 0) or 0
+        _pct_conc = round(100.0 * _conc / _tot, 1) if _tot else 0.0
+        _p_app = br.get("pct_venceu_app", 0) or 0
+        _p_ref = br.get("pct_venceu_ref", 0) or 0
+        _p_emp = br.get("pct_empate", 0) or 0
+        _econ = br.get("economia_ponderada_km", 0) or 0
+        _kpis = [("Conciliação", f"{_pct_conc:.0f}%"), ("Vitórias da aplicação", f"{_p_app:.0f}%"),
+                 ("Vitórias da referência", f"{_p_ref:.0f}%"), ("Empate técnico", f"{_p_emp:.0f}%")]
+        if _econ:
+            _kpis.append(("Economia ponderada", f"{_econ:,.0f} km"))
+        _kpi_html = "".join(f'<div class="kpi"><div class="kpi-v">{_he.escape(str(v))}</div>'
+                            f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in _kpis)
+        _ver = ("A aplicação produziu a melhor distribuição na maioria dos municípios comparáveis."
+                if _p_app > _p_ref + 5 else
+                ("A base de referência venceu na maioria dos casos."
+                 if _p_ref > _p_app + 5 else
+                 "As duas soluções são tecnicamente equivalentes no conjunto."))
+        _figs, _sf = [], {"first": True}
+
+        def _emb(fig):
+            _h = fig.to_html(full_html=False, include_plotlyjs=(True if _sf["first"] else False),
+                             config={"displayModeBar": False})
+            _sf["first"] = False
+            return _h
+        _fig_w = go.Figure(go.Bar(x=["Aplicação", "Referência", "Empate técnico"], y=[_p_app, _p_ref, _p_emp],
+                                  marker_color=["#2563eb", "#f59e0b", "#94a3b8"]))
+        _fig_w.update_layout(title="Distribuição de vitórias (% dos municípios comparáveis)", height=320,
+                             margin=dict(l=40, r=20, t=50, b=40), template="plotly_white", yaxis_title="%")
+        _figs.append(_emb(_fig_w))
+        _fx = br.get("faixas_economia_candidatos", {}) or {}
+        if any(_fx.values()):
+            _fig_f = go.Figure(go.Bar(x=list(_fx.keys()), y=[_fx[k] for k in _fx], marker_color="#16a34a"))
+            _fig_f.update_layout(title="Candidatos por faixa de economia de distância", height=320,
+                                 margin=dict(l=40, r=20, t=50, b=40), template="plotly_white")
+            _figs.append(_emb(_fig_f))
+        _figs_html = "".join(f'<section><div class="fig">{_h}</div></section>' for _h in _figs)
+        _css = ("body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f8fafc;"
+                "color:#0f172a}header{background:#0f172a;color:#fff;padding:28px 32px}header h1{margin:0;"
+                "font-size:22px}header p{margin:4px 0 0;color:#cbd5e1;font-size:13px}main{max-width:960px;"
+                "margin:0 auto;padding:24px 32px}.kpis{display:flex;flex-wrap:wrap;gap:14px}.kpi{flex:1;"
+                "min-width:150px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px}"
+                ".kpi-v{font-size:24px;font-weight:700;color:#2563eb}.kpi-l{font-size:12px;color:#64748b;"
+                "margin-top:2px}section{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;"
+                "margin-top:16px}.verdict{background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;"
+                "padding:16px;margin-top:16px;font-size:15px}.fig{overflow:auto}footer{max-width:960px;"
+                "margin:0 auto;padding:16px 32px 40px;color:#94a3b8;font-size:11px}")
+        return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                f'<title>{_he.escape(titulo)}</title><style>{_css}</style></head><body>'
+                f'<header><h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · '
+                f'{_conc} de {_tot} municípios conciliados</p></header>'
+                f'<main><div class="verdict">🔎 <strong>Veredito:</strong> {_he.escape(_ver)}</div>'
+                f'<div class="kpis" style="margin-top:16px">{_kpi_html}</div>{_figs_html}</main>'
+                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer></body></html>')
+    except Exception:
+        logger.error("[RELATORIO-HTML] Falha ao gerar relatório de comparação", exc_info=True)
+        return None
+
+
 def _raio_x_planilha(origens, destinos, max_exemplos=3):
     """[PREVOO - 119ª geração] Raio-X de saúde da planilha ANTES do processamento. Varre Origem/Destino
     em UMA passada (O(N)) e reporta os problemas que mais degradam o resultado. PURO e determinístico.
@@ -3966,6 +4113,11 @@ def _raio_x_planilha(origens, destinos, max_exemplos=3):
         return (v == "") or v.lower() == "nan"
 
     inc, ig, moji, esp, coord_ruim = [], [], [], [], []
+    nao_enc, homon_sem_uf = [], []   # [PREVOO-IBGE - 184ª geração] validação SEMÂNTICA de município
+    _UFS_PV = {"AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB",
+               "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"}
+    _RE_ENDERECO_PV = re.compile(r"\b(rua|r\.|av\.?|avenida|rod\.?|rodovia|estrada|travessa|alameda|pra[çc]a|"
+                                 r"quadra|lote|km|n[º°]|bairro)\b|\d{2,}", re.I)
     pares = {}
 
     for i in range(n):
@@ -3994,6 +4146,25 @@ def _raio_x_planilha(origens, destinos, max_exemplos=3):
                 stt = _prevoo_status_coord(pc[0], pc[1])
                 if stt != "ok":
                     coord_ruim.append(f"L{i+2}/{col}: {v} ({'lat/lon trocadas' if stt == 'trocada' else 'fora do Brasil'})")
+            # [PREVOO-IBGE - 184ª geração] validação SEMÂNTICA contra a base oficial (fail-fast): só para células
+            # que parecem NOME DE MUNICÍPIO — pula coordenadas e qualquer coisa com marcador de endereço ou dígitos
+            # (endereço/CEP/código IBGE, onde o município não é a célula inteira e o geocoder resolve). O(1)/célula.
+            elif pc is None and not _RE_ENDERECO_PV.search(v):
+                _uf_pv, _muni_pv = None, v
+                _mu = re.search(r"[\/\-,]?\s*([A-Za-z]{2})\s*$", v)
+                if _mu and _mu.group(1).upper() in _UFS_PV:
+                    _resto_pv = v[:_mu.start()].strip(" /-,")
+                    if _resto_pv:
+                        _uf_pv, _muni_pv = _mu.group(1).upper(), _resto_pv
+                _cand_pv = IBGE_MUNICIPIOS.get(semantica.normalizar(_muni_pv))
+                if _cand_pv is None and _uf_pv:            # a separação da UF pode ter errado: tenta o texto inteiro
+                    _cand_inteiro = IBGE_MUNICIPIOS.get(semantica.normalizar(v))
+                    if _cand_inteiro is not None:
+                        _cand_pv, _uf_pv = _cand_inteiro, None
+                if _cand_pv is None:
+                    nao_enc.append(f"L{i+2}/{col}: {v}")
+                elif len(_cand_pv) > 1 and not _uf_pv:
+                    homon_sem_uf.append(f"L{i+2}/{col}: {v} ({','.join(sorted({e.get('uf', '') for e in _cand_pv}))})")
 
     achados = []
 
@@ -4020,6 +4191,12 @@ def _raio_x_planilha(origens, destinos, max_exemplos=3):
          "Encoding quebrado (ex.: 'SÃ£o Paulo' → 'São Paulo'). O botão de higienização corrige automaticamente.", corrigivel=True)
     _add("espacos_problematicos", "info", "Espaços extras (início/fim ou duplicados)", esp,
          "Espaços supérfluos podem quebrar o casamento com o cache. A higienização corrige automaticamente.", corrigivel=True)
+    _add("municipio_nao_encontrado", "critico", "Município não encontrado na base oficial do IBGE", nao_enc,
+         "O nome não casa com nenhum município do IBGE — provável erro de digitação. Corrija antes de processar; "
+         "senão a rota pode falhar ou cair em fallback impreciso.")
+    _add("homonimo_sem_uf", "aviso", "Município homônimo sem UF (ambíguo)", homon_sem_uf,
+         "Esse nome existe em mais de um estado. Sem a UF, o motor pode escolher o município errado — "
+         "acrescente a sigla (ex.: 'São Domingos/SC').")
 
     # Score de saúde: 100 − penalidades ponderadas pela fração afetada. Duplicatas NÃO penalizam
     # (o dedup as resolve — são informativas/positivas).
@@ -8256,6 +8433,58 @@ def _integridade_geografica(dist_viaria_km, dist_reta_km, nivel_origem="", nivel
 
 
 @st.cache_data(show_spinner=False)
+def _montar_planilha_lote_xlsx(df_final):
+    """[XLSX-RICO - 184ª geração] Monta o workbook do Lote com MÚLTIPLAS abas estruturadas, em vez de uma aba
+    plana: 'Rotas' (dado bruto com cabeçalhos de exame — IDÊNTICA à exportação anterior, p/ compatibilidade),
+    'Resumo Executivo' (KPIs), 'Distribuição de Distâncias' (faixas), 'Síntese por UF' e 'Status das Rotas'.
+    Cada aba EXTRA só é criada se as colunas existirem; se qualquer extra falhar, a 'Rotas' já foi escrita e o
+    arquivo continua válido (defensivo). Retorna bytes."""
+    _buf = io.BytesIO()
+    with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
+        _renomear_colunas_exame(df_final).to_excel(_w, index=False, sheet_name="Rotas")
+        try:
+            _dist = pd.to_numeric(df_final['Distancia'], errors='coerce') if 'Distancia' in df_final.columns else None
+            _reta = pd.to_numeric(df_final['Linha Reta'], errors='coerce') if 'Linha Reta' in df_final.columns else None
+            _integ = pd.to_numeric(df_final['Integridade Geográfica'], errors='coerce') if 'Integridade Geográfica' in df_final.columns else None
+            _res = [("Total de rotas", len(df_final))]
+            if _dist is not None:
+                _res += [("Distância viária média (km)", round(_dist.mean(), 1)),
+                         ("Distância viária total (km)", round(_dist.sum(), 1)),
+                         ("Maior deslocamento (km)", round(_dist.max(), 1)),
+                         ("Menor deslocamento (km)", round(_dist.min(), 1))]
+                if _reta is not None and float(_reta.sum()) > 0:
+                    _res.append(("Sinuosidade média (viária/reta)", round(float(_dist.sum()) / float(_reta.sum()), 3)))
+            if _integ is not None:
+                _res.append(("Integridade geográfica média (0-100)", round(_integ.mean(), 1)))
+            if 'Balsas' in df_final.columns:
+                _nb = int(df_final['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1']).sum())
+                _res.append(("Rotas que cruzam balsa", _nb))
+            pd.DataFrame(_res, columns=["Indicador", "Valor"]).to_excel(_w, index=False, sheet_name="Resumo Executivo")
+            if _dist is not None and _dist.notna().any():
+                _labs = ["0–50", "50–100", "100–150", "150–200", "200–300", "300–500", "500+"]
+                _cat = pd.cut(_dist.dropna(), bins=[0, 50, 100, 150, 200, 300, 500, 10**9], labels=_labs, right=False)
+                _cnt = _cat.value_counts().reindex(_labs, fill_value=0)
+                _dd = pd.DataFrame({"Faixa (km)": _labs, "Rotas": [int(x) for x in _cnt.values]})
+                _dd["% do total"] = (_dd["Rotas"] / max(1, int(_dd["Rotas"].sum())) * 100).round(1)
+                _dd.to_excel(_w, index=False, sheet_name="Distribuição de Distâncias")
+            if 'UF Origem' in df_final.columns and _dist is not None:
+                _g = df_final.assign(_d=_dist).groupby('UF Origem').agg(
+                    Rotas=('_d', 'size'), _med=('_d', 'mean'), _max=('_d', 'max'), _tot=('_d', 'sum')
+                ).reset_index().sort_values('Rotas', ascending=False)
+                for _c in ('_med', '_max', '_tot'):
+                    _g[_c] = _g[_c].round(1)
+                _g.columns = ['UF', 'Rotas', 'Dist. média (km)', 'Dist. máx (km)', 'Dist. total (km)']
+                _g.to_excel(_w, index=False, sheet_name="Síntese por UF")
+            if 'Status da Rota' in df_final.columns:
+                _s = df_final['Status da Rota'].astype(str).value_counts().reset_index()
+                _s.columns = ['Status', 'Rotas']
+                _s['% do total'] = (_s['Rotas'] / max(1, int(_s['Rotas'].sum())) * 100).round(1)
+                _s.to_excel(_w, index=False, sheet_name="Status das Rotas")
+        except Exception:
+            logger.error("[XLSX-RICO] Falha nas abas extras do Lote (aba 'Rotas' preservada)", exc_info=True)
+    return _buf.getvalue()
+
+
 def _xlsx_bytes(df, sheet_name="Dados"):
     """[UI-ESTAVEL - 137ª geração] Gera os bytes de um .xlsx UMA ÚNICA VEZ e os memoriza.
     CAUSA RAIZ do removeChild "ao digitar": vários st.download_button recebiam `data=` de um XLSX
@@ -8375,6 +8604,118 @@ _MAPA_COLUNAS_EXAME = {
 # ============================================================================
 # [COBERTURA - 140ª geração] Planejamento de polos: cobertura + onde abrir
 # ============================================================================
+
+def _haversine_matriz(lats, lons):
+    """[PLANEJAMENTO - 184ª geração] Matriz N×N de distâncias Haversine (km) entre pontos. Vetorizado (numpy).
+    Núcleo do motor de planejamento territorial (catchment/cobertura). Puro."""
+    import numpy as np
+    _la = np.radians(np.asarray(lats, dtype=float))
+    _lo = np.radians(np.asarray(lons, dtype=float))
+    _dla = _la[:, None] - _la[None, :]
+    _dlo = _lo[:, None] - _lo[None, :]
+    _a = np.sin(_dla / 2.0) ** 2 + np.cos(_la)[:, None] * np.cos(_la)[None, :] * np.sin(_dlo / 2.0) ** 2
+    return 6371.0088 * 2.0 * np.arcsin(np.sqrt(np.clip(_a, 0.0, 1.0)))
+
+
+def _catchment_ranking(df, raio_km=100.0):
+    """[PLANEJAMENTO - 184ª geração] Para CADA município candidato a sediar prova, quantos municípios e
+    candidatos ele cobriria dentro de raio_km (Haversine), + distância média (ponderada por candidatos) e
+    máxima na área de influência. Ranqueia por candidatos cobertos. df: colunas
+    ['municipio','uf','codigo_ibge','lat','lon','candidatos']. Puro e vetorizado. Retorna DataFrame."""
+    import numpy as np
+    _cols = ['municipio', 'uf', 'codigo_ibge', 'municipios_cobertos', 'candidatos_cobertos',
+             'pct_candidatos', 'dist_media_km', 'dist_max_km']
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=_cols)
+    _cand = pd.to_numeric(df['candidatos'], errors='coerce').fillna(0).to_numpy(dtype=float)
+    _D = _haversine_matriz(pd.to_numeric(df['lat'], errors='coerce').to_numpy(dtype=float),
+                           pd.to_numeric(df['lon'], errors='coerce').to_numpy(dtype=float))
+    _mask = _D <= float(raio_km)
+    _total = _cand.sum()
+    _wmat = _mask * _cand[None, :]
+    _wsum = _wmat.sum(axis=1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        _dmed = np.where(_wsum > 0, (_D * _wmat).sum(axis=1) / _wsum, 0.0)
+    _dmax = np.where(_mask, _D, 0.0).max(axis=1)
+    return pd.DataFrame({
+        'municipio': df['municipio'].values if 'municipio' in df.columns else '',
+        'uf': df['uf'].values if 'uf' in df.columns else '',
+        'codigo_ibge': df['codigo_ibge'].values if 'codigo_ibge' in df.columns else '',
+        'municipios_cobertos': _mask.sum(axis=1).astype(int),
+        'candidatos_cobertos': _wsum.astype(int),
+        'pct_candidatos': (100.0 * _wsum / _total).round(1) if _total else 0.0,
+        'dist_media_km': np.round(_dmed, 1),
+        'dist_max_km': np.round(_dmax, 1),
+    }).sort_values('candidatos_cobertos', ascending=False).reset_index(drop=True)
+
+
+def _cenarios_cobertura_maxima(df, raio_km=100.0, ns=(5, 10, 20, 30, 50, 100)):
+    """[PLANEJAMENTO - 184ª geração] Cenários de COBERTURA MÁXIMA (MCLP guloso): para cada N, escolhe
+    gulosamente os N municípios que cobrem o MÁXIMO de candidatos AINDA descobertos, dentro de raio_km.
+    Retorna (cenarios, escolhidos_por_N, marcos). cenarios: lista de {n, candidatos_cobertos, pct_candidatos,
+    municipios_cobertos, pct_municipios, candidatos_descobertos}. marcos: {80/90/95: nº de locais p/ atingir}.
+    Puro e vetorizado. Custo ~O(N² · max_n)."""
+    import numpy as np
+    if df is None or len(df) == 0:
+        return [], {}, {}
+    _cand = pd.to_numeric(df['candidatos'], errors='coerce').fillna(0).to_numpy(dtype=float)
+    _D = _haversine_matriz(pd.to_numeric(df['lat'], errors='coerce').to_numpy(dtype=float),
+                           pd.to_numeric(df['lon'], errors='coerce').to_numpy(dtype=float))
+    _mask = _D <= float(raio_km)
+    _total = _cand.sum()
+    _n_mun = len(df)
+    _ns = sorted({int(x) for x in ns if int(x) > 0})
+    _max_n = min(max(_ns) if _ns else 0, _n_mun)
+    _coberto = np.zeros(_n_mun, dtype=bool)
+    _sel, _cenarios, _escolhidos, _marcos = [], [], {}, {}
+    for _k in range(1, _max_n + 1):
+        _ganho = (_mask * (_cand * (~_coberto))[None, :]).sum(axis=1)
+        if _sel:
+            _ganho[_sel] = -1.0
+        _best = int(np.argmax(_ganho))
+        if _ganho[_best] <= 0:
+            break
+        _sel.append(_best)
+        _coberto = _coberto | _mask[_best]
+        _cc = float(_cand[_coberto].sum())
+        _pct = (100.0 * _cc / _total) if _total else 0.0
+        for _lim in (80, 90, 95):
+            if _lim not in _marcos and _pct >= _lim:
+                _marcos[_lim] = _k
+        if _k in _ns:
+            _escolhidos[_k] = list(_sel)
+            _cenarios.append({'n': _k, 'candidatos_cobertos': int(_cc), 'pct_candidatos': round(_pct, 1),
+                              'municipios_cobertos': int(_coberto.sum()),
+                              'pct_municipios': round(100.0 * _coberto.sum() / _n_mun, 1),
+                              'candidatos_descobertos': int(_total - _cc)})
+    return _cenarios, _escolhidos, _marcos
+
+
+def _indices_territoriais(df, marcos=None):
+    """[PLANEJAMENTO - 184ª geração] Índices de planejamento territorial, com definições TRANSPARENTES:
+    - concentracao (0-100): Gini da demanda entre municípios × 100 (alto = demanda concentrada em poucos).
+    - interiorizacao (0-100): % de candidatos FORA dos 10 municípios de maior demanda (alto = espalhado no interior).
+    - capilaridade_80pct: nº de locais (do cenário guloso) p/ cobrir 80% dos candidatos (menos = mais concentrado).
+    Heurísticos e documentados; puros. Retorna dict."""
+    import numpy as np
+    if df is None or len(df) == 0:
+        return {'concentracao': 0.0, 'interiorizacao': 0.0, 'capilaridade_80pct': None,
+                'total_candidatos': 0, 'total_municipios': 0}
+    _cand = pd.to_numeric(df['candidatos'], errors='coerce').fillna(0).to_numpy(dtype=float)
+    _total = float(_cand.sum())
+    _n = len(df)
+    _s = np.sort(_cand)
+    if _total > 0 and _n > 1:
+        _idx = np.arange(1, _n + 1)
+        _gini = (2.0 * float((_idx * _s).sum()) / (_n * float(_s.sum()))) - (_n + 1.0) / _n
+    else:
+        _gini = 0.0
+    _top = float(np.sort(_cand)[::-1][:10].sum())
+    return {'concentracao': round(max(0.0, min(1.0, _gini)) * 100, 1),
+            'interiorizacao': round(100.0 * (_total - _top) / _total, 1) if _total else 0.0,
+            'capilaridade_80pct': (marcos or {}).get(80),
+            'total_candidatos': int(_total), 'total_municipios': int(_n)}
+
 
 def _curva_cobertura(distancias, pesos=None, faixas=(50, 100, 150, 200, 300, 500)):
     """[COBERTURA - 140ª geração] Curva de cobertura: percentual de CANDIDATOS (ponderado por inscritos)
@@ -20951,13 +21292,10 @@ if _secao == _SECOES[1]:   # tab_processamento
                         ordem_finais.append(col)
                     df_final = df_final.reindex(columns=ordem_finais)
                     
-                    # [SPEED-3] Exportação xlsxwriter (~1.7x vs openpyxl)
-                    output_buffer = io.BytesIO()
-                    with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
-                        # [EXAMES - 134ª geração] Cabeçalhos traduzidos para o contexto de exames APENAS na exportação
-                        # (sobre cópia). As chaves internas do df permanecem — renomeá-las quebraria a app inteira.
-                        _renomear_colunas_exame(df_final).to_excel(writer, index=False)
-                    st.session_state['planilha_pronta'] = output_buffer.getvalue()
+                    # [XLSX-RICO - 184ª geração] Workbook estruturado (Rotas + Resumo + Distribuição + UF + Status).
+                    # A aba 'Rotas' é IDÊNTICA à exportação anterior (cabeçalhos de exame). As chaves internas do
+                    # df permanecem — renomeá-las quebraria a app inteira.
+                    st.session_state['planilha_pronta'] = _montar_planilha_lote_xlsx(df_final)
                     st.session_state['df_processado'] = df_final
                     st.session_state['lote_tempo_total'] = tempo_lote_segundos
                     st.session_state['lote_preaquecido_final'] = _preaq
@@ -21113,6 +21451,13 @@ if _secao == _SECOES[1]:   # tab_processamento
                         if not _chart_h.empty:
                             st.markdown("**Rotas com balsa por UF**")
                             st.bar_chart(_chart_h)
+                            _uf_top_h = str(_chart_h["Com Balsa"].idxmax())
+                            _n_top_h = int(_chart_h["Com Balsa"].max())
+                            _leitura_grafico(
+                                como_ler="cada barra é uma **UF de origem**; a altura é quantas rotas do lote cruzam "
+                                         "uma **balsa** naquele estado — barras mais altas indicam maior dependência de travessia.",
+                                conclusao=f"a UF com mais rotas dependentes de balsa é **{_uf_top_h}** "
+                                          f"({_n_top_h} rota(s)), onde vale priorizar alternativas de acesso.")
             except Exception as _e_uh:
                 logger.error(f"[INTEL-TERRITORIAL] Falha na análise hídrica por UF: {_e_uh}")
             # [HOMONIMO - 126ª geração] Painel de Auditoria de Homônimos: superfície visual da camada de
@@ -21357,6 +21702,25 @@ if _secao == _SECOES[1]:   # tab_processamento
                 logger.error(f"[TSP] Falha no sequenciamento multi-parada: {_e_tsp}")
             # [FASE2-FLUXO - 184ª geração] Cabeçalho de fase: Exportação (aditivo, dentro do bloco de resultado).
             st.markdown("#### ⬇️ Exportação")
+            # [RELATORIO-HTML - 184ª geração] Relatório autocontido (KPIs + distribuição + mapa + maiores
+            # deslocamentos) num arquivo único que abre OFFLINE — para enviar a quem decide e não roda a app.
+            # Gerado sob demanda (é pesado: plotly embutido) e defensivo.
+            if st.button("📄 Gerar relatório HTML compartilhável", key="btn_relatorio_html", use_container_width=True,
+                         help="Um arquivo HTML único (KPIs, distribuição, mapa e maiores deslocamentos) que abre "
+                              "offline em qualquer navegador — para enviar a quem decide e não usa a aplicação."):
+                with st.spinner("Gerando relatório..."):
+                    _rel_html = _gerar_relatorio_html(st.session_state['df_processado'],
+                                                      titulo="Relatório do Estudo em Lote",
+                                                      data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"))
+                    if _rel_html:
+                        st.session_state['relatorio_html_lote'] = _rel_html.encode("utf-8")
+                    else:
+                        st.session_state.pop('relatorio_html_lote', None)
+                        st.warning("Não foi possível gerar o relatório.")
+            if st.session_state.get('relatorio_html_lote'):
+                st.download_button("⬇️ Baixar relatório HTML (.html)", data=st.session_state['relatorio_html_lote'],
+                                   file_name="relatorio_estudo_lote.html", mime="text/html",
+                                   use_container_width=True, key="dl_relatorio_html")
             col_down1, col_down2 = st.columns(2)
             with col_down1:
                 st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -22283,6 +22647,13 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         _q4.metric("Pior caso", f"{_cv['max']} km" if _cv['max'] is not None else "—")
                         if _cv["faixas"]:
                             st.bar_chart(pd.Series(_cv["faixas"]))
+                            _leitura_grafico(
+                                como_ler=f"cada barra é uma **faixa de distância**; a altura é quantos {_unid} têm esse "
+                                         f"deslocamento até o polo alocado. Barras concentradas à esquerda = maioria perto.",
+                                conclusao=(f"metade dos {_unid} percorre até **{_cv['mediana']} km** e 90% até "
+                                           f"**{_cv['p90']} km**; o pior caso é **{_cv['max']} km**."
+                                           if _cv['mediana'] is not None else
+                                           f"distribuição dos {_unid} por faixa de deslocamento até o polo."))
                             _f200 = _cv["faixas"].get(200, 0)
                             st.caption(f"Interpretação: **{_f200}% dos {_unid}** estão a **≤200 km** do local de prova — "
                                        f"logo **{round(100 - _f200, 1)}%** estão **acima** disso. A média de "
@@ -22967,6 +23338,12 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                                          showlegend=True, height=380, margin=dict(l=40, r=40, t=30, b=30))
                                 st.markdown("**🕸️ Radar comparativo (100 = melhor no eixo)**")
                                 st.plotly_chart(_fig_radar, use_container_width=True)
+                                _leitura_grafico(
+                                    como_ler="três eixos (proximidade viária, proximidade em linha reta e diretividade "
+                                             "V/R), cada um normalizado para **100 = o melhor dos dois hubs** naquele eixo — "
+                                             "polígono maior/mais preenchido significa melhor no conjunto.",
+                                    conclusao=f"**{_venc_nome}** atinge o máximo em proximidade viária (o critério de "
+                                              f"escolha); compare o preenchimento nos demais eixos com **{_conc_nome}**.")
                                 # Índices numéricos (também vão na planilha)
                                 _ic = _indice_competitividade(_dif_pct)
                                 _ir = _indice_robustez(_dif_km)
@@ -23157,6 +23534,24 @@ if _secao == _SECOES[2]:   # tab_alocacao
             st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
             # [FASE2-FLUXO - 184ª geração] Cabeçalho de fase: Exportação (aditivo, dentro do bloco de resultado).
             st.markdown("#### ⬇️ Exportação")
+            # [RELATORIO-HTML - 184ª geração] Relatório autocontido (KPIs + distribuição + mapa + maiores
+            # deslocamentos) da alocação, num arquivo único que abre OFFLINE. Sob demanda, defensivo.
+            if st.button("📄 Gerar relatório HTML compartilhável", key="btn_relatorio_html_loc", use_container_width=True,
+                         help="Um arquivo HTML único (KPIs, distribuição, mapa e maiores deslocamentos) que abre "
+                              "offline em qualquer navegador — para enviar a quem decide e não usa a aplicação."):
+                with st.spinner("Gerando relatório..."):
+                    _rel_html_loc = _gerar_relatorio_html(st.session_state['df_processado'],
+                                                          titulo="Relatório de Locais de Aplicação",
+                                                          data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"))
+                    if _rel_html_loc:
+                        st.session_state['relatorio_html_loc'] = _rel_html_loc.encode("utf-8")
+                    else:
+                        st.session_state.pop('relatorio_html_loc', None)
+                        st.warning("Não foi possível gerar o relatório.")
+            if st.session_state.get('relatorio_html_loc'):
+                st.download_button("⬇️ Baixar relatório HTML (.html)", data=st.session_state['relatorio_html_loc'],
+                                   file_name="relatorio_locais_aplicacao.html", mime="text/html",
+                                   use_container_width=True, key="dl_relatorio_html_loc")
             st.download_button(
                 label="📥 Baixar Planilha de Alocação Competitiva (.xlsx)",
                 data=st.session_state['alo_planilha_pronta'],
@@ -24328,6 +24723,26 @@ if _secao == _SECOES[3]:   # tab_comparador
             _xb = _res_c.get("xlsx")
             if _xb:
                 st.markdown("#### ⬇️ Exportação")
+                # [RELATORIO-HTML - 184ª geração] Parecer da comparação (conciliação, vitórias, economia) num
+                # arquivo HTML único que abre OFFLINE — para enviar a quem decide. Sob demanda, defensivo.
+                if st.button("📄 Gerar relatório HTML da comparação", key="btn_relatorio_html_cmp",
+                             use_container_width=True,
+                             help="Parecer da comparação (conciliação, vitórias, economia) num arquivo HTML "
+                                  "único que abre offline em qualquer navegador."):
+                    with st.spinner("Gerando relatório..."):
+                        _rel_html_cmp = _gerar_relatorio_comparacao_html(
+                            _res_c["stats"], _aud_c, titulo="Relatório da Comparação de Estudos",
+                            data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"))
+                        if _rel_html_cmp:
+                            st.session_state['relatorio_html_cmp'] = _rel_html_cmp.encode("utf-8")
+                        else:
+                            st.session_state.pop('relatorio_html_cmp', None)
+                            st.warning("Não foi possível gerar o relatório.")
+                if st.session_state.get('relatorio_html_cmp'):
+                    st.download_button("⬇️ Baixar relatório HTML (.html)",
+                                       data=st.session_state['relatorio_html_cmp'],
+                                       file_name="relatorio_comparacao.html", mime="text/html",
+                                       use_container_width=True, key="dl_relatorio_html_cmp")
                 st.download_button("📥 Baixar comparação completa (.xlsx — 24 abas + 2 de documentação)", data=_xb,
                                    file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -24543,6 +24958,11 @@ if _secao == _SECOES[4]:   # tab_analytics
                                 tooltip=['Regiao_Sintetica_Origem', 'Rotas', 'Participacao_Nacional', 'Dist_Media', 'Muns_Unicos']
                             ).properties(height=280, title="Ranking de Volume por Região (Filtrado)")
                             st.altair_chart(bar_regiao, use_container_width=True)
+                            _leitura_grafico(
+                                como_ler="cada barra é uma **região do Brasil**; o comprimento é o **volume de rotas** que "
+                                         "se originam ali, ordenado da maior para a menor.",
+                                conclusao=f"a região de maior volume é **{df_regioes.loc[df_regioes['Rotas'].idxmax(), 'Regiao_Sintetica_Origem']}** "
+                                          f"({df_regioes['Participacao_Nacional'].max():.0f}% do total filtrado).")
                         with col_r2:
                             st.write("Tabela Mestre Regional")
                             st.dataframe(df_regioes.rename(columns={'Regiao_Sintetica_Origem': 'Região Geográfica', 'Dist_Media': 'Distância Média (km)', 'Tempo_Medio_Horas': 'Tempo Médio (h)', 'Score_Medio': 'Score Médio', 'Muns_Unicos': 'Municípios Atendidos', 'Participacao_Nacional': 'Share Selecionado (%)'}), use_container_width=True, hide_index=True)
@@ -24638,6 +25058,11 @@ if _secao == _SECOES[4]:   # tab_analytics
                 col_p4.altair_chart(chart_lr_mun, use_container_width=True, on_select="rerun", key="dash_lr")
                 col_p5.altair_chart(chart_muns, use_container_width=True, on_select="rerun", key="dash_mun")
                 st.altair_chart(chart_scatter, use_container_width=True, on_select="rerun", key="dash_scatter")
+                _leitura_grafico(
+                    como_ler="cada ponto é uma rota; o eixo X é a **distância viária** e o eixo Y é o **tempo estimado**, "
+                             "coloridos pelo status. Pontos alinhados numa diagonal indicam a relação distância-tempo típica.",
+                    conclusao="pontos que fogem da diagonal (muito tempo para pouca distância, ou o inverso) são "
+                              "**outliers** — em geral rota com balsa, serra ou geocodificação a revisar.")
             
             # [F-NEW4 - 4ª geração] Análise de distribuição estatística (histograma + boxplot)
             st.markdown("#### 📊 Distribuição Estatística de Distâncias")
@@ -24694,6 +25119,10 @@ if _secao == _SECOES[4]:   # tab_analytics
                         ]
                     ).properties(height=max(200, len(df_cobertura) * 28), title='Rotas por Estado de Origem')
                     st.altair_chart(chart_cobertura, use_container_width=True)
+                    _leitura_grafico(
+                        conclusao=f"o estado de maior volume é **{df_cobertura.iloc[0]['UF_Sintetica_Origem']}** "
+                                  f"({int(df_cobertura.iloc[0]['Rotas'])} rotas); a cor indica a distância média — "
+                                  f"estados escuros com muitas barras concentram a operação e o esforço logístico.")
                     n_ufs = len(df_cobertura)
                     st.caption(f"📍 Cobertura atual: **{n_ufs} de 27 estados** ({round(100*n_ufs/27)}% do território nacional) presentes neste recorte.")
                 else:
@@ -24992,6 +25421,10 @@ if _secao == _SECOES[6]:   # tab_classificacao
                 cc_k4.metric("Polo Mais Crítico", f"{m_critico} ({v_critico})")
                 
             st.markdown("#### 3️⃣ Ecossistema Visual Temático")
+            _leitura_grafico(
+                como_ler="quatro vistas da mesma classificação — **barras** (top cidades pela métrica), **pizza** "
+                         "(proporção por nível crítico), **treemap** (hierarquia região→UF→cidade) e **mapa** "
+                         "(distribuição espacial). Cores iguais = mesmo nível crítico; o **polo mais crítico** está no KPI acima.")
             map_colors = dict(zip(df_agg_class['Rótulo'], df_agg_class['Cor Hex']))
             
             t_col1, t_col2 = st.columns([60, 40])
@@ -26822,6 +27255,9 @@ if _secao == _SECOES[10]:   # tab_motores
                 tooltip=['Fonte Geocoding Origem', 'count()']
             ).properties(height=350)
             st.altair_chart(grafico_apis, use_container_width=True)
+            _leitura_grafico(
+                conclusao=f"o motor que mais resolveu origens foi **{df_kpi['Fonte Geocoding Origem'].value_counts().idxmax()}** "
+                          f"({int(df_kpi['Fonte Geocoding Origem'].value_counts().max())} de {len(df_kpi)} rotas).")
             
         with col_m2:
             st.caption("**Distribuição Qualitativa: Status Bayesiano Pós-Processamento**")
@@ -26833,6 +27269,10 @@ if _secao == _SECOES[10]:   # tab_motores
                 tooltip=['Status da Rota', 'count()']
             ).properties(height=350)
             st.altair_chart(grafico_status, use_container_width=True)
+            _pct_bom_st = (df_kpi['Status da Rota'].isin(['Excelente', 'Boa']).mean() * 100)
+            _leitura_grafico(
+                conclusao=f"**{_pct_bom_st:.0f}%** das rotas ficaram em status Excelente/Boa; as marcadas como "
+                          f"**Revisar/Erro** merecem conferência manual.")
             
     st.markdown("---")
     st.markdown("#### 📡 Tabela Mestre de SLA e Latência em Tempo Real")
