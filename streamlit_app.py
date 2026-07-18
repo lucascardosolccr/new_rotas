@@ -6592,6 +6592,49 @@ def _validar_coordenada_no_municipio(lat, lon, codigo_ibge, tolerancia_km=None):
 IBGE_MUNICIPIOS = _validar_coordenadas_por_geometria(IBGE_MUNICIPIOS)
 
 
+def _auditar_saude_coordenadas():
+    """[SAUDE-COORD - 184ª geração] MONITORAMENTO CONTÍNUO da base de coordenadas. Ao final da carga (após
+    correção curada + SEDE OFICIAL + validação por geometria), verifica o estado FINAL contra a geometria
+    oficial e registra UM resumo nos logs — para que qualquer regressão futura de fonte/código seja VISÍVEL
+    em produção (detecção precoce), em vez de silenciosa. Read-only, defensivo, roda 1× no import. NÃO flagra
+    como 'fora' os códigos com SEDE OFICIAL (são autoritativos e propositalmente confiados acima da malha,
+    que é mais antiga)."""
+    try:
+        _total = _com_geo = _sem_coord = _fora = 0
+        for _nome, _itens in IBGE_MUNICIPIOS.items():
+            for _it in _itens:
+                _cod = str(_it.get("codigo_ibge") or "").strip()
+                if len(_cod) != 7 or not _cod.isdigit():
+                    continue
+                _total += 1
+                _lat = _it.get("lat") or 0.0
+                _lon = _it.get("lon") or 0.0
+                if not (_lat and _lon):
+                    _sem_coord += 1
+                    continue
+                if _cod in _CODIGOS_SEDE_OFICIAL:
+                    _com_geo += 1   # confiado: sede oficial do IBGE
+                    continue
+                _v = _validar_coordenada_no_municipio(_lat, _lon, _cod)
+                if _v.get("tem_ref"):
+                    _com_geo += 1
+                    if _v.get("dentro") is False:
+                        _fora += 1
+        logger.warning("[SAUDE-COORD] estado final: %d municípios | %d validáveis por geometria | %d SEM "
+                       "coordenada | %d fora do polígono (não-oficiais) | %d com sede oficial.",
+                       _total, _com_geo, _sem_coord, _fora, len(_CODIGOS_SEDE_OFICIAL))
+        if _sem_coord or _fora:
+            logger.warning("[SAUDE-COORD] ⚠️ ATENÇÃO: %d sem coordenada e %d fora do polígono após correções — "
+                           "investigar (possível regressão de fonte/código).", _sem_coord, _fora)
+        else:
+            logger.warning("[SAUDE-COORD] ✅ base íntegra: nenhuma coordenada ausente ou fora do polígono.")
+    except Exception:
+        pass
+
+
+_auditar_saude_coordenadas()
+
+
 # ==============================================================================
 # [IBGE-INPUT - 98ª geração] CÓDIGO IBGE COMO ENTRADA OFICIAL — índice reverso O(1) + detecção + resolução.
 # Torna o Código IBGE de município (7 dígitos) uma forma de ENTRADA de primeira classe: digitou o código
@@ -8718,6 +8761,18 @@ _ROTULOS_TABELA = {
     "uf_polo": "UF do Polo", "dist_media_km": "Distância Média (km)",
     "dist_max_km": "Distância Máxima (km)",
 }
+
+
+def _leitura_grafico(como_ler=None, conclusao=None):
+    """[FASE3-VISUAL - 184ª geração] Rodapé PADRONIZADO de gráfico (linguagem visual única do Blueprint):
+    '📖 Como ler' (interpretação) + '🔎 O que diz' (conclusão automática). Codifica o padrão que as partes
+    novas da app (ex.: Comparador de Estudos) já usam inline, para uniformizar os gráficos das abas mais
+    antigas que hoje têm só o título. Só st.caption — sem CSS global, sem tocar na árvore de widgets.
+    Chame LOGO APÓS o st.*_chart correspondente (título em negrito acima, gráfico, depois esta leitura)."""
+    if como_ler:
+        st.caption(f"📖 **Como ler:** {como_ler}")
+    if conclusao:
+        st.caption(f"🔎 **O que diz:** {conclusao}")
 
 
 def _rotular_colunas(df, extra=None):
@@ -19978,6 +20033,13 @@ if _secao == _SECOES[0]:   # tab_individual
                 # Apresentado SEMPRE que ambos os motores responderam — obrigatório quando o
                 # OSRM vence, opcional/informativo quando o Google vence. Cards lado a lado,
                 # selo do vencedor, diferenças absolutas/percentuais e leitura automática.
+                # [FASE2-FLUXO - 184ª geração] Cabeçalho de seção (nível ####, aditivo — não move código):
+                # agrupa o bloco de análise/rastreabilidade que vem a seguir (comparativo de provedores,
+                # auditorias de geocodificação/consenso/motores e barreiras físicas) numa fase clara do fluxo
+                # de resultado, logo após a identidade. Só markdown estático — zero risco de removeChild.
+                st.markdown("#### 🔍 Diagnóstico & Auditoria")
+                st.caption("Como a rota foi medida, a comparação entre provedores, as barreiras físicas e a "
+                           "rastreabilidade completa das consultas aos motores de rota.")
                 _comp_str = res_ind[35] if len(res_ind) > 35 else ""
                 _comp = _parsear_comparativo_provedores(_comp_str)
                 if _comp:
@@ -20224,6 +20286,9 @@ if _secao == _SECOES[0]:   # tab_individual
                                    "**nome oficial** correspondente à mesma geocodificação. Ambos operam sobre a mesma localidade validada — "
                                    "a diferença remanescente vem do **snap** do OSRM à malha viária, agora medido e validado acima.")
 
+                # [FASE2-FLUXO - 184ª geração] Cabeçalho de seção (nível ####, aditivo): marca o mapa como uma
+                # fase própria do fluxo (o payoff visual), depois do diagnóstico. Só markdown estático.
+                st.markdown("#### 🗺️ Mapa da Rota")
                 url_iframe = res_ind[29]
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _link_osrm_viewer = res_ind[36] if len(res_ind) > 36 else ""
@@ -20911,6 +20976,34 @@ if _secao == _SECOES[1]:   # tab_processamento
                 _tempo_lote = st.session_state['lote_tempo_total']
                 _df_fin = st.session_state['df_processado']
                 st.success("✨ Processamento em lote concluído com êxito! Todos os registros foram processados automaticamente.")
+                # [FASE2-RESUMO-LOTE - 184ª geração] RESUMO EXECUTIVO agregado do lote (KPIs do RESULTADO — não
+                # da performance): a resposta em 5 segundos no topo, antes do detalhamento. Defensivo: só mostra
+                # cada métrica se a coluna existir; qualquer erro → silencioso (não quebra a aba). Reusa o
+                # df_processado já pronto. Aditivo, dentro do bloco de resultado — sem risco de removeChild.
+                with st.container(border=True):
+                    st.markdown("#### 📋 Resumo Executivo")
+                    try:
+                        _n_rotas = len(_df_fin)
+                        _dist = pd.to_numeric(_df_fin['Distancia'], errors='coerce') if 'Distancia' in _df_fin.columns else None
+                        _reta = pd.to_numeric(_df_fin['Linha Reta'], errors='coerce') if 'Linha Reta' in _df_fin.columns else None
+                        _integ = pd.to_numeric(_df_fin['Integridade Geográfica'], errors='coerce') if 'Integridade Geográfica' in _df_fin.columns else None
+                        _rc1, _rc2, _rc3, _rc4 = st.columns(4)
+                        _rc1.metric("Rotas processadas", f"{_n_rotas:,}", help="Total de rotas (origem→destino) no lote.")
+                        if _dist is not None:
+                            _rc2.metric("Distância viária média", f"{_dist.mean():.1f} km", help="Média da quilometragem por estrada das rotas do lote.")
+                            _rc3.metric("Distância viária total", f"{_dist.sum():,.0f} km", help="Soma da quilometragem viária de todas as rotas do lote.")
+                        if _integ is not None:
+                            _rc4.metric("Integridade média", f"{_integ.mean():.0f}/100", help="Confiança média da identificação geográfica (100 = ideal; abaixo, investigar troca de município).")
+                        _cap = []
+                        if _dist is not None and _reta is not None and float(_reta.sum()) > 0:
+                            _cap.append(f"sinuosidade média {(float(_dist.sum()) / float(_reta.sum())):.2f}×")
+                        if 'Balsas' in _df_fin.columns:
+                            _nb = int(_df_fin['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1']).sum())
+                            _cap.append(f"{_nb} rota(s) com balsa")
+                        if _cap:
+                            st.caption("Panorama do lote: " + " · ".join(_cap) + ".")
+                    except Exception:
+                        pass
                 with st.container(border=True):
                     st.markdown("#### ⚡ Monitoramento de Performance deste Lote")
                     _med_geo = float(_df_fin['Tempo Geocoding (s)'].mean()) if 'Tempo Geocoding (s)' in _df_fin.columns else 0.0
@@ -21262,6 +21355,8 @@ if _secao == _SECOES[1]:   # tab_processamento
                                 st.caption("⚠️ Ordem por distância em linha reta; a sequência viária real pode variar levemente — bom ponto de partida para o roteiro.")
             except Exception as _e_tsp:
                 logger.error(f"[TSP] Falha no sequenciamento multi-parada: {_e_tsp}")
+            # [FASE2-FLUXO - 184ª geração] Cabeçalho de fase: Exportação (aditivo, dentro do bloco de resultado).
+            st.markdown("#### ⬇️ Exportação")
             col_down1, col_down2 = st.columns(2)
             with col_down1:
                 st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -22114,6 +22209,26 @@ if _secao == _SECOES[2]:   # tab_alocacao
             if 'alo_tempo_total' in st.session_state:
                 st.success(f"✨ Alocação concluída automaticamente! {st.session_state.get('alo_linhas', 0)} linhas processadas em {_formatar_duracao(st.session_state['alo_tempo_total'])}.")
                 st.session_state.pop('alo_tempo_total', None)
+            # [FASE2-RESUMO-ALOC - 184ª geração] RESUMO EXECUTIVO da alocação: KPIs no topo (municípios de
+            # origem, polos utilizados, deslocamento médio/máximo ao polo) antes do detalhamento denso. A
+            # resposta em 5 segundos. Defensivo: cada métrica só aparece se a coluna existir; erro →
+            # silencioso. Reusa o df_processado já pronto. Aditivo, dentro do bloco de resultado.
+            with st.container(border=True):
+                st.markdown("#### 📋 Resumo Executivo")
+                try:
+                    _dfa = st.session_state['df_processado']
+                    _dist_a = pd.to_numeric(_dfa['Distancia'], errors='coerce') if 'Distancia' in _dfa.columns else None
+                    _n_orig = _dfa['Municipio Origem'].nunique() if 'Municipio Origem' in _dfa.columns else len(_dfa)
+                    _n_polos = _dfa['Municipio Destino'].nunique() if 'Municipio Destino' in _dfa.columns else None
+                    _ra1, _ra2, _ra3, _ra4 = st.columns(4)
+                    _ra1.metric("Municípios de origem", f"{_n_orig:,}", help="Municípios de candidatos alocados no estudo.")
+                    if _n_polos is not None:
+                        _ra2.metric("Polos utilizados", f"{_n_polos:,}", help="Locais de prova distintos para onde os candidatos foram alocados.")
+                    if _dist_a is not None:
+                        _ra3.metric("Deslocamento médio", f"{_dist_a.mean():.1f} km", help="Distância viária média do candidato até o polo alocado.")
+                        _ra4.metric("Deslocamento máximo", f"{_dist_a.max():.1f} km", help="Maior distância viária de um candidato até seu polo — sinaliza acessibilidade crítica.")
+                except Exception:
+                    pass
             # [METODO-TELA - 57ª geração / item #8] Método de SELEÇÃO dos hubs, EXPLÍCITO na tela.
             # Hoje a seleção do hub mais próximo de cada cliente é por menor distância em LINHA RETA
             # (geodésica WGS-84): o valor exibido usa GeographicLib/Karney (padrão-ouro, erro <1mm) e o
@@ -22824,6 +22939,12 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                     index=[f"🥇 {_venc_nome}", f"🥈 {_conc_nome}"])
                                 st.markdown("**📊 Comparação visual (distâncias)**")
                                 st.bar_chart(_df_disp)
+                                _leitura_grafico(
+                                    como_ler="cada grupo de barras é um hub; compara a **distância viária** (estrada) "
+                                             "com a **linha reta** do candidato até cada um. Barras menores = mais perto.",
+                                    conclusao=f"o vencedor **{_venc_nome}** ({_venc_dist:.1f} km viária) fica "
+                                              f"**{_dif_km:.1f} km mais perto** que o 2º colocado **{_conc_nome}** "
+                                              f"({_conc_dist:.1f} km).")
                             except Exception as _e_disp:
                                 logger.error(f"[DISPUTA-XAI] Falha no gráfico comparativo: {_e_disp}")
 
@@ -23034,6 +23155,8 @@ if _secao == _SECOES[2]:   # tab_alocacao
             except Exception as _e_hubopt:
                 logger.error(f"[HUBOPT] Falha no otimizador de localização: {_e_hubopt}")
             st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
+            # [FASE2-FLUXO - 184ª geração] Cabeçalho de fase: Exportação (aditivo, dentro do bloco de resultado).
+            st.markdown("#### ⬇️ Exportação")
             st.download_button(
                 label="📥 Baixar Planilha de Alocação Competitiva (.xlsx)",
                 data=st.session_state['alo_planilha_pronta'],
@@ -23420,6 +23543,7 @@ if _secao == _SECOES[3]:   # tab_comparador
                         if _sn and _sn.get("matriz"):
                             _escrever_aba_profissional(_wnw, pd.DataFrame(_sn["matriz"]),
                                                        "Matriz de Similaridade")
+                    st.markdown("#### ⬇️ Exportação")
                     st.download_button(
                         f"📥 Baixar comparação dos {_rn['n_estudos']} estudos (.xlsx)",
                         data=_buf_nw.getvalue(),
@@ -24203,6 +24327,7 @@ if _secao == _SECOES[3]:   # tab_comparador
             # [PERF - 139ª geração] Bytes JÁ prontos (montados no clique). Zero CPU por rerun.
             _xb = _res_c.get("xlsx")
             if _xb:
+                st.markdown("#### ⬇️ Exportação")
                 st.download_button("📥 Baixar comparação completa (.xlsx — 24 abas + 2 de documentação)", data=_xb,
                                    file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
