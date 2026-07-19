@@ -3951,80 +3951,163 @@ def _prevoo_higienizar_texto(s):
 
 
 def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
-    """[RELATORIO-HTML - 184ª geração] Relatório HTML AUTOCONTIDO (abre offline em qualquer navegador) do
-    estudo: KPIs + distribuição de distâncias + mapa espacial (scatter_geo — usa contornos embutidos, SEM
-    tiles → funciona offline) + tabela das rotas mais longas. Para compartilhar com quem DECIDE e não roda a
-    app. Defensivo: cada bloco só aparece se a coluna existir; erro em um bloco não derruba o relatório.
-    Retorna string HTML (ou None em falha)."""
+    """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) de nível profissional/BI:
+    capa, NAVEGAÇÃO LATERAL (sumário), cartões executivos e seções analíticas ricas — Resumo, Distribuição de
+    Distâncias, Síntese por UF, Competitividade dos Polos, Concorrentes, Balsas, Linha Reta × Rota, Mapa e
+    Diagnóstico Executivo automático. Gráficos plotly embutidos (scatter_geo funciona sem tiles → offline);
+    layout responsivo e amigável para impressão. Defensivo: cada seção só aparece se as colunas existirem;
+    erro numa seção não derruba o relatório. Retorna string HTML (ou None em falha)."""
     import html as _he
     try:
+        def _num(c):
+            return pd.to_numeric(df[c], errors='coerce') if c in df.columns else None
         _n = len(df)
-        _dist = pd.to_numeric(df['Distancia'], errors='coerce') if 'Distancia' in df.columns else None
-        _integ = pd.to_numeric(df['Integridade Geográfica'], errors='coerce') if 'Integridade Geográfica' in df.columns else None
-        _kpis = [("Rotas", f"{_n:,}")]
-        if _dist is not None:
-            _kpis += [("Distância média", f"{_dist.mean():.1f} km"), ("Distância total", f"{_dist.sum():,.0f} km"),
-                      ("Maior deslocamento", f"{_dist.max():.1f} km")]
-        if _integ is not None:
-            _kpis.append(("Integridade média", f"{_integ.mean():.0f}/100"))
-        _kpi_html = "".join(f'<div class="kpi"><div class="kpi-v">{_he.escape(str(v))}</div>'
-                            f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in _kpis)
-        _figs, _st = [], {"first": True}
+        _dist, _reta, _integ = _num('Distancia'), _num('Linha Reta'), _num('Integridade Geográfica')
+        _insc = _num('Inscritos')
+        if _insc is None:
+            _insc = _num('Quantidade de Inscritos')
+        _tot_cand = int(_insc.fillna(0).sum()) if _insc is not None else _n
+        _n_polos = df['Municipio Destino'].nunique() if 'Municipio Destino' in df.columns else None
+        _st = {"first": True}
 
         def _emb(fig):
             _h = fig.to_html(full_html=False, include_plotlyjs=(True if _st["first"] else False),
-                             config={"displayModeBar": False})
+                             config={"displayModeBar": False, "responsive": True})
             _st["first"] = False
             return _h
+        _sec = []   # (id, título, html)
+
+        _kpis = [("Candidatos", f"{_tot_cand:,}"), ("Municípios de origem", f"{_n:,}")]
+        if _n_polos is not None:
+            _kpis.append(("Polos utilizados", f"{_n_polos:,}"))
+        if _dist is not None:
+            _kpis += [("Deslocamento médio", f"{_dist.mean():.0f} km"), ("Mediana", f"{_dist.median():.0f} km"),
+                      ("Maior deslocamento", f"{_dist.max():.0f} km"), ("Deslocamento total", f"{_dist.sum():,.0f} km")]
+        if _integ is not None:
+            _kpis.append(("Integridade média", f"{_integ.mean():.0f}/100"))
+        _kh = "".join(f'<div class="kpi"><div class="kpi-v">{_he.escape(str(v))}</div>'
+                      f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in _kpis)
+        _sec.append(("resumo", "Resumo Executivo", f'<div class="kpis">{_kh}</div>'))
+
         if _dist is not None and _dist.notna().any():
             _labs = ["0–50", "50–100", "100–150", "150–200", "200–300", "300–500", "500+"]
             _cat = pd.cut(_dist.dropna(), bins=[0, 50, 100, 150, 200, 300, 500, 10**9], labels=_labs, right=False)
             _cnt = _cat.value_counts().reindex(_labs, fill_value=0)
-            _fig_d = go.Figure(go.Bar(x=list(_labs), y=[int(x) for x in _cnt.values], marker_color="#2563eb"))
-            _fig_d.update_layout(title="Distribuição de distâncias (km viária)", height=340,
-                                 margin=dict(l=40, r=20, t=50, b=40), template="plotly_white")
-            _figs.append(_emb(_fig_d))
+            _f = go.Figure(go.Bar(x=list(_labs), y=[int(x) for x in _cnt.values], marker_color="#2563eb"))
+            _f.update_layout(height=320, margin=dict(l=44, r=16, t=16, b=40), template="plotly_white", yaxis_title="rotas")
+            _sec.append(("dist", "Distribuição de Distâncias", _emb(_f)))
+
+        if 'UF Origem' in df.columns and _dist is not None:
+            _g = df.assign(_d=_dist).groupby('UF Origem').agg(Rotas=('_d', 'size'), Media=('_d', 'mean')).reset_index().sort_values('Rotas', ascending=False)
+            _f = go.Figure(go.Bar(x=_g['UF Origem'], y=_g['Rotas'], marker_color="#0ea5e9"))
+            _f.update_layout(height=300, margin=dict(l=44, r=16, t=16, b=40), template="plotly_white", yaxis_title="rotas")
+            _rows = "".join(f"<tr><td>{_he.escape(str(r['UF Origem']))}</td><td class='r'>{int(r['Rotas'])}</td><td class='r'>{r['Media']:.0f}</td></tr>" for _, r in _g.head(15).iterrows())
+            _sec.append(("uf", "Síntese por UF", _emb(_f) + f"<table><thead><tr><th>UF</th><th class='r'>Rotas</th><th class='r'>Dist. média (km)</th></tr></thead><tbody>{_rows}</tbody></table>"))
+
+        if 'Municipio Destino' in df.columns and _dist is not None:
+            _p = df.assign(_d=_dist).groupby('Municipio Destino').agg(Mun=('_d', 'size'), DM=('_d', 'mean')).reset_index().sort_values('Mun', ascending=False)
+            _has_c = _insc is not None
+            if _has_c:
+                _p['Cand'] = _p['Municipio Destino'].map(df.assign(_i=_insc.fillna(0)).groupby('Municipio Destino')['_i'].sum()).fillna(0).astype(int)
+            _rows = "".join("<tr><td>" + _he.escape(str(r['Municipio Destino'])) + f"</td><td class='r'>{int(r['Mun'])}</td>" + (f"<td class='r'>{int(r['Cand']):,}</td>" if _has_c else "") + f"<td class='r'>{r['DM']:.0f}</td></tr>" for _, r in _p.head(20).iterrows())
+            _cab = "<th>Polo</th><th class='r'>Municípios</th>" + ("<th class='r'>Candidatos</th>" if _has_c else "") + "<th class='r'>Dist. média (km)</th>"
+            _sec.append(("polos", "Competitividade dos Polos", f'<p class="lead">Quantos municípios e candidatos cada polo concentra — os do topo são os mais demandados.</p><table><thead><tr>{_cab}</tr></thead><tbody>{_rows}</tbody></table>'))
+
+        if 'Municipio Concorrente' in df.columns:
+            _cc = df['Municipio Concorrente'].astype(str).str.strip()
+            _cc = _cc[(_cc != '') & (_cc.str.lower() != 'nan')]
+            _vc = _cc.value_counts().head(10)
+            if len(_vc):
+                _dc = _num('Distancia Concorrente')
+                _extra = ""
+                if _dist is not None and _dc is not None:
+                    _difs = (_dc - _dist).dropna()
+                    if len(_difs):
+                        _extra = f'<p class="lead">Diferença média para o 2º colocado: <b>{_difs.mean():.0f} km</b> · mínima {_difs.min():.0f} km · máxima {_difs.max():.0f} km.</p>'
+                _rows = "".join(f"<tr><td>{_he.escape(str(k))}</td><td class='r'>{int(v)}</td></tr>" for k, v in _vc.items())
+                _sec.append(("conc", "Concorrentes (2º colocado)", f'{_extra}<table><thead><tr><th>Alternativa de aplicação</th><th class="r">Vezes como 2ª opção</th></tr></thead><tbody>{_rows}</tbody></table>'))
+
+        if 'Balsas' in df.columns:
+            _bm = df['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1'])
+            _nb = int(_bm.sum())
+            _cb = int(_insc[_bm].fillna(0).sum()) if _insc is not None else _nb
+            _sec.append(("balsa", "Balsas", f'<div class="kpis"><div class="kpi"><div class="kpi-v">{_nb:,}</div><div class="kpi-l">Rotas que cruzam balsa</div></div><div class="kpi"><div class="kpi-v">{_cb:,}</div><div class="kpi-l">Candidatos afetados</div></div></div><p class="lead">Rotas dependentes de travessia são sensíveis a horários e condições do rio — priorize alternativas onde possível.</p>'))
+
+        if _dist is not None and _reta is not None:
+            _mm = pd.DataFrame({"r": _reta, "v": _dist}).dropna()
+            _mm = _mm[(_mm["r"] > 0) & (_mm["v"] > 0)]
+            if len(_mm):
+                _f = go.Figure(go.Scatter(x=_mm["r"], y=_mm["v"], mode="markers", marker=dict(color="#7c3aed", size=6, opacity=0.55)))
+                _mx = float(max(_mm["r"].max(), _mm["v"].max()))
+                _f.add_trace(go.Scatter(x=[0, _mx], y=[0, _mx], mode="lines", line=dict(dash="dash", color="#94a3b8")))
+                _f.update_layout(height=360, margin=dict(l=52, r=16, t=16, b=40), template="plotly_white", xaxis_title="linha reta (km)", yaxis_title="viária (km)", showlegend=False)
+                _sec.append(("sinuo", "Linha Reta × Rota", f'<p class="lead">Sinuosidade média (viária ÷ reta): <b>{(_mm["v"] / _mm["r"]).mean():.2f}×</b>. Pontos acima da diagonal indicam o desvio natural das estradas.</p>' + _emb(_f)))
+
         if {'Lat Origem', 'Lon Origem'}.issubset(df.columns):
             _dm = df.copy()
             _dm['_la'] = pd.to_numeric(_dm['Lat Origem'], errors='coerce')
             _dm['_lo'] = pd.to_numeric(_dm['Lon Origem'], errors='coerce')
             _dm = _dm[_dm['_la'].notna() & _dm['_lo'].notna()]
-            if not _dm.empty:
-                _fig_m = px.scatter_geo(_dm, lat='_la', lon='_lo',
-                                        color=('Distancia' if 'Distancia' in _dm.columns else None),
-                                        hover_name=('Municipio Origem' if 'Municipio Origem' in _dm.columns else None),
-                                        scope='south america', color_continuous_scale="Turbo")
-                _fig_m.update_layout(title="Origens dos candidatos", height=430, margin=dict(l=0, r=0, t=50, b=0))
-                _fig_m.update_geos(fitbounds="locations", showcountries=True, countrycolor="#94a3b8")
-                _figs.append(_emb(_fig_m))
-        _figs_html = "".join(f'<section><div class="fig">{_h}</div></section>' for _h in _figs)
-        _tab_html = ""
-        if _dist is not None and {'Municipio Origem', 'Municipio Destino'}.issubset(df.columns):
-            _top = df.assign(_d=_dist).nlargest(10, '_d')
-            _rows = "".join(f"<tr><td>{_he.escape(str(r['Municipio Origem']))}</td>"
-                            f"<td>{_he.escape(str(r['Municipio Destino']))}</td>"
-                            f"<td style='text-align:right'>{r['_d']:.1f}</td></tr>" for _, r in _top.iterrows())
-            _tab_html = ('<section><h2>10 maiores deslocamentos</h2><table><thead><tr><th>Origem</th>'
-                         f'<th>Destino</th><th>km viária</th></tr></thead><tbody>{_rows}</tbody></table></section>')
-        _css = ("body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f8fafc;"
-                "color:#0f172a}header{background:#0f172a;color:#fff;padding:28px 32px}header h1{margin:0;"
-                "font-size:22px}header p{margin:4px 0 0;color:#cbd5e1;font-size:13px}main{max-width:960px;"
-                "margin:0 auto;padding:24px 32px}.kpis{display:flex;flex-wrap:wrap;gap:14px}.kpi{flex:1;"
-                "min-width:150px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px}"
-                ".kpi-v{font-size:24px;font-weight:700;color:#2563eb}.kpi-l{font-size:12px;color:#64748b;"
-                "margin-top:2px}section{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;"
-                "margin-top:16px}h2{font-size:15px;margin:0 0 10px}table{width:100%;border-collapse:collapse;"
-                "font-size:13px}th,td{padding:8px 10px;border-bottom:1px solid #eef2f7;text-align:left}"
-                "thead th{background:#f1f5f9;color:#475569;font-size:12px}.fig{overflow:auto}footer{"
-                "max-width:960px;margin:0 auto;padding:16px 32px 40px;color:#94a3b8;font-size:11px}")
+            if len(_dm):
+                _fm = px.scatter_geo(_dm, lat='_la', lon='_lo',
+                                     color=('Distancia' if 'Distancia' in _dm.columns else None),
+                                     hover_name=('Municipio Origem' if 'Municipio Origem' in _dm.columns else None),
+                                     scope='south america', color_continuous_scale="Turbo")
+                _fm.update_layout(height=460, margin=dict(l=0, r=0, t=0, b=0))
+                _fm.update_geos(fitbounds="locations", showcountries=True, countrycolor="#94a3b8")
+                _sec.append(("mapa", "Mapa das Origens", _emb(_fm)))
+
+        _dg = []
+        if _dist is not None:
+            _dg.append(f"O estudo cobre <b>{_n:,} municípios</b> de origem" + (f" e <b>{_tot_cand:,} candidatos</b>" if _insc is not None else "") + (f", distribuídos em <b>{_n_polos} polos</b>" if _n_polos else "") + f". O deslocamento médio é de <b>{_dist.mean():.0f} km</b> (mediana {_dist.median():.0f} km) e o pior caso, <b>{_dist.max():.0f} km</b>.")
+            if 'Municipio Origem' in df.columns:
+                _cr = df.assign(_d=_dist).nlargest(3, '_d')
+                _dg.append("<b>Municípios críticos</b> (maior deslocamento): " + "; ".join(f"{_he.escape(str(r['Municipio Origem']))} ({r['_d']:.0f} km)" for _, r in _cr.iterrows()) + " — atenção prioritária a esses candidatos.")
+            if 'Municipio Destino' in df.columns:
+                _pv = df['Municipio Destino'].value_counts()
+                if len(_pv):
+                    _dg.append(f"<b>Polo mais utilizado</b>: {_he.escape(str(_pv.index[0]))} ({int(_pv.iloc[0])} municípios) — verifique a capacidade; polos com poucos municípios podem ser consolidados.")
+        _sec.append(("diag", "Diagnóstico Executivo", "".join(f"<p>{d}</p>" for d in _dg) or "<p>Sem dados suficientes.</p>"))
+
+        _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
+        _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
+        _css = (
+            ":root{--brand:#0f172a;--accent:#2563eb;--line:#e2e8f0;--muted:#64748b}"
+            "*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;"
+            "background:#f1f5f9;color:#0f172a}a{color:inherit;text-decoration:none}"
+            ".cover{background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;padding:40px 40px 44px}"
+            ".cover .tag{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#93c5fd}"
+            ".cover h1{margin:8px 0 6px;font-size:28px;font-weight:800}.cover p{margin:0;color:#cbd5e1;font-size:13px}"
+            ".wrap{display:flex;align-items:flex-start;max-width:1180px;margin:0 auto}"
+            "nav{position:sticky;top:0;align-self:flex-start;width:240px;flex:0 0 240px;padding:24px 16px;"
+            "max-height:100vh;overflow:auto}nav .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;"
+            "color:var(--muted);margin:0 10px 8px}nav a{display:block;padding:9px 12px;border-radius:8px;"
+            "font-size:13.5px;color:#334155;margin-bottom:2px}nav a:hover{background:#e2e8f0;color:var(--brand)}"
+            "main{flex:1;min-width:0;padding:24px 32px 60px}"
+            ".kpis{display:flex;flex-wrap:wrap;gap:14px}.kpi{flex:1;min-width:150px;background:#fff;"
+            "border:1px solid var(--line);border-radius:14px;padding:18px}.kpi-v{font-size:26px;font-weight:800;"
+            "color:var(--accent)}.kpi-l{font-size:12px;color:var(--muted);margin-top:2px}"
+            "section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px 22px;"
+            "margin-bottom:18px;scroll-margin-top:16px}h2{font-size:16px;margin:0 0 14px;padding-bottom:10px;"
+            "border-bottom:2px solid #eef2f7}p.lead{color:#475569;font-size:13.5px;margin:0 0 12px}"
+            "table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;"
+            "border-bottom:1px solid #eef2f7;text-align:left}td.r,th.r{text-align:right}"
+            "thead th{background:#f1f5f9;color:#475569;font-size:12px}"
+            "footer{max-width:1180px;margin:0 auto;padding:8px 32px 44px;color:#94a3b8;font-size:11px}"
+            "@media(max-width:820px){.wrap{display:block}nav{position:static;width:auto;flex:none;max-height:none;"
+            "display:flex;flex-wrap:wrap;gap:6px}nav .lbl{display:none}nav a{margin:0}}"
+            "@media print{nav{display:none}section{break-inside:avoid}.cover{-webkit-print-color-adjust:exact}}"
+        )
         return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width, initial-scale=1">'
                 f'<title>{_he.escape(titulo)}</title><style>{_css}</style></head><body>'
-                f'<header><h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_n:,} rota(s)</p></header>'
-                f'<main><div class="kpis">{_kpi_html}</div>{_figs_html}{_tab_html}</main>'
-                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer></body></html>')
+                f'<div class="cover"><div class="tag">Relatório Técnico · Planejamento de Locais de Aplicação</div>'
+                f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_n:,} municípios · {_tot_cand:,} candidatos</p></div>'
+                f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
+                f'<footer>Relatório autocontido · abre offline em qualquer navegador · gerado pela aplicação.</footer>'
+                f'</body></html>')
     except Exception:
-        logger.error("[RELATORIO-HTML] Falha ao gerar relatório", exc_info=True)
+        logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório", exc_info=True)
         return None
 
 
