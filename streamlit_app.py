@@ -8578,6 +8578,10 @@ _MAPA_COLUNAS_EXAME = {
     'Distancia Concorrente': 'Distância à Alternativa de Aplicação (km)',
     'Linha Reta Concorrente': 'Distância Geodésica à Alternativa (km)',
     'Tempo Concorrente': 'Tempo Estimado até a Alternativa',
+    'Municipio Concorrente': 'Município da Alternativa de Aplicação',
+    'UF Concorrente': 'UF da Alternativa de Aplicação',
+    'Cod IBGE Concorrente': 'Código IBGE da Alternativa',
+    'Motor Vencedor Concorrente': 'Motor de Rota da Alternativa',
     'IGQ Hub': 'Índice de Qualidade do Polo (0-100)',
     'Custo Efetivo Hub (km-eq)': 'Esforço de Deslocamento do Polo (km-equiv.)',
     'Hub 2o (Custo)': 'Alternativa de Aplicação (2º melhor)',
@@ -8715,6 +8719,60 @@ def _indices_territoriais(df, marcos=None):
             'interiorizacao': round(100.0 * (_total - _top) / _total, 1) if _total else 0.0,
             'capilaridade_80pct': (marcos or {}).get(80),
             'total_candidatos': int(_total), 'total_municipios': int(_n)}
+
+
+def _detectar_coluna(colunas, palavras_chave):
+    """[PLANEJAMENTO - 184ª geração] Detecta a 1ª coluna cujo nome (normalizado) contém alguma palavra-chave.
+    Retorna o nome da coluna ou None. Puro."""
+    _norm = {c: unidecode(str(c)).lower().strip() for c in colunas}
+    for _p in palavras_chave:
+        for _c in colunas:
+            if _p in _norm[_c]:
+                return _c
+    return None
+
+
+def _planejamento_resolver_entrada(df_bruto, col_muni, col_cand, col_uf=None):
+    """[PLANEJAMENTO - 184ª geração] Resolve a planilha de entrada do planejamento em um DataFrame com
+    coordenadas OFICIAIS, OFFLINE (base IBGE embarcada — sem rede): cada linha vira
+    (codigo_ibge, municipio, uf, lat, lon, candidatos). col_muni aceita nome de município (± UF) OU Código
+    IBGE. Agrega candidatos por município. Homônimo sem UF, não encontrado, ou sem coordenada → não resolvido
+    (contado). Reusa a base corrigida (curada + sede oficial + geometria). Puro. Retorna (df, n_nao_resolvidos)."""
+    _idx = _indice_ibge_por_codigo()
+    _linhas, _nao = {}, 0
+    for _, _row in df_bruto.iterrows():
+        _mv = str(_row.get(col_muni, "") if _row.get(col_muni) is not None else "").strip()
+        _cv = pd.to_numeric(_row.get(col_cand), errors='coerce')
+        _cv = 0.0 if pd.isna(_cv) else float(_cv)
+        if not _mv or _mv.lower() == "nan":
+            _nao += 1
+            continue
+        _uf = str(_row.get(col_uf, "")).strip().upper() if col_uf else ""
+        _cod, _info = None, None
+        _digs = re.sub(r"\D", "", _mv)
+        if len(_digs) == 7 and _digs in _idx:
+            _cod, _info = _digs, _idx[_digs]
+        else:
+            _ent = IBGE_MUNICIPIOS.get(semantica.normalizar(_mv))
+            _e = None
+            if _ent:
+                if len(_ent) == 1:
+                    _e = _ent[0]
+                elif _uf:
+                    _e = next((x for x in _ent if str(x.get("uf", "")).upper() == _uf), None)
+            if _e:
+                _cod = str(_e.get("codigo_ibge") or "").strip()
+                _info = {"municipio": _e.get("municipio", ""), "uf": _e.get("uf", ""),
+                         "lat": _e.get("lat", 0.0), "lon": _e.get("lon", 0.0)}
+        if _cod and _info and (_info.get("lat") or _info.get("lon")):
+            if _cod not in _linhas:
+                _linhas[_cod] = {"codigo_ibge": _cod, "municipio": _info.get("municipio", ""),
+                                 "uf": _info.get("uf", ""), "lat": _info.get("lat"),
+                                 "lon": _info.get("lon"), "candidatos": 0.0}
+            _linhas[_cod]["candidatos"] += _cv
+        else:
+            _nao += 1
+    return pd.DataFrame(list(_linhas.values())), _nao
 
 
 def _curva_cobertura(distancias, pesos=None, faixas=(50, 100, 150, 200, 300, 500)):
@@ -18004,13 +18062,20 @@ def _explicacao_analista_hub(cliente, hub_venc, conc, dist_v, dist_c, dif_km, di
     _fluvial = ("fluvial" in _m) or ("isolado" in _m)
     _sem_conc = (not conc) or str(conc).strip().lower() in ("n/a", "nan", "", "—") or _dc <= 0
 
-    if not _sem_conc:
-        _abre = (f"O hub **{hub_venc}** foi indicado para **{cliente}** por oferecer a menor distância "
-                 f"rodoviária ({_dv:.1f} km) entre as bases avaliadas, com vantagem de {_difkm:.1f} km "
-                 f"(+{_difpct:.1f}%) sobre a segunda melhor opção (**{conc}**, {_dc:.1f} km).")
-    else:
+    if _sem_conc:
         _abre = (f"O hub **{hub_venc}** foi indicado para **{cliente}** com distância rodoviária de "
                  f"{_dv:.1f} km. Não há segunda opção viável registrada (base única na região).")
+    elif _dv <= _dc:
+        _abre = (f"O hub **{hub_venc}** foi indicado para **{cliente}** por oferecer a menor distância "
+                 f"rodoviária ({_dv:.1f} km) entre as bases avaliadas, com vantagem de {abs(_difkm):.1f} km "
+                 f"(+{_difpct:.1f}%) sobre a segunda opção (**{conc}**, {_dc:.1f} km).")
+    else:
+        # [SSOT-DECISAO - 184ª geração] Vencedor com viária MAIOR que a do concorrente → acesso fluvial/isolado,
+        # decisão por proximidade em linha reta. Dizer a VERDADE, nunca "menor distância rodoviária".
+        _abre = (f"O hub **{hub_venc}** foi indicado para **{cliente}** por **proximidade geográfica**: o destino "
+                 f"não tem rota rodoviária viável (**acesso fluvial/isolado**), então a distância por estrada "
+                 f"({_dv:.1f} km) é MAIOR que a de **{conc}** ({_dc:.1f} km), que seria a mais curta por asfalto. "
+                 f"A escolha reflete a menor distância em linha reta, não a viária.")
 
     if _rvr <= 0:
         _rota = ""
@@ -18439,6 +18504,45 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
     # [M14] Flush forçado do buffer de telemetria ao final do lote
     _flush_telemetria_forcado()
     return df_final
+
+
+def _validar_coerencia_viaria(df):
+    """[COERENCIA-VIARIA - 184ª geração] VALIDAÇÃO AUTOMÁTICA (modo viária): detecta toda linha em que a
+    distância viária do VENCEDOR é MAIOR que a do CONCORRENTE — inconsistência impossível para o critério de
+    menor rota viária (tipicamente destino de ACESSO FLUVIAL, cuja "rota rodoviária" é um contorno d'água, ou
+    rota recuperada após falha). Registra em log (contagem + exemplos) E marca uma coluna de alerta que
+    aparece na planilha exportada, para auditoria e reprocessamento. NÃO troca o vencedor: isso mexeria em
+    ~15 colunas pareadas + capacidade da alocação e exige validação no ambiente real. O painel de auditoria
+    já sinaliza cada caso na tela e nomeia o hub de menor viária. Defensivo; retorna o df (com a coluna)."""
+    try:
+        if df is None or 'Distancia' not in df.columns or 'Distancia Concorrente' not in df.columns:
+            return df
+        _dv = pd.to_numeric(df['Distancia'], errors='coerce')
+        _dc = pd.to_numeric(df['Distancia Concorrente'], errors='coerce')
+        _mask = _dv.notna() & _dc.notna() & (_dc > 0) & (_dv > _dc)
+        _n = int(_mask.sum())
+        if _n <= 0:
+            return df
+        df = df.copy()
+        if 'Alerta Coerência Viária' not in df.columns:
+            df['Alerta Coerência Viária'] = ''
+        df.loc[_mask, 'Alerta Coerência Viária'] = ("⚠️ vencedor com viária MAIOR que o concorrente — "
+                                                    "provável acesso fluvial/rota rodoviária indisponível; "
+                                                    "reprocessar ou tratar como acesso fluvial")
+        _ex, _cmo, _cmd = [], ('Municipio Origem' if 'Municipio Origem' in df.columns else None), \
+            ('Municipio Destino' if 'Municipio Destino' in df.columns else None)
+        for _, _r in df[_mask].head(5).iterrows():
+            _o = _r.get(_cmo, '?') if _cmo else '?'
+            _d = _r.get(_cmd, '?') if _cmd else '?'
+            _ex.append(f"{_o}→{_d} (venc {pd.to_numeric(_r['Distancia'], errors='coerce'):.0f} km > "
+                       f"conc {pd.to_numeric(_r['Distancia Concorrente'], errors='coerce'):.0f} km)")
+        logger.warning("[COERENCIA-VIARIA] %d rota(s) com viária do vencedor MAIOR que a do concorrente (modo "
+                       "viária) — provável acesso fluvial/rota indisponível. Exemplos: %s. Coluna de alerta "
+                       "adicionada; o painel de auditoria sinaliza cada caso e nomeia o hub de menor viária.",
+                       _n, "; ".join(_ex))
+        return df
+    except Exception:
+        return df
 
 
 def _alinhar_concorrente_por_viaria(df, mcda_map, resultados):
@@ -21777,6 +21881,77 @@ if _secao == _SECOES[1]:   # tab_processamento
 if _secao == _SECOES[2]:   # tab_alocacao
     st.info("🎯 **Objetivo desta aba:** Definir o **melhor local de aplicação da prova** para cada município de candidatos. Envie a lista de **municípios de origem dos candidatos** e a lista de **polos de aplicação** (escolas/unidades aplicadoras). O sistema avalia todas as combinações e recomenda, para cada município, o local de prova que minimiza o deslocamento dos candidatos.")
     renderizar_guia_aba("alocacao")
+    # [PLANEJAMENTO - 184ª geração] SEÇÃO NOVA (Fase 2, peça 1: entrada + ranking). Ferramenta EXPLORATÓRIA,
+    # decolada da alocação: a partir da distribuição de candidatos, rankeia quais municípios têm maior
+    # POTENCIAL de sediar provas (catchment). Resolve OFFLINE pela base IBGE embarcada (corrigida). Aditivo,
+    # opt-in (expander), com chaves e session_state próprios ('plan_*') — não interfere no fluxo de alocação.
+    with st.expander("🗺️ Planejamento Estratégico de Cobertura de Locais (novo)", expanded=False):
+        st.caption("Descubra quais municípios têm **maior potencial para sediar provas**, a partir da "
+                   "distribuição de candidatos — sem rodar a alocação. Envie uma planilha com **município "
+                   "(ou Código IBGE)** e **quantidade de candidatos**.")
+        _plan_arq = st.file_uploader("Planilha (.xlsx)", type=["xlsx"], key="plan_upload")
+        if _plan_arq is not None:
+            try:
+                _plan_bruto = pd.read_excel(_plan_arq, engine='calamine')
+            except Exception:
+                _plan_bruto = None
+                st.error("Não consegui ler a planilha. Use um arquivo .xlsx válido.")
+            if _plan_bruto is not None and len(_plan_bruto) > 0:
+                _pcols = list(_plan_bruto.columns)
+                _dm = _detectar_coluna(_pcols, ['municipio', 'município', 'cidade', 'origem', 'local'])
+                _dc = _detectar_coluna(_pcols, ['candidato', 'inscrito', 'quantidade', 'qtd', 'total', 'demanda'])
+                _du = _detectar_coluna(_pcols, ['uf', 'estado'])
+                _pcol1, _pcol2 = st.columns(2)
+                _sel_m = _pcol1.selectbox("Coluna de município / Código IBGE", _pcols,
+                                          index=(_pcols.index(_dm) if _dm in _pcols else 0), key="plan_col_m")
+                _sel_c = _pcol2.selectbox("Coluna de candidatos", _pcols,
+                                          index=(_pcols.index(_dc) if _dc in _pcols else 0), key="plan_col_c")
+                _pcol3, _pcol4 = st.columns(2)
+                _opts_uf = ["(nenhuma)"] + _pcols
+                _sel_u = _pcol3.selectbox("Coluna de UF (recomendado p/ homônimos)", _opts_uf,
+                                          index=(_opts_uf.index(_du) if _du in _pcols else 0), key="plan_col_u")
+                _sel_r = _pcol4.slider("Raio de cobertura (km)", 30, 300, 100, 10, key="plan_raio",
+                                       help="Distância máxima que um candidato percorreria até o local de prova.")
+                if st.button("🔎 Analisar potencial de cobertura", key="plan_btn", use_container_width=True):
+                    with st.spinner("Resolvendo municípios (base IBGE) e calculando cobertura..."):
+                        _pr, _pn = _planejamento_resolver_entrada(
+                            _plan_bruto, _sel_m, _sel_c, None if _sel_u == "(nenhuma)" else _sel_u)
+                        st.session_state['plan_resolvido'] = _pr
+                        st.session_state['plan_naoresolv'] = int(_pn)
+                        st.session_state['plan_raio_usado'] = int(_sel_r)
+        if isinstance(st.session_state.get('plan_resolvido'), pd.DataFrame):
+            _pr = st.session_state['plan_resolvido']
+            _pn = st.session_state.get('plan_naoresolv', 0)
+            if len(_pr) == 0:
+                st.warning("Nenhum município foi resolvido — verifique as colunas e clique em Analisar.")
+            else:
+                _pra = int(st.session_state.get('plan_raio_usado', 100))
+                _pmc1, _pmc2, _pmc3 = st.columns(3)
+                _pmc1.metric("Municípios com candidatos", f"{len(_pr):,}")
+                _pmc2.metric("Total de candidatos",
+                             f"{int(pd.to_numeric(_pr['candidatos'], errors='coerce').fillna(0).sum()):,}")
+                _pmc3.metric("Raio de cobertura", f"{_pra} km")
+                if _pn:
+                    st.info(f"⚠️ {_pn} linha(s) não resolvida(s) (Código/município não encontrado ou homônimo "
+                            f"sem UF). As demais foram usadas normalmente.")
+                _rk = _catchment_ranking(_pr, raio_km=float(_pra))
+                st.markdown("#### 📊 Ranking de Potencial de Cobertura")
+                if len(_rk) > 0:
+                    _t0 = _rk.iloc[0]
+                    _leitura_grafico(
+                        como_ler=f"cada linha é um município **candidato a sediar prova**; mostra quantos municípios e "
+                                 f"**candidatos** ele cobriria num raio de {_pra} km, e a distância média/máxima na área.",
+                        conclusao=f"o de maior potencial é **{_t0['municipio']}/{_t0['uf']}** — cobre "
+                                  f"**{int(_t0['candidatos_cobertos']):,} candidatos** ({_t0['pct_candidatos']:.0f}% do "
+                                  f"total) em **{int(_t0['municipios_cobertos'])} municípios** "
+                                  f"(dist. média {_t0['dist_media_km']:.0f} km).")
+                    _rk_show = _rk.head(50).rename(columns={
+                        'municipio': 'Município', 'uf': 'UF', 'codigo_ibge': 'Cód. IBGE',
+                        'municipios_cobertos': 'Municípios cobertos', 'candidatos_cobertos': 'Candidatos cobertos',
+                        'pct_candidatos': '% dos candidatos', 'dist_media_km': 'Dist. média (km)',
+                        'dist_max_km': 'Dist. máx (km)'})
+                    st.dataframe(_rk_show, use_container_width=True, hide_index=True)
+                    st.caption("Próximas peças (em breve): cenários “abrir N locais → % coberto”, mapa e diagnóstico.")
     # [ALOC-ENTERPRISE - 49ª geração] Seção de boas práticas, no mesmo padrão do Processamento em Lote.
     with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (Alocação de Hubs)", expanded=False):
         st.markdown("""
@@ -22370,6 +22545,11 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             df_final_alo, st.session_state.get('alo_mcda') or {}, _resultados)
                     except Exception as _e_alc:
                         logger.error(f"[VIÁRIA-PADRÃO] Falha ao alinhar concorrente por viária: {_e_alc}")
+                    # [COERENCIA-VIARIA - 184ª geração] Validação automática: detecta/sinaliza rotas com viária do
+                    # vencedor MAIOR que a do concorrente (acesso fluvial / rota recuperada) — adiciona coluna de
+                    # alerta na planilha e registra em log. Não troca o vencedor (risco de capacidade/consistência);
+                    # o painel de auditoria já sinaliza cada caso e nomeia o hub de menor viária.
+                    df_final_alo = _validar_coerencia_viaria(df_final_alo)
                 # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos.
                 df_final_alo = _enriquecer_desambiguacao_homonimos(df_final_alo)
                 # [INTEGRIDADE - 133ª geração] Pós-passo ADITIVO: Índice de Integridade Geográfica + alerta por rota.
@@ -23261,13 +23441,17 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             })
                             st.dataframe(_tab_cmp, use_container_width=True, hide_index=True)
 
-                            # Sensibilidade da escolha
-                            if _dif_km < 5:
-                                _sens = ("🔴 Muito sensível", f"Apenas **{_dif_km:.1f} km** separam os hubs — pequenas mudanças na malha viária podem **inverter** o resultado. Empate técnico.")
-                            elif _dif_km < 20:
-                                _sens = ("🟡 Moderadamente sensível", f"Diferença de **{_dif_km:.1f} km** — a escolha é consistente, mas não folgada.")
+                            # [SSOT-DECISAO - 184ª geração] Sensibilidade pela diferença ABSOLUTA de viária — antes
+                            # usava _dif_km com sinal, e um _dif_km negativo (vencedor com viária MAIOR que a do
+                            # concorrente, caso fluvial) caía em "< 5" e rotulava um abismo de 2394 km como "empate
+                            # técnico". Agora usa abs().
+                            _dif_abs = abs(_dif_km)
+                            if _dif_abs < 5:
+                                _sens = ("🔴 Muito sensível", f"Apenas **{_dif_abs:.1f} km** separam os hubs — pequenas mudanças na malha viária podem **inverter** o resultado. Empate técnico.")
+                            elif _dif_abs < 20:
+                                _sens = ("🟡 Moderadamente sensível", f"Diferença de **{_dif_abs:.1f} km** — a escolha é consistente, mas não folgada.")
                             else:
-                                _sens = ("🟢 Escolha robusta", f"Diferença de **{_dif_km:.1f} km** — baixíssima probabilidade de inversão.")
+                                _sens = ("🟢 Escolha robusta", f"Diferença de **{_dif_abs:.1f} km** — baixíssima probabilidade de inversão.")
                             st.markdown(f"**🎯 Sensibilidade da Escolha:** {_sens[0]}")
                             st.caption(_sens[1])
 
@@ -23281,14 +23465,32 @@ if _secao == _SECOES[2]:   # tab_alocacao
 
                             # Explicação automática (escolha do vencedor)
                             st.markdown("**🧾 Justificativa automática da escolha**")
-                            _motivos = [f"menor distância viária ({_venc_dist:.1f} km vs {_conc_dist:.1f} km)"]
-                            if _razao_v <= _razao_c:
-                                _motivos.append(f"menor Razão V/R ({_razao_v}× vs {_razao_c}×)")
-                            st.success(f"O hub **{_venc_nome}** foi escolhido por apresentar " + "; ".join(_motivos) +
-                                       f". O concorrente **{_conc_nome}** perdeu principalmente por uma distância superior em "
-                                       f"**{_dif_km:.1f} km** (+{_dif_pct}%)" +
-                                       (", mas a diferença é pequena o suficiente para caracterizar empate técnico." if _dif_km < 5
-                                        else "." ))
+                            # [SSOT-DECISAO - 184ª geração] PORTÃO DE COERÊNCIA (fonte única): a justificativa usa os
+                            # MESMOS valores exibidos e só afirma "menor distância viária" quando o vencedor REALMENTE
+                            # tem a menor viária. Antes era fixo — e num destino de acesso fluvial (sem rota rodoviária
+                            # viável) o vencedor podia ter viária MAIOR que a do concorrente, gerando a frase
+                            # matematicamente impossível "menor viária (2515 vs 120)". Agora, se o vencedor NÃO tem a
+                            # menor viária, dizemos a VERDADE e alertamos, em vez de afirmar o contrário do dado.
+                            if _venc_dist <= _conc_dist:
+                                _motivos = [f"menor distância viária ({_venc_dist:.1f} km vs {_conc_dist:.1f} km)"]
+                                if _razao_v <= _razao_c:
+                                    _motivos.append(f"menor Razão V/R ({_razao_v}× vs {_razao_c}×)")
+                                st.success(f"O hub **{_venc_nome}** foi escolhido por apresentar " + "; ".join(_motivos) +
+                                           f". O concorrente **{_conc_nome}** ficou atrás por **{_dif_abs:.1f} km** "
+                                           f"(+{_dif_pct}%) de distância viária" +
+                                           (", diferença pequena o suficiente para caracterizar empate técnico."
+                                            if _dif_abs < 5 else "."))
+                            else:
+                                st.error(
+                                    f"⚠️ **Inconsistência: a decisão NÃO foi por menor distância viária.** O hub "
+                                    f"escolhido **{_venc_nome}** tem viária de **{_venc_dist:.1f} km**, MAIOR que a do "
+                                    f"concorrente **{_conc_nome}** (**{_conc_dist:.1f} km**). Pelo critério de menor rota "
+                                    f"viária, **quem deveria vencer é {_conc_nome}**.\n\n"
+                                    f"🛟 **Causa provável:** o destino não tem rota rodoviária viável (**acesso "
+                                    f"fluvial/isolado** — razão V/R do vencedor **{_razao_v}×**), então a atribuição caiu "
+                                    f"na **proximidade em linha reta** ({_venc_reta:.1f} km vs {_conc_reta:.1f} km). "
+                                    f"**Reprocesse o estudo** para reavaliar por viária com as rotas recuperadas, ou trate "
+                                    f"este município como acesso fluvial.")
 
                             # [DISPUTA-XAI - 74ª geração] "Por que o concorrente não venceu?" — motivos
                             # estruturados a partir das diferenças já calculadas (viária, linha reta, razão).
