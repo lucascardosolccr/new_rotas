@@ -4067,6 +4067,27 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 _pv = df['Municipio Destino'].value_counts()
                 if len(_pv):
                     _dg.append(f"<b>Polo mais utilizado</b>: {_he.escape(str(_pv.index[0]))} ({int(_pv.iloc[0])} municípios) — verifique a capacidade; polos com poucos municípios podem ser consolidados.")
+        if _dist is not None and {'Municipio Origem', 'Municipio Destino'}.issubset(df.columns):
+            _det = df.assign(_d=_dist).nlargest(15, '_d')
+            _has_b = 'Balsas' in df.columns
+            _rt = _num('Linha Reta')
+            _rows_d = ""
+            for _, r in _det.iterrows():
+                _b = (str(r.get('Balsas', '')).strip().lower() in ('sim', 'yes', 'true', '1')) if _has_b else False
+                _reta_v = pd.to_numeric(r.get('Linha Reta'), errors='coerce') if _rt is not None else None
+                _rows_d += ("<tr><td>" + _he.escape(str(r['Municipio Origem'])) + "</td><td>" +
+                            _he.escape(str(r['Municipio Destino'])) + f"</td><td class='r'>{r['_d']:.0f}</td>" +
+                            (f"<td class='r'>{_reta_v:.0f}</td>" if (_reta_v is not None and pd.notna(_reta_v))
+                             else ("<td class='r'>—</td>" if _rt is not None else "")) +
+                            (f"<td>{'🚢 sim' if _b else 'não'}</td>" if _has_b else "") + "</tr>")
+            _cab_d = "<th>Origem</th><th>Local de prova</th><th class='r'>km viária</th>" + \
+                     ("<th class='r'>linha reta</th>" if _rt is not None else "") + \
+                     ("<th>Balsa</th>" if _has_b else "")
+            _sec.append(("detalhe", "Rotas em Detalhe (15 maiores)",
+                         '<p class="lead">As 15 rotas de maior deslocamento — origem, local de prova, distância '
+                         f'viária e por linha reta, e travessias.</p><table><thead><tr>{_cab_d}</tr></thead>'
+                         f'<tbody>{_rows_d}</tbody></table>'))
+
         _sec.append(("diag", "Diagnóstico Executivo", "".join(f"<p>{d}</p>" for d in _dg) or "<p>Sem dados suficientes.</p>"))
 
         _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
@@ -14423,6 +14444,36 @@ def _relatorio_executivo_comparacao(stats, aud, top_municipios=None):
     return "\n".join(L)
 
 
+def _preencher_vazios_exportacao(df):
+    """[EXPORT-COMPLETO - 184ª geração] Garante que NENHUMA célula da planilha exportada fique em branco:
+    preenche vazios com um marcador CONTEXTUAL que diz POR QUE está vazio, em vez de deixar a célula muda.
+    - Colunas do Google (quando o Google não respondeu) → 'N/A — Google não respondeu'.
+    - Colunas de distrito (a base IBGE não fornece esse nível) → 'Não disponível (base IBGE)'.
+    - Demais vazios → '—'. PRESERVA todo dado real: só toca em células realmente vazias. Retorna o df.
+    Obs.: as colunas do detalhamento multicritério (1º/2º/3º Polo, IGQ, justificativa) preenchem com dado
+    REAL quando a decisão por viária popula o 'mcda' — este passe só cobre o que é genuinamente indisponível."""
+    try:
+        if df is None or len(df) == 0:
+            return df
+        df = df.copy()
+        for _c in df.columns:
+            _s = df[_c]
+            _m = _s.isna() | _s.astype(str).str.strip().isin(['', 'nan', 'None', 'NaN', 'NaT', '<NA>'])
+            if not _m.any():
+                continue
+            _cl = str(_c).lower()
+            if any(_k in _cl for _k in ('google', 'divergência', 'divergencia', 'comparativo', 'motores')):
+                _fill = 'N/A — Google não respondeu nesta medição'
+            elif 'distrito' in _cl:
+                _fill = 'Não disponível (base IBGE)'
+            else:
+                _fill = '—'
+            df[_c] = df[_c].astype(object).where(~_m, _fill)
+        return df
+    except Exception:
+        return df
+
+
 def _renomear_colunas_exame(df, mapa=None):
     """[EXAMES - 134ª geração] Traduz os CABEÇALHOS da planilha exportada para a linguagem de planejamento
     de exames (município de origem do candidato / local de aplicação / polo). Aplicado APENAS na FRONTEIRA
@@ -17814,6 +17865,7 @@ def _selecionar_hub_multicriterio(candidatos, params=None):
         _dv = round(float(c.get('dist_viaria')), 3)
         _validos.append({'hub': c.get('hub'), 'dist_viaria': _dv, 'dist_reta': _dr, 'tempo_min': _tm,
                          'balsa': bool(c.get('balsa')), 'modo': c.get('modo', ''),
+                         'rota_real': bool(c.get('rota_real', True)),
                          'sinuosidade': round(_dv / _dr, 4) if (_dr and _dr > 0) else None,
                          'custo_efetivo': _det["custo_efetivo_km"], 'componentes': _det})
     out = {'vencedor': None, 'igq_vencedor': None, 'custo_vencedor': None, 'ranking': [],
@@ -17833,7 +17885,12 @@ def _selecionar_hub_multicriterio(candidatos, params=None):
     # custo logístico composto (que absorve sinuosidade/lentidão). Assim o investimento no custo composto
     # é preservado — como critério de desempate/qualidade —, mas nunca sobrepõe a menor viária. Por
     # construção, o concorrente (_validos[1]) é o de 2ª MENOR viária.
-    _validos.sort(key=lambda d: (d['dist_viaria'],
+    # [PODA-SEGURA - 184ª geração] Chave 0: rotas REAIS (OSRM/Google) ANTES das de FALLBACK geodésico. Uma
+    # viária de fallback (≈ geodésica) subestima a rota real e não pode vencer uma rota real de maior viária
+    # (era como o mais próximo em LINHA RETA vencia). Só quando NENHUM candidato tem rota real (destino sem
+    # estrada) o de menor geodésica-fallback vence — o comportamento honesto para acesso fluvial/isolado.
+    _validos.sort(key=lambda d: (not d.get('rota_real', True),
+                                 d['dist_viaria'],
                                  d['balsa'],
                                  d['tempo_min'] if d['tempo_min'] is not None else float('inf'),
                                  d['custo_efetivo']))
@@ -17979,7 +18036,13 @@ def _reatribuir_hubs_multicriterio(topk_map, resultados, params=None, parse_temp
             except Exception:
                 _tm = None
             _bal = (str(_res[3]).strip().lower() == "sim") if (len(_res) > 3 and _res[3] is not None) else False
-            _cands.append({"hub": _hub, "dist_viaria": _dv, "dist_reta": _reta, "tempo_min": _tm, "balsa": _bal})
+            # [PODA-SEGURA - 184ª geração] Marca se a rota é REAL (OSRM/Google) ou FALLBACK geodésico. Uma
+            # viária de fallback (≈ geodésica) SUBESTIMA a rota real e não pode vencer uma rota real de maior
+            # viária — o seletor ordena rotas reais ANTES das de fallback (ver _selecionar_hub_multicriterio).
+            _fonte = str(_res[5]).lower() if len(_res) > 5 else ""
+            _rota_real = ("geodés" not in _fonte) and ("falha" not in _fonte)
+            _cands.append({"hub": _hub, "dist_viaria": _dv, "dist_reta": _reta, "tempo_min": _tm,
+                           "balsa": _bal, "rota_real": _rota_real})
         if not _cands:
             if _topk:
                 novo_dest[_cli] = _topk[0][1]
@@ -22034,7 +22097,115 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         'pct_candidatos': '% dos candidatos', 'dist_media_km': 'Dist. média (km)',
                         'dist_max_km': 'Dist. máx (km)'})
                     st.dataframe(_rk_show, use_container_width=True, hide_index=True)
-                    st.caption("Próximas peças (em breve): cenários “abrir N locais → % coberto”, mapa e diagnóstico.")
+                    # [PLANEJAMENTO - 184ª geração] PEÇA 2: Cenários de cobertura máxima (abrir N locais).
+                    # Usa o motor guloso _cenarios_cobertura_maxima (testado). Guarda de tamanho: o guloso é
+                    # ~O(N²·max_n), então para >1500 municípios ele é desativado (recalcula a cada rerun).
+                    st.markdown("#### 🎯 Cenários — quantos locais abrir?")
+                    _cen, _marc = [], {}
+                    if len(_pr) > 1500:
+                        st.info("Cenários desativados para mais de 1.500 municípios (cálculo pesado) — filtre "
+                                "por região/UF na planilha para visualizá-los.")
+                    else:
+                        _cen, _esc, _marc = _cenarios_cobertura_maxima(
+                            _pr, raio_km=float(_pra), ns=(5, 10, 20, 30, 50, 100))
+                        if _cen:
+                            _cdf = pd.DataFrame(_cen)
+                            _cshow = _cdf.rename(columns={
+                                'n': 'Locais abertos', 'candidatos_cobertos': 'Candidatos cobertos',
+                                'pct_candidatos': '% coberto', 'municipios_cobertos': 'Municípios cobertos',
+                                'pct_municipios': '% municípios', 'candidatos_descobertos': 'Candidatos descobertos'})
+                            st.dataframe(_cshow, use_container_width=True, hide_index=True)
+                            st.bar_chart(_cdf.set_index('n')[['pct_candidatos']])
+                            _mtxt = [f"**{_marc[_l]} locais** cobrem {_l}%" for _l in (80, 90, 95) if _marc.get(_l)]
+                            _leitura_grafico(
+                                como_ler=f"cada cenário abre N locais — escolhidos gulosamente para cobrir o máximo de "
+                                         f"candidatos ainda descobertos — e mostra o % de candidatos a até {_pra} km de um local.",
+                                conclusao=(" · ".join(_mtxt) + ". O ganho marginal cai conforme se abrem mais locais."
+                                           if _mtxt else "a cobertura cresce com mais locais, com ganho marginal decrescente."))
+                        else:
+                            st.info("Sem cenários para os dados atuais.")
+                    # [PLANEJAMENTO - 184ª geração] PEÇA 3: Índices territoriais (motor _indices_territoriais).
+                    st.markdown("#### 📐 Índices territoriais")
+                    _idx = _indices_territoriais(_pr, marcos=_marc)
+                    _ic1, _ic2, _ic3 = st.columns(3)
+                    _ic1.metric("Concentração da demanda", f"{_idx['concentracao']:.0f}/100",
+                                help="Gini da distribuição de candidatos entre municípios (0–100). Alto = demanda "
+                                     "concentrada em poucos municípios.")
+                    _ic2.metric("Interiorização", f"{_idx['interiorizacao']:.0f}%",
+                                help="% de candidatos fora dos 10 maiores municípios. Alto = demanda espalhada no interior.")
+                    _ic3.metric("Capilaridade (80%)",
+                                f"{_idx['capilaridade_80pct']} locais" if _idx.get('capilaridade_80pct') else "—",
+                                help="Nº de locais (do cenário guloso) para cobrir 80% dos candidatos. Menos = "
+                                     "demanda mais concentrada.")
+                    # [PLANEJAMENTO - 184ª geração] PEÇA 4: Mapa (candidatos + municípios de maior potencial).
+                    # scatter_geo (contornos embutidos, sem tiles) → renderiza sempre, sem token/rede.
+                    st.markdown("#### 🗺️ Mapa — candidatos e municípios de maior potencial")
+                    try:
+                        _dmap = _pr.copy()
+                        _dmap['_la'] = pd.to_numeric(_dmap['lat'], errors='coerce')
+                        _dmap['_lo'] = pd.to_numeric(_dmap['lon'], errors='coerce')
+                        _dmap = _dmap[_dmap['_la'].notna() & _dmap['_lo'].notna()]
+                        if len(_dmap):
+                            _top_cods = set(_rk.head(10)['codigo_ibge'].astype(str))
+                            _dmap['Potencial'] = _dmap['codigo_ibge'].astype(str).isin(_top_cods).map(
+                                {True: 'Top 10 potencial', False: 'Demais municípios'})
+                            _figp = px.scatter_geo(_dmap, lat='_la', lon='_lo', size='candidatos', color='Potencial',
+                                                   hover_name='municipio', scope='south america', size_max=26,
+                                                   color_discrete_map={'Top 10 potencial': '#dc2626',
+                                                                       'Demais municípios': '#2563eb'})
+                            _figp.update_layout(height=460, margin=dict(l=0, r=0, t=0, b=0),
+                                                legend=dict(orientation='h', y=-0.05))
+                            _figp.update_geos(fitbounds="locations", showcountries=True, countrycolor="#94a3b8")
+                            st.plotly_chart(_figp, use_container_width=True)
+                            _leitura_grafico(
+                                como_ler="cada bolha é um município de candidatos (tamanho = nº de candidatos); em "
+                                         "vermelho, os 10 de maior potencial de cobertura.",
+                                conclusao="aglomerados de bolhas grandes distantes dos vermelhos indicam onde faltam "
+                                          "locais — candidatos ali dependeriam de deslocamentos longos.")
+                        else:
+                            st.info("Sem coordenadas para o mapa.")
+                    except Exception:
+                        st.info("Mapa indisponível para os dados atuais.")
+                    # [PLANEJAMENTO - 184ª geração] PEÇA 5: Diagnóstico textual + Exportação.
+                    st.markdown("#### 🧠 Diagnóstico e exportação")
+                    _t0 = _rk.iloc[0]
+                    _dg = [f"O município de **maior potencial** para sediar prova é **{_t0['municipio']}/{_t0['uf']}**, "
+                           f"cobrindo **{int(_t0['candidatos_cobertos']):,} candidatos** em "
+                           f"{int(_t0['municipios_cobertos'])} municípios num raio de {_pra} km."]
+                    if _idx.get('capilaridade_80pct'):
+                        _dg.append(f"Bastam **{_idx['capilaridade_80pct']} locais** bem escolhidos (cenário guloso) "
+                                   f"para cobrir **80%** dos candidatos.")
+                    _dg.append(f"A concentração da demanda é **{_idx['concentracao']:.0f}/100** e a interiorização, "
+                               f"**{_idx['interiorizacao']:.0f}%** — " +
+                               ("demanda concentrada em poucos centros, o que facilita cobrir muita gente com poucos locais."
+                                if _idx['concentracao'] > 50 else
+                                "demanda bem distribuída no território, exigindo mais locais para boa cobertura."))
+                    for _d in _dg:
+                        st.markdown(f"- {_d}")
+                    try:
+                        _buf_pl = io.BytesIO()
+                        with pd.ExcelWriter(_buf_pl, engine='xlsxwriter') as _w:
+                            _rk.rename(columns={'municipio': 'Município', 'uf': 'UF', 'codigo_ibge': 'Cód. IBGE',
+                                                'municipios_cobertos': 'Municípios cobertos',
+                                                'candidatos_cobertos': 'Candidatos cobertos',
+                                                'pct_candidatos': '% dos candidatos',
+                                                'dist_media_km': 'Dist. média (km)', 'dist_max_km': 'Dist. máx (km)'}
+                                       ).to_excel(_w, index=False, sheet_name="Ranking de Potencial")
+                            if _cen:
+                                pd.DataFrame(_cen).to_excel(_w, index=False, sheet_name="Cenários de Cobertura")
+                            pd.DataFrame([{
+                                'Concentração da demanda (0-100)': _idx['concentracao'],
+                                'Interiorização (%)': _idx['interiorizacao'],
+                                'Capilaridade — locais p/ 80%': _idx.get('capilaridade_80pct'),
+                                'Total de candidatos': _idx['total_candidatos'],
+                                'Total de municípios': _idx['total_municipios'],
+                                'Raio de cobertura (km)': _pra}]).to_excel(_w, index=False, sheet_name="Índices")
+                        st.download_button("⬇️ Baixar análise de cobertura (.xlsx)", data=_buf_pl.getvalue(),
+                                           file_name="planejamento_cobertura.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                           use_container_width=True, key="plan_export_xlsx")
+                    except Exception:
+                        pass
     # [ALOC-ENTERPRISE - 49ª geração] Seção de boas práticas, no mesmo padrão do Processamento em Lote.
     with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (Alocação de Hubs)", expanded=False):
         st.markdown("""
@@ -22185,12 +22356,16 @@ if _secao == _SECOES[2]:   # tab_alocacao
                              "acima. Em **linha reta**, mexer nos controles abaixo **não muda "
                              "absolutamente nada** no resultado.")
                 st.markdown("""
-                #### 📖 O que é isto, em uma frase
-                A plataforma não escolhe o polo mais **perto**. Ela escolhe o de **menor esforço real de
-                deslocamento** — e mede esse esforço numa moeda única: o **km-equivalente**.
+                #### 📖 O que é isto — e o QUANTO interfere na escolha (leia primeiro)
+                **No modo 🛣️ Menor rota viária, o vencedor é SEMPRE o de menor distância por estrada.** O
+                **km-equivalente** abaixo **NÃO muda esse vencedor** — ele age apenas como **critério de
+                desempate** (quando dois polos têm a *mesma* distância viária, decide pelo de menor esforço:
+                sem balsa, mais rápido) e como **otimização interna** do roteamento. Mexer nestes controles
+                **não inverte** a decisão por rota viária; só afina o desempate e os indicadores de qualidade.
+                O exemplo abaixo mostra *por que* o desempate leva em conta o esforço, e não só os quilômetros.
 
-                #### 🤔 Por que a distância não basta
-                Dois locais de prova para o mesmo município:
+                #### 🤔 Por que, no desempate, a distância não basta
+                Dois locais de prova para o mesmo município, **com distância viária muito parecida**:
 
                 | | Polo A | Polo B |
                 |---|---|---|
@@ -22557,7 +22732,15 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         _inc = str(_tk_p[0][1]).strip()          # polo mais próximo (já roteado)
                         _r_inc = _res_r1.get((_cli_p, _inc))
                         _custo_inc = None
-                        if _r_inc and _r_inc[0]:
+                        # [PODA-SEGURA - 184ª geração] O custo-limite da poda SÓ é válido se vier de rota REAL
+                        # (OSRM/Google). Se o incumbente veio de FALLBACK GEODÉSICO (Google falhou e ainda não há
+                        # rota rodoviária), sua viária ≈ geodésica SUBESTIMA o custo real — e o limite baixo faz a
+                        # poda eliminar concorrentes de MENOR rota viária ANTES de roteá-los (o bug que fazia o
+                        # mais próximo em LINHA RETA vencer no modo viária). Nesse caso custo_inc fica None → SEM
+                        # poda p/ este cliente (rota todos os top-K e acha a verdadeira menor viária). A economia
+                        # de API é preservada sempre que o incumbente TEM rota real.
+                        _fonte_inc = str(_r_inc[5]).lower() if (_r_inc and len(_r_inc) > 5) else "geodés"
+                        if _r_inc and _r_inc[0] and "geodés" not in _fonte_inc and "falha" not in _fonte_inc:
                             try:
                                 _d = _custo_logistico_efetivo(
                                     float(_r_inc[0]), float(_tk_p[0][0]),
@@ -22781,7 +22964,8 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
                     # [EXAMES - 134ª geração] Cabeçalhos traduzidos para o contexto de exames APENAS na exportação
                     # (sobre cópia). As chaves internas do df permanecem — renomeá-las quebraria a app inteira.
-                    _renomear_colunas_exame(df_final_alo).to_excel(writer, index=False,
+                    _preencher_vazios_exportacao(
+                        _renomear_colunas_exame(df_final_alo)).to_excel(writer, index=False,
                                                                   sheet_name="Locais de Aplicacao")
                     # [DASHBOARD - 177ª geração] AS ANÁLISES DO CANDIDATO vão para a planilha.
                     # Só quando há a coluna de INSCRITOS — sem ela, a planilha sai como sempre saiu.
