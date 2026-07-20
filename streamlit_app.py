@@ -23093,16 +23093,23 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         _ra4.metric("Deslocamento máximo", f"{_dist_a.max():.1f} km", help="Maior distância viária de um candidato até seu polo — sinaliza acessibilidade crítica.")
                 except Exception:
                     pass
-            # [METODO-TELA - 57ª geração / item #8] Método de SELEÇÃO dos hubs, EXPLÍCITO na tela.
-            # Hoje a seleção do hub mais próximo de cada cliente é por menor distância em LINHA RETA
-            # (geodésica WGS-84): o valor exibido usa GeographicLib/Karney (padrão-ouro, erro <1mm) e o
-            # ranking usa Haversine/IUGG (ordem idêntica). A 2ª opção "por rota viária" é item futuro (#7/#9).
-            st.success("✅ **Método de seleção dos hubs:** ✓ Linha reta (GeographicLib · WGS-84)")
-            st.caption("A base logística mais próxima de cada cliente foi escolhida pela **menor distância "
-                       "em linha reta** (geodésica WGS-84; valor via GeographicLib/Karney, erro <1mm; ranking "
-                       "por Haversine/IUGG, de ordem idêntica). As **distâncias viárias** por cliente "
-                       "(Google prioritário → OSRM fallback) constam na planilha exportada, na coluna "
-                       "**Método Utilizado**.")
+            # [SSOT-DECISAO - 184ª geração] Método de SELEÇÃO dos hubs, HONESTO por modo. Antes esta mensagem
+            # era hardcoded "Linha reta" e aparecia SEMPRE — inclusive no modo viária, mentindo sobre o método
+            # e minando a confiança. Agora reflete o modo real: no modo viária, a alocação final é por MENOR
+            # ROTA VIÁRIA (a linha reta é só pré-filtro/desempate); no modo reta, é por menor geodésica.
+            if st.session_state.get('alo_multicriterio'):
+                st.success("✅ **Método de seleção dos hubs:** 🛣️ Menor rota viária (Google → OSRM)")
+                st.caption("Cada cliente foi alocado ao polo de **menor distância viária real** entre os polos "
+                           "próximos roteados (Google prioritário → OSRM fallback). A distância em linha reta é "
+                           "usada apenas como **pré-filtro** (quais polos rotear) e **desempate**, nunca como "
+                           "critério final da escolha. As distâncias viárias constam na coluna **Método Utilizado**.")
+            else:
+                st.success("✅ **Método de seleção dos hubs:** ✓ Linha reta (GeographicLib · WGS-84)")
+                st.caption("A base logística mais próxima de cada cliente foi escolhida pela **menor distância "
+                           "em linha reta** (geodésica WGS-84; valor via GeographicLib/Karney, erro <1mm; ranking "
+                           "por Haversine/IUGG, de ordem idêntica). As **distâncias viárias** por cliente "
+                           "(Google prioritário → OSRM fallback) constam na planilha exportada, na coluna "
+                           "**Método Utilizado**.")
             # [ALOC-ENTERPRISE - 49ª geração] Paridade com o Processamento em Lote: o mesmo Scorecard de
             # qualidade e a mesma Auditoria Automática de Rotas Suspeitas (REUSO das funções existentes,
             # sem duplicar lógica). A planilha da Alocação já é enriquecida (mesmo _montar_dataframe_final).
