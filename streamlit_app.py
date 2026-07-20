@@ -4133,10 +4133,11 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
 
 
 def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str=""):
-    """[RELATORIO-HTML - 184ª geração] Relatório HTML AUTOCONTIDO (offline) da COMPARAÇÃO entre estudos:
-    KPIs de conciliação e vitória + distribuição de vitórias + candidatos por faixa de economia + veredito.
-    Para compartilhar o parecer com quem DECIDE. Reusa os agregados de stats['brasil']/aud (chaves conhecidas
-    do relatório executivo). Defensivo. Retorna string HTML (ou None)."""
+    """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) da COMPARAÇÃO entre estudos,
+    nível profissional/BI: navegação lateral + Veredito, Placar, Distribuição de Vitórias, Conciliação dos
+    Municípios (detalhada), Economia de Deslocamento (detalhada + faixas) e Convergência de Destinos. Reusa
+    os agregados de stats['brasil']/aud (chaves conhecidas). Defensivo: cada seção só aparece se houver dado.
+    Retorna string HTML (ou None)."""
     import html as _he
     try:
         br = (stats or {}).get("brasil", {})
@@ -4148,56 +4149,108 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
         _p_ref = br.get("pct_venceu_ref", 0) or 0
         _p_emp = br.get("pct_empate", 0) or 0
         _econ = br.get("economia_ponderada_km", 0) or 0
-        _kpis = [("Conciliação", f"{_pct_conc:.0f}%"), ("Vitórias da aplicação", f"{_p_app:.0f}%"),
-                 ("Vitórias da referência", f"{_p_ref:.0f}%"), ("Empate técnico", f"{_p_emp:.0f}%")]
-        if _econ:
-            _kpis.append(("Economia ponderada", f"{_econ:,.0f} km"))
-        _kpi_html = "".join(f'<div class="kpi"><div class="kpi-v">{_he.escape(str(v))}</div>'
-                            f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in _kpis)
         _ver = ("A aplicação produziu a melhor distribuição na maioria dos municípios comparáveis."
                 if _p_app > _p_ref + 5 else
                 ("A base de referência venceu na maioria dos casos."
                  if _p_ref > _p_app + 5 else
                  "As duas soluções são tecnicamente equivalentes no conjunto."))
-        _figs, _sf = [], {"first": True}
+        _st = {"first": True}
 
         def _emb(fig):
-            _h = fig.to_html(full_html=False, include_plotlyjs=(True if _sf["first"] else False),
-                             config={"displayModeBar": False})
-            _sf["first"] = False
+            _h = fig.to_html(full_html=False, include_plotlyjs=(True if _st["first"] else False),
+                             config={"displayModeBar": False, "responsive": True})
+            _st["first"] = False
             return _h
+
+        def _kcards(pares):
+            return '<div class="kpis">' + "".join(
+                f'<div class="kpi"><div class="kpi-v">{_he.escape(str(v))}</div>'
+                f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in pares) + '</div>'
+        _sec = []
+        _sec.append(("veredito", "Veredito", f'<div class="verdict">🔎 <strong>{_he.escape(_ver)}</strong></div>'))
+        _placar = [("Conciliação", f"{_pct_conc:.0f}%"), ("Vitórias da aplicação", f"{_p_app:.0f}%"),
+                   ("Vitórias da referência", f"{_p_ref:.0f}%"), ("Empate técnico", f"{_p_emp:.0f}%")]
+        if _econ:
+            _placar.append(("Economia ponderada", f"{_econ:,.0f} km"))
+        _sec.append(("placar", "Placar da Comparação", _kcards(_placar)))
         _fig_w = go.Figure(go.Bar(x=["Aplicação", "Referência", "Empate técnico"], y=[_p_app, _p_ref, _p_emp],
                                   marker_color=["#2563eb", "#f59e0b", "#94a3b8"]))
-        _fig_w.update_layout(title="Distribuição de vitórias (% dos municípios comparáveis)", height=320,
-                             margin=dict(l=40, r=20, t=50, b=40), template="plotly_white", yaxis_title="%")
-        _figs.append(_emb(_fig_w))
+        _fig_w.update_layout(height=320, margin=dict(l=40, r=20, t=16, b=40), template="plotly_white",
+                             yaxis_title="% dos municípios")
+        _sec.append(("vitorias", "Distribuição de Vitórias", _emb(_fig_w)))
+        _rows_c = "".join(f"<tr><td>{_l}</td><td class='r'>{int(_v):,}</td></tr>" for _l, _v in [
+            ("Por código IBGE", aud.get("por_ibge", 0) or 0), ("Por município + UF", aud.get("por_mun_uf", 0) or 0),
+            ("Por município", aud.get("por_mun", 0) or 0), ("Por similaridade (fuzzy)", aud.get("por_fuzzy", 0) or 0),
+            ("Não conciliados", len(aud.get("nao_conciliados") or []) if isinstance(aud.get("nao_conciliados"), list)
+             else (aud.get("nao_conciliados", 0) or 0))] if _v)
+        if _rows_c:
+            _sec.append(("concil", "Conciliação dos Municípios",
+                         f'<p class="lead">Como os {_conc} de {_tot} municípios foram casados entre os dois '
+                         f'estudos.</p><table><thead><tr><th>Método de conciliação</th>'
+                         f'<th class="r">Municípios</th></tr></thead><tbody>{_rows_c}</tbody></table>'))
+        _e_cand = br.get("economia_km_por_candidato", 0) or 0
+        _kpi_e = [("Economia por candidato", f"{_e_cand:.1f} km"),
+                  ("Candidatos beneficiados", f"{int(br.get('candidatos_beneficiados', 0) or 0):,}"),
+                  ("Candidatos prejudicados", f"{int(br.get('candidatos_prejudicados', 0) or 0):,}"),
+                  ("Redução média", f"{br.get('reducao_pct_media', 0) or 0:.1f}%")]
+        _e_tempo = br.get("economia_tempo_ponderada_min", 0) or 0
+        if _e_tempo:
+            _kpi_e.append(("Economia de tempo", f"{_e_tempo:,.0f} min"))
+        _econ_html = _kcards(_kpi_e)
         _fx = br.get("faixas_economia_candidatos", {}) or {}
         if any(_fx.values()):
             _fig_f = go.Figure(go.Bar(x=list(_fx.keys()), y=[_fx[k] for k in _fx], marker_color="#16a34a"))
-            _fig_f.update_layout(title="Candidatos por faixa de economia de distância", height=320,
-                                 margin=dict(l=40, r=20, t=50, b=40), template="plotly_white")
-            _figs.append(_emb(_fig_f))
-        _figs_html = "".join(f'<section><div class="fig">{_h}</div></section>' for _h in _figs)
-        _css = ("body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f8fafc;"
-                "color:#0f172a}header{background:#0f172a;color:#fff;padding:28px 32px}header h1{margin:0;"
-                "font-size:22px}header p{margin:4px 0 0;color:#cbd5e1;font-size:13px}main{max-width:960px;"
-                "margin:0 auto;padding:24px 32px}.kpis{display:flex;flex-wrap:wrap;gap:14px}.kpi{flex:1;"
-                "min-width:150px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px}"
-                ".kpi-v{font-size:24px;font-weight:700;color:#2563eb}.kpi-l{font-size:12px;color:#64748b;"
-                "margin-top:2px}section{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;"
-                "margin-top:16px}.verdict{background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;"
-                "padding:16px;margin-top:16px;font-size:15px}.fig{overflow:auto}footer{max-width:960px;"
-                "margin:0 auto;padding:16px 32px 40px;color:#94a3b8;font-size:11px}")
+            _fig_f.update_layout(height=300, margin=dict(l=40, r=20, t=16, b=40), template="plotly_white",
+                                 yaxis_title="candidatos")
+            _econ_html += _emb(_fig_f)
+        _sec.append(("economia", "Economia de Deslocamento", _econ_html))
+        _pconv = br.get("pct_convergencia", None)
+        if _pconv is not None:
+            _sec.append(("converg", "Convergência de Destinos",
+                         '<p class="lead">Em quantos municípios os dois estudos escolheram o <b>mesmo</b> local '
+                         'de prova.</p>' + _kcards([
+                             ("Convergência de destinos", f"{_pconv:.0f}%"),
+                             ("Mesmo destino", f"{int(br.get('mesmo_destino', 0) or 0):,}"),
+                             ("Destino diferente", f"{int(br.get('destino_diferente', 0) or 0):,}")])))
+        _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
+        _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
+        _css = (
+            ":root{--brand:#0f172a;--accent:#2563eb;--line:#e2e8f0;--muted:#64748b}"
+            "*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;"
+            "background:#f1f5f9;color:#0f172a}a{color:inherit;text-decoration:none}"
+            ".cover{background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;padding:40px 40px 44px}"
+            ".cover .tag{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#93c5fd}"
+            ".cover h1{margin:8px 0 6px;font-size:28px;font-weight:800}.cover p{margin:0;color:#cbd5e1;font-size:13px}"
+            ".wrap{display:flex;align-items:flex-start;max-width:1180px;margin:0 auto}"
+            "nav{position:sticky;top:0;align-self:flex-start;width:240px;flex:0 0 240px;padding:24px 16px;"
+            "max-height:100vh;overflow:auto}nav .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;"
+            "color:var(--muted);margin:0 10px 8px}nav a{display:block;padding:9px 12px;border-radius:8px;"
+            "font-size:13.5px;color:#334155;margin-bottom:2px}nav a:hover{background:#e2e8f0;color:var(--brand)}"
+            "main{flex:1;min-width:0;padding:24px 32px 60px}"
+            ".kpis{display:flex;flex-wrap:wrap;gap:14px}.kpi{flex:1;min-width:150px;background:#fff;"
+            "border:1px solid var(--line);border-radius:14px;padding:18px}.kpi-v{font-size:26px;font-weight:800;"
+            "color:var(--accent)}.kpi-l{font-size:12px;color:var(--muted);margin-top:2px}"
+            "section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px 22px;"
+            "margin-bottom:18px;scroll-margin-top:16px}h2{font-size:16px;margin:0 0 14px;padding-bottom:10px;"
+            "border-bottom:2px solid #eef2f7}p.lead{color:#475569;font-size:13.5px;margin:0 0 12px}"
+            ".verdict{background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px;font-size:15px}"
+            "table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 11px;"
+            "border-bottom:1px solid #eef2f7;text-align:left}td.r,th.r{text-align:right}"
+            "thead th{background:#f1f5f9;color:#475569;font-size:12px}"
+            "footer{max-width:1180px;margin:0 auto;padding:8px 32px 44px;color:#94a3b8;font-size:11px}"
+            "@media(max-width:820px){.wrap{display:block}nav{position:static;width:auto;flex:none;max-height:none;"
+            "display:flex;flex-wrap:wrap;gap:6px}nav .lbl{display:none}nav a{margin:0}}"
+            "@media print{nav{display:none}section{break-inside:avoid}.cover{-webkit-print-color-adjust:exact}}"
+        )
         return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width, initial-scale=1">'
                 f'<title>{_he.escape(titulo)}</title><style>{_css}</style></head><body>'
-                f'<header><h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · '
-                f'{_conc} de {_tot} municípios conciliados</p></header>'
-                f'<main><div class="verdict">🔎 <strong>Veredito:</strong> {_he.escape(_ver)}</div>'
-                f'<div class="kpis" style="margin-top:16px">{_kpi_html}</div>{_figs_html}</main>'
+                f'<div class="cover"><div class="tag">Relatório Técnico · Comparação de Estudos</div>'
+                f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_conc} de {_tot} municípios conciliados</p></div>'
+                f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
                 f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer></body></html>')
     except Exception:
-        logger.error("[RELATORIO-HTML] Falha ao gerar relatório de comparação", exc_info=True)
+        logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório de comparação", exc_info=True)
         return None
 
 
@@ -25189,29 +25242,46 @@ if _secao == _SECOES[3]:   # tab_comparador
                 st.markdown(_rel_c)
 
             # [PERF - 139ª geração] Bytes JÁ prontos (montados no clique). Zero CPU por rerun.
+            # [FIX-EXPORT-CMP - 184ª geração] Exportação SEMPRE visível. Antes, TODO o bloco (relatório +
+            # planilha) ficava dentro de `if _xb:` — se o xlsx pré-gerado viesse None (falha ao montar as 24
+            # abas, ou resultado antigo em sessão), os DOIS botões sumiam juntos. Agora: o relatório HTML (que
+            # usa stats/aud, não o xlsx) aparece SEMPRE; e a planilha, se não estiver pré-gerada, é gerada SOB
+            # DEMANDA — o usuário nunca fica sem os downloads.
+            st.markdown("#### ⬇️ Exportação")
+            if st.button("📄 Gerar relatório HTML da comparação", key="btn_relatorio_html_cmp",
+                         use_container_width=True,
+                         help="Parecer da comparação (conciliação, vitórias, economia) num arquivo HTML "
+                              "único que abre offline em qualquer navegador."):
+                with st.spinner("Gerando relatório..."):
+                    _rel_html_cmp = _gerar_relatorio_comparacao_html(
+                        _res_c["stats"], _aud_c, titulo="Relatório da Comparação de Estudos",
+                        data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"))
+                    if _rel_html_cmp:
+                        st.session_state['relatorio_html_cmp'] = _rel_html_cmp.encode("utf-8")
+                    else:
+                        st.session_state.pop('relatorio_html_cmp', None)
+                        st.warning("Não foi possível gerar o relatório.")
+            if st.session_state.get('relatorio_html_cmp'):
+                st.download_button("⬇️ Baixar relatório HTML (.html)",
+                                   data=st.session_state['relatorio_html_cmp'],
+                                   file_name="relatorio_comparacao.html", mime="text/html",
+                                   use_container_width=True, key="dl_relatorio_html_cmp")
             _xb = _res_c.get("xlsx")
+            if not _xb:
+                st.caption("A planilha completa (.xlsx) não está pré-gerada para esta comparação — gere sob demanda:")
+                if st.button("📊 Gerar planilha de comparação (.xlsx — 24 abas)", key="btn_xlsx_cmp_regen",
+                             use_container_width=True):
+                    with st.spinner("Gerando planilha..."):
+                        try:
+                            _xb = _montar_xlsx_comparacao(_cmp, _res_c["stats"], _aud_c, _rel_c)
+                            if _xb:
+                                _res_c["xlsx"] = _xb
+                                st.session_state['cmp_resultado'] = _res_c
+                        except Exception as _e_xbr:
+                            _xb = None
+                            logger.error(f"[FIX-EXPORT-CMP] Falha ao gerar planilha sob demanda: {_e_xbr}")
+                            st.warning("Não foi possível gerar a planilha de comparação.")
             if _xb:
-                st.markdown("#### ⬇️ Exportação")
-                # [RELATORIO-HTML - 184ª geração] Parecer da comparação (conciliação, vitórias, economia) num
-                # arquivo HTML único que abre OFFLINE — para enviar a quem decide. Sob demanda, defensivo.
-                if st.button("📄 Gerar relatório HTML da comparação", key="btn_relatorio_html_cmp",
-                             use_container_width=True,
-                             help="Parecer da comparação (conciliação, vitórias, economia) num arquivo HTML "
-                                  "único que abre offline em qualquer navegador."):
-                    with st.spinner("Gerando relatório..."):
-                        _rel_html_cmp = _gerar_relatorio_comparacao_html(
-                            _res_c["stats"], _aud_c, titulo="Relatório da Comparação de Estudos",
-                            data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"))
-                        if _rel_html_cmp:
-                            st.session_state['relatorio_html_cmp'] = _rel_html_cmp.encode("utf-8")
-                        else:
-                            st.session_state.pop('relatorio_html_cmp', None)
-                            st.warning("Não foi possível gerar o relatório.")
-                if st.session_state.get('relatorio_html_cmp'):
-                    st.download_button("⬇️ Baixar relatório HTML (.html)",
-                                       data=st.session_state['relatorio_html_cmp'],
-                                       file_name="relatorio_comparacao.html", mime="text/html",
-                                       use_container_width=True, key="dl_relatorio_html_cmp")
                 st.download_button("📥 Baixar comparação completa (.xlsx — 24 abas + 2 de documentação)", data=_xb,
                                    file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
