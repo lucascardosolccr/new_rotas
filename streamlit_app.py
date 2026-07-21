@@ -18744,6 +18744,36 @@ def _validar_coerencia_viaria(df):
         return df
 
 
+def _resolver_nome_municipio(valor, lat=0.0, lon=0.0):
+    """[NOME-CONCORRENTE - 184ª geração] Retorna SEMPRE o nome do município (nunca o código IBGE). Se 'valor'
+    já contém letras, é um nome → devolve como está. Se veio como CÓDIGO (só dígitos) ou vazio, resolve: 1º
+    pela coordenada (centróide oficial, via _identidade_por_coordenada); 2º pelo código na base IBGE. Puro e
+    defensivo — em falha, devolve o valor original."""
+    try:
+        _s = str(valor or "").strip()
+        if _s and any(_c.isalpha() for _c in _s):
+            return _s
+        try:
+            _la, _lo = float(lat or 0.0), float(lon or 0.0)
+        except Exception:
+            _la, _lo = 0.0, 0.0
+        if _la or _lo:
+            _id = _identidade_por_coordenada(_la, _lo) or {}
+            if _id.get("municipio"):
+                _uf = _id.get("uf", "")
+                return f"{_id['municipio']}/{_uf}" if _uf else str(_id['municipio'])
+        _digs = re.sub(r"\D", "", _s)
+        if len(_digs) == 7:
+            _ix = _indice_ibge_por_codigo() or {}
+            _info = _ix.get(_digs) or {}
+            if _info.get("municipio"):
+                _uf = _info.get("uf", "")
+                return f"{_info['municipio']}/{_uf}" if _uf else str(_info['municipio'])
+        return _s or "—"
+    except Exception:
+        return str(valor or "—")
+
+
 def _forcar_menor_viaria_vencedor(df):
     """[SSOT-DECISAO - 184ª geração] CORREÇÃO AUTORITATIVA FINAL (modo viária): garante, no resultado FINAL,
     o invariante 'vencedor = MENOR rota viária real'. Quando — por qualquer razão no fluxo de roteamento (ex.:
@@ -18779,6 +18809,18 @@ def _forcar_menor_viaria_vencedor(df):
         for _i in df.index[_mask]:
             for _a, _b in _pares_ok:
                 df.at[_i, _a], df.at[_i, _b] = df.at[_i, _b], df.at[_i, _a]
+            # [NOME-CONCORRENTE - 184ª geração] Após a troca, garante NOME (nunca código) em ambos, usando as
+            # coordenadas (que foram trocadas junto).
+            if 'Municipio Destino' in df.columns:
+                df.at[_i, 'Municipio Destino'] = _resolver_nome_municipio(
+                    df.at[_i, 'Municipio Destino'],
+                    df.at[_i, 'Lat Destino'] if 'Lat Destino' in df.columns else 0.0,
+                    df.at[_i, 'Lon Destino'] if 'Lon Destino' in df.columns else 0.0)
+            if 'Concorrente Analisado' in df.columns:
+                df.at[_i, 'Concorrente Analisado'] = _resolver_nome_municipio(
+                    df.at[_i, 'Concorrente Analisado'],
+                    df.at[_i, 'Lat Concorrente'] if 'Lat Concorrente' in df.columns else 0.0,
+                    df.at[_i, 'Lon Concorrente'] if 'Lon Concorrente' in df.columns else 0.0)
             for _rz in ('Razao V/R', 'Razão V/R'):
                 if _rz in df.columns:
                     try:
@@ -18872,7 +18914,7 @@ def _alinhar_concorrente_por_viaria(df, mcda_map, resultados):
                 except Exception:
                     _tempo_txt_c = "N/A"
             # ── sobrescreve as colunas do concorrente = 2º MENOR VIÁRIA ──
-            df.at[_idx, 'Concorrente Analisado'] = _nome_c
+            df.at[_idx, 'Concorrente Analisado'] = _resolver_nome_municipio(_nome_c, _lat_c, _lon_c)
             df.at[_idx, 'Distancia Concorrente'] = round(float(_viaria_c), 3) if _viaria_c else 0.0
             df.at[_idx, 'Linha Reta Concorrente'] = round(float(_reta_c), 3) if _reta_c else 0.0
             df.at[_idx, 'Tempo Concorrente'] = _tempo_txt_c if _tempo_txt_c else "N/A"
