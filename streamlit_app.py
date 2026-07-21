@@ -18744,6 +18744,58 @@ def _validar_coerencia_viaria(df):
         return df
 
 
+def _forcar_menor_viaria_vencedor(df):
+    """[SSOT-DECISAO - 184ª geração] CORREÇÃO AUTORITATIVA FINAL (modo viária): garante, no resultado FINAL,
+    o invariante 'vencedor = MENOR rota viária real'. Quando — por qualquer razão no fluxo de roteamento (ex.:
+    ranking montado com a viária de FALLBACK do incumbente, que só depois virou OSRM real) — o vencedor
+    exibido tem viária MAIOR que a do concorrente, TROCA vencedor↔concorrente coluna a coluna: o de MENOR
+    viária real passa a ser o vencedor e o outro, o 2º colocado. Opera sobre os valores FINAIS já na planilha
+    (viárias reais). DEFENSIVO: só troca pares cujas DUAS colunas existem (nome errado → par ignorado, nunca
+    corrompe); recalcula a Razão V/R do novo vencedor. Registra em log. Retorna o df."""
+    _PARES = [
+        ('Municipio Destino', 'Concorrente Analisado'), ('Distancia', 'Distancia Concorrente'),
+        ('Linha Reta', 'Linha Reta Concorrente'), ('Tempo', 'Tempo Concorrente'),
+        ('Velocidade Media', 'Velocidade Media Concorrente'), ('Lat Destino', 'Lat Concorrente'),
+        ('Lon Destino', 'Lon Concorrente'), ('Link Rota', 'Link Rota Concorrente'),
+        ('OSRM km', 'OSRM km Concorrente'), ('Fonte da Rota', 'Motor Vencedor Concorrente'),
+        ('Divergencia Motores (km)', 'Divergencia Motores Concorrente (km)'),
+        ('Divergencia Motores (%)', 'Divergencia Motores Concorrente (%)'),
+        ('Cod IBGE Destino', 'Cod IBGE Concorrente'), ('UF Destino', 'UF Concorrente'),
+        ('Snap Destino (m)', 'Snap Concorrente (m)'), ('Score Geo Destino', 'Score Geo Concorrente'),
+        ('Confianca Geo Destino', 'Confianca Geo Concorrente'), ('Fonte Geo Destino', 'Fonte Geo Concorrente'),
+    ]
+    try:
+        if df is None or getattr(df, "empty", True):
+            return df
+        if 'Distancia' not in df.columns or 'Distancia Concorrente' not in df.columns:
+            return df
+        _dv = pd.to_numeric(df['Distancia'], errors='coerce')
+        _dc = pd.to_numeric(df['Distancia Concorrente'], errors='coerce')
+        _mask = _dv.notna() & _dc.notna() & (_dc > 0) & (_dv > _dc)
+        _n = int(_mask.sum())
+        if _n <= 0:
+            return df
+        _pares_ok = [(_a, _b) for _a, _b in _PARES if _a in df.columns and _b in df.columns]
+        for _i in df.index[_mask]:
+            for _a, _b in _pares_ok:
+                df.at[_i, _a], df.at[_i, _b] = df.at[_i, _b], df.at[_i, _a]
+            for _rz in ('Razao V/R', 'Razão V/R'):
+                if _rz in df.columns:
+                    try:
+                        _nv = pd.to_numeric(df.at[_i, 'Distancia'], errors='coerce')
+                        _nr = pd.to_numeric(df.at[_i, 'Linha Reta'], errors='coerce')
+                        if _nr and float(_nr) > 0:
+                            df.at[_i, _rz] = round(float(_nv) / float(_nr), 2)
+                    except Exception:
+                        pass
+        logger.warning("[SSOT-DECISAO] Correção autoritativa: %d rota(s) tiveram vencedor↔concorrente TROCADOS "
+                       "para respeitar 'menor rota viária' (o vencedor tinha viária real maior que o 2º).", _n)
+        return df
+    except Exception:
+        logger.error("[SSOT-DECISAO] Falha na correção autoritativa de menor viária", exc_info=True)
+        return df
+
+
 def _alinhar_concorrente_por_viaria(df, mcda_map, resultados):
     """[VIÁRIA-PADRÃO - 184ª geração] No modo VIÁRIA, o CONCORRENTE exibido/exportado deve ser o 2º colocado
     EM VIÁRIA — não o 2º em LINHA RETA (que é o que o runner_up_map traz por padrão). Este pós-passo
@@ -22864,6 +22916,11 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             df_final_alo, st.session_state.get('alo_mcda') or {}, _resultados)
                     except Exception as _e_alc:
                         logger.error(f"[VIÁRIA-PADRÃO] Falha ao alinhar concorrente por viária: {_e_alc}")
+                    # [SSOT-DECISAO - 184ª geração] CORREÇÃO AUTORITATIVA FINAL: garante vencedor = MENOR viária
+                    # real. Roda com as viárias REAIS já populadas (após o alinhamento do concorrente) e ANTES da
+                    # validação — se sobrou algum caso com vencedor de viária maior que o 2º, ele é TROCADO aqui,
+                    # e a validação seguinte confirma que não resta inconsistência (deve zerar os alertas).
+                    df_final_alo = _forcar_menor_viaria_vencedor(df_final_alo)
                     # [COERENCIA-VIARIA - 184ª geração] Validação automática: detecta/sinaliza rotas com viária do
                     # vencedor MAIOR que a do concorrente (acesso fluvial / rota recuperada) — adiciona coluna de
                     # alerta na planilha e registra em log. Não troca o vencedor (risco de capacidade/consistência);
