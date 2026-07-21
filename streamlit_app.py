@@ -2640,6 +2640,10 @@ import time
 import math
 import io
 import re
+# [FIX-EXPORT-CMP - 184ª geração] datetime era USADO em 6 pontos (relatórios e o xlsx da Comparação) mas
+# NUNCA importado → NameError silencioso. Em _montar_xlsx_comparacao isso fazia a geração falhar e retornar
+# None, e o download da planilha de comparação "não baixava nada". Import no módulo conserta as 6 de uma vez.
+from datetime import datetime
 import os
 import pickle
 import collections
@@ -4132,7 +4136,7 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         return None
 
 
-def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str=""):
+def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str="", linhas=None):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) da COMPARAÇÃO entre estudos,
     nível profissional/BI: navegação lateral + Veredito, Placar, Distribuição de Vitórias, Conciliação dos
     Municípios (detalhada), Economia de Deslocamento (detalhada + faixas) e Convergência de Destinos. Reusa
@@ -4212,6 +4216,130 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                              ("Convergência de destinos", f"{_pconv:.0f}%"),
                              ("Mesmo destino", f"{int(br.get('mesmo_destino', 0) or 0):,}"),
                              ("Destino diferente", f"{int(br.get('destino_diferente', 0) or 0):,}")])))
+        # [RELATORIO-HTML-PRO - 184ª geração] Seções PER-MUNICÍPIO (nível de artigo científico), quando as
+        # linhas brutas da comparação são fornecidas: distribuição das diferenças, dispersão App×Ref, boxplot,
+        # municípios críticos e economia por UF — cada uma com "como interpretar". Defensivo por coluna.
+        _dfl = None
+        if linhas:
+            try:
+                _dfl = pd.DataFrame(linhas)
+            except Exception:
+                _dfl = None
+        if _dfl is not None and len(_dfl) > 0:
+            _cda, _cdr, _cdif = 'Distancia Aplicacao', 'Distancia Referencia', 'Diferenca Abs (km)'
+            _cuf = 'UF' if 'UF' in _dfl.columns else None
+            _cmun = 'Municipio' if 'Municipio' in _dfl.columns else None
+            _va = pd.to_numeric(_dfl[_cda], errors='coerce') if _cda in _dfl.columns else None
+            _vr = pd.to_numeric(_dfl[_cdr], errors='coerce') if _cdr in _dfl.columns else None
+            _vd = pd.to_numeric(_dfl[_cdif], errors='coerce') if _cdif in _dfl.columns else None
+            if _vd is not None and _vd.notna().any():
+                _f = go.Figure(go.Histogram(x=_vd.dropna(), nbinsx=30, marker_color="#2563eb"))
+                _f.update_layout(height=320, margin=dict(l=44, r=16, t=16, b=40), template="plotly_white",
+                                 xaxis_title="diferença de deslocamento (km) — positivo = aplicação melhor",
+                                 yaxis_title="municípios")
+                _sec.append(("distdif", "Distribuição das Diferenças",
+                             '<p class="lead"><b>Como interpretar:</b> cada barra conta quantos municípios têm '
+                             'determinada diferença de deslocamento entre os estudos (positivo = a aplicação encurta '
+                             'a distância). Mediana de <b>{:.0f} km</b> e desvio-padrão de <b>{:.0f} km</b>; uma cauda '
+                             'longa à direita indica municípios de grande economia.</p>'.format(
+                                 float(_vd.median()), float(_vd.std() if _vd.notna().sum() > 1 else 0)) + _emb(_f)))
+            if _va is not None and _vr is not None:
+                _m = pd.DataFrame({"app": _va, "ref": _vr}).dropna()
+                if len(_m):
+                    _f = go.Figure(go.Scatter(x=_m["ref"], y=_m["app"], mode="markers",
+                                              marker=dict(color="#7c3aed", size=6, opacity=0.55)))
+                    _mx = float(max(_m["ref"].max(), _m["app"].max()))
+                    _f.add_trace(go.Scatter(x=[0, _mx], y=[0, _mx], mode="lines",
+                                            line=dict(dash="dash", color="#94a3b8")))
+                    _f.update_layout(height=380, margin=dict(l=52, r=16, t=16, b=40), template="plotly_white",
+                                     xaxis_title="distância — referência (km)",
+                                     yaxis_title="distância — aplicação (km)", showlegend=False)
+                    _sec.append(("scatter", "Aplicação × Referência",
+                                 '<p class="lead"><b>Como interpretar:</b> cada ponto é um município. Pontos <b>abaixo</b> '
+                                 'da linha tracejada são casos em que a aplicação escolheu um local <b>mais próximo</b> '
+                                 'que a referência (<b>{}</b> de {} municípios). Quanto mais concentrados abaixo da '
+                                 'diagonal, melhor a aplicação.</p>'.format(
+                                     int((_m["app"] < _m["ref"]).sum()), len(_m)) + _emb(_f)))
+                    _f = go.Figure()
+                    _f.add_trace(go.Box(y=_vr.dropna(), name="Referência", marker_color="#f59e0b"))
+                    _f.add_trace(go.Box(y=_va.dropna(), name="Aplicação", marker_color="#2563eb"))
+                    _f.update_layout(height=340, margin=dict(l=44, r=16, t=16, b=40), template="plotly_white",
+                                     yaxis_title="distância (km)")
+                    _sec.append(("box", "Comparação de Distâncias (boxplot)",
+                                 '<p class="lead"><b>Como interpretar:</b> cada caixa resume a distribuição das '
+                                 'distâncias de um estudo — a linha central é a mediana, a caixa vai do 1º ao 3º quartil '
+                                 'e os pontos são outliers. Se a caixa da <b>aplicação</b> está mais baixa, seus '
+                                 'deslocamentos são sistematicamente menores.</p>' + _emb(_f)))
+            if _vd is not None and _cmun:
+                _crit = _dfl.assign(_ad=_vd.abs()).nlargest(15, '_ad')
+                _rows_c2 = ""
+                for _, r in _crit.iterrows():
+                    _dvv = pd.to_numeric(r.get(_cdif), errors='coerce')
+                    if pd.isna(_dvv):
+                        continue
+                    _rows_c2 += ("<tr><td>" + _he.escape(str(r.get(_cmun, '—'))) + "</td>" +
+                                 (f"<td>{_he.escape(str(r.get(_cuf, '—')))}</td>" if _cuf else "") +
+                                 f"<td>{_he.escape(str(r.get('Destino Aplicacao', '—')))}</td>" +
+                                 f"<td>{_he.escape(str(r.get('Destino Referencia', '—')))}</td>" +
+                                 f"<td class='r'>{_dvv:+.0f}</td></tr>")
+                _cab2 = "<th>Município</th>" + ("<th>UF</th>" if _cuf else "") + \
+                        "<th>Local (aplicação)</th><th>Local (referência)</th><th class='r'>Δ km</th>"
+                _sec.append(("criticos", "Municípios Críticos",
+                             '<p class="lead"><b>Como interpretar:</b> os 15 municípios com maior diferença de '
+                             'deslocamento entre os estudos — onde a escolha do local mais impacta os candidatos. '
+                             'Δ positivo = a aplicação encurta; negativo = a referência era melhor. Priorize estes para '
+                             'revisão manual.</p><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table>'.format(
+                                 _cab2, _rows_c2)))
+            if _vd is not None and _cuf:
+                _g = _dfl.assign(_d=_vd).groupby(_cuf)['_d'].sum().sort_values(ascending=False)
+                _g = _g[_g != 0].head(20)
+                if len(_g):
+                    _f = go.Figure(go.Bar(x=[str(x) for x in _g.index], y=[float(v) for v in _g.values],
+                                          marker_color="#16a34a"))
+                    _f.update_layout(height=320, margin=dict(l=44, r=16, t=16, b=40), template="plotly_white",
+                                     yaxis_title="economia líquida (km)")
+                    _sec.append(("ecouf", "Economia por UF",
+                                 '<p class="lead"><b>Como interpretar:</b> soma da diferença de deslocamento por estado '
+                                 '(positivo = a aplicação economiza no total do estado). Barras altas mostram onde a '
+                                 'mudança de metodologia gera mais ganho territorial.</p>' + _emb(_f)))
+        # [RELATORIO-HTML-PRO - 184ª geração] Diagnóstico Técnico Final: síntese AUTOMÁTICA com interpretação,
+        # insights, nível de confiança e recomendação — a inteligência que transforma dados em decisão.
+        _dg = []
+        _venc = ("a <b>aplicação</b>" if _p_app > _p_ref else
+                 ("a <b>base de referência</b>" if _p_ref > _p_app else "<b>nenhuma</b> (empate)"))
+        _dg.append(f"<b>Veredito.</b> No conjunto de <b>{_conc}</b> municípios conciliados ({_pct_conc:.0f}% da base "
+                   f"de referência), {_venc} produziu a melhor alocação na maioria dos casos — <b>{_p_app:.0f}%</b> de "
+                   f"vitórias da aplicação × <b>{_p_ref:.0f}%</b> da referência ({_p_emp:.0f}% de empate técnico).")
+        if _econ:
+            _dg.append(f"<b>Economia.</b> Adotar a alocação da aplicação representa <b>{_econ:,.0f} km</b> de "
+                       f"deslocamento ponderado economizado" + (f", ou <b>{_e_cand:.1f} km por candidato</b>" if _e_cand
+                       else "") + f". São <b>{int(br.get('candidatos_beneficiados', 0) or 0):,}</b> candidatos "
+                       f"beneficiados e <b>{int(br.get('candidatos_prejudicados', 0) or 0):,}</b> prejudicados.")
+        if _pconv is not None:
+            _dg.append(f"<b>Convergência.</b> Os dois estudos escolheram o mesmo local em <b>{_pconv:.0f}%</b> dos "
+                       f"municípios — concordância estrutural "
+                       f"{'forte' if _pconv >= 70 else 'moderada' if _pconv >= 40 else 'baixa'} entre as metodologias.")
+        _puf = (stats or {}).get("por_uf") or []
+        if isinstance(_puf, list) and _puf:
+            try:
+                _tuf = max(_puf, key=lambda x: (x.get("economia", 0) or 0))
+                if (_tuf.get("economia", 0) or 0) > 0:
+                    _dg.append(f"<b>Concentração geográfica.</b> A maior parte dos ganhos concentrou-se em "
+                               f"<b>{_he.escape(str(_tuf.get('uf', '—')))}</b>, o estado com maior economia de deslocamento.")
+            except Exception:
+                pass
+        _dg.append("<b>Confiança.</b> A comparação cobre {:.0f}% da base de referência — {}. Municípios não "
+                   "conciliados não entram no placar.".format(
+                       _pct_conc,
+                       "cobertura alta, resultado robusto" if _pct_conc >= 90 else
+                       "cobertura parcial; leia com essa ressalva" if _pct_conc < 70 else "cobertura boa"))
+        _rec = ("Recomenda-se <b>adotar a alocação da aplicação</b>" if _p_app > _p_ref + 5 else
+                "Recomenda-se <b>manter a base de referência</b>" if _p_ref > _p_app + 5 else
+                "As duas soluções são equivalentes; a escolha pode considerar outros critérios operacionais")
+        _dg.append(f"<b>Recomendação.</b> {_rec} — priorizando os municípios críticos (maior diferença de "
+                   f"deslocamento) para revisão manual.")
+        _sec.append(("diagnostico", "Diagnóstico Técnico Final",
+                     "".join(f'<p>{_d}</p>' for _d in _dg)))
         _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
         _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
         _css = (
@@ -14527,6 +14655,104 @@ def _preencher_vazios_exportacao(df):
         return df
 
 
+def _montar_abas_analiticas_alocacao(writer, df):
+    """[EXPORT-ANALITICO - 184ª geração] Escreve abas ANALÍTICAS na planilha de Locais de Prova: Resumo
+    Executivo, Síntese por UF, Competitividade dos Polos, Concorrentes, Distribuição de Distâncias e
+    Municípios Críticos. Computa de df_final_alo (colunas internas). Defensivo: cada aba só é escrita se as
+    colunas existirem e erro numa aba não derruba as outras; valores completos (sem vazios)."""
+    try:
+        if df is None or len(df) == 0:
+            return
+
+        def _num(c):
+            return pd.to_numeric(df[c], errors='coerce') if c in df.columns else None
+        _n = len(df)
+        _dist, _reta, _integ = _num('Distancia'), _num('Linha Reta'), _num('Integridade Geográfica')
+        _insc = _num('Inscritos') if 'Inscritos' in df.columns else _num('Quantidade de Inscritos')
+        _tot_cand = int(_insc.fillna(0).sum()) if _insc is not None else _n
+        _n_polos = df['Municipio Destino'].nunique() if 'Municipio Destino' in df.columns else 0
+
+        _res = [("Total de rotas", f"{_n:,}"), ("Total de candidatos", f"{_tot_cand:,}"),
+                ("Municípios de origem", f"{_n:,}"), ("Polos (locais de prova) utilizados", f"{_n_polos:,}")]
+        if _dist is not None:
+            _res += [("Deslocamento médio (km)", f"{_dist.mean():.1f}"),
+                     ("Deslocamento mediano (km)", f"{_dist.median():.1f}"),
+                     ("Maior deslocamento (km)", f"{_dist.max():.1f}"),
+                     ("Menor deslocamento (km)", f"{_dist.min():.1f}"),
+                     ("Deslocamento total (km)", f"{_dist.sum():,.0f}")]
+            if _reta is not None:
+                _mm = pd.DataFrame({'v': _dist, 'r': _reta}).dropna()
+                _mm = _mm[(_mm['r'] > 0) & (_mm['v'] > 0)]
+                if len(_mm):
+                    _res.append(("Sinuosidade média (viária ÷ reta)", f"{(_mm['v'] / _mm['r']).mean():.2f}x"))
+        if 'Balsas' in df.columns:
+            _b = df['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1'])
+            _res.append(("Rotas que cruzam balsa", f"{int(_b.sum()):,}"))
+            if _insc is not None:
+                _res.append(("Candidatos afetados por balsa", f"{int(_insc[_b].fillna(0).sum()):,}"))
+        if _integ is not None:
+            _res.append(("Integridade geográfica média (0-100)", f"{_integ.mean():.0f}"))
+        pd.DataFrame(_res, columns=["Indicador", "Valor"]).to_excel(writer, index=False, sheet_name="Resumo Executivo")
+
+        if 'UF Origem' in df.columns and _dist is not None:
+            _g = df.assign(_d=_dist).groupby('UF Origem').agg(
+                Rotas=('_d', 'size'), Dist_media=('_d', 'mean'), Dist_max=('_d', 'max'),
+                Dist_total=('_d', 'sum')).reset_index()
+            if _insc is not None:
+                _g['Candidatos'] = _g['UF Origem'].map(
+                    df.assign(_i=_insc.fillna(0)).groupby('UF Origem')['_i'].sum()).fillna(0).astype(int)
+            _g = _g.round(1).sort_values('Rotas', ascending=False).rename(columns={
+                'UF Origem': 'UF', 'Dist_media': 'Dist. média (km)', 'Dist_max': 'Dist. máx (km)',
+                'Dist_total': 'Dist. total (km)'})
+            _g.to_excel(writer, index=False, sheet_name="Sintese por UF")
+
+        if 'Municipio Destino' in df.columns and _dist is not None:
+            _p = df.assign(_d=_dist).groupby('Municipio Destino').agg(
+                Municipios=('_d', 'size'), Dist_media=('_d', 'mean'), Dist_max=('_d', 'max')).reset_index()
+            if _insc is not None:
+                _p['Candidatos'] = _p['Municipio Destino'].map(
+                    df.assign(_i=_insc.fillna(0)).groupby('Municipio Destino')['_i'].sum()).fillna(0).astype(int)
+            _p = _p.round(1).sort_values('Municipios', ascending=False).rename(columns={
+                'Municipio Destino': 'Local de Prova (Polo)', 'Municipios': 'Municípios atendidos',
+                'Dist_media': 'Dist. média (km)', 'Dist_max': 'Dist. máx (km)'})
+            _p.to_excel(writer, index=False, sheet_name="Competitividade dos Polos")
+
+        if 'Municipio Concorrente' in df.columns:
+            _c = df['Municipio Concorrente'].astype(str).str.strip()
+            _c = _c[(_c != '') & (_c.str.lower() != 'nan') & (_c != '—')]
+            if len(_c):
+                _vc = _c.value_counts().reset_index()
+                _vc.columns = ['Alternativa (2º local de prova)', 'Vezes como 2º colocado']
+                _vc.head(50).to_excel(writer, index=False, sheet_name="Concorrentes")
+
+        if _dist is not None and _dist.notna().any():
+            _labs = ["0-50", "50-100", "100-150", "150-200", "200-300", "300-500", "500+"]
+            _cat = pd.cut(_dist, bins=[0, 50, 100, 150, 200, 300, 500, 10**9], labels=_labs, right=False)
+            _dd = df.assign(_faixa=_cat)
+            _rows = []
+            for _l in _labs:
+                _sub = _dd[_dd['_faixa'] == _l]
+                _cand = (int(pd.to_numeric(_sub['Inscritos'], errors='coerce').fillna(0).sum())
+                         if (_insc is not None and 'Inscritos' in _sub.columns) else len(_sub))
+                _rows.append({'Faixa (km)': _l, 'Rotas': len(_sub), 'Candidatos': _cand,
+                              '% das rotas': round(100.0 * len(_sub) / _n, 1)})
+            pd.DataFrame(_rows).to_excel(writer, index=False, sheet_name="Distribuicao de Distancias")
+
+        if _dist is not None and 'Municipio Origem' in df.columns:
+            _crit = df.assign(_d=_dist).nlargest(30, '_d')
+            _oc = pd.DataFrame({'Município': _crit['Municipio Origem'].values})
+            if 'UF Origem' in df.columns:
+                _oc['UF'] = _crit['UF Origem'].values
+            if 'Municipio Destino' in df.columns:
+                _oc['Local de Prova'] = _crit['Municipio Destino'].values
+            _oc['Distância (km)'] = _crit['_d'].round(1).values
+            if _insc is not None and 'Inscritos' in _crit.columns:
+                _oc['Candidatos'] = pd.to_numeric(_crit['Inscritos'], errors='coerce').fillna(0).astype(int).values
+            _oc.to_excel(writer, index=False, sheet_name="Municipios Criticos")
+    except Exception:
+        logger.error("[EXPORT-ANALITICO] Falha ao montar abas analíticas da alocação", exc_info=True)
+
+
 def _renomear_colunas_exame(df, mapa=None):
     """[EXAMES - 134ª geração] Traduz os CABEÇALHOS da planilha exportada para a linguagem de planejamento
     de exames (município de origem do candidato / local de aplicação / polo). Aplicado APENAS na FRONTEIRA
@@ -18744,6 +18970,31 @@ def _validar_coerencia_viaria(df):
         return df
 
 
+def _resolver_nomes_finais(df):
+    """[NOME-CONCORRENTE - 184ª geração] Passe FINAL e ABRANGENTE: garante que 'Concorrente Analisado' e o
+    vencedor 'Municipio Destino' apareçam SEMPRE pelo NOME do município (nunca pelo código IBGE) em TODAS as
+    linhas — inclusive as que o alinhamento por viária não tocou (ranking <2) e em qualquer modo (viária ou
+    linha reta). Resolve pela coordenada do concorrente/vencedor ou pelo código, via _resolver_nome_municipio.
+    Vetorizado por coluna; defensivo. Retorna o df."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return df
+        _alvos = [('Concorrente Analisado', 'Lat Concorrente', 'Lon Concorrente'),
+                  ('Municipio Destino', 'Lat Destino', 'Lon Destino')]
+        for _cnome, _clat, _clon in _alvos:
+            if _cnome not in df.columns:
+                continue
+            _s = df[_cnome].astype(str)
+            _mask = ~_s.str.contains(r"[A-Za-zÀ-ÿ]", regex=True, na=False)  # sem letra = código/vazio
+            for _i in df.index[_mask]:
+                _la = df.at[_i, _clat] if _clat in df.columns else 0.0
+                _lo = df.at[_i, _clon] if _clon in df.columns else 0.0
+                df.at[_i, _cnome] = _resolver_nome_municipio(df.at[_i, _cnome], _la, _lo)
+        return df
+    except Exception:
+        return df
+
+
 def _resolver_nome_municipio(valor, lat=0.0, lon=0.0):
     """[NOME-CONCORRENTE - 184ª geração] Retorna SEMPRE o nome do município (nunca o código IBGE). Se 'valor'
     já contém letras, é um nome → devolve como está. Se veio como CÓDIGO (só dígitos) ou vazio, resolve: 1º
@@ -18772,6 +19023,23 @@ def _resolver_nome_municipio(valor, lat=0.0, lon=0.0):
         return _s or "—"
     except Exception:
         return str(valor or "—")
+
+
+def _verificar_invariante_viaria(df):
+    """[SSOT-DECISAO - 184ª geração] Verifica o invariante 'vencedor = MENOR rota viária' no resultado FINAL
+    (modo viária): conta quantas rotas têm concorrente e, dessas, quantas ainda VIOLAM (vencedor com viária
+    maior que o 2º). Após a correção autoritativa, deve dar ZERO violações — serve de prova ao usuário.
+    Read-only; tolerância mínima de arredondamento. Retorna dict {com_concorrente, violacoes, corrigidas}."""
+    try:
+        if df is None or 'Distancia' not in df.columns or 'Distancia Concorrente' not in df.columns:
+            return {'com_concorrente': 0, 'violacoes': 0}
+        _dv = pd.to_numeric(df['Distancia'], errors='coerce')
+        _dc = pd.to_numeric(df['Distancia Concorrente'], errors='coerce')
+        _tem = _dv.notna() & _dc.notna() & (_dc > 0)
+        _viol = _tem & (_dv > _dc + 0.05)
+        return {'com_concorrente': int(_tem.sum()), 'violacoes': int(_viol.sum())}
+    except Exception:
+        return {'com_concorrente': 0, 'violacoes': 0}
 
 
 def _forcar_menor_viaria_vencedor(df):
@@ -22962,7 +23230,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # real. Roda com as viárias REAIS já populadas (após o alinhamento do concorrente) e ANTES da
                     # validação — se sobrou algum caso com vencedor de viária maior que o 2º, ele é TROCADO aqui,
                     # e a validação seguinte confirma que não resta inconsistência (deve zerar os alertas).
+                    _inv_antes_viaria = _verificar_invariante_viaria(df_final_alo)
                     df_final_alo = _forcar_menor_viaria_vencedor(df_final_alo)
+                    st.session_state['alo_correcoes_viaria'] = int(_inv_antes_viaria.get('violacoes', 0))
                     # [COERENCIA-VIARIA - 184ª geração] Validação automática: detecta/sinaliza rotas com viária do
                     # vencedor MAIOR que a do concorrente (acesso fluvial / rota recuperada) — adiciona coluna de
                     # alerta na planilha e registra em log. Não troca o vencedor (risco de capacidade/consistência);
@@ -22974,6 +23244,13 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 df_final_alo = _enriquecer_integridade_geografica(df_final_alo)
                 # [IBGE-ROTULO - 146ª geração] Rótulos legíveis + retroalimentação Município/UF.
                 df_final_alo = _enriquecer_rotulos_ibge(df_final_alo)
+                # [NOME-CONCORRENTE - 184ª geração] Passe FINAL: 'Concorrente Analisado' e 'Municipio Destino'
+                # SEMPRE pelo NOME do município (nunca o código IBGE), em TODAS as linhas e em qualquer modo —
+                # aplicado antes de montar o export e a tela, para cobrir inclusive as linhas que o alinhamento
+                # por viária não tocou (ranking <2) e o modo linha reta.
+                df_final_alo = _resolver_nomes_finais(df_final_alo)
+                # [SSOT-DECISAO - 184ª geração] Verificação FINAL do invariante da menor viária (prova ao usuário).
+                st.session_state['alo_invariante_viaria'] = _verificar_invariante_viaria(df_final_alo)
                 # [HUMANIZAR - 173ª geração] O CÓDIGO IBGE SAI da coluna Origem/Destino; o NOME entra.
                 # O código NÃO se perde: vai para a coluna própria. Ninguém analisa uma planilha com
                 # '1100023' na coluna Origem — código é identificador de MÁQUINA, nome é de GENTE.
@@ -23119,6 +23396,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     _preencher_vazios_exportacao(
                         _renomear_colunas_exame(df_final_alo)).to_excel(writer, index=False,
                                                                   sheet_name="Locais de Aplicacao")
+                    # [EXPORT-ANALITICO - 184ª geração] Camada ANALÍTICA sempre presente: Resumo Executivo,
+                    # Síntese por UF, Competitividade dos Polos, Concorrentes, Distribuição de Distâncias e
+                    # Municípios Críticos — computadas de df_final_alo, com valores completos (sem vazios).
+                    _montar_abas_analiticas_alocacao(writer, df_final_alo)
                     # [DASHBOARD - 177ª geração] AS ANÁLISES DO CANDIDATO vão para a planilha.
                     # Só quando há a coluna de INSCRITOS — sem ela, a planilha sai como sempre saiu.
                     try:
@@ -23202,6 +23483,22 @@ if _secao == _SECOES[2]:   # tab_alocacao
                            "próximos roteados (Google prioritário → OSRM fallback). A distância em linha reta é "
                            "usada apenas como **pré-filtro** (quais polos rotear) e **desempate**, nunca como "
                            "critério final da escolha. As distâncias viárias constam na coluna **Método Utilizado**.")
+                # [SSOT-DECISAO - 184ª geração] PROVA ao usuário de que a metodologia foi cumprida: confirma o
+                # invariante 'vencedor = menor rota viária' no resultado final, e quantos ajustes autoritativos
+                # foram aplicados. Transparência — a validação automática que faltava para gerar confiança.
+                _inv = st.session_state.get('alo_invariante_viaria') or {}
+                _corr = int(st.session_state.get('alo_correcoes_viaria', 0) or 0)
+                if _inv.get('com_concorrente'):
+                    if _inv.get('violacoes', 0) == 0:
+                        st.success("✓ **Invariante garantido:** todos os **{}** locais com alternativa avaliada "
+                                   "têm a **menor rota viária** entre o escolhido e o 2º colocado.{}".format(
+                                       _inv['com_concorrente'],
+                                       " {} ajuste(s) autoritativo(s) aplicado(s) para garantir isso.".format(_corr)
+                                       if _corr > 0 else ""))
+                    else:
+                        st.warning("⚠️ **{} de {}** locais ainda com o escolhido tendo viária maior que o 2º — "
+                                   "veja a coluna **Alerta Coerência Viária** na planilha.".format(
+                                       _inv['violacoes'], _inv['com_concorrente']))
             else:
                 st.success("✅ **Método de seleção dos hubs:** ✓ Linha reta (GeographicLib · WGS-84)")
                 st.caption("A base logística mais próxima de cada cliente foi escolhida pela **menor distância "
@@ -25361,7 +25658,7 @@ if _secao == _SECOES[3]:   # tab_comparador
                 with st.spinner("Gerando relatório..."):
                     _rel_html_cmp = _gerar_relatorio_comparacao_html(
                         _res_c["stats"], _aud_c, titulo="Relatório da Comparação de Estudos",
-                        data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"))
+                        data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"), linhas=_cmp)
                     if _rel_html_cmp:
                         st.session_state['relatorio_html_cmp'] = _rel_html_cmp.encode("utf-8")
                     else:
@@ -25372,26 +25669,31 @@ if _secao == _SECOES[3]:   # tab_comparador
                                    data=st.session_state['relatorio_html_cmp'],
                                    file_name="relatorio_comparacao.html", mime="text/html",
                                    use_container_width=True, key="dl_relatorio_html_cmp")
+            # [FIX-EXPORT-CMP - 184ª geração] Download ROBUSTO: valida que o xlsx em sessão é BYTES não-vazio (um
+            # BytesIO ou None de uma geração antiga faz o st.download_button "não baixar nada"). Se inválido,
+            # RE-GERA automaticamente (sem botão extra → download em 1 clique) e passa bytes() explícito.
             _xb = _res_c.get("xlsx")
-            if not _xb:
-                st.caption("A planilha completa (.xlsx) não está pré-gerada para esta comparação — gere sob demanda:")
-                if st.button("📊 Gerar planilha de comparação (.xlsx — 24 abas)", key="btn_xlsx_cmp_regen",
-                             use_container_width=True):
-                    with st.spinner("Gerando planilha..."):
-                        try:
-                            _xb = _montar_xlsx_comparacao(_cmp, _res_c["stats"], _aud_c, _rel_c)
-                            if _xb:
-                                _res_c["xlsx"] = _xb
-                                st.session_state['cmp_resultado'] = _res_c
-                        except Exception as _e_xbr:
+            if not (isinstance(_xb, (bytes, bytearray)) and len(_xb) > 0):
+                with st.spinner("Preparando a planilha de comparação (24 abas)..."):
+                    try:
+                        _xb_novo = _montar_xlsx_comparacao(_cmp, _res_c["stats"], _aud_c, _rel_c)
+                        if isinstance(_xb_novo, (bytes, bytearray)) and len(_xb_novo) > 0:
+                            _xb = bytes(_xb_novo)
+                            _res_c["xlsx"] = _xb
+                            st.session_state['cmp_resultado'] = _res_c
+                        else:
                             _xb = None
-                            logger.error(f"[FIX-EXPORT-CMP] Falha ao gerar planilha sob demanda: {_e_xbr}")
-                            st.warning("Não foi possível gerar a planilha de comparação.")
+                    except Exception as _e_xbr:
+                        _xb = None
+                        logger.error(f"[FIX-EXPORT-CMP] Falha ao gerar planilha de comparação: {_e_xbr}", exc_info=True)
             if _xb:
-                st.download_button("📥 Baixar comparação completa (.xlsx — 24 abas + 2 de documentação)", data=_xb,
-                                   file_name="comparacao_estudos.xlsx",
+                st.download_button("📥 Baixar comparação completa (.xlsx — 24 abas + 2 de documentação)",
+                                   data=bytes(_xb), file_name="comparacao_estudos.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True, key="cmp_export")
+            else:
+                st.warning("⚠️ Não foi possível gerar a planilha de comparação (veja os logs). O **relatório HTML** "
+                           "acima está disponível como alternativa completa.")
 
 
 if _secao == _SECOES[4]:   # tab_analytics
