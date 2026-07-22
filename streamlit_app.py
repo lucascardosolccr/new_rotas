@@ -2655,7 +2655,7 @@ import smtplib
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import NamedTuple, Optional, List
+from typing import NamedTuple, List
 import altair as alt
 import plotly.express as px
 import plotly.graph_objects as go
@@ -2693,11 +2693,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MotorGeodesicoCorp")
 
 # [M21] Log estruturado: adiciona campos extras a cada evento de relevância
-def _log_api(fonte: str, sucesso: bool, latencia_ms: float, query: str = ""):
-    logger.info(
-        "api_call",
-        extra={"fonte": fonte, "sucesso": sucesso, "latencia_ms": round(latencia_ms, 1), "query": query[:120]}
-    )
+# [AUDITORIA-184] Função morta '_log_api' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 # [M11] RotaPipeline NamedTuple — substitui tupla posicional de 31+ elementos
 # Acesso por nome elimina bugs de deslocamento de índice ao adicionar campos
@@ -3552,15 +3548,7 @@ st.markdown("""
 # ==============================================================================
 # DESIGN SYSTEM — Helpers de UI reutilizáveis [UX 2ª geração]
 # ==============================================================================
-def ds_status_pill(status: str) -> str:
-    """Retorna HTML de uma pílula de status com semáforo de cor consistente."""
-    mapa = {
-        "Excelente": "ds-pill-excelente", "Boa": "ds-pill-boa",
-        "Aceitável": "ds-pill-aceitavel", "Revisar": "ds-pill-revisar",
-        "Erro": "ds-pill-erro", "Erro Crítico de Processamento": "ds-pill-erro",
-    }
-    classe = mapa.get(status, "ds-pill-revisar")
-    return f"<span class='ds-pill {classe}'>{status}</span>"
+# [AUDITORIA-184] Função morta 'ds_status_pill' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 def ds_barra_confianca(score: float) -> str:
     """Retorna HTML de uma barra de confiança 0-100 com cor por faixa."""
@@ -8002,13 +7990,7 @@ def cascata_postal_tripla(cep_limpo):
         
     return "", "", "", "", 0.0, 0.0
 
-def validar_consistencia_administrativa(candidato, uf_inf):
-    est_api = unidecode(candidato.get('estado', '')).upper().strip()
-    if uf_inf and est_api:
-        nome_estado_inf = _normalizar_uf(uf_inf) if uf_inf else ""
-        if uf_inf not in est_api and nome_estado_inf not in est_api:
-            return False
-    return True
+# [AUDITORIA-184] Função morta 'validar_consistencia_administrativa' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 def validar_consistencia_municipal(candidato, mun_inf):
     if not mun_inf: 
@@ -8973,7 +8955,7 @@ _MAPA_COLUNAS_EXAME = {
 # [COBERTURA - 140ª geração] Planejamento de polos: cobertura + onde abrir
 # ============================================================================
 
-def _haversine_matriz(lats, lons):
+def _haversine_matriz_nn(lats, lons):
     """[PLANEJAMENTO - 184ª geração] Matriz N×N de distâncias Haversine (km) entre pontos. Vetorizado (numpy).
     Núcleo do motor de planejamento territorial (catchment/cobertura). Puro."""
     import numpy as np
@@ -8996,7 +8978,7 @@ def _catchment_ranking(df, raio_km=100.0):
     if df is None or len(df) == 0:
         return pd.DataFrame(columns=_cols)
     _cand = pd.to_numeric(df['candidatos'], errors='coerce').fillna(0).to_numpy(dtype=float)
-    _D = _haversine_matriz(pd.to_numeric(df['lat'], errors='coerce').to_numpy(dtype=float),
+    _D = _haversine_matriz_nn(pd.to_numeric(df['lat'], errors='coerce').to_numpy(dtype=float),
                            pd.to_numeric(df['lon'], errors='coerce').to_numpy(dtype=float))
     _mask = _D <= float(raio_km)
     _total = _cand.sum()
@@ -9027,7 +9009,7 @@ def _cenarios_cobertura_maxima(df, raio_km=100.0, ns=(5, 10, 20, 30, 50, 100)):
     if df is None or len(df) == 0:
         return [], {}, {}
     _cand = pd.to_numeric(df['candidatos'], errors='coerce').fillna(0).to_numpy(dtype=float)
-    _D = _haversine_matriz(pd.to_numeric(df['lat'], errors='coerce').to_numpy(dtype=float),
+    _D = _haversine_matriz_nn(pd.to_numeric(df['lat'], errors='coerce').to_numpy(dtype=float),
                            pd.to_numeric(df['lon'], errors='coerce').to_numpy(dtype=float))
     _mask = _D <= float(raio_km)
     _total = _cand.sum()
@@ -11433,278 +11415,10 @@ def _escrever_aba_pro(writer, df, nome, titulo=None, subtitulo=None, cols_alerta
 
 
 
-def _aba_resumo_executivo(writer, stats, aud, linhas, tempo_proc=None, nome_ref=None):
-    """[XLSX-PRO - 182ª geração] O RESUMO EXECUTIVO — a aba que um gestor abre primeiro e talvez única.
-
-    ── POR QUE ELA EXISTE ──
-    Um relatório de 26 abas é inútil para quem tem 3 minutos antes da reunião. Esta aba responde, **numa
-    tela**: posso confiar? quem venceu? quanto isso vale em GENTE? o que eu faço?
-
-    E ela começa pela **CONFIANÇA** — não pelo resultado. Porque um percentual calculado sobre 57% do
-    universo **não é um resultado: é uma armadilha**. Quem lê primeiro o número e depois a ressalva já
-    formou opinião."""
-    try:
-        _wb = writer.book
-        _ws = _wb.add_worksheet("Resumo Executivo")
-        writer.sheets["Resumo Executivo"] = _ws
-
-        _f_tit = _wb.add_format({"bold": True, "font_size": 18, "font_color": "#FFFFFF",
-                                 "bg_color": _XP["titulo"], "align": "center", "valign": "vcenter"})
-        _f_sub = _wb.add_format({"italic": True, "font_size": 10, "font_color": _XP["apoio"],
-                                 "align": "center"})
-        _f_sec = _wb.add_format({"bold": True, "font_size": 12, "font_color": "#FFFFFF",
-                                 "bg_color": _XP["cabecalho"], "align": "left", "valign": "vcenter",
-                                 "indent": 1})
-        _f_lbl = _wb.add_format({"font_size": 10, "font_color": _XP["apoio"], "align": "left",
-                                 "indent": 1, "border": 1, "border_color": _XP["borda"]})
-        _f_val = _wb.add_format({"bold": True, "font_size": 16, "font_color": _XP["titulo"],
-                                 "align": "center", "valign": "vcenter", "border": 1,
-                                 "border_color": _XP["borda"], "num_format": "#,##0"})
-        _f_val_pct = _wb.add_format({"bold": True, "font_size": 16, "font_color": _XP["titulo"],
-                                     "align": "center", "valign": "vcenter", "border": 1,
-                                     "border_color": _XP["borda"], "num_format": '0.0"%"'})
-        _f_txt = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10,
-                                 "border": 1, "border_color": _XP["borda"]})
-        _f_ok = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10, "bold": True,
-                                "bg_color": _XP["ok"], "font_color": _XP["ok_txt"], "border": 1})
-        _f_al = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10, "bold": True,
-                                "bg_color": _XP["alerta"], "font_color": _XP["alerta_txt"], "border": 1})
-        _f_er = _wb.add_format({"text_wrap": True, "valign": "top", "font_size": 10, "bold": True,
-                                "bg_color": _XP["erro"], "font_color": _XP["erro_txt"], "border": 1})
-
-        _ws.set_column(0, 0, 3)
-        _ws.set_column(1, 4, 22)
-        _ws.set_column(5, 5, 3)
-
-        _ws.merge_range(1, 1, 1, 4, "RELATÓRIO COMPARATIVO DE LOCAIS DE APLICAÇÃO", _f_tit)
-        _ws.set_row(1, 34)
-        _ws.merge_range(2, 1, 2, 4,
-                        f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M:%S')}"
-                        + (f"  ·  Base de referência: {nome_ref}" if nome_ref else "")
-                        + (f"  ·  Processamento: {tempo_proc}" if tempo_proc else ""), _f_sub)
-
-        _br = (stats or {}).get("brasil", {})
-        _tot_ref = (aud or {}).get("total_ref", 0)
-        _conc = (aud or {}).get("conciliados", 0)
-        _fz = (aud or {}).get("por_fuzzy", 0)
-        _nc = len((aud or {}).get("nao_conciliados", []) or [])
-        _ncomp = len((aud or {}).get("nao_comparaveis", []) or [])
-        _pct_c = round(100.0 * _conc / _tot_ref, 1) if _tot_ref else 0.0
-
-        # ── 1. CONFIANÇA — vem PRIMEIRO. Sempre. ──
-        _l = 4
-        _ws.merge_range(_l, 1, _l, 4, "1.  POSSO CONFIAR NESTES NÚMEROS?", _f_sec)
-        _ws.set_row(_l, 22)
-        _l += 1
-        if _pct_c >= 95 and _fz == 0:
-            _cx, _msg = _f_ok, (f"✅ SIM — CONFIANÇA ALTA.  {_pct_c}% dos municípios foram conciliados, "
-                                "TODOS por vínculo oficial (Código IBGE ou Município+UF). Os percentuais "
-                                "deste relatório descrevem o universo completo.")
-        elif _pct_c >= 80:
-            _cx, _msg = _f_al, (f"🟡 COM RESSALVA — CONFIANÇA MÉDIA.  {_pct_c}% conciliados"
-                                + (f"; {_fz} vínculo(s) feitos por SIMILARIDADE TEXTUAL (não é oficial: a "
-                                   "plataforma adivinhou — confira-os)" if _fz else "")
-                                + (f"; {_nc} registro(s) ficaram FORA de todas as estatísticas." if _nc else "."))
-        else:
-            _cx, _msg = _f_er, (f"🔴 NÃO — CONFIANÇA BAIXA.  Apenas {_pct_c}% conciliados. OS PERCENTUAIS "
-                                "DESTE RELATÓRIO NÃO REPRESENTAM O UNIVERSO COMPLETO — descrevem só a parte "
-                                "que casou. Corrija a planilha de referência (adicione Código IBGE) e "
-                                "reprocesse ANTES de tirar conclusões.")
-        _ws.merge_range(_l, 1, _l + 2, 4, _msg, _cx)
-        _ws.set_row(_l, 18)
-        _l += 4
-
-        # ── 2. INDICADORES ──
-        _ws.merge_range(_l, 1, _l, 4, "2.  INDICADORES", _f_sec)
-        _ws.set_row(_l, 22)
-        _l += 1
-        _ins = _br.get("inscritos", 0)
-        _ec = _br.get("economia_ponderada_km", 0)
-        _kmc = round(_ec / _ins, 1) if _ins else 0.0
-        _cards = [
-            ("Registros analisados", _tot_ref, _f_val),
-            ("Conciliados", _conc, _f_val),
-            ("Correspondência", _pct_c, _f_val_pct),
-            ("Sem correspondência", _nc, _f_val),
-            ("Nossa aplicação venceu", _br.get("pct_venceu_app", 0), _f_val_pct),
-            ("Referência venceu", _br.get("pct_venceu_ref", 0), _f_val_pct),
-            ("Empates técnicos", _br.get("pct_empate", 0), _f_val_pct),
-            ("Candidatos analisados", _ins, _f_val),
-            ("Candidatos beneficiados", _br.get("candidatos_beneficiados", 0), _f_val),
-            ("Candidatos prejudicados", _br.get("candidatos_prejudicados", 0), _f_val),
-            ("Economia (km-candidato)", _ec, _f_val),
-            ("Km a MENOS por candidato", _kmc, _wb.add_format({
-                "bold": True, "font_size": 16, "font_color": _XP["ok_txt"], "align": "center",
-                "valign": "vcenter", "border": 1, "border_color": _XP["borda"],
-                "num_format": '#,##0.0" km"'})),
-        ]
-        for _i, (_lbl, _v, _fv) in enumerate(_cards):
-            _r = _l + (_i // 2) * 2
-            _c = 1 + (_i % 2) * 2
-            _ws.merge_range(_r, _c, _r, _c + 1, _lbl, _f_lbl)
-            _ws.merge_range(_r + 1, _c, _r + 1, _c + 1, _v, _fv)
-            _ws.set_row(_r + 1, 26)
-        _l += ((len(_cards) + 1) // 2) * 2 + 1
-
-        # ── 3. A TRADUÇÃO PARA ESCALA HUMANA ──
-        _ws.merge_range(_l, 1, _l, 4, "3.  O QUE ISSO SIGNIFICA, EM PORTUGUÊS", _f_sec)
-        _ws.set_row(_l, 22)
-        _l += 1
-        _ws.merge_range(_l, 1, _l + 2, 4,
-                        f"A economia total de {_ec:,.0f} km-candidato não significa nada para ninguém. "
-                        f"DIVIDIDA pelos {_ins:,.0f} candidatos, ela vira: cada candidato anda "
-                        f"{abs(_kmc):,.1f} km {'A MENOS' if _kmc >= 0 else 'A MAIS'}. "
-                        "É o MESMO número — mas um é dado e o outro é entendimento."
-                        .replace(",", "@").replace(".", ",").replace("@", "."), _f_txt)
-        _l += 4
-
-        # ── 4. RECOMENDAÇÃO ──
-        _ws.merge_range(_l, 1, _l, 4, "4.  RECOMENDAÇÃO", _f_sec)
-        _ws.set_row(_l, 22)
-        _l += 1
-        _rec = "Consulte a aba 📘 Guia de Interpretação para os alertas e recomendações derivados dos SEUS dados."
-        try:
-            _hb = _plano_hibrido(linhas)
-            if _hb and _hb.get("vale_a_pena"):
-                _rec = (f"🏆 ADOTE O PLANO HÍBRIDO. Ninguém é obrigado a adotar um estudo inteiro. "
-                        f"Tomando de cada município a melhor das duas escolhas, você poupa "
-                        f"{_hb['ganho_do_hibrido_sobre_nos']:,.0f} km-candidato A MAIS do que adotar só a "
-                        f"sua solução — bastaria migrar {_hb['municipios_do_concorrente']} município(s) "
-                        f"({_hb['candidatos_que_migrariam']:,.0f} candidatos) para o polo da referência. "
-                        "Veja a aba 'Plano Hibrido'.")
-        except Exception:
-            pass
-        _ws.merge_range(_l, 1, _l + 2, 4, _rec, _f_txt)
-        _ws.hide_gridlines(2)
-        return True
-    except Exception as _e:
-        logger.error(f"[XLSX-PRO] Falha no Resumo Executivo: {_e}")
-        return False
+# [AUDITORIA-184] Função morta '_aba_resumo_executivo' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 
-def _aba_graficos(writer, stats, linhas):
-    """[XLSX-PRO - 182ª geração] GRÁFICOS NATIVOS DO EXCEL — não imagens coladas.
-
-    ── A DIFERENÇA (e ela importa) ──
-    Um gráfico NATIVO do Excel é **vivo**: o usuário clica, filtra, muda o tipo, copia para o PowerPoint
-    e ele continua ligado aos dados. Uma IMAGEM colada é um cadáver — bonita e inútil.
-    Por isso os dados de cada gráfico vão numa área da própria aba: o gráfico aponta para células REAIS.
-
-    ── E POR QUE SÓ TRÊS GRÁFICOS ──
-    Recusei treemap, sunburst, rosca e mapa de densidade quatro vezes, e mantenho: **seriam mais tinta,
-    não mais informação**. Estes três respondem as três perguntas que movem a decisão: **quem venceu ·
-    onde · e o ganho é concentrado ou espalhado?**"""
-    try:
-        _wb = writer.book
-        _ws = _wb.add_worksheet("Graficos")
-        writer.sheets["Graficos"] = _ws
-        _f_t = _wb.add_format({"bold": True, "font_size": 13, "font_color": "#FFFFFF",
-                               "bg_color": _XP["titulo"], "align": "left", "indent": 1,
-                               "valign": "vcenter"})
-        _f_h = _wb.add_format({"bold": True, "bg_color": _XP["cabecalho"], "font_color": "#FFFFFF",
-                               "border": 1, "align": "center"})
-        _f_c = _wb.add_format({"border": 1, "border_color": _XP["borda"], "num_format": "#,##0"})
-        _ws.merge_range(0, 0, 0, 9, "  GRÁFICOS DA COMPARAÇÃO", _f_t)
-        _ws.set_row(0, 28)
-        _ws.set_column(0, 0, 26)
-        _ws.set_column(1, 3, 16)
-
-        _br = (stats or {}).get("brasil", {})
-        _l = 2
-
-        # ── 1. QUEM VENCEU (colunas) ──
-        _ws.write(_l, 0, "Quem venceu", _f_h)
-        _ws.write(_l, 1, "Municípios", _f_h)
-        _dados1 = [("Nossa aplicação", _br.get("municipios_venceu_app", _br.get("pct_venceu_app", 0))),
-                   ("Base de referência", _br.get("municipios_venceu_ref", _br.get("pct_venceu_ref", 0))),
-                   ("Empate técnico", _br.get("municipios_empate", _br.get("pct_empate", 0)))]
-        for _i, (_k, _v) in enumerate(_dados1):
-            _ws.write(_l + 1 + _i, 0, _k, _f_c)
-            _ws.write(_l + 1 + _i, 1, _v, _f_c)
-        _ch1 = _wb.add_chart({"type": "column"})
-        _ch1.add_series({
-            "name": "Quem venceu",
-            "categories": ["Graficos", _l + 1, 0, _l + 3, 0],
-            "values": ["Graficos", _l + 1, 1, _l + 3, 1],
-            "data_labels": {"value": True, "font": {"size": 9}},
-            "points": [{"fill": {"color": "#2F5597"}}, {"fill": {"color": "#C55A11"}},
-                       {"fill": {"color": "#A6A6A6"}}],
-            "gap": 60,
-        })
-        _ch1.set_title({"name": "Quem levou o candidato mais perto",
-                        "name_font": {"size": 12, "color": _XP["titulo"]}})
-        _ch1.set_y_axis({"name": "Municípios", "major_gridlines": {"visible": True}})
-        _ch1.set_legend({"none": True})
-        _ch1.set_size({"width": 460, "height": 280})
-        _ws.insert_chart(_l, 4, _ch1)
-        _l += 18
-
-        # ── 2. ECONOMIA POR UF (barras horizontais — nome longo cabe) ──
-        _ufs = ((stats or {}).get("por_uf") or [])[:12]
-        if _ufs:
-            _ws.write(_l, 0, "UF", _f_h)
-            _ws.write(_l, 1, "km-candidato", _f_h)
-            for _i, _u in enumerate(_ufs):
-                _ws.write(_l + 1 + _i, 0, str(_u.get("uf") or _u.get("UF") or "—"), _f_c)
-                _ws.write(_l + 1 + _i, 1, float(_u.get("economia_ponderada_km") or 0), _f_c)
-            _ch2 = _wb.add_chart({"type": "bar"})
-            _ch2.add_series({
-                "name": "Economia (km-candidato)",
-                "categories": ["Graficos", _l + 1, 0, _l + len(_ufs), 0],
-                "values": ["Graficos", _l + 1, 1, _l + len(_ufs), 1],
-                "data_labels": {"value": True, "font": {"size": 8}},
-                "fill": {"color": "#2F5597"},
-                "gap": 50,
-            })
-            _ch2.set_title({"name": "Economia por estado (barra para a esquerda = perdemos ali)",
-                            "name_font": {"size": 12, "color": _XP["titulo"]}})
-            _ch2.set_legend({"none": True})
-            _ch2.set_size({"width": 460, "height": 320})
-            _ws.insert_chart(_l, 4, _ch2)
-            _l += max(20, len(_ufs) + 4)
-
-        # ── 3. PARETO: o ganho é concentrado ou espalhado? ──
-        try:
-            _pa = (_pareto_economia(linhas, top=20) or {}).get("itens") or []
-        except Exception:
-            _pa = []
-        if _pa:
-            _ws.write(_l, 0, "Município", _f_h)
-            _ws.write(_l, 1, "Economia", _f_h)
-            _ws.write(_l, 2, "% acumulado", _f_h)
-            for _i, _p in enumerate(_pa):
-                _ws.write(_l + 1 + _i, 0, str(_p.get("municipio") or _p.get("Município") or "—"), _f_c)
-                _ws.write(_l + 1 + _i, 1, float(_p.get("economia_km_candidato") or 0), _f_c)
-                _ws.write(_l + 1 + _i, 2, float(_p.get("pct_acumulado") or 0), _f_c)
-            _ch3 = _wb.add_chart({"type": "column"})
-            _ch3.add_series({
-                "name": "Economia (km-candidato)",
-                "categories": ["Graficos", _l + 1, 0, _l + len(_pa), 0],
-                "values": ["Graficos", _l + 1, 1, _l + len(_pa), 1],
-                "fill": {"color": "#2F5597"},
-            })
-            _ln = _wb.add_chart({"type": "line"})
-            _ln.add_series({
-                "name": "% acumulado",
-                "categories": ["Graficos", _l + 1, 0, _l + len(_pa), 0],
-                "values": ["Graficos", _l + 1, 2, _l + len(_pa), 2],
-                "y2_axis": True,
-                "line": {"color": "#C55A11", "width": 2.0},
-                "marker": {"type": "circle", "size": 4},
-            })
-            _ch3.combine(_ln)
-            _ch3.set_title({"name": "Pareto: poucos municípios explicam o resultado?",
-                            "name_font": {"size": 12, "color": _XP["titulo"]}})
-            _ch3.set_y_axis({"name": "km-candidato"})
-            _ch3.set_y2_axis({"name": "% acumulado", "max": 100})
-            _ch3.set_legend({"position": "bottom", "font": {"size": 9}})
-            _ch3.set_size({"width": 620, "height": 320})
-            _ws.insert_chart(_l, 4, _ch3)
-        _ws.hide_gridlines(2)
-        return True
-    except Exception as _e:
-        logger.error(f"[XLSX-PRO] Falha na aba de Gráficos: {_e}")
-        return False
+# [AUDITORIA-184] Função morta '_aba_graficos_v1_obsoleta' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 
 
@@ -11791,353 +11505,18 @@ def _tipo_da_coluna(nome, serie):
     return "num"
 
 
-def _formatar_aba_profissional(writer, df, nome, titulo=None, nota=None):
-    """[XLSX-PRO - 182ª geração] A ABA DE DADOS COM CARA DE RELATÓRIO TÉCNICO.
-
-    ── O QUE MUDA (e por que cada coisa importa) ──
-    · **Tabela do Excel** (`add_table`) — não é enfeite: dá **filtro nativo, linhas zebradas, referências
-      estruturadas e expansão automática**. É o que separa "um dump de dados" de "uma tabela".
-    · **Formato por TIPO de dado** — "220,0 km" em vez de "220.0"; "21,4%" em vez de "0.214". O formato
-      **É parte da informação**: um número sem unidade obriga o leitor a adivinhar.
-    · **Formatação condicional** — a divergência fica VERMELHA, a coincidência VERDE, o vazio CINZA.
-      Num relatório de 5.571 linhas, **a cor é o único canal que chega ao olho antes da leitura consciente**.
-    · **Congelamento + largura automática** — o que torna 5.571 linhas realmente navegáveis.
-    · **Cores DISCRETAS e institucionais** (a paleta padrão do Excel) — um relatório que parece dashboard
-      de startup **perde autoridade numa auditoria**.
-
-    ⚠️ O CABEÇALHO CONTINUA NA LINHA 1. Aprendi isso na 171ª: pôr título acima da tabela quebra o
-    AutoFiltro, a ordenação, a tabela dinâmica e o `read_excel()`. **O título vive na CAPA**, não aqui.
-    A aba de dados é **DADO PURO** — filtrável, ordenável e legível por máquina."""
-    _n = (nome or "Dados")[:31]
-    try:
-        if df is None or len(df) == 0:
-            df = pd.DataFrame([{"—": "sem dados para esta seção"}])
-        df.to_excel(writer, index=False, sheet_name=_n, startrow=0)
-        _ws = writer.sheets[_n]
-        _wb = writer.book
-        _F = _fmts_xlsx(_wb)
-        _nl, _nc = len(df), len(df.columns)
-
-        # ---- Tabela do Excel: filtro nativo + zebra + referências estruturadas ----
-        _ws.add_table(0, 0, _nl, _nc - 1, {
-            "columns": [{"header": str(c), "header_format": _F["cab"]} for c in df.columns],
-            "style": "Table Style Light 9",     # azul institucional, discreto
-            "banded_rows": True,
-            "autofilter": True,
-            "name": re.sub(r"\W+", "_", _n)[:30] or "Tabela",
-        })
-
-        # ---- formato e largura por coluna, conforme o TIPO do dado ----
-        for _i, _c in enumerate(df.columns):
-            _t = _tipo_da_coluna(_c, df[_c])
-            _fmt = {"km": _F["km"], "int": _F["int"], "num": _F["num"],
-                    "pct_ja": _F["num"], "txt": _F["txt"]}[_t]
-            try:
-                _larg = int(df[_c].astype(str).str.len().quantile(0.9) or 12)
-            except Exception:
-                _larg = 14
-            _larg = max(11, min(48, max(_larg, len(str(_c)) + 2)))
-            _ws.set_column(_i, _i, _larg, _fmt)
-
-        _ws.freeze_panes(1, 0)
-        _ws.set_row(0, 32)
-
-        # ---- FORMATAÇÃO CONDICIONAL: o perigo chega ao olho antes da leitura ----
-        _cf = {
-            "divergente": _wb.add_format({"bg_color": _PALETA_XLSX["ruim"],
-                                          "font_color": _PALETA_XLSX["ruim_txt"]}),
-            "coincidente": _wb.add_format({"bg_color": _PALETA_XLSX["ok"],
-                                           "font_color": _PALETA_XLSX["ok_txt"]}),
-            "atencao": _wb.add_format({"bg_color": _PALETA_XLSX["alerta"],
-                                       "font_color": _PALETA_XLSX["alerta_txt"]}),
-            "vazio": _wb.add_format({"bg_color": _PALETA_XLSX["vazio"]}),
-        }
-        for _i, _c in enumerate(df.columns):
-            _cn = str(_c).lower()
-            _rng = (1, _i, _nl, _i)
-            # negativo = a aplicação levou o candidato MAIS LONGE
-            if any(_k in _cn for _k in ("economia", "diferenca", "diferença", "impacto", "ganho")):
-                _ws.conditional_format(*_rng, {"type": "cell", "criteria": "<", "value": 0,
-                                               "format": _cf["divergente"]})
-                _ws.conditional_format(*_rng, {"type": "cell", "criteria": ">", "value": 0,
-                                               "format": _cf["coincidente"]})
-            # vencedor
-            if "vencedor" in _cn:
-                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
-                                               "value": "Referência", "format": _cf["divergente"]})
-                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
-                                               "value": "Aplicação", "format": _cf["coincidente"]})
-            # conciliação por similaridade = NÃO é oficial
-            if "metodo" in _cn or "método" in _cn:
-                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
-                                               "value": "Fuzzy", "format": _cf["atencao"]})
-            # geodésica = município SEM ESTRADA
-            if "tipo de dist" in _cn:
-                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
-                                               "value": "Geodésica", "format": _cf["atencao"]})
-            # mesmo destino
-            if "mesmo destino" in _cn:
-                _ws.conditional_format(*_rng, {"type": "text", "criteria": "containing",
-                                               "value": "Não", "format": _cf["atencao"]})
-            # ocupação ≥ 100% = polo ESTOURADO
-            if "ocupa" in _cn:
-                _ws.conditional_format(*_rng, {"type": "cell", "criteria": ">=", "value": 100,
-                                               "format": _cf["divergente"]})
-            # células VAZIAS ficam cinzas — o vazio é uma informação
-            _ws.conditional_format(*_rng, {"type": "blanks", "format": _cf["vazio"]})
-
-        # ---- rodapé de impressão ----
-        _ws.set_footer("&L&8Comparador de Estudos — Motor Nacional de Roteirização"
-                       "&C&8Página &P de &N&R&8&D &T")
-        _ws.set_landscape()
-        _ws.fit_to_pages(1, 0)
-        _ws.repeat_rows(0)          # o cabeçalho se repete em toda página impressa
-        if nota:
-            _ws.write(_nl + 2, 0, nota, _F["nota"])
-    except Exception as _e:
-        logger.error(f"[XLSX-PRO] Falha ao formatar a aba '{_n}': {_e}")
-        try:
-            df.to_excel(writer, index=False, sheet_name=_n)
-        except Exception:
-            pass
+# [AUDITORIA-184] Função morta '_formatar_aba_profissional' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 
 
 
-def _capa_relatorio(writer, meta):
-    """[XLSX-PRO - 182ª geração] A CAPA — a primeira impressão de um relatório técnico.
-
-    ── POR QUE ELA VIVE NUMA ABA PRÓPRIA ──
-    Aprendi na 171ª: pôr título e prosa ACIMA da tabela quebra o AutoFiltro, a ordenação, a tabela
-    dinâmica e o `read_excel()`. **A aba de dados tem que ser DADO PURO.**
-    Então o título, o timestamp e os metadados vivem AQUI — onde não atrapalham ninguém e onde um gestor
-    que abre o arquivo vê primeiro **o que é isto, quando foi gerado, e o que ele NÃO diz.**"""
-    _wb = writer.book
-    _ws = _wb.add_worksheet("Capa")
-    writer.sheets["Capa"] = _ws
-    _F = _fmts_xlsx(_wb)
-    _ws.hide_gridlines(2)
-    _ws.set_column(0, 0, 3)
-    _ws.set_column(1, 1, 34)
-    _ws.set_column(2, 2, 66)
-
-    _ws.set_row(2, 34)
-    _ws.write(2, 1, "RELATÓRIO COMPARATIVO DE ESTUDOS", _F["titulo"])
-    _ws.write(3, 1, "Definição dos Locais de Aplicação de Provas — Exames Nacionais", _F["subtitulo"])
-    _ws.write(4, 1, f"Gerado em {meta.get('gerado_em', '—')}", _F["subtitulo"])
-
-    _ws.write(6, 1, "IDENTIFICAÇÃO DO PROCESSAMENTO", _F["secao"])
-    _linhas = [
-        ("Estudo analisado", meta.get("arquivo_app", "Resultado da aba Locais de Aplicação")),
-        ("Base de referência", meta.get("arquivo_ref", "—")),
-        ("Municípios no estudo", _fmt_num(meta.get("n_app", 0))),
-        ("Registros na referência", _fmt_num(meta.get("n_ref", 0))),
-        ("Conciliados", f"{_fmt_num(meta.get('conciliados', 0))} "
-                        f"({_fmt_num(meta.get('pct_conciliado', 0), 1)}%)"),
-        ("Comparáveis", _fmt_num(meta.get("comparaveis", 0))),
-        ("Tempo de processamento", meta.get("tempo", "—")),
-        ("Versão da plataforma", meta.get("versao", "—")),
-    ]
-    for _i, (_r, _v) in enumerate(_linhas, start=7):
-        _ws.write(_i, 1, _r, _F["kpi_rot"])
-        _ws.write(_i, 2, str(_v), _F["txt"])
-
-    _ws.write(len(_linhas) + 8, 1, "O QUE ESTE RELATÓRIO **NÃO** DIZ", _F["secao"])
-    _limites = [
-        "Capacidade das escolas — a comparação mede DESLOCAMENTO, não se o local CABE os candidatos.",
-        "Qualidade da infraestrutura — carteiras, banheiros, acessibilidade. Nenhum modelo sabe isso.",
-        "COMO a base de referência mediu a distância — se ela usou LINHA RETA e nós usamos VIÁRIA, a "
-        "diferença é METODOLÓGICA, não logística. Só você pode verificar isso.",
-        "Horário de transporte público — a plataforma calcula quando o candidato precisa SAIR, mas não "
-        "sabe se existe ônibus àquela hora.",
-    ]
-    for _i, _t in enumerate(_limites, start=len(_linhas) + 9):
-        _ws.write(_i, 1, "⚠️", _F["nota"])
-        _ws.write(_i, 2, _t, _F["nota"])
-        _ws.set_row(_i, 28)
-
-    _fim = len(_linhas) + 9 + len(_limites) + 1
-    _ws.write(_fim, 1, "COMECE POR AQUI", _F["secao"])
-    _ordem = [
-        ("1º", "Resumo Executivo — os indicadores e a CONFIANÇA da comparação."),
-        ("2º", "Guia de Interpretação — o que você PODE e o que NÃO PODE concluir."),
-        ("3º", "Gráficos — a visão geral em 10 segundos."),
-        ("4º", "Vitórias do Concorrente + Plano Híbrido — é AQUI que a decisão acontece."),
-        ("5º", "Comparacao — o detalhe município a município, quando precisar auditar."),
-    ]
-    for _i, (_o, _t) in enumerate(_ordem, start=_fim + 1):
-        _ws.write(_i, 1, _o, _F["kpi_rot"])
-        _ws.write(_i, 2, _t, _F["txt"])
-    _ws.set_footer("&L&8Motor Nacional de Roteirização Inteligente&R&8&D &T")
+# [AUDITORIA-184] Função morta '_capa_relatorio' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 
-def _resumo_executivo_xlsx(writer, stats, aud, veredito=None):
-    """[XLSX-PRO - 182ª geração] O RESUMO EXECUTIVO — um DASHBOARD, não uma tabela.
-
-    Uma linha de dados brutos ("pct_venceu_app: 62") não é um resumo executivo. Um resumo executivo é o
-    que um gestor lê em **10 segundos** antes de uma reunião: **cartões grandes, cores que significam
-    algo, e o veredito em português**. Aqui os KPIs viram CARTÕES, e o número que importa vem traduzido
-    para escala humana ("cada candidato anda 12,4 km a menos")."""
-    _wb = writer.book
-    _ws = _wb.add_worksheet("Resumo Executivo")
-    writer.sheets["Resumo Executivo"] = _ws
-    _F = _fmts_xlsx(_wb)
-    _ws.hide_gridlines(2)
-    for _c in range(1, 9):
-        _ws.set_column(_c, _c, 16)
-
-    _br = (stats or {}).get("brasil", {})
-    _ws.set_row(1, 30)
-    _ws.merge_range(1, 1, 1, 8, "RESUMO EXECUTIVO", _F["titulo"])
-    _ws.merge_range(2, 1, 2, 8, "Comparação entre o estudo da aplicação e a base de referência",
-                    _F["subtitulo"])
-
-    # ---- CONFIANÇA primeiro: se não dá para confiar, nada mais importa ----
-    _tot = (aud or {}).get("total_ref", 0)
-    _conc = (aud or {}).get("conciliados", 0)
-    _pct_c = round(100.0 * _conc / _tot, 1) if _tot else 0.0
-    _f_conf = _F["kpi_ok"] if _pct_c >= 95 else (_F["kpi_val"] if _pct_c >= 80 else _F["kpi_ruim"])
-    _ws.merge_range(4, 1, 4, 8, "CONFIANÇA DA COMPARAÇÃO", _F["secao"])
-    _ws.merge_range(5, 1, 6, 2, f"{_pct_c}%", _f_conf)
-    _ws.merge_range(5, 3, 6, 8,
-                    ("Conciliação ALTA — pode confiar nos números abaixo."
-                     if _pct_c >= 95 else
-                     ("Conciliação MÉDIA — leia com ressalva; confira os vínculos por similaridade."
-                      if _pct_c >= 80 else
-                      "⚠️ CONCILIAÇÃO BAIXA — os percentuais abaixo NÃO representam o universo completo. "
-                      "Corrija a planilha de referência (adicione o Código IBGE) e reprocesse.")),
-                    _F["txt"])
-    _ws.write(7, 1, "dos registros da referência foram casados com o estudo", _F["nota"])
-
-    # ---- os KPIs, em CARTÕES ----
-    _ws.merge_range(9, 1, 9, 8, "O RESULTADO", _F["secao"])
-    _kpis = [
-        ("Nossa aplicação venceu", f"{_br.get('pct_venceu_app', 0)}%", "ok"),
-        ("Referência venceu", f"{_br.get('pct_venceu_ref', 0)}%", "ruim"),
-        ("Empates técnicos", f"{_br.get('pct_empate', 0)}%", "normal"),
-        ("Candidatos analisados", _fmt_num(_br.get("inscritos", 0)), "normal"),
-    ]
-    for _i, (_rot, _val, _cor) in enumerate(_kpis):
-        _c0 = 1 + _i * 2
-        _f = {"ok": _F["kpi_ok"], "ruim": _F["kpi_ruim"], "normal": _F["kpi_val"]}[_cor]
-        _ws.merge_range(10, _c0, 11, _c0 + 1, _val, _f)
-        _ws.merge_range(12, _c0, 12, _c0 + 1, _rot, _F["kpi_rot"])
-    _ws.set_row(10, 26)
-    _ws.set_row(11, 26)
-
-    # ---- ESCALA HUMANA: o número que uma pessoa entende ----
-    _ec = _br.get("economia_ponderada_km", 0)
-    _in = _br.get("inscritos", 0)
-    _km = round(_ec / _in, 1) if _in else 0.0
-    _ws.merge_range(14, 1, 14, 8, "EM ESCALA HUMANA", _F["secao"])
-    _ws.merge_range(15, 1, 16, 3, f"{_fmt_num(abs(_km), 1)} km", _F["kpi_ok"] if _km >= 0 else _F["kpi_ruim"])
-    _ws.merge_range(15, 4, 16, 8,
-                    (f"É quanto cada candidato anda {'A MENOS' if _km >= 0 else 'A MAIS'}, em média.\n\n"
-                     f"O total ({_fmt_num(_ec)} km-candidato) não significa nada para ninguém. "
-                     "DIVIDIDO pelo número de candidatos, ele vira este número — que é o mesmo dado, "
-                     "mas é a diferença entre um DADO e um ENTENDIMENTO."), _F["txt"])
-    _ws.set_row(15, 30)
-    _ws.set_row(16, 30)
-
-    # ---- o veredito, em português ----
-    if veredito:
-        _ws.merge_range(18, 1, 18, 8, "VEREDITO", _F["secao"])
-        _ws.merge_range(19, 1, 21, 8,
-                        f"{veredito.get('icone', '')} {veredito.get('titulo', '')}\n\n"
-                        + re.sub(r"\*\*", "", veredito.get("frase", "")), _F["txt"])
-    _ws.set_footer("&L&8Resumo Executivo — Comparador de Estudos&R&8&D &T")
+# [AUDITORIA-184] Função morta '_resumo_executivo_xlsx' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 
-def _graficos_xlsx(writer, stats, faixas, por_uf):
-    """[XLSX-PRO - 182ª geração] GRÁFICOS NATIVOS DO EXCEL — não imagens coladas.
-
-    Gráfico nativo é VIVO: o gestor clica, filtra, muda a série, copia para o PowerPoint e ele continua
-    ligado aos dados. Uma imagem colada é um cadáver bonito.
-
-    ⚠️ E aqui eu mantenho a linha que sustento desde a 138ª: **só os gráficos que INFORMAM.** Nada de
-    pizza com 12 fatias (ninguém compara ângulos), nada de treemap (bonito e ilegível). Três gráficos que
-    respondem três perguntas: **quem venceu · onde ganhamos e onde perdemos · como as diferenças se
-    distribuem.**"""
-    _wb = writer.book
-    _ws = _wb.add_worksheet("Graficos")
-    writer.sheets["Graficos"] = _ws
-    _F = _fmts_xlsx(_wb)
-    _ws.hide_gridlines(2)
-    _ws.merge_range(1, 1, 1, 8, "GRÁFICOS", _F["titulo"])
-    _ws.merge_range(2, 1, 2, 8,
-                    "Três perguntas: quem venceu · onde ganhamos e perdemos · como as diferenças se "
-                    "distribuem. Só entram gráficos que INFORMAM.", _F["subtitulo"])
-
-    _br = (stats or {}).get("brasil", {})
-    # dados auxiliares numa aba oculta (o Excel precisa deles em células)
-    _dw = _wb.add_worksheet("_dados_graficos")
-    writer.sheets["_dados_graficos"] = _dw
-    _dw.hide()
-
-    # 1) QUEM VENCEU (barras)
-    _dw.write_column("A1", ["Vencedor", "Nossa aplicação", "Referência", "Empate"])
-    _dw.write_column("B1", ["%", _br.get("pct_venceu_app", 0), _br.get("pct_venceu_ref", 0),
-                            _br.get("pct_empate", 0)])
-    _c1 = _wb.add_chart({"type": "column"})
-    _c1.add_series({
-        "name": "% dos municípios",
-        "categories": ["_dados_graficos", 1, 0, 3, 0],
-        "values": ["_dados_graficos", 1, 1, 3, 1],
-        "data_labels": {"value": True, "num_format": '0.0"%"'},
-        "points": [{"fill": {"color": _PALETA_XLSX["ok"]}},
-                   {"fill": {"color": _PALETA_XLSX["ruim"]}},
-                   {"fill": {"color": _PALETA_XLSX["alerta"]}}],
-    })
-    _c1.set_title({"name": "Quem levou o candidato mais perto (% dos municípios)"})
-    _c1.set_y_axis({"name": "% dos municípios", "major_gridlines": {"visible": True}})
-    _c1.set_legend({"none": True})
-    _c1.set_size({"width": 520, "height": 300})
-    _ws.insert_chart("B5", _c1)
-
-    # 2) ECONOMIA POR UF (barras — onde ganhamos e onde PERDEMOS)
-    if por_uf:
-        _uf = sorted(por_uf, key=lambda x: -abs(float(x.get("economia_km_candidato") or 0)))[:15]
-        _dw.write_column("D1", ["UF"] + [str(x.get("UF", "")) for x in _uf])
-        _dw.write_column("E1", ["km-candidato"] + [float(x.get("economia_km_candidato") or 0)
-                                                   for x in _uf])
-        _c2 = _wb.add_chart({"type": "bar"})
-        _c2.add_series({
-            "name": "Economia (km-candidato)",
-            "categories": ["_dados_graficos", 1, 3, len(_uf), 3],
-            "values": ["_dados_graficos", 1, 4, len(_uf), 4],
-            "data_labels": {"value": True, "num_format": "#,##0"},
-            "fill": {"color": _PALETA_XLSX["sub"]},
-            "invert_if_negative": True,      # 🔴 o negativo aparece INVERTIDO: perdemos ali
-        })
-        _c2.set_title({"name": "Economia por UF — barras NEGATIVAS = levamos o candidato mais LONGE"})
-        _c2.set_x_axis({"name": "km-candidato"})
-        _c2.set_legend({"none": True})
-        _c2.set_size({"width": 520, "height": 420})
-        _ws.insert_chart("B22", _c2)
-
-    # 3) FAIXAS DE DIFERENÇA (distribuição, COM SINAL)
-    if faixas:
-        _fx = [f for f in faixas if int(f.get("candidatos") or 0) > 0][:14]
-        _dw.write_column("G1", ["Faixa"] + [str(f.get("faixa", "")) for f in _fx])
-        _dw.write_column("H1", ["Candidatos"] + [int(f.get("candidatos") or 0) for f in _fx])
-        _c3 = _wb.add_chart({"type": "column"})
-        _c3.add_series({
-            "name": "Candidatos",
-            "categories": ["_dados_graficos", 1, 6, len(_fx), 6],
-            "values": ["_dados_graficos", 1, 7, len(_fx), 7],
-            "data_labels": {"value": True, "num_format": "#,##0"},
-            "fill": {"color": _PALETA_XLSX["cabecalho"]},
-        })
-        _c3.set_title({"name": "Candidatos por faixa de diferença (COM SINAL)"})
-        _c3.set_y_axis({"name": "Candidatos"})
-        _c3.set_legend({"none": True})
-        _c3.set_size({"width": 900, "height": 340})
-        _ws.insert_chart("K5", _c3)
-
-    _ws.write(1, 10, "Como ler:", _F["kpi_rot"])
-    _ws.write(2, 10, "Barra NEGATIVA em 'Economia por UF' = a nossa aplicação levou o candidato MAIS "
-                     "LONGE naquele estado. É por ali que a revisão começa.", _F["nota"])
-    _ws.set_footer("&L&8Gráficos — Comparador de Estudos&R&8&D &T")
+# [AUDITORIA-184] Função morta '_graficos_xlsx' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 
 
@@ -12495,44 +11874,7 @@ def _escrever_aba_com_guia(writer, df, nome, guia=None):
     return _escrever_aba_profissional(writer, df, nome)
 
 
-def _escrever_aba_com_guia_LEGADO(writer, df, nome, guia=None):
-    """[GUIA-PLANILHA - 171ª geração] Escreve a aba de DADOS — **limpa, do jeito que o Excel precisa**.
-
-    ── EU TINHA ERRADO, E O USUÁRIO PERCEBEU ──
-    Na 170ª eu pus 25 linhas de guia ACIMA dos dados de cada aba. Achei que estava ajudando. **Estava
-    quebrando a planilha.** Com o guia no topo, o cabeçalho da tabela sai da linha 1 e vai para a linha 26 —
-    e aí **o autofiltro, o congelar painéis, a tabela dinâmica e o Ctrl+A param de funcionar direito**.
-    Uma planilha de 5.571 linhas que não dá para filtrar não serve para nada.
-
-    ── O PADRÃO PROFISSIONAL ──
-    Power BI, Tableau, dados abertos de governo: **as abas de DADOS são DADOS PUROS; a documentação vive
-    SEPARADA.** O guia inteiro (aba por aba) agora fica na aba **📖 Como Ler Cada Aba**, e o capítulo
-    executivo na **📘 Guia de Interpretação**.
-
-    Aqui a aba sai limpa — cabeçalho na linha 1 — com **autofiltro** e **painel congelado** de brinde, que é
-    o que de fato ajuda quem vai TRABALHAR o dado."""
-    try:
-        _n = nome[:31]
-        df.to_excel(writer, index=False, sheet_name=_n)
-        _ws = writer.sheets[_n]
-        _wb = writer.book
-        _nl, _nc = df.shape
-        if _nc:
-            _f_cab = _wb.add_format({"bold": True, "bg_color": "#1F4E79", "font_color": "white",
-                                     "border": 1, "text_wrap": True, "valign": "vcenter"})
-            for _j, _col in enumerate(df.columns):
-                _ws.write(0, _j, str(_col), _f_cab)
-                _larg = max(12, min(42, int(df[_col].astype(str).str.len().max() or 12) + 2))
-                _ws.set_column(_j, _j, _larg)
-            _ws.autofilter(0, 0, max(_nl, 1), _nc - 1)   # filtro pronto
-            _ws.freeze_panes(1, 0)                        # cabeçalho fixo ao rolar
-            _ws.set_row(0, 30)
-    except Exception as _e:
-        logger.error(f"[GUIA-PLANILHA] Falha ao escrever a aba '{nome}': {_e}")
-        try:
-            df.to_excel(writer, index=False, sheet_name=nome[:31])
-        except Exception:
-            pass
+# [AUDITORIA-184] Função morta '_escrever_aba_com_guia_LEGADO' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 
 def _guia_interpretacao_completo(stats, aud, linhas):
@@ -16332,17 +15674,7 @@ def _extrair_geometria_google(texto_resposta, lat_o, lon_o, lat_d, lon_d):
             return cand
     return ""
 
-def _gerar_mapa_rota_google(geometria_polyline, lat_o, lon_o, lat_d, lon_d, nome_origem="", nome_destino="", distancia_km="", tempo_str=""):
-    """[VIS-GOOGLE-GEO - 27ª geração] Gera o mapa EMBARCADO da rota do GOOGLE desenhando o
-    TRAÇADO COMPLETO (Leaflet + OpenStreetMap) a partir da polyline decodificada do Google.
-    Resolve a PRIORIDADE MÁXIMA Nº 1: o mapa do Google mostrava só 2 marcadores; agora
-    desenha a geometria integral da rota (curvas, conversões, segmentos), com nomes
-    oficiais de origem/destino, distância e tempo. Se a geometria não estiver disponível,
-    cai graciosamente para os marcadores (degradação segura). Reusa a infra de mapa do
-    OSRM mas com rótulos por NOME (não coordenadas), conforme pedido."""
-    return _gerar_mapa_leaflet_rota(geometria_polyline, lat_o, lon_o, lat_d, lon_d,
-                                    nome_origem, nome_destino, distancia_km, tempo_str,
-                                    provedor="Google Maps", cor="#1a73e8")
+# [AUDITORIA-184] Função morta '_gerar_mapa_rota_google' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
 
 def _decodificar_polyline(polyline_str, precision=5):
     """[FIX-OSRM-GEO2 - 18ª geração] Decodifica uma polyline codificada (formato Google/
@@ -19432,7 +18764,7 @@ def _alinhar_concorrente_por_viaria(df, mcda_map, resultados):
                             if _mdc:
                                 _div_km_c, _div_pct_c = _mdc.get('km', 0.0), _mdc.get('pct', 0.0)
                 except Exception:
-                    pass
+                    logger.debug("[GUARDA-ALINHAR] falha tolerada no alinhamento do concorrente", exc_info=True)
             _vel_c = 0.0
             try:
                 _tmin = float(_tempo_min_c) if _tempo_min_c not in (None, "") else _parse_tempo_min(_tempo_txt_c)
@@ -19469,7 +18801,7 @@ def _alinhar_concorrente_por_viaria(df, mcda_map, resultados):
                 df.at[_idx, 'UF Concorrente'] = _idc.get('uf', '—')
                 df.at[_idx, 'Municipio Concorrente'] = _idc.get('municipio', '—')
             except Exception:
-                pass
+                logger.debug("[GUARDA-ALINHAR] falha tolerada no alinhamento do concorrente", exc_info=True)
             # ── recalcula os índices da disputa contra o NOVO concorrente (mesmas funções puras) ──
             try:
                 _cv = float(df.at[_idx, 'Distancia']) if df.at[_idx, 'Distancia'] not in (None, "") else 0.0
@@ -19488,7 +18820,7 @@ def _alinhar_concorrente_por_viaria(df, mcda_map, resultados):
                     df.at[_idx, 'Indice Robustez'] = _indice_robustez(_d_km)
                     df.at[_idx, 'Motivo Resumido Perda'] = _motivo_resumido_perda(_d_km, _d_reta, _d_raz)
             except Exception:
-                pass
+                logger.debug("[GUARDA-ALINHAR] falha tolerada no alinhamento do concorrente", exc_info=True)
         except Exception:
             continue
     return df
