@@ -13713,6 +13713,21 @@ def _montar_leitura_similaridade(pares):
     return _out
 
 
+def _coluna_parece_sim_nao(df, col):
+    """[MAPA-REF - 184ª geração] True se a coluna parece BOOLEANA (SIM/NÃO): ≤3 valores distintos, todos em
+    {SIM,NAO,S,N,YES,NO,TRUE,FALSE,0,1,X,''}. Protege o mapeamento do Comparador: 'MUNICIPIO_PROVA' (SIM/NÃO)
+    escolhida como DESTINO fazia toda a coluna 'Destino Referencia' virar 'NÃO'. Puro e defensivo."""
+    try:
+        if df is None or not col or col not in df.columns or len(df) == 0:
+            return False
+        _v = {unidecode(str(x)).strip().upper() for x in df[col].dropna().unique()}
+        _v = {x for x in _v if x != ""}
+        _BOOL = {"SIM", "NAO", "S", "N", "YES", "NO", "TRUE", "FALSE", "0", "1", "X"}
+        return 0 < len(_v) <= 3 and _v.issubset(_BOOL)
+    except Exception:
+        return False
+
+
 def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
     """[COMPARADOR - 138ª geração] Concilia a saída da aba Locais de Aplicação (df_app) com a base externa
     de referência (df_ref), pela ORIGEM (município de candidatos). HIERARQUIA, do mais forte ao mais fraco:
@@ -24945,24 +24960,33 @@ if _secao == _SECOES[3]:   # tab_comparador
                 _cols = ["—"] + list(_df_ref.columns)
 
                 def _auto(*chaves):
-                    for c in _df_ref.columns:
-                        _cn = str(c).lower()
-                        if any(k in _cn for k in chaves):
-                            return _cols.index(c)
+                    # [MAPA-REF - 184ª geração] Prioridade por PALAVRA-CHAVE (antes iterava colunas por fora,
+                    # e a 1ª coluna com qualquer palavra vencia — 'CO_MUNICIPIO' roubava o lugar de
+                    # 'NO_MUNICIPIO'). Agora a 1ª palavra-chave que casar em alguma coluna decide.
+                    for k in chaves:
+                        for c in _df_ref.columns:
+                            if k in str(c).lower():
+                                return _cols.index(c)
                     return 0
                 st.markdown("##### 🔗 Mapeamento das colunas da referência")
                 _m1, _m2, _m3 = st.columns(3)
                 with _m1:
-                    _c_ori = st.selectbox("Município de origem do candidato *", _cols, index=_auto("origem", "municipio", "município"), key="cmp_ori")
+                    _c_ori = st.selectbox("Município de origem do candidato *", _cols, index=_auto("no_municipio", "origem", "municipio", "município"), key="cmp_ori")
                     _c_uf = st.selectbox("UF de origem", _cols, index=_auto("uf"), key="cmp_uf")
                 with _m2:
-                    _c_dst = st.selectbox("Local de aplicação (destino) *", _cols, index=_auto("destino", "aplicacao", "aplicação", "polo"), key="cmp_dst")
-                    _c_ibge = st.selectbox("Código IBGE da origem", _cols, index=_auto("ibge", "cod"), key="cmp_ibge")
+                    _c_dst = st.selectbox("Local de aplicação (destino) *", _cols, index=_auto("no_mun_prox", "mun_prox", "destino", "aplicacao", "aplicação", "polo"), key="cmp_dst")
+                    _c_ibge = st.selectbox("Código IBGE da origem", _cols, index=_auto("ibge", "co_municipio", "cod"), key="cmp_ibge")
                 with _m3:
                     _c_dist = st.selectbox("Distância viária (km) *", _cols, index=_auto("dist", "km", "rota"), key="cmp_dist")
                     _c_insc = st.selectbox("Quantidade de inscritos", _cols, index=_auto("inscrit", "candidat", "qtd"), key="cmp_insc")
                 _c_tempo = st.selectbox("Tempo de deslocamento", _cols, index=_auto("tempo", "duracao", "duração"), key="cmp_tempo")
                 _ok_map = _c_ori != "—" and _c_dst != "—" and _c_dist != "—"
+                # [MAPA-REF - 184ª geração] Guarda anti-armadilha: coluna de DESTINO que parece SIM/NÃO
+                # (ex.: 'MUNICIPIO_PROVA') derrubava a comparação inteira ('Destino Referencia' = 'NÃO').
+                if _ok_map and _coluna_parece_sim_nao(_df_ref, _c_dst):
+                    st.warning(f"⚠️ A coluna **{_c_dst}** escolhida como destino parece conter apenas SIM/NÃO — "
+                               "ela indica *se* o município sedia prova, não *qual* é o local. Selecione a coluna "
+                               "com o **nome do município de prova** (ex.: `NO_MUN_PROX`).")
                 if not _ok_map:
                     st.caption("Selecione ao menos **origem**, **destino** e **distância viária** para comparar.")
 
