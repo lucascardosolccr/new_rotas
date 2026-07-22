@@ -13728,7 +13728,7 @@ def _coluna_parece_sim_nao(df, col):
         return False
 
 
-def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
+def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90, limiar_empate_km=1.0):
     """[COMPARADOR - 138ª geração] Concilia a saída da aba Locais de Aplicação (df_app) com a base externa
     de referência (df_ref), pela ORIGEM (município de candidatos). HIERARQUIA, do mais forte ao mais fraco:
     (1) Código IBGE da origem; (2) município + UF; (3) município sem UF; (4) fuzzy controlado (rapidfuzz
@@ -13913,7 +13913,7 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
     return linhas, aud
 
 
-def _comparar_alocacoes(linhas, parse_tempo=None):
+def _comparar_alocacoes(linhas, parse_tempo=None, limiar_empate_km=1.0):
     """[COMPARADOR - 138ª geração] Compara, linha a linha, a alocação da APLICAÇÃO contra a da REFERÊNCIA e
     produz as colunas de decisão: mesmo destino?, diferença absoluta e percentual, economia de km, economia
     PONDERADA por inscritos, economia de tempo, vencedor e JUSTIFICATIVA técnica. Convenção: economia
@@ -13946,7 +13946,10 @@ def _comparar_alocacoes(linhas, parse_tempo=None):
             d["Diferenca Pct (%)"] = round(100.0 * _dif / _dr, 2)
             d["Economia km"] = max(0.0, _dif)
             d["Economia km x Inscritos"] = round(_dif * _insc, 1)
-            if abs(_dif) < 1.0:
+            # [LIMIAR-EMPATE - 184ª geração] Limiar CONFIGURÁVEL: diferenças abaixo dele são ruído de
+            # medição entre fontes (matriz pré-computada × roteamento ao vivo; mediana real ~2 km no mesmo
+            # destino), não vitória.
+            if abs(_dif) < float(limiar_empate_km):
                 d["Vencedor Distancia"] = "Empate"
             elif _dif > 0:
                 d["Vencedor Distancia"] = "Aplicação"
@@ -13997,7 +14000,7 @@ def _comparar_alocacoes(linhas, parse_tempo=None):
         # SOLUÇÃO. O motor de alocação decide por CUSTO EFETIVO — mas o COMPARADOR ainda usava régua de km.
         # Duas partes da mesma app com critérios diferentes. Agora falam a mesma língua.
         try:
-            _vm, _crit, _exp = _vencedor_multicriterio_comparacao(d)
+            _vm, _crit, _exp = _vencedor_multicriterio_comparacao(d, limiar_empate_km=limiar_empate_km)
             d["Vencedor (Esforço Real)"] = _vm
             d["Criterio Usado"] = _crit
             d["Explicacao do Criterio"] = _exp
@@ -17808,7 +17811,7 @@ _PARAMS_CUSTO_HUB = {
 
 
 
-def _vencedor_multicriterio_comparacao(linha, params=None):
+def _vencedor_multicriterio_comparacao(linha, params=None, limiar_empate_km=1.0):
     """[MULTI-CMP - 167ª geração] O COMPARADOR DEIXA DE SER SÓ QUILOMETRAGEM.
 
     ── A PREMISSA QUE ESTAVA ERRADA ──
@@ -17840,11 +17843,11 @@ def _vencedor_multicriterio_comparacao(linha, params=None):
     # sem tempo dos DOIS lados: não dá para ir além do quilômetro. E a app DIZ isso.
     if _ta is None or _tr is None:
         _dif = _dr - _da
-        if abs(_dif) < 1.0:
+        if abs(_dif) < float(limiar_empate_km):
             return "Empate", "distância (só)", (
                 "⚠️ **Critério usado: DISTÂNCIA apenas.** A planilha de referência não informa TEMPO, então "
                 "não é possível comparar o esforço real (que inclui lentidão da estrada e balsa). "
-                "**Empate técnico** (< 1 km). Se a referência trouxer a coluna de tempo, a comparação passa "
+                f"**Empate técnico** (< {float(limiar_empate_km):g} km). Se a referência trouxer a coluna de tempo, a comparação passa "
                 "a ser multicritério automaticamente.")
         _v = "Aplicação" if _dif > 0 else "Referência"
         return _v, "distância (só)", (
@@ -17861,11 +17864,11 @@ def _vencedor_multicriterio_comparacao(linha, params=None):
         _vr = float(_cr["custo_efetivo_km"])
     except (TypeError, ValueError, KeyError):
         _dif = _dr - _da
-        _v = "Empate" if abs(_dif) < 1 else ("Aplicação" if _dif > 0 else "Referência")
+        _v = "Empate" if abs(_dif) < float(limiar_empate_km) else ("Aplicação" if _dif > 0 else "Referência")
         return _v, "distância (fallback)", "Falha no cálculo multicritério; usada a distância."
 
     _dif = _vr - _va
-    if abs(_dif) < 1.0:
+    if abs(_dif) < float(limiar_empate_km):
         return "Empate", "custo efetivo (multicritério)", (
             "**Empate no ESFORÇO REAL** (< 1 km-equivalente). Considerados: distância, lentidão da estrada "
             "e balsa.")
@@ -18350,6 +18353,43 @@ def _justificar_escolha_hub(resultado_mcda):
     if _cd:
         _txt += f". Critério decisivo: **{_cd}**."
     return _txt
+
+
+def _pares_retry_viaria(topk_map, resultados, fator=1.5, max_pares=40):
+    """[RETRY-VIARIA - 184ª geração] SEGUNDA CHANCE para o candidato geodésico-líder rebaixado (padrão
+    Candeias do Jamari→Porto Velho): quando a rota de um candidato PRÓXIMO falhou (fallback geodésico) e o
+    vencedor real tem viária MUITO maior (reta_do_candidato × fator < melhor_viária_real), aquele candidato
+    merece UMA nova tentativa de roteamento — a falha pode ter sido transiente (rate-limit/timeout) e custar
+    ~150 km ao candidato. Retorna a lista de pares (cliente, hub) a re-rotear, ordenada pelo GANHO potencial
+    e limitada a max_pares (chamadas de API limitadas). PURA e defensiva; clientes sem nenhuma rota real são
+    pulados (caso fluvial — não há o que comparar)."""
+    _out = []
+    try:
+        for _cli, _cands in (topk_map or {}).items():
+            _reais, _fbs = [], []
+            for _item in (_cands or []):
+                try:
+                    _reta, _hub = float(_item[0] or 0), _item[1]
+                except Exception:
+                    continue
+                _r = (resultados or {}).get((_cli, _hub))
+                if not _r or not _r[0]:
+                    continue
+                _f = str(_r[5]).lower() if len(_r) > 5 else ""
+                if "geodés" in _f or "falha" in _f:
+                    _fbs.append((_reta if _reta > 0 else float(_r[4] or 0), _hub))
+                else:
+                    _reais.append((float(_r[0]), _hub))
+            if not _reais or not _fbs:
+                continue
+            _melhor_real = min(_v for _v, _ in _reais)
+            for _reta, _hub in _fbs:
+                if _reta > 0 and _reta * float(fator) < _melhor_real:
+                    _out.append((_melhor_real - _reta, (_cli, _hub)))
+        _out.sort(key=lambda x: -x[0])
+        return [_p for _, _p in _out[:int(max_pares)]]
+    except Exception:
+        return []
 
 
 def _reatribuir_hubs_multicriterio(topk_map, resultados, params=None, parse_tempo=None):
@@ -22948,6 +22988,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
         if _alo_ativo:
             if st.button("⏹️ Cancelar Alocação", key="cancel_alo"):
                 for _k in ['alo_em_andamento', 'alo_fase', 'alo_tarefas', 'alo_resultados', 'alo_chunk_idx',
+                           'alo_retry_viaria_feito',
                            'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map', 'alo_topk_map',
                            'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
                            'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
@@ -23269,6 +23310,32 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 if st.session_state.get('alo_multicriterio'):
                     try:
                         _topk_mc = st.session_state.get('alo_topk_map', {})
+                        # [RETRY-VIARIA - 184ª geração] SEGUNDA CHANCE (uma vez por estudo, ≤40 pares): se a
+                        # rota de um candidato PRÓXIMO falhou (fallback) e o melhor real está muito mais longe
+                        # (reta×1.5 < melhor viária real), re-roteia esses pares agora, sincronamente — falhas
+                        # transientes de API custavam ~150 km ao candidato (padrão Candeias→Porto Velho). Só
+                        # aceita o retry se vier ROTA REAL; senão mantém o que havia (zero regressão).
+                        if not st.session_state.get('alo_retry_viaria_feito'):
+                            st.session_state['alo_retry_viaria_feito'] = True
+                            _pares_rt = _pares_retry_viaria(_topk_mc, _resultados)
+                            if _pares_rt:
+                                with st.spinner(f"🛟 Segunda chance: re-roteando {len(_pares_rt)} candidato(s) "
+                                                f"próximos cuja rota falhou..."):
+                                    try:
+                                        _res_rt = processar_chunk_rotas(
+                                            _pares_rt, runner_up_map=st.session_state.get('alo_runner_map'))
+                                        _aceitos = 0
+                                        for _kr, _vr in (_res_rt or {}).items():
+                                            _fr = str(_vr[5]).lower() if (_vr and len(_vr) > 5) else "geodés"
+                                            if _vr and _vr[0] and "geodés" not in _fr and "falha" not in _fr:
+                                                _resultados[_kr] = _vr
+                                                _aceitos += 1
+                                        if _aceitos:
+                                            st.session_state['alo_resultados'] = _resultados
+                                            logger.warning("[RETRY-VIARIA] %d rota(s) recuperadas na segunda "
+                                                           "chance (candidato próximo sem rota).", _aceitos)
+                                    except Exception as _e_rt:
+                                        logger.error(f"[RETRY-VIARIA] Falha na segunda chance: {_e_rt}")
                         # [HUB-PARAMS - 131ª geração] Usa a calibração do usuário (congelada no clique);
                         # se ausente, reconstrói dos widgets; se tudo faltar, cai nos padrões validados.
                         _params_mc = st.session_state.get('alo_params_custo') or _montar_params_custo(
@@ -23507,6 +23574,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 st.session_state['alo_linhas'] = len(df_final_alo)
                 
                 for _k in ['alo_em_andamento', 'alo_tarefas', 'alo_resultados', 'alo_chunk_idx',
+                           'alo_retry_viaria_feito',
                            'alo_df_pares', 'alo_start_clock', 'alo_total', 'alo_runner_map',
                            'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
                            'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
@@ -24981,6 +25049,16 @@ if _secao == _SECOES[3]:   # tab_comparador
                     _c_insc = st.selectbox("Quantidade de inscritos", _cols, index=_auto("inscrit", "candidat", "qtd"), key="cmp_insc")
                 _c_tempo = st.selectbox("Tempo de deslocamento", _cols, index=_auto("tempo", "duracao", "duração"), key="cmp_tempo")
                 _ok_map = _c_ori != "—" and _c_dst != "—" and _c_dist != "—"
+                # [LIMIAR-EMPATE - 184ª geração] Limiar de empate técnico CONFIGURÁVEL. A investigação forense
+                # mostrou que, quando app e referência escolhem o MESMO destino, a diferença mediana é ~2 km
+                # (ruído entre matriz pré-computada e roteamento ao vivo). Com 1 km, esse ruído vira "derrota".
+                _limiar_emp = st.number_input(
+                    "⚖️ Limiar de empate técnico (km)", min_value=0.0, max_value=25.0, value=1.0, step=0.5,
+                    key="cmp_limiar_empate",
+                    help="Diferenças de distância ABAIXO deste valor contam como empate técnico, não vitória. "
+                         "Comparando fontes de medição diferentes (matriz oficial × roteamento ao vivo), o ruído "
+                         "típico é de 2–5 km mesmo quando os dois estudos escolhem o MESMO local — recomenda-se "
+                         "5 km nesses casos. Com 0, qualquer diferença decide.")
                 # [MAPA-REF - 184ª geração] Guarda anti-armadilha: coluna de DESTINO que parece SIM/NÃO
                 # (ex.: 'MUNICIPIO_PROVA') derrubava a comparação inteira ('Destino Referencia' = 'NÃO').
                 if _ok_map and _coluna_parece_sim_nao(_df_ref, _c_dst):
@@ -25061,8 +25139,11 @@ if _secao == _SECOES[3]:   # tab_comparador
                                      "inscritos": None if _c_insc == "—" else _c_insc,
                                      "distancia": None if _c_dist == "—" else _c_dist,
                                      "tempo": None if _c_tempo == "—" else _c_tempo}
-                        _lin, _aud_c = _conciliar_comparativo(_df_alo_cmp, _df_ref, _mapa_cmp)
-                        _cmp = _comparar_alocacoes(_lin)
+                        _lin, _aud_c = _conciliar_comparativo(
+                            _df_alo_cmp, _df_ref, _mapa_cmp,
+                            limiar_empate_km=float(st.session_state.get('cmp_limiar_empate', 1.0) or 1.0))
+                        _cmp = _comparar_alocacoes(
+                            _lin, limiar_empate_km=float(st.session_state.get('cmp_limiar_empate', 1.0) or 1.0))
                         _st_c = _estatisticas_comparacao(_cmp)
                         # [PERF - 139ª geração] Relatório e XLSX são calculados AQUI (uma vez, no clique) e
                         # guardados. Na 138ª eu os recalculava a CADA RERUN — 1,2 s de CPU bloqueante por
