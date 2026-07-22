@@ -3954,6 +3954,75 @@ def _prevoo_higienizar_texto(s):
     return re.sub(r"\s+", " ", _prevoo_corrigir_mojibake(s)).strip()
 
 
+def _secoes_metodologia_referencias_html():
+    """[ARTIGO - 184ª geração] Seções de METODOLOGIA e REFERÊNCIAS (padrão artigo científico) para os
+    relatórios HTML. Estáticas e honestas — descrevem o pipeline real e citam as fontes reais. Retorna
+    lista de (id, título, html)."""
+    _met = (
+        '<p class="lead"><b>1. Geocodificação.</b> Coordenadas de origem resolvidas por consenso multi-API '
+        '(ArcGIS, TomTom, Nominatim, Photon) com validação espacial; municípios ancorados na <b>base oficial '
+        'de sedes municipais do IBGE</b> embarcada (5.571 municípios), com desambiguação de homônimos por UF '
+        'e código IBGE.</p>'
+        '<p class="lead"><b>2. Distâncias geodésicas.</b> Valores exibidos pela solução de <b>Karney (2013)</b> '
+        'sobre o elipsoide WGS-84 (erro &lt;1 mm); ranking por Haversine com raio médio IUGG (6.371,0088 km), '
+        'de ordenação idêntica (Sinnott, 1984).</p>'
+        '<p class="lead"><b>3. Roteamento viário.</b> Motor primário Google Directions; fallback OSRM sobre '
+        'OpenStreetMap (Luxen &amp; Vetter, 2011). Quando nenhum motor produz rota, usa-se a geodésica, '
+        '<b>sempre sinalizada</b> (📏). Cada rota recebe classificação de qualidade: 🟢 confirmada, '
+        '🟡 desvio extremo/traçado atípico (revisar), 🟠 linha reta por ausência de rota. Falhas transientes '
+        'em candidatos próximos recebem <b>re-roteamento automático</b> (segunda chance, limitada).</p>'
+        '<p class="lead"><b>4. Decisão do local de prova.</b> No modo viário, vence <b>sempre a menor '
+        'distância viária real</b>; rotas reais precedem estimativas; o custo logístico (km-equivalente) atua '
+        'apenas como desempate. Um <b>invariante verificado</b> ao final garante que nenhuma linha exportada '
+        'tenha vencedor com viária maior que o 2º colocado (correção autoritativa).</p>'
+        '<p class="lead"><b>5. Comparação entre estudos.</b> Conciliação hierárquica (código IBGE → município+UF '
+        '→ município → similaridade com trava de UF e anti-duplicata), <b>limiar de empate técnico '
+        'configurável</b> (diferenças abaixo do limiar são ruído entre fontes de medição — tipicamente 2–5 km '
+        'entre matrizes oficiais e roteamento ao vivo) e economia ponderada em km-candidato.</p>'
+        '<p class="lead"><b>6. Planejamento de cobertura.</b> Cenários de abertura de locais pelo problema de '
+        '<b>cobertura máxima</b> (MCLP; Church &amp; ReVelle, 1974) com heurística gulosa; concentração da '
+        'demanda pelo índice de <b>Gini (1912)</b>; alocação com capacidade pela aproximação de <b>Vogel</b> '
+        '(Reinfeld &amp; Vogel, 1958).</p>'
+        '<p class="lead"><b>7. Limitações.</b> Municípios de acesso fluvial não possuem rota rodoviária; '
+        'matrizes de referência (rod_fiocruz/hid_ibge) incluem pernas de balsa/hidrovia que motores '
+        'rodoviários não produzem — casos sinalizados (🟡/🟠) para análise. Divergências ≤5 km entre fontes '
+        'distintas de medição são esperadas e não caracterizam erro.</p>')
+    _refs = (
+        '<ol style="font-size:13px;color:#334155;line-height:1.55">'
+        '<li>KARNEY, C. F. F. <i>Algorithms for geodesics</i>. Journal of Geodesy, v. 87, n. 1, p. 43–55, 2013.</li>'
+        '<li>SINNOTT, R. W. <i>Virtues of the Haversine</i>. Sky &amp; Telescope, v. 68, n. 2, p. 159, 1984.</li>'
+        '<li>LUXEN, D.; VETTER, C. <i>Real-time routing with OpenStreetMap data</i>. In: Proc. 19th ACM '
+        'SIGSPATIAL, 2011.</li>'
+        '<li>CHURCH, R.; REVELLE, C. <i>The maximal covering location problem</i>. Papers of the Regional '
+        'Science Association, v. 32, p. 101–118, 1974.</li>'
+        '<li>REINFELD, N. V.; VOGEL, W. R. <i>Mathematical Programming</i>. Englewood Cliffs: Prentice-Hall, 1958.</li>'
+        '<li>GINI, C. <i>Variabilità e mutabilità</i>. Studi Economico-Giuridici, Università di Cagliari, 1912.</li>'
+        '<li>IBGE. <i>Malha Municipal Digital; Tabela de Códigos de Municípios; Áreas Territoriais</i>. Rio de '
+        'Janeiro: IBGE.</li>'
+        '<li>IBGE. <i>REGIC 2018 — Regiões de Influência das Cidades</i> (tipologia de acesso fluvial).</li>'
+        '<li>FIOCRUZ; IBGE. <i>Matrizes de distâncias intermunicipais</i> (rod_ibge, rod_fiocruz, hid_ibge).</li>'
+        '<li>ANTAQ; ANA. <i>Plano Nacional de Integração Hidroviária — base geográfica de hidrovias (BHO250)</i>.</li>'
+        '<li>OpenStreetMap contributors. <i>Base cartográfica colaborativa</i>, 2026.</li></ol>')
+    return [("metodologia", "Metodologia", _met), ("referencias", "Referências", _refs)]
+
+
+def _abas_metodologia_referencias(writer):
+    """[ARTIGO - 184ª geração] Abas 'Metodologia Cientifica' e 'Referencias' para as planilhas exportáveis
+    (padrão artigo científico). Reusa o conteúdo do relatório HTML, convertido a texto. Defensiva."""
+    try:
+        import re as _re
+        _secs = _secoes_metodologia_referencias_html()
+        _txt = lambda h: _re.sub(r"\s+", " ", _re.sub(r"<[^>]+>", " ", h)).strip()
+        _met = _txt(_secs[0][2])
+        _blocos = [_b.strip() for _b in _re.split(r"(?=\d\.\s)", _met) if _b.strip()]
+        pd.DataFrame({"Metodologia (padrão artigo científico)": _blocos}).to_excel(
+            writer, index=False, sheet_name="Metodologia Cientifica")
+        _refs = [_txt(_li) for _li in _re.findall(r"<li>(.*?)</li>", _secs[1][2], _re.S)]
+        pd.DataFrame({"Referências (ABNT)": _refs}).to_excel(writer, index=False, sheet_name="Referencias")
+    except Exception:
+        logger.error("[ARTIGO] Falha ao escrever metodologia/referências", exc_info=True)
+
+
 def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) de nível profissional/BI:
     capa, NAVEGAÇÃO LATERAL (sumário), cartões executivos e seções analíticas ricas — Resumo, Distribuição de
@@ -4062,6 +4131,13 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 _sec.append(("mapa", "Mapa das Origens", _emb(_fm)))
 
         _dg = []
+        if 'Classificação da Rota' in df.columns:
+            _vc_cl = df['Classificação da Rota'].astype(str).value_counts()
+            if len(_vc_cl):
+                _dg.append("<b>Qualidade das rotas.</b> " + "; ".join(
+                    f"{_he.escape(str(k))}: <b>{int(v)}</b>" for k, v in _vc_cl.head(5).items()) +
+                    ". Rotas 🟠 usaram linha reta por ausência de rota viária; 🟡 merecem revisão (desvio "
+                    "extremo ou traçado atípico).")
         if _dist is not None:
             _dg.append(f"O estudo cobre <b>{_n:,} municípios</b> de origem" + (f" e <b>{_tot_cand:,} candidatos</b>" if _insc is not None else "") + (f", distribuídos em <b>{_n_polos} polos</b>" if _n_polos else "") + f". O deslocamento médio é de <b>{_dist.mean():.0f} km</b> (mediana {_dist.median():.0f} km) e o pior caso, <b>{_dist.max():.0f} km</b>.")
             if 'Municipio Origem' in df.columns:
@@ -4093,6 +4169,7 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                          f'<tbody>{_rows_d}</tbody></table>'))
 
         _sec.append(("diag", "Diagnóstico Executivo", "".join(f"<p>{d}</p>" for d in _dg) or "<p>Sem dados suficientes.</p>"))
+        _sec.extend(_secoes_metodologia_referencias_html())  # [ARTIGO - 184ª geração]
 
         _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
         _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
@@ -4340,6 +4417,7 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                    f"deslocamento) para revisão manual.")
         _sec.append(("diagnostico", "Diagnóstico Técnico Final",
                      "".join(f'<p>{_d}</p>' for _d in _dg)))
+        _sec.extend(_secoes_metodologia_referencias_html())  # [ARTIGO - 184ª geração]
         _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
         _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
         _css = (
@@ -8793,6 +8871,7 @@ def _xlsx_bytes_2(df1, nome1, df2=None, nome2="Aba2"):
         df1.to_excel(_w, index=False, sheet_name=nome1)
         if df2 is not None and len(df2):
             df2.to_excel(_w, index=False, sheet_name=nome2)
+        _abas_metodologia_referencias(_w)  # [ARTIGO - 184ª geração]
     return _buf.getvalue()
 
 
@@ -14814,6 +14893,7 @@ def _montar_abas_analiticas_alocacao(writer, df):
             if _insc is not None and 'Inscritos' in _crit.columns:
                 _oc['Candidatos'] = pd.to_numeric(_crit['Inscritos'], errors='coerce').fillna(0).astype(int).values
             _oc.to_excel(writer, index=False, sheet_name="Municipios Criticos")
+        _abas_metodologia_referencias(writer)  # [ARTIGO - 184ª geração]
     except Exception:
         logger.error("[EXPORT-ANALITICO] Falha ao montar abas analíticas da alocação", exc_info=True)
 
@@ -19071,6 +19151,84 @@ def _validar_coerencia_viaria(df):
                        "viária) — provável acesso fluvial/rota indisponível. Exemplos: %s. Coluna de alerta "
                        "adicionada; o painel de auditoria sinaliza cada caso e nomeia o hub de menor viária.",
                        _n, "; ".join(_ex))
+        return df
+    except Exception:
+        return df
+
+
+def _classificar_rota(fonte_rota, dist_viaria=None, dist_reta=None, balsa=False):
+    """[XAI-ROTA - 184ª geração] Classifica a rota e EXPLICA o método (a inteligência explicável pedida):
+    devolve dict {selo, rotulo, metodo, motivo}. Regras:
+    - fonte geodésica/falha → 🟠 linha reta por ausência de rota (método 📏), com o PORQUÊ;
+    - rota real com razão V/R > 3× → 🟡 desvio extremo (contorno de barreira — pode não refletir o
+      deslocamento real; provável travessia fluvial na prática);
+    - rota real com razão < 1,03 e > 30 km → 🟡 traçado quase reto (verificar);
+    - rota real normal → 🟢 confirmada pelo motor. Balsa vira sufixo. PURA e defensiva."""
+    _f = str(fonte_rota or "").strip()
+    _fl = _f.lower()
+    _motor = "Google Maps" if "google" in _fl else ("OSRM" if "osrm" in _fl else (_f or "motor desconhecido"))
+    try:
+        _dv = float(dist_viaria) if dist_viaria is not None else None
+        _dr = float(dist_reta) if dist_reta is not None else None
+    except Exception:
+        _dv, _dr = None, None
+    _razao = (_dv / _dr) if (_dv and _dr and _dr > 0) else None
+    _suf_b = " · inclui travessia por balsa" if balsa else ""
+    if (not _f) or ("geodés" in _fl) or ("karney" in _fl) or ("falha" in _fl):
+        return {"selo": "🟠", "rotulo": "Linha reta — sem rota viária" + _suf_b,
+                "metodo": "📏 Distância estimada em linha reta",
+                "motivo": ("Foi utilizada a distância em linha reta (geodésica de Karney, WGS-84) porque "
+                           "nenhum motor de roteamento produziu rota rodoviária confiável — destino de acesso "
+                           "fluvial/isolado ou falha de todos os motores. Sinalizado para auditoria.")}
+    if _razao is not None and _razao > 3.0:
+        return {"selo": "🟡", "rotulo": f"Rota viária com desvio extremo ({_razao:.1f}× a linha reta)" + _suf_b,
+                "metodo": "✅ Distância viária real (com ressalva)",
+                "motivo": (f"Rota calculada pelo {_motor}, mas o traçado percorre {_razao:.1f}× a distância em "
+                           "linha reta — desvio típico de contorno de barreira natural (rio/floresta). Na "
+                           "prática, o deslocamento real pode ser fluvial e menor; revisar este caso.")}
+    if _razao is not None and _razao < 1.03 and (_dv or 0) > 30:
+        return {"selo": "🟡", "rotulo": "Rota viária com traçado quase reto — verificar" + _suf_b,
+                "metodo": "✅ Distância viária real (com ressalva)",
+                "motivo": (f"Rota calculada pelo {_motor}, porém quase idêntica à linha reta "
+                           f"({_razao:.2f}×) em trecho longo — padrão raro em malha real; vale conferir se o "
+                           "trecho mapeado é trafegável.")}
+    return {"selo": "🟢", "rotulo": f"Rota viária confirmada ({_motor})" + _suf_b,
+            "metodo": "✅ Distância viária real",
+            "motivo": f"Foi utilizada a distância viária porque o {_motor} calculou uma rota válida"
+                      + (f" (razão V/R {_razao:.2f}×)" if _razao else "") + "."}
+
+
+def _enriquecer_classificacao_rotas(df):
+    """[XAI-ROTA - 184ª geração] Pós-passo ADITIVO (todos os modos): adiciona à planilha as colunas
+    'Método da Distância' (✅ viária real / 📏 linha reta — nunca implícito) e 'Classificação da Rota'
+    (🟢/🟡/🟠 com rótulo), e ANEXA o MOTIVO às colunas de justificativa/explicação existentes. Defensivo;
+    retorna o df."""
+    try:
+        if df is None or getattr(df, "empty", True) or 'Fonte da Rota' not in df.columns:
+            return df
+        _dv = pd.to_numeric(df.get('Distancia'), errors='coerce') if 'Distancia' in df.columns else None
+        _dr = pd.to_numeric(df.get('Linha Reta'), errors='coerce') if 'Linha Reta' in df.columns else None
+        _bal = (df['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1'])
+                if 'Balsas' in df.columns else None)
+        _metodos, _classes, _motivos = [], [], []
+        for _i in range(len(df)):
+            _c = _classificar_rota(
+                df['Fonte da Rota'].iloc[_i],
+                (_dv.iloc[_i] if _dv is not None else None),
+                (_dr.iloc[_i] if _dr is not None else None),
+                bool(_bal.iloc[_i]) if _bal is not None else False)
+            _metodos.append(_c["metodo"])
+            _classes.append(f'{_c["selo"]} {_c["rotulo"]}')
+            _motivos.append(_c["motivo"])
+        df = df.copy()
+        df['Método da Distância'] = _metodos
+        df['Classificação da Rota'] = _classes
+        for _col in ('Explicacao do Criterio', 'Explicação do Critério', 'Justificativa Hub (XAI)'):
+            if _col in df.columns:
+                _base = df[_col].astype(object)
+                df[_col] = [((str(_b).strip() + " | ") if (str(_b).strip() and str(_b).strip().lower()
+                            not in ('nan', 'none', '—')) else "") + _m
+                            for _b, _m in zip(_base, _motivos)]
         return df
     except Exception:
         return df
@@ -23382,6 +23540,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 # aplicado antes de montar o export e a tela, para cobrir inclusive as linhas que o alinhamento
                 # por viária não tocou (ranking <2) e o modo linha reta.
                 df_final_alo = _resolver_nomes_finais(df_final_alo)
+                # [XAI-ROTA - 184ª geração] Classificação da rota (🟢/🟡/🟠) + método EXPLÍCITO
+                # (✅ viária real / 📏 linha reta) + MOTIVO anexado às justificativas — em tela e planilha.
+                df_final_alo = _enriquecer_classificacao_rotas(df_final_alo)
                 # [SSOT-DECISAO - 184ª geração] Verificação FINAL do invariante da menor viária (prova ao usuário).
                 st.session_state['alo_invariante_viaria'] = _verificar_invariante_viaria(df_final_alo)
                 # [HUMANIZAR - 173ª geração] O CÓDIGO IBGE SAI da coluna Origem/Destino; o NOME entra.
@@ -28143,6 +28304,31 @@ if _secao == _SECOES[9]:   # tab_manual
     st.info("📖 **Bem-vindo ao Manual Operacional!** Este espaço é destinado a todos os usuários da plataforma, ensinando de forma prática o 'passo a passo' para executar as operações do dia a dia.")
     renderizar_guia_aba("manual")
     st.markdown("### 📖 Manual do Usuário e Treinamento")
+    # [DOC-184 - 184ª geração] Adendo NATIVO de documentação: o handbook embarcado (blob) é da geração
+    # anterior; este painel documenta a 184ª para o handbook, o manual e a enciclopédia de uma vez.
+    with st.expander("🆕 **Novidades da 184ª geração — adendo oficial de documentação** (leia antes do handbook)", expanded=False):
+        st.markdown("""
+#### 🛣️ Soberania da Menor Rota Viária (garantida por construção)
+No modo **Menor rota viária**, o vencedor é **sempre** o polo de menor distância por estrada. A garantia é em camadas: seleção ordena rotas **reais antes de fallbacks** e por viária; **poda segura** (desliga quando o custo-limite vem de fallback geodésico); **correção autoritativa final** (`vencedor↔concorrente` trocados se a viária do 2º for menor — impossível exportar inconsistência); **painel do invariante** na tela ("✓ Invariante garantido: todos os N locais...") com o nº de ajustes; coluna **Alerta Coerência Viária** na planilha. A **linha reta só decide quando não existe rota viária** — e é sinalizada.
+
+#### 🧠 Explicabilidade (XAI) de cada rota
+Colunas novas em toda planilha: **Método da Distância** (✅ viária real / 📏 linha reta — nunca implícito) e **Classificação da Rota** (🟢 confirmada · 🟡 desvio extremo ou traçado atípico — revisar · 🟠 linha reta por ausência de rota). O **motivo** é anexado às justificativas ("Foi utilizada a distância viária porque..."). O relatório HTML traz a distribuição de qualidade.
+
+#### 🛟 Segunda chance de roteamento
+Se a rota de um polo **próximo** falhou (fallback) e o melhor real ficou muito mais longe (reta×1,5 < melhor viária), a app **re-roteia automaticamente** esses pares (1× por estudo, ≤40 pares) antes de finalizar — falhas transientes de API não custam mais ~150 km ao candidato.
+
+#### ⚖️ Comparador de Estudos, blindado e calibrável
+**Conciliação segura**: código IBGE manda; nome/fuzzy exigem **UF compatível**; código ausente na app → *não conciliado com motivo* (nunca casa homônimo — ex.: São Geraldo/MG ≠ São Geraldo do Araguaia/PA); **anti-duplicata** (Careiro × Careiro da Várzea). **Limiar de empate técnico configurável** (0–25 km): entre fontes distintas (matriz oficial × roteamento ao vivo) o ruído típico é 2–5 km mesmo com o mesmo destino — recomenda-se 5 km. Mapeamento com autodetecção para formatos oficiais (`NO_MUN_PROX`, `CO_MUNICIPIO`) e **guarda anti-SIM/NÃO**.
+
+#### 🗺️ Planejamento Estratégico de Cobertura (novo, em Locais)
+Envie municípios+candidatos e obtenha: **ranking de potencial** (catchment por raio), **cenários "abrir N locais → % coberto"** (MCLP guloso, marcos 80/90/95%), **índices territoriais** (concentração de Gini, interiorização, capilaridade), **mapa** e **exportação**. Resolve municípios **offline** pela base IBGE embarcada.
+
+#### 📦 Exportações e relatórios
+Planilha de Locais com **camada analítica** (Resumo Executivo, Síntese por UF, Competitividade dos Polos, Concorrentes, Distribuição, Municípios Críticos) e **zero células vazias** (vazios recebem o motivo: "N/A — Google não respondeu", "Não disponível (base IBGE)"). Relatórios HTML em padrão profissional com **metodologia e referências** (artigo científico). Identidade do concorrente **sempre pelo nome do município** (nunca código).
+
+#### ⚠️ Limitação conhecida (honesta)
+Municípios de **acesso fluvial** não têm rota rodoviária real: a app sinaliza (🟡/🟠) e usa o melhor proxy disponível; a referência oficial usa matrizes com pernas de **balsa/fluvial** (rod_fiocruz/hid_ibge) que motores rodoviários não produzem. O roteamento fluvial (base ANTAQ) é o próximo passo planejado.
+""")
 
     # [DOC-EMBED - 95a geracao] Handbook tecnico completo embarcado (28 secoes) — inline + download.
     st.markdown("#### 📘 Handbook Técnico Completo (Documentação Oficial)")
