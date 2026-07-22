@@ -10642,7 +10642,12 @@ def _chave_mun(nome, uf=""):
     try:
         t = semantica.normalizar(nome or "")
     except Exception:
-        t = str(nome or "").upper()
+        # [CONCILIA-SEGURA - 184ª geração] Fallback ROBUSTO: unidecode antes do upper — o .upper() cru
+        # deixava o acento para a regex destruir ('São' → 'S O'), quebrando conciliação acentuado×sem-acento.
+        try:
+            t = unidecode(str(nome or "")).upper()
+        except Exception:
+            t = str(nome or "").upper()
     t = re.sub(r"[^A-Z0-9 ]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     u = str(uf or "").strip().upper()
@@ -13743,6 +13748,10 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
     linhas, aud = [], {"conciliados": 0, "por_ibge": 0, "por_mun_uf": 0, "por_mun": 0, "por_fuzzy": 0,
                        "nao_conciliados": [], "nao_comparaveis": [], "total_ref": 0}
     _chaves_mun = list(idx_mun.keys())
+    # [CONCILIA-SEGURA - 184ª geração] Conjuntos de apoio dos guardas: códigos (só dígitos) das origens da
+    # aplicação, e linhas da app já consumidas (para bloquear duplicata por nome/fuzzy).
+    _ibge_digs = {re.sub(r"\D", "", str(_k)) for _k in idx_ibge}
+    _consumidos_nome = set()
     for r in df_ref.to_dict("records"):
         aud["total_ref"] += 1
         _o_ref = _v(r, _mo, "")
@@ -13754,6 +13763,26 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
         if _cod_ref and _cod_ref in idx_ibge:
             i_app, metodo, score_m = idx_ibge[_cod_ref], "Código IBGE", 100
             aud["por_ibge"] += 1
+        # [CONCILIA-SEGURA - 184ª geração] Se a referência TEM código IBGE válido e ele NÃO existe entre as
+        # origens da aplicação, o município genuinamente não está no estudo — cair para nome/fuzzy aqui casa
+        # HOMÔNIMOS e fabrica comparações falsas (provado: "São Geraldo"/MG casado a "São Geraldo do
+        # Araguaia"/PA; "Careiro da Várzea" duplicando "Careiro"). Vai para não-conciliados com o motivo.
+        _dig_ref = re.sub(r"\D", "", _cod_ref)
+        if i_app is None and len(_dig_ref) == 7 and _ibge_digs and _dig_ref not in _ibge_digs:
+            aud["bloqueado_codigo_ausente"] = aud.get("bloqueado_codigo_ausente", 0) + 1
+            aud["nao_conciliados"].append({"origem_ref": str(_o_ref),
+                                           "motivo": f"Código IBGE {_dig_ref} da referência não existe entre as "
+                                                     "origens do estudo da aplicação (município fora do estudo; "
+                                                     "casamento por nome bloqueado para evitar homônimo)."})
+            continue
+        _uf_ref = str(_v(r, _muf, "") or "").strip().upper()
+
+        def _uf_compativel(_ix):
+            # [CONCILIA-SEGURA] Nome/fuzzy só valem se a UF (quando conhecida dos dois lados) BATER.
+            if not _uf_ref:
+                return True
+            _uf_app = str(app_rows[_ix].get("UF Origem", "") or app_rows[_ix].get("UF", "") or "").strip().upper()
+            return (not _uf_app) or (_uf_app == _uf_ref)
         if i_app is None:
             _k = _chave_mun(_o_ref, _v(r, _muf, ""))
             if _k in idx_mun_uf:
@@ -13761,7 +13790,7 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
                 aud["por_mun_uf"] += 1
         if i_app is None:
             _k2 = _chave_mun(_o_ref)
-            if _k2 in idx_mun:
+            if _k2 in idx_mun and _uf_compativel(idx_mun[_k2]) and idx_mun[_k2] not in _consumidos_nome:
                 i_app, metodo, score_m = idx_mun[_k2], "Município (sem UF)", 90
                 aud["por_mun"] += 1
         if i_app is None and _chaves_mun:
@@ -13775,7 +13804,24 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
             except Exception:
                 _m = None
             if _m:
-                i_app, metodo, score_m = idx_mun[_m[0]], f"Fuzzy ({int(_m[1])}%)", int(_m[1])
+                _ix_fz = idx_mun[_m[0]]
+                # [CONCILIA-SEGURA] Fuzzy só com UF compatível e sem reconsumir linha já conciliada
+                # (evita homônimo cross-UF e derrota duplicada).
+                if not _uf_compativel(_ix_fz):
+                    aud["fuzzy_bloqueado_uf"] = aud.get("fuzzy_bloqueado_uf", 0) + 1
+                    aud["nao_conciliados"].append({"origem_ref": str(_o_ref),
+                                                   "motivo": "Similaridade encontrada, mas em OUTRA UF — casamento "
+                                                             "bloqueado para evitar homônimo (ex.: São Geraldo/MG × "
+                                                             "São Geraldo do Araguaia/PA)."})
+                    continue
+                if _ix_fz in _consumidos_nome:
+                    aud["fuzzy_bloqueado_duplicata"] = aud.get("fuzzy_bloqueado_duplicata", 0) + 1
+                    aud["nao_conciliados"].append({"origem_ref": str(_o_ref),
+                                                   "motivo": "Linha da aplicação já conciliada por método mais forte — "
+                                                             "novo vínculo por similaridade bloqueado (evita derrota "
+                                                             "duplicada por homônimo, ex.: Careiro × Careiro da Várzea)."})
+                    continue
+                i_app, metodo, score_m = _ix_fz, f"Fuzzy ({int(_m[1])}%)", int(_m[1])
                 aud["por_fuzzy"] += 1
         if i_app is None:
             aud["nao_conciliados"].append({"origem_ref": str(_o_ref),
@@ -13784,6 +13830,7 @@ def _conciliar_comparativo(df_app, df_ref, mapa, limiar_fuzzy=90):
             continue
         a = app_rows[i_app]
         aud["conciliados"] += 1
+        _consumidos_nome.add(i_app)
         # [ANTI-FALHA - 161ª geração] O estudo da APLICAÇÃO produziu resultado válido para esta linha?
         # Se a rota falhou (Marajó: sem estrada até a ilha), a app gravou Distancia=0 e Municipio="Erro".
         # Comparar isso contra a referência faria a aplicação "vencer pela distância inteira". É mentira.
@@ -17602,7 +17649,11 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
     Benefício líquido: mesmíssimo resultado de alocação, ordens de magnitude mais rápido.
     """
     dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map = {}, {}, {}, {}, {}
-    _TETO_TOPK = 5  # teto de memória p/ lotes grandes (roadmap: "teto top-5")
+    _TETO_TOPK = 10  # [MAIS-CANDIDATOS - 184ª geração] Nº de polos mais próximos (por linha reta) roteados por
+    # origem. Era 5 — pequeno demais: em regiões com muitos polos, o mais próximo por ESTRADA podia ficar fora
+    # dos 5 mais próximos por RETA e nunca ser roteado, fazendo a app perder para a referência (que usa matriz
+    # pré-computada completa). Aumentado para 10 (mais candidatos → mais chance de achar o melhor por asfalto).
+    # Custo: ~2× roteamentos por origem em lotes grandes — aceitável no modo viária ("mais preciso e lento").
 
     # Prepara arrays dos hubs válidos
     hub_nomes = list(hubs_validos.keys())
