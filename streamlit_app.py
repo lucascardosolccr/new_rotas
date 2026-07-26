@@ -3942,6 +3942,106 @@ def _prevoo_higienizar_texto(s):
     return re.sub(r"\s+", " ", _prevoo_corrigir_mojibake(s)).strip()
 
 
+def _secao_qualidade_dados_html(df):
+    """[QUALIDADE-DADOS - 184ª geração] Seção 'Qualidade dos Dados' para o relatório de Locais: avalia
+    completude (colunas preenchidas), campos estimados (linha reta/fallback), qualidade das rotas (🟢🟡🟠),
+    detecção de OUTLIERS de distância (regra de Tukey, 1,5·IQR) e nível de confiança agregado. Retorna HTML
+    (string) ou ''. Puro e defensivo — cada bloco só aparece se a coluna existir."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return ""
+        _n = len(df)
+        _blocos = []
+        # 1) COMPLETUDE — % de células preenchidas por coluna (as 12 menos completas)
+        _compl = []
+        for _c in df.columns:
+            _s = df[_c]
+            _vazio = _s.isna() | _s.astype(str).str.strip().isin(
+                ['', 'nan', 'None', 'NaN', '—', 'N/A', 'Não informado', 'Não calculado',
+                 'Coordenada indisponível', 'Link indisponível', 'Tempo não estimado'])
+            _pct = 100.0 * (1 - _vazio.sum() / _n) if _n else 0
+            _compl.append((str(_c), _pct))
+        _compl.sort(key=lambda x: x[1])
+        _media_compl = sum(p for _, p in _compl) / len(_compl) if _compl else 0
+        _incompletas = [(c, p) for c, p in _compl if p < 100]
+        _linhas_tab = "".join(
+            f"<tr><td>{_he.escape(c)}</td><td class='r'>{p:.1f}%</td>"
+            f"<td><div style='background:#eef2f7;border-radius:6px;height:10px;width:120px'>"
+            f"<div style='background:{'#16a34a' if p>=90 else ('#f59e0b' if p>=60 else '#dc2626')};"
+            f"height:10px;border-radius:6px;width:{max(2,p*1.2):.0f}px'></div></div></td></tr>"
+            for c, p in (_incompletas[:12] if _incompletas else _compl[:6]))
+        _blocos.append(
+            f'<p class="lead">Completude média das <b>{len(_compl)} colunas</b>: '
+            f'<b>{_media_compl:.1f}%</b>. ' +
+            (f'{len(_incompletas)} coluna(s) têm células não preenchidas (sempre com motivo explícito, '
+             'nunca em branco).' if _incompletas else 'Todas as colunas estão 100% preenchidas.') +
+            f'</p><table><thead><tr><th>Coluna</th><th class="r">Completude</th><th>Barra</th></tr></thead>'
+            f'<tbody>{_linhas_tab}</tbody></table>')
+        # 2) MÉTODO DA DISTÂNCIA — viária real × linha reta (campos estimados)
+        if 'Método da Distância' in df.columns:
+            _vc = df['Método da Distância'].astype(str).value_counts()
+            _via = int(sum(v for k, v in _vc.items() if 'viária' in k.lower() or 'viaria' in k.lower()))
+            _lr = int(sum(v for k, v in _vc.items() if 'linha reta' in k.lower()))
+            _blocos.append(
+                f'<p class="lead"><b>Origem das distâncias:</b> {100.0*_via/_n:.1f}% por rota viária real '
+                f'(medida por motor de roteamento) e {100.0*_lr/_n:.1f}% estimadas em linha reta '
+                f'(acesso fluvial/sem malha). Quanto maior a fração viária, mais preciso o estudo.</p>')
+        # 3) QUALIDADE DAS ROTAS — 🟢🟡🟠
+        if 'Classificação da Rota' in df.columns:
+            _vc = df['Classificação da Rota'].astype(str).value_counts()
+            _verde = int(sum(v for k, v in _vc.items() if '🟢' in k))
+            _amar = int(sum(v for k, v in _vc.items() if '🟡' in k))
+            _lar = int(sum(v for k, v in _vc.items() if '🟠' in k))
+            _blocos.append(
+                f'<div class="kpis"><div class="kpi"><div class="kpi-v" style="color:#16a34a">{_verde:,}</div>'
+                f'<div class="kpi-l">🟢 Rotas confirmadas</div></div>'
+                f'<div class="kpi"><div class="kpi-v" style="color:#f59e0b">{_amar:,}</div>'
+                f'<div class="kpi-l">🟡 A revisar (desvio/atípica)</div></div>'
+                f'<div class="kpi"><div class="kpi-v" style="color:#dc2626">{_lar:,}</div>'
+                f'<div class="kpi-l">🟠 Linha reta (sem rota)</div></div></div>'
+                f'<p class="lead">Rotas 🟡/🟠 concentram a incerteza — são as candidatas naturais a revisão '
+                f'manual ou tratamento fluvial.</p>')
+        # 4) OUTLIERS de distância (Tukey 1,5·IQR)
+        if 'Distancia' in df.columns:
+            _d = pd.to_numeric(df['Distancia'], errors='coerce').dropna()
+            if len(_d) >= 8:
+                _q1, _q3 = _d.quantile(0.25), _d.quantile(0.75)
+                _iqr = _q3 - _q1
+                _lim = _q3 + 1.5 * _iqr
+                _out = df.assign(_d=pd.to_numeric(df['Distancia'], errors='coerce'))
+                _out = _out[_out['_d'] > _lim].sort_values('_d', ascending=False)
+                _no = len(_out)
+                _amostra = ""
+                if _no and 'Municipio Origem' in df.columns:
+                    _amostra = "<table><thead><tr><th>Município</th><th class='r'>Distância (km)</th></tr></thead><tbody>" + "".join(
+                        f"<tr><td>{_he.escape(str(r['Municipio Origem']))}</td><td class='r'>{r['_d']:.0f}</td></tr>"
+                        for _, r in _out.head(10).iterrows()) + "</tbody></table>"
+                _blocos.append(
+                    f'<p class="lead"><b>Detecção de outliers (regra de Tukey, 1,5·IQR):</b> limiar superior '
+                    f'em <b>{_lim:.0f} km</b> (Q1={_q1:.0f}, Q3={_q3:.0f}). '
+                    f'<b>{_no}</b> município(s) acima do limiar — deslocamentos atipicamente longos que merecem '
+                    f'verificação (possível acesso fluvial, malha esparsa ou erro de coordenada).</p>' + _amostra)
+        # 5) CONFIANÇA AGREGADA
+        _score = None
+        if 'Classificação da Rota' in df.columns:
+            _vc = df['Classificação da Rota'].astype(str).value_counts()
+            _verde = sum(v for k, v in _vc.items() if '🟢' in k)
+            _amar = sum(v for k, v in _vc.items() if '🟡' in k)
+            _score = 100.0 * (_verde + 0.5 * _amar) / _n if _n else 0
+        if _score is not None:
+            _rot = ("Alta" if _score >= 85 else ("Média" if _score >= 60 else "Baixa"))
+            _cor = "#16a34a" if _score >= 85 else ("#f59e0b" if _score >= 60 else "#dc2626")
+            _blocos.append(
+                f'<p class="lead"><b>Índice de confiança do estudo:</b> '
+                f'<span style="color:{_cor};font-weight:800;font-size:18px">{_score:.0f}/100 ({_rot})</span> — '
+                f'combina rotas confirmadas (peso 1) e a revisar (peso 0,5) sobre o total. Reflete o quanto das '
+                f'distâncias vem de rota viária confirmada.</p>')
+        return "".join(_blocos)
+    except Exception:
+        logger.error("[QUALIDADE-DADOS] Falha ao montar seção de qualidade", exc_info=True)
+        return ""
+
+
 def _secoes_metodologia_referencias_html():
     """[ARTIGO - 184ª geração] Seções de METODOLOGIA e REFERÊNCIAS (padrão artigo científico) para os
     relatórios HTML. Estáticas e honestas — descrevem o pipeline real e citam as fontes reais. Retorna
@@ -4011,6 +4111,83 @@ def _abas_metodologia_referencias(writer):
         logger.error("[ARTIGO] Falha ao escrever metodologia/referências", exc_info=True)
 
 
+_BI_UF_GRID = {
+    # grade geográfica aproximada (col, lin) das 27 UFs — coroplético esquemático offline (sem GeoJSON/rede)
+    "RR": (3, 0), "AP": (5, 0),
+    "AM": (2, 1), "PA": (4, 1), "MA": (5, 1), "CE": (6, 1), "RN": (7, 1),
+    "AC": (0, 2), "RO": (1, 2), "TO": (4, 2), "PI": (5, 2), "PB": (7, 2),
+    "MT": (3, 3), "GO": (4, 3), "BA": (5, 3), "PE": (7, 3),
+    "DF": (4, 4), "MG": (5, 4), "AL": (7, 4),
+    "MS": (3, 5), "SP": (4, 5), "RJ": (5, 5), "ES": (6, 5), "SE": (7, 5),
+    "PR": (3, 6), "SC": (4, 7), "RS": (3, 8),
+}
+
+
+def _bi_mapa_uf_svg():
+    """[BI-MAPA - 184ª geração] Coroplético ESQUEMÁTICO das 27 UFs como SVG embarcado e CLICÁVEL (offline,
+    sem GeoJSON nem rede — o sandbox e o app não dependem de .gov.br). Cada UF é um quadro rotulado numa
+    grade geográfica aproximada; a cor é preenchida por JS conforme a métrica filtrada, e clicar filtra o
+    painel. Retorna (html, css) da caixa do mapa; o JS de pintura/clique é injetado pelo dashboard."""
+    _cell, _gap = 52, 6
+    _ncol = max(c for c, _ in _BI_UF_GRID.values()) + 1
+    _nlin = max(l for _, l in _BI_UF_GRID.values()) + 1
+    _w = _ncol * (_cell + _gap) + _gap
+    _h = _nlin * (_cell + _gap) + _gap
+    _quadros = []
+    for _uf, (_c, _l) in _BI_UF_GRID.items():
+        _x = _gap + _c * (_cell + _gap)
+        _y = _gap + _l * (_cell + _gap)
+        _quadros.append(
+            f'<g class="bi-uf-cell" data-uf="{_uf}" style="cursor:pointer">'
+            f'<rect id="uf-{_uf}" x="{_x}" y="{_y}" width="{_cell}" height="{_cell}" rx="7" '
+            f'fill="#e2e8f0" stroke="#fff" stroke-width="2"></rect>'
+            f'<text x="{_x + _cell/2}" y="{_y + _cell/2 - 2}" text-anchor="middle" '
+            f'font-size="13" font-weight="700" fill="#0f172a" pointer-events="none">{_uf}</text>'
+            f'<text id="ufv-{_uf}" x="{_x + _cell/2}" y="{_y + _cell/2 + 13}" text-anchor="middle" '
+            f'font-size="9.5" fill="#475569" pointer-events="none"></text></g>')
+    _svg = (f'<svg id="bi-mapa-svg" viewBox="0 0 {_w} {_h}" width="100%" '
+            f'style="max-width:{_w}px;height:auto" xmlns="http://www.w3.org/2000/svg">'
+            + "".join(_quadros) + '</svg>')
+    _html = ('<div class="bi-mapa-wrap"><div class="bi-mapa-head">'
+             '<b>🗺️ Mapa por estado</b> — a cor indica a intensidade da métrica; clique numa UF para filtrar '
+             '(clique de novo para limpar). <span id="bi-mapa-metrica" class="bi-mapa-m"></span></div>'
+             + _svg + '<div class="bi-mapa-leg" id="bi-mapa-leg"></div></div>')
+    _css = (".bi-mapa-wrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;"
+            "margin-bottom:16px}.bi-mapa-head{font-size:12.5px;color:#475569;margin-bottom:10px}"
+            ".bi-mapa-m{color:var(--accent);font-weight:600}"
+            ".bi-uf-cell:hover rect{stroke:#1e3a8a;stroke-width:3}"
+            ".bi-uf-cell.on rect{stroke:#1e3a8a;stroke-width:3}"
+            ".bi-mapa-leg{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--muted)}"
+            ".bi-mapa-leg .sw{width:22px;height:12px;border-radius:3px;border:1px solid #cbd5e1}")
+    return _html, _css
+
+
+def _bi_mapa_uf_js(metrica_label):
+    """[BI-MAPA - 184ª geração] JS (fragmento) que pinta o coroplético e liga o clique ao filtro de UF. Espera
+    que o dashboard já tenha D, F, $, flt() e render() no escopo. `metrica_label` descreve o que a cor mede."""
+    return (
+        "function _corUF(t,mx){if(mx<=0||t<=0)return '#eef2f7';var r=t/mx;"
+        "var c=[[239,246,255],[191,219,254],[96,165,250],[37,99,235],[30,58,138]];"
+        "var p=r*(c.length-1),i=Math.floor(p),f=p-i;if(i>=c.length-1)return 'rgb('+c[c.length-1].join(',')+')';"
+        "var a=c[i],b=c[i+1];return 'rgb('+Math.round(a[0]+(b[0]-a[0])*f)+','+Math.round(a[1]+(b[1]-a[1])*f)+"
+        "','+Math.round(a[2]+(b[2]-a[2])*f)+')'}"
+        "function mapa(rows){var by={};rows.forEach(function(r){if(!r.uf||r.uf=='—')return;"
+        "by[r.uf]=(by[r.uf]||0)+1});var vals=Object.keys(by).map(function(k){return by[k]});"
+        "var mx=vals.length?Math.max.apply(null,vals):0;"
+        "Object.keys(_UFGRID).forEach(function(uf){var el=document.getElementById('uf-'+uf);"
+        "var tv=document.getElementById('ufv-'+uf);if(!el)return;var v=by[uf]||0;"
+        "el.setAttribute('fill', F.uf&&F.uf!=uf?'#f1f5f9':_corUF(v,mx));"
+        "el.parentNode.classList.toggle('on',F.uf==uf);if(tv)tv.textContent=v||''});"
+        "var lg=document.getElementById('bi-mapa-leg');if(lg){lg.innerHTML='menos "
+        "<span class=\\'sw\\' style=\\'background:#eff6ff\\'></span><span class=\\'sw\\' style=\\'background:#bfdbfe\\'></span>"
+        "<span class=\\'sw\\' style=\\'background:#60a5fa\\'></span><span class=\\'sw\\' style=\\'background:#2563eb\\'></span>"
+        "<span class=\\'sw\\' style=\\'background:#1e3a8a\\'></span> mais (nº de rotas por UF; máx '+mx+')'}"
+        "var mm=document.getElementById('bi-mapa-metrica');if(mm)mm.textContent='— " + metrica_label + "'}"
+        "Array.from(document.querySelectorAll('.bi-uf-cell')).forEach(function(g){g.onclick=function(){"
+        "var uf=g.getAttribute('data-uf');F.uf=(F.uf==uf?'':uf);var s=document.getElementById('bi-uf');"
+        "if(s)s.value=F.uf;page=0;render()}});")
+
+
 def _bi_dashboard_alocacao(df):
     """[BI-DASHBOARD - 184ª geração] Camada de Business Intelligence AUTOCONTIDA (JS puro, offline) para
     ANEXAR ao topo do relatório de Locais — SEM tocar em nada do relatório atual. Gera: (1) KPIs clicáveis;
@@ -4067,6 +4244,7 @@ def _bi_dashboard_alocacao(df):
                 "cls": (str(df[_c_cls].iloc[_i]) if _c_cls else "—"),
                 "fon": (str(df[_c_fon].iloc[_i]) if _c_fon else "—")})
         _dados_json = _json.dumps(_regs, ensure_ascii=False)
+        _mapa_html, _mapa_css = _bi_mapa_uf_svg()  # [BI-MAPA - 184ª geração] coroplético UF clicável
 
         _html = (
             '<section id="bi" class="bi"><h2>📊 Dashboard Executivo (BI Interativo)</h2>'
@@ -4085,6 +4263,7 @@ def _bi_dashboard_alocacao(df):
             '<div id="bi-kpis" class="bi-kpis"></div>'
             '<div class="bi-chart-wrap"><canvas id="bi-chart" height="150"></canvas>'
             '<div class="bi-chart-l" id="bi-chart-l">Rotas por faixa de distância (clique numa barra para filtrar)</div></div>'
+            + _mapa_html +
             '<div class="bi-tbl-wrap"><table id="bi-tbl" class="bi-tbl"><thead><tr>'
             '<th data-k="o">Município ▲▼</th><th data-k="uf">UF ▲▼</th><th data-k="d">Local de prova ▲▼</th>'
             '<th data-k="km" class="r">Dist. (km) ▲▼</th><th data-k="cand" class="r">Candidatos ▲▼</th>'
@@ -4116,7 +4295,7 @@ def _bi_dashboard_alocacao(df):
             ".bi-tbl td{padding:8px 11px;border-bottom:1px solid #eef2f7}.bi-tbl td.r{text-align:right}"
             ".bi-tbl tr:hover td{background:#f8fafc}"
             ".bi-pag{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12.5px;color:var(--muted)}"
-            ".bi-count{margin-left:auto}")
+            ".bi-count{margin-left:auto}" + _mapa_css)
 
         _js = (
             "(function(){var D=" + _dados_json + ";var F={uf:'',fx:'',bal:'',met:'',q:''};"
@@ -4166,7 +4345,9 @@ def _bi_dashboard_alocacao(df):
             "r.conc+'</td><td>'+r.bal+'</td><td>'+(r.cls||'—')+'</td></tr>'}).join('');"
             "var np=Math.max(1,Math.ceil(tot/PP));$('bi-pag-i').textContent='pág. '+(page+1)+'/'+np;"
             "$('bi-count').textContent=tot.toLocaleString('pt-BR')+' registro(s)';}"
-            "function render(){var rows=flt();kpis(rows);chart(rows);tbl(rows)}"
+            "var _UFGRID={'RR':1,'AP':1,'AM':1,'PA':1,'MA':1,'CE':1,'RN':1,'AC':1,'RO':1,'TO':1,'PI':1,'PB':1,'MT':1,'GO':1,'BA':1,'PE':1,'DF':1,'MG':1,'AL':1,'MS':1,'SP':1,'RJ':1,'ES':1,'SE':1,'PR':1,'SC':1,'RS':1};"
+            + _bi_mapa_uf_js("nº de rotas por UF") +
+            "function render(){var rows=flt();kpis(rows);chart(rows);mapa(rows);tbl(rows)}"
             "$('bi-busca').oninput=function(e){F.q=e.target.value.toLowerCase().trim();page=0;render()};"
             "$('bi-uf').onchange=function(e){F.uf=e.target.value;page=0;render()};"
             "$('bi-fx').onchange=function(e){F.fx=e.target.value;page=0;render()};"
@@ -4264,6 +4445,14 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                         _sun = ('<p class="lead">Anel hierárquico <b>estado → local de prova</b>: o tamanho de '
                                 'cada fatia é o volume de ' + ('candidatos' if _insc is not None else
                                 'municípios') + ' atendidos. Clique numa UF para aprofundar.</p>' + _emb(_fs))
+                        # [TREEMAP - 184ª geração] Treemap complementar ao sunburst: blocos proporcionais.
+                        _ftp = px.treemap(_hier, path=['UF Origem', 'Municipio Destino'], values='_w',
+                                          color='UF Origem',
+                                          color_discrete_sequence=px.colors.qualitative.Set2)
+                        _ftp.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=440)
+                        _sun += ('<p class="lead" style="margin-top:14px">Mesma hierarquia como <b>treemap</b> — '
+                                 'blocos proporcionais ao volume, úteis para comparar magnitudes lado a lado.</p>'
+                                 + _emb(_ftp))
                 except Exception:
                     _sun = ""
             _sec.append(("polos", "Competitividade dos Polos", f'<p class="lead">Quantos municípios e candidatos cada polo concentra — os do topo são os mais demandados.</p>' + _sun + f'<table><thead><tr>{_cab}</tr></thead><tbody>{_rows}</tbody></table>'))
@@ -4311,6 +4500,10 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 _fm.update_layout(height=460, margin=dict(l=0, r=0, t=0, b=0))
                 _fm.update_geos(fitbounds="locations", showcountries=True, countrycolor="#94a3b8")
                 _sec.append(("mapa", "Mapa das Origens", _emb(_fm)))
+
+        _qual = _secao_qualidade_dados_html(df)  # [QUALIDADE-DADOS - 184ª geração]
+        if _qual:
+            _sec.append(("qualidade", "Qualidade dos Dados", _qual))
 
         _dg = []
         if 'Classificação da Rota' in df.columns:
@@ -4402,6 +4595,163 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         return None
 
 
+def _bi_dashboard_comparacao(linhas):
+    """[BI-DASHBOARD - 184ª geração] Camada BI AUTOCONTIDA (JS puro, offline) para ANEXAR ao topo do relatório
+    do COMPARADOR — sem tocar no relatório atual. KPIs de vitória/economia clicáveis, filtros (UF, vencedor,
+    faixa de diferença, mesmo destino), busca global e tabela interativa (busca, ordenação, paginação). Dados
+    embutidos como JSON. Retorna (html, css, js) ou ('','','')."""
+    try:
+        if not linhas:
+            return "", "", ""
+        import json as _json
+
+        def _f(v):
+            try:
+                return float(v)
+            except Exception:
+                return None
+        _regs = []
+        for _l in linhas:
+            _da, _dr = _f(_l.get("Distancia Aplicacao")), _f(_l.get("Distancia Referencia"))
+            _eco = _f(_l.get("Economia km"))
+            _regs.append({
+                "o": str(_l.get("Municipio Origem", _l.get("Origem", "—")) or "—"),
+                "uf": str(_l.get("UF", "") or "—").upper()[:2] or "—",
+                "da": round(_da, 1) if _da is not None else None,
+                "dr": round(_dr, 1) if _dr is not None else None,
+                "dif": round(_f(_l.get("Diferenca Abs (km)")) or 0, 1),
+                "eco": round(_eco, 1) if _eco is not None else None,
+                "venc": str(_l.get("Vencedor Distancia", "—") or "—"),
+                "fx": str(_l.get("Faixa de Diferenca", "—") or "—"),
+                "mesmo": str(_l.get("Mesmo Destino", "—") or "—"),
+                "dapp": str(_l.get("Destino Aplicacao", "—") or "—"),
+                "dref": str(_l.get("Destino Referencia", "—") or "—"),
+                "cand": (int(_f(_l.get("Inscritos")) or 0) if _l.get("Inscritos") is not None else None)})
+        _dados_json = _json.dumps(_regs, ensure_ascii=False)
+        _mapa_html, _mapa_css = _bi_mapa_uf_svg()  # [BI-MAPA - 184ª geração]
+
+        _html = (
+            '<section id="bi" class="bi"><h2>📊 Dashboard Comparativo (BI Interativo)</h2>'
+            '<p class="lead">Painel interativo offline da comparação: clique num indicador, filtre ou busque — '
+            'KPIs, gráfico e tabela respondem ao vivo. Toda a análise textual e os gráficos originais '
+            'permanecem nas seções seguintes.</p>'
+            '<div class="bi-filtros">'
+            '<input id="bi-busca" class="bi-in" placeholder="🔎 Buscar município, UF, destino...">'
+            '<select id="bi-uf" class="bi-in"><option value="">UF (todas)</option></select>'
+            '<select id="bi-venc" class="bi-in"><option value="">Vencedor (todos)</option>'
+            '<option value="Aplicação">Aplicação venceu</option>'
+            '<option value="Referência">Referência venceu</option>'
+            '<option value="Empate">Empate técnico</option></select>'
+            '<select id="bi-mesmo" class="bi-in"><option value="">Mesmo destino (todos)</option>'
+            '<option value="Sim">Mesmo destino</option><option value="Não">Destino diferente</option></select>'
+            '<button id="bi-reset" class="bi-btn">limpar filtros</button></div>'
+            '<div id="bi-kpis" class="bi-kpis"></div>'
+            '<div class="bi-chart-wrap"><canvas id="bi-chart" height="150"></canvas>'
+            '<div class="bi-chart-l">Distribuição de vitórias (clique numa barra para filtrar)</div></div>'
+            + _mapa_html +
+            '<div class="bi-tbl-wrap"><table id="bi-tbl" class="bi-tbl"><thead><tr>'
+            '<th data-k="o">Município ▲▼</th><th data-k="uf">UF ▲▼</th>'
+            '<th data-k="da" class="r">Dist. App (km) ▲▼</th><th data-k="dr" class="r">Dist. Ref (km) ▲▼</th>'
+            '<th data-k="dif" class="r">Δ (km) ▲▼</th><th data-k="venc">Vencedor ▲▼</th>'
+            '<th data-k="mesmo">Mesmo destino</th></tr></thead><tbody id="bi-tbody"></tbody></table></div>'
+            '<div class="bi-pag"><button id="bi-prev" class="bi-btn">‹ anterior</button>'
+            '<span id="bi-pag-i">–</span><button id="bi-next" class="bi-btn">próxima ›</button>'
+            '<span id="bi-count" class="bi-count"></span></div></section>')
+
+        _css = (
+            ".bi .bi-filtros{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}"
+            ".bi-in{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff}"
+            "#bi-busca{flex:1;min-width:220px}"
+            ".bi-btn{padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;"
+            "cursor:pointer;font-size:12.5px}.bi-btn:hover{background:#eef2f7}"
+            ".bi-kpis{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}"
+            ".bi-kpi{flex:1;min-width:140px;background:#fff;border:1px solid var(--line);border-radius:12px;"
+            "padding:14px;cursor:pointer;transition:.15s;border-left:4px solid var(--accent)}"
+            ".bi-kpi:hover{box-shadow:0 4px 14px rgba(2,6,23,.08);transform:translateY(-1px)}"
+            ".bi-kpi.on{background:#eff6ff;border-left-color:#1e3a8a}"
+            ".bi-kpi-v{font-size:22px;font-weight:800;color:var(--accent)}"
+            ".bi-kpi-l{font-size:11.5px;color:var(--muted);margin-top:2px}"
+            ".bi-chart-wrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:16px}"
+            ".bi-chart-l{font-size:12px;color:var(--muted);text-align:center;margin-top:8px}"
+            ".bi-tbl-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;max-height:520px}"
+            ".bi-tbl{width:100%;border-collapse:collapse;font-size:12.5px}"
+            ".bi-tbl th{position:sticky;top:0;background:#1e3a8a;color:#fff;padding:9px 11px;text-align:left;"
+            "cursor:pointer;white-space:nowrap;font-size:11.5px}.bi-tbl th.r{text-align:right}"
+            ".bi-tbl td{padding:8px 11px;border-bottom:1px solid #eef2f7}.bi-tbl td.r{text-align:right}"
+            ".bi-tbl tr:hover td{background:#f8fafc}"
+            ".bi-pag{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12.5px;color:var(--muted)}"
+            ".bi-count{margin-left:auto}" + _mapa_css)
+
+        _js = (
+            "(function(){var D=" + _dados_json + ";var F={uf:'',venc:'',mesmo:'',q:''};"
+            "var page=0,PP=25,sortK='dif',sortA=false;"
+            "var $=function(i){return document.getElementById(i)};"
+            "var ufs=Array.from(new Set(D.map(function(r){return r.uf}))).filter(function(x){return x&&x!='—'}).sort();"
+            "ufs.forEach(function(u){var o=document.createElement('option');o.value=u;o.textContent=u;$('bi-uf').appendChild(o)});"
+            "function flt(){return D.filter(function(r){"
+            "if(F.uf&&r.uf!=F.uf)return false;if(F.venc&&r.venc!=F.venc)return false;"
+            "if(F.mesmo&&r.mesmo!=F.mesmo)return false;"
+            "if(F.q){var s=(r.o+' '+r.uf+' '+r.dapp+' '+r.dref).toLowerCase();if(s.indexOf(F.q)<0)return false}"
+            "return true})}"
+            "function fmt(n){return n==null?'—':n.toLocaleString('pt-BR')}"
+            "function kpis(rows){var n=rows.length;"
+            "var va=rows.filter(function(r){return r.venc=='Aplicação'}).length;"
+            "var vr=rows.filter(function(r){return r.venc=='Referência'}).length;"
+            "var ve=rows.filter(function(r){return r.venc=='Empate'}).length;"
+            "var eco=rows.reduce(function(a,r){return a+(r.eco||0)},0);"
+            "var ecil=rows.reduce(function(a,r){return a+((r.eco||0)*(r.cand||0))},0);"
+            "var difs=rows.filter(function(r){return r.dif!=null}).map(function(r){return r.dif});"
+            "var mdif=difs.length?difs.reduce(function(a,b){return a+b},0)/difs.length:0;"
+            "var msm=rows.filter(function(r){return r.mesmo=='Sim'}).length;"
+            "var K=[['Municípios',fmt(n),''],['Aplicação venceu',fmt(va)+' ('+(n?(100*va/n).toFixed(0):0)+'%)','venc:Aplicação'],"
+            "['Referência venceu',fmt(vr)+' ('+(n?(100*vr/n).toFixed(0):0)+'%)','venc:Referência'],"
+            "['Empates técnicos',fmt(ve)+' ('+(n?(100*ve/n).toFixed(0):0)+'%)','venc:Empate'],"
+            "['Economia total',eco.toFixed(0)+' km',''],['Economia km×cand',fmt(Math.round(ecil)),''],"
+            "['Δ médio',mdif.toFixed(1)+' km',''],['Mesmo destino',fmt(msm)+' ('+(n?(100*msm/n).toFixed(0):0)+'%)','mesmo:Sim']];"
+            "$('bi-kpis').innerHTML=K.map(function(k){return '<div class=\\'bi-kpi\\' data-f=\\''+k[2]+'\\'>"
+            "<div class=\\'bi-kpi-v\\'>'+k[1]+'</div><div class=\\'bi-kpi-l\\'>'+k[0]+'</div></div>'}).join('');"
+            "Array.from($('bi-kpis').children).forEach(function(el){el.onclick=function(){var f=el.getAttribute('data-f');"
+            "if(!f)return;var p=f.split(':');if(p[0]=='venc'){F.venc=(F.venc==p[1]?'':p[1]);$('bi-venc').value=F.venc}"
+            "if(p[0]=='mesmo'){F.mesmo=(F.mesmo==p[1]?'':p[1]);$('bi-mesmo').value=F.mesmo}page=0;render()}})}"
+            "var VS=['Aplicação','Referência','Empate'];var VC={'Aplicação':'#16a34a','Referência':'#dc2626','Empate':'#94a3b8'};"
+            "function chart(rows){var c=VS.map(function(v){return rows.filter(function(r){return r.venc==v}).length});"
+            "var mx=Math.max.apply(null,c)||1;var cv=$('bi-chart'),ct=cv.getContext('2d');"
+            "var W=cv.width=cv.offsetWidth,H=cv.height;ct.clearRect(0,0,W,H);var bw=W/VS.length;"
+            "for(var i=0;i<VS.length;i++){var h=(c[i]/mx)*(H-34);ct.fillStyle=(F.venc==VS[i]?'#1e3a8a':VC[VS[i]]);"
+            "ct.fillRect(i*bw+18,H-h-18,bw-36,h);ct.fillStyle='#475569';ct.font='11px sans-serif';ct.textAlign='center';"
+            "ct.fillText(VS[i],i*bw+bw/2,H-4);ct.fillText(c[i],i*bw+bw/2,H-h-22)}"
+            "cv.onclick=function(e){var idx=Math.floor(e.offsetX/bw);if(idx>=0&&idx<VS.length){"
+            "F.venc=(F.venc==VS[idx]?'':VS[idx]);$('bi-venc').value=F.venc;page=0;render()}}}"
+            "function tbl(rows){var s=rows.slice().sort(function(a,b){var x=a[sortK],y=b[sortK];"
+            "if(x==null)return 1;if(y==null)return -1;if(typeof x=='number')return sortA?x-y:y-x;"
+            "return sortA?(''+x).localeCompare(''+y):(''+y).localeCompare(''+x)});"
+            "var tot=s.length,pg=s.slice(page*PP,page*PP+PP);"
+            "$('bi-tbody').innerHTML=pg.map(function(r){var vcol=r.venc=='Aplicação'?'#16a34a':(r.venc=='Referência'?'#dc2626':'#64748b');"
+            "return '<tr><td>'+r.o+'</td><td>'+r.uf+'</td><td class=\\'r\\'>'+(r.da==null?'—':r.da)+"
+            "'</td><td class=\\'r\\'>'+(r.dr==null?'—':r.dr)+'</td><td class=\\'r\\'>'+(r.dif==null?'—':r.dif)+"
+            "'</td><td style=\\'color:'+vcol+';font-weight:600\\'>'+r.venc+'</td><td>'+r.mesmo+'</td></tr>'}).join('');"
+            "var np=Math.max(1,Math.ceil(tot/PP));$('bi-pag-i').textContent='pág. '+(page+1)+'/'+np;"
+            "$('bi-count').textContent=tot.toLocaleString('pt-BR')+' registro(s)';}"
+            "var _UFGRID={'RR':1,'AP':1,'AM':1,'PA':1,'MA':1,'CE':1,'RN':1,'AC':1,'RO':1,'TO':1,'PI':1,'PB':1,'MT':1,'GO':1,'BA':1,'PE':1,'DF':1,'MG':1,'AL':1,'MS':1,'SP':1,'RJ':1,'ES':1,'SE':1,'PR':1,'SC':1,'RS':1};"
+            + _bi_mapa_uf_js("nº de municípios comparados por UF") +
+            "function render(){var rows=flt();kpis(rows);chart(rows);mapa(rows);tbl(rows)}"
+            "$('bi-busca').oninput=function(e){F.q=e.target.value.toLowerCase().trim();page=0;render()};"
+            "$('bi-uf').onchange=function(e){F.uf=e.target.value;page=0;render()};"
+            "$('bi-venc').onchange=function(e){F.venc=e.target.value;page=0;render()};"
+            "$('bi-mesmo').onchange=function(e){F.mesmo=e.target.value;page=0;render()};"
+            "$('bi-reset').onclick=function(){F={uf:'',venc:'',mesmo:'',q:''};page=0;"
+            "['bi-busca','bi-uf','bi-venc','bi-mesmo'].forEach(function(i){$(i).value=''});render()};"
+            "$('bi-prev').onclick=function(){if(page>0){page--;render()}};"
+            "$('bi-next').onclick=function(){page++;if(page*PP>=flt().length)page--;render()};"
+            "Array.from(document.querySelectorAll('#bi-tbl th')).forEach(function(th){th.onclick=function(){"
+            "var k=th.getAttribute('data-k');if(k==sortK){sortA=!sortA}else{sortK=k;sortA=false}render()}});"
+            "window.addEventListener('resize',function(){chart(flt())});render();})();")
+        return _html, _css, _js
+    except Exception:
+        logger.error("[BI-DASHBOARD] Falha ao montar a camada BI do Comparador", exc_info=True)
+        return "", "", ""
+
+
 def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str="", linhas=None):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) da COMPARAÇÃO entre estudos,
     nível profissional/BI: navegação lateral + Veredito, Placar, Distribuição de Vitórias, Conciliação dos
@@ -4448,6 +4798,34 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
         _fig_w.update_layout(height=320, margin=dict(l=40, r=20, t=16, b=40), template="plotly_white",
                              yaxis_title="% dos municípios")
         _sec.append(("vitorias", "Distribuição de Vitórias", _emb(_fig_w)))
+        # [SUNBURST+TREEMAP - 184ª geração] Hierarquia UF → vencedor (anel) e treemap de volume por UF/vencedor,
+        # a partir das linhas conciliadas. Só aparece se houver UF nas linhas.
+        if linhas:
+            try:
+                import pandas as _pd
+                _dfh = _pd.DataFrame([{"UF": str(_l.get("UF", "") or "—").upper()[:2] or "—",
+                                       "Vencedor": str(_l.get("Vencedor Distancia", "—") or "—"),
+                                       "n": 1} for _l in linhas])
+                _dfh = _dfh[_dfh["UF"] != "—"]
+                if len(_dfh) > 1 and _dfh["UF"].nunique() >= 1:
+                    _agg = _dfh.groupby(["UF", "Vencedor"], as_index=False)["n"].sum()
+                    _cmap = {"Aplicação": "#16a34a", "Referência": "#dc2626", "Empate": "#94a3b8"}
+                    _fsun = px.sunburst(_agg, path=["UF", "Vencedor"], values="n",
+                                        color="Vencedor", color_discrete_map=_cmap)
+                    _fsun.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=460)
+                    _sec.append(("sunburst", "Vitórias por Estado (anel hierárquico)",
+                                 '<p class="lead">Anel <b>estado → vencedor</b>: para cada UF, a proporção de '
+                                 'municípios em que a aplicação venceu (verde), a referência venceu (vermelho) '
+                                 'ou houve empate (cinza). Clique numa UF para aprofundar.</p>' + _emb(_fsun)))
+                    _ftree = px.treemap(_agg, path=["UF", "Vencedor"], values="n",
+                                        color="Vencedor", color_discrete_map=_cmap)
+                    _ftree.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=460)
+                    _sec.append(("treemap", "Volume por Estado (treemap)",
+                                 '<p class="lead">Treemap por <b>volume de municípios</b>: o tamanho de cada '
+                                 'bloco é o nº de municípios comparados naquele estado, subdividido por quem '
+                                 'venceu. Estados maiores concentram mais da comparação.</p>' + _emb(_ftree)))
+            except Exception:
+                logger.error("[SUNBURST+TREEMAP] Falha ao montar anel/treemap do Comparador", exc_info=True)
         _rows_c = "".join(f"<tr><td>{_l}</td><td class='r'>{int(_v):,}</td></tr>" for _l, _v in [
             ("Por código IBGE", aud.get("por_ibge", 0) or 0), ("Por município + UF", aud.get("por_mun_uf", 0) or 0),
             ("Por município", aud.get("por_mun", 0) or 0), ("Por similaridade (fuzzy)", aud.get("por_fuzzy", 0) or 0),
@@ -4609,6 +4987,11 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
         _sec.extend(_secoes_metodologia_referencias_html())  # [ARTIGO - 184ª geração]
         _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
         _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
+        # [BI-DASHBOARD - 184ª geração] Camada BI do Comparador ANEXADA ao topo — relatório original INTACTO.
+        _bi_html, _bi_css, _bi_js = _bi_dashboard_comparacao(linhas)
+        if _bi_html:
+            _nav = '<a href="#bi">📊 Dashboard BI</a>' + _nav
+            _corpo = _bi_html + _corpo
         _css = (
             ":root{--brand:#0f172a;--accent:#2563eb;--line:#e2e8f0;--muted:#64748b}"
             "*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;"
@@ -4636,6 +5019,7 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
             "@media(max-width:820px){.wrap{display:block}nav{position:static;width:auto;flex:none;max-height:none;"
             "display:flex;flex-wrap:wrap;gap:6px}nav .lbl{display:none}nav a{margin:0}}"
             "@media print{nav{display:none}section{break-inside:avoid}.cover{-webkit-print-color-adjust:exact}}"
+            + _bi_css
         )
         return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -4643,7 +5027,7 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                 f'<div class="cover"><div class="tag">Relatório Técnico · Comparação de Estudos</div>'
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_conc} de {_tot} municípios conciliados</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
-                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer></body></html>')
+                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer><script>{_bi_js}</script></body></html>')
     except Exception:
         logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório de comparação", exc_info=True)
         return None
