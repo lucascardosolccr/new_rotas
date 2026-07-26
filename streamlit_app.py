@@ -4011,6 +4011,180 @@ def _abas_metodologia_referencias(writer):
         logger.error("[ARTIGO] Falha ao escrever metodologia/referências", exc_info=True)
 
 
+def _bi_dashboard_alocacao(df):
+    """[BI-DASHBOARD - 184ª geração] Camada de Business Intelligence AUTOCONTIDA (JS puro, offline) para
+    ANEXAR ao topo do relatório de Locais — SEM tocar em nada do relatório atual. Gera: (1) KPIs clicáveis;
+    (2) filtros dependentes (UF, faixa de distância, balsa, método) que atualizam KPIs, gráfico e tabela ao
+    vivo; (3) pesquisa global; (4) tabela interativa (busca, ordenação, paginação). Todos os dados são
+    embutidos como JSON no próprio HTML; nada é buscado em servidor. Retorna (html, css, js) ou ('','','')."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return "", "", ""
+        import json as _json
+        _dist = pd.to_numeric(df.get('Distancia'), errors='coerce') if 'Distancia' in df.columns else None
+        _reta = pd.to_numeric(df.get('Linha Reta'), errors='coerce') if 'Linha Reta' in df.columns else None
+        _insc = (pd.to_numeric(df.get('Inscritos'), errors='coerce') if 'Inscritos' in df.columns
+                 else (pd.to_numeric(df.get('Quantidade de Inscritos'), errors='coerce')
+                       if 'Quantidade de Inscritos' in df.columns else None))
+
+        def _faixa(d):
+            try:
+                d = float(d)
+            except Exception:
+                return "—"
+            for _lim, _lab in [(50, "0-50"), (100, "50-100"), (150, "100-150"), (200, "150-200"),
+                               (300, "200-300"), (500, "300-500")]:
+                if d < _lim:
+                    return _lab
+            return "500+"
+
+        def _col(*cands):
+            for _c in cands:
+                if _c in df.columns:
+                    return _c
+            return None
+        _c_org, _c_dst = _col('Municipio Origem', 'Origem'), _col('Municipio Destino')
+        _c_uf, _c_conc = _col('UF Origem', 'UF'), _col('Concorrente Analisado')
+        _c_met = _col('Método da Distância')
+        _c_cls = _col('Classificação da Rota')
+        _c_bal = _col('Balsas')
+        _c_fon = _col('Fonte da Rota')
+        # registros embutidos (limite defensivo p/ tamanho do arquivo em estudos nacionais)
+        _regs = []
+        for _i in range(len(df)):
+            _d = _dist.iloc[_i] if _dist is not None else None
+            _regs.append({
+                "o": str(df[_c_org].iloc[_i]) if _c_org else "—",
+                "d": str(df[_c_dst].iloc[_i]) if _c_dst else "—",
+                "uf": (str(df[_c_uf].iloc[_i]).upper()[:2] if _c_uf else "—"),
+                "km": (round(float(_d), 1) if _d is not None and pd.notna(_d) else None),
+                "fx": _faixa(_d) if _d is not None and pd.notna(_d) else "—",
+                "cand": (int(_insc.iloc[_i]) if _insc is not None and pd.notna(_insc.iloc[_i]) else None),
+                "conc": str(df[_c_conc].iloc[_i]) if _c_conc else "—",
+                "bal": ("Sim" if (_c_bal and str(df[_c_bal].iloc[_i]).strip().lower()
+                                  in ('sim', 'yes', 'true', '1')) else "Não"),
+                "met": (str(df[_c_met].iloc[_i]) if _c_met else "—"),
+                "cls": (str(df[_c_cls].iloc[_i]) if _c_cls else "—"),
+                "fon": (str(df[_c_fon].iloc[_i]) if _c_fon else "—")})
+        _dados_json = _json.dumps(_regs, ensure_ascii=False)
+
+        _html = (
+            '<section id="bi" class="bi"><h2>📊 Dashboard Executivo (BI Interativo)</h2>'
+            '<p class="lead">Painel interativo offline: clique num indicador ou use os filtros e a busca — '
+            'os KPIs, o gráfico e a tabela abaixo respondem ao vivo. Todo o conteúdo analítico e textual '
+            'original permanece nas seções seguintes.</p>'
+            '<div class="bi-filtros">'
+            '<input id="bi-busca" class="bi-in" placeholder="🔎 Buscar município, polo, UF, concorrente...">'
+            '<select id="bi-uf" class="bi-in"><option value="">UF (todas)</option></select>'
+            '<select id="bi-fx" class="bi-in"><option value="">Faixa de distância (todas)</option></select>'
+            '<select id="bi-bal" class="bi-in"><option value="">Balsa (todas)</option>'
+            '<option value="Sim">Só com balsa</option><option value="Não">Sem balsa</option></select>'
+            '<select id="bi-met" class="bi-in"><option value="">Método (todos)</option>'
+            '<option value="viária">Viária real</option><option value="linha reta">Linha reta</option></select>'
+            '<button id="bi-reset" class="bi-btn">limpar filtros</button></div>'
+            '<div id="bi-kpis" class="bi-kpis"></div>'
+            '<div class="bi-chart-wrap"><canvas id="bi-chart" height="150"></canvas>'
+            '<div class="bi-chart-l" id="bi-chart-l">Rotas por faixa de distância (clique numa barra para filtrar)</div></div>'
+            '<div class="bi-tbl-wrap"><table id="bi-tbl" class="bi-tbl"><thead><tr>'
+            '<th data-k="o">Município ▲▼</th><th data-k="uf">UF ▲▼</th><th data-k="d">Local de prova ▲▼</th>'
+            '<th data-k="km" class="r">Dist. (km) ▲▼</th><th data-k="cand" class="r">Candidatos ▲▼</th>'
+            '<th data-k="conc">Concorrente ▲▼</th><th data-k="bal">Balsa</th><th data-k="cls">Rota</th>'
+            '</tr></thead><tbody id="bi-tbody"></tbody></table></div>'
+            '<div class="bi-pag"><button id="bi-prev" class="bi-btn">‹ anterior</button>'
+            '<span id="bi-pag-i">–</span><button id="bi-next" class="bi-btn">próxima ›</button>'
+            '<span id="bi-count" class="bi-count"></span></div></section>')
+
+        _css = (
+            ".bi .bi-filtros{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}"
+            ".bi-in{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff}"
+            "#bi-busca{flex:1;min-width:220px}"
+            ".bi-btn{padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;"
+            "cursor:pointer;font-size:12.5px}.bi-btn:hover{background:#eef2f7}"
+            ".bi-kpis{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}"
+            ".bi-kpi{flex:1;min-width:140px;background:#fff;border:1px solid var(--line);border-radius:12px;"
+            "padding:14px;cursor:pointer;transition:.15s;border-left:4px solid var(--accent)}"
+            ".bi-kpi:hover{box-shadow:0 4px 14px rgba(2,6,23,.08);transform:translateY(-1px)}"
+            ".bi-kpi.on{background:#eff6ff;border-left-color:#1e3a8a}"
+            ".bi-kpi-v{font-size:22px;font-weight:800;color:var(--accent)}"
+            ".bi-kpi-l{font-size:11.5px;color:var(--muted);margin-top:2px}"
+            ".bi-chart-wrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:16px}"
+            ".bi-chart-l{font-size:12px;color:var(--muted);text-align:center;margin-top:8px}"
+            ".bi-tbl-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;max-height:520px}"
+            ".bi-tbl{width:100%;border-collapse:collapse;font-size:12.5px}"
+            ".bi-tbl th{position:sticky;top:0;background:#1e3a8a;color:#fff;padding:9px 11px;text-align:left;"
+            "cursor:pointer;white-space:nowrap;font-size:11.5px}.bi-tbl th.r{text-align:right}"
+            ".bi-tbl td{padding:8px 11px;border-bottom:1px solid #eef2f7}.bi-tbl td.r{text-align:right}"
+            ".bi-tbl tr:hover td{background:#f8fafc}"
+            ".bi-pag{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12.5px;color:var(--muted)}"
+            ".bi-count{margin-left:auto}")
+
+        _js = (
+            "(function(){var D=" + _dados_json + ";var F={uf:'',fx:'',bal:'',met:'',q:''};"
+            "var page=0,PP=25,sortK='km',sortA=false;"
+            "var $=function(i){return document.getElementById(i)};"
+            "var ufs=Array.from(new Set(D.map(function(r){return r.uf}))).filter(function(x){return x&&x!='—'}).sort();"
+            "ufs.forEach(function(u){var o=document.createElement('option');o.value=u;o.textContent=u;$('bi-uf').appendChild(o)});"
+            "var FX=['0-50','50-100','100-150','150-200','200-300','300-500','500+'];"
+            "FX.forEach(function(f){var o=document.createElement('option');o.value=f;o.textContent=f+' km';$('bi-fx').appendChild(o)});"
+            "function flt(){return D.filter(function(r){"
+            "if(F.uf&&r.uf!=F.uf)return false;if(F.fx&&r.fx!=F.fx)return false;"
+            "if(F.bal&&r.bal!=F.bal)return false;"
+            "if(F.met&&(r.met||'').toLowerCase().indexOf(F.met)<0)return false;"
+            "if(F.q){var s=(r.o+' '+r.d+' '+r.uf+' '+r.conc).toLowerCase();if(s.indexOf(F.q)<0)return false}"
+            "return true})}"
+            "function fmt(n){return n==null?'—':n.toLocaleString('pt-BR')}"
+            "function kpis(rows){var n=rows.length;var km=rows.filter(function(r){return r.km!=null});"
+            "var soma=km.reduce(function(a,r){return a+r.km},0);var med=km.length?soma/km.length:0;"
+            "var mx=km.length?Math.max.apply(null,km.map(function(r){return r.km})):0;"
+            "var cand=rows.reduce(function(a,r){return a+(r.cand||0)},0);"
+            "var pol=new Set(rows.map(function(r){return r.d})).size;"
+            "var bal=rows.filter(function(r){return r.bal=='Sim'}).length;"
+            "var lr=rows.filter(function(r){return (r.met||'').toLowerCase().indexOf('linha reta')>=0}).length;"
+            "var K=[['Municípios',fmt(n),''],['Candidatos',fmt(cand),''],['Locais de prova',fmt(pol),''],"
+            "['Deslocamento médio',med.toFixed(1)+' km',''],['Maior deslocamento',mx.toFixed(0)+' km','fx:500+'],"
+            "['Rotas com balsa',fmt(bal),'bal:Sim'],['Rotas linha reta',fmt(lr),'met:linha reta']];"
+            "$('bi-kpis').innerHTML=K.map(function(k){return '<div class=\\'bi-kpi\\' data-f=\\''+k[2]+'\\'>"
+            "<div class=\\'bi-kpi-v\\'>'+k[1]+'</div><div class=\\'bi-kpi-l\\'>'+k[0]+'</div></div>'}).join('');"
+            "Array.from($('bi-kpis').children).forEach(function(el){el.onclick=function(){var f=el.getAttribute('data-f');"
+            "if(!f){return}var p=f.split(':');if(p[0]=='fx'){F.fx=(F.fx==p[1]?'':p[1]);$('bi-fx').value=F.fx}"
+            "if(p[0]=='bal'){F.bal=(F.bal==p[1]?'':p[1]);$('bi-bal').value=F.bal}"
+            "if(p[0]=='met'){F.met=(F.met==p[1]?'':p[1]);$('bi-met').value=F.met}page=0;render()}})}"
+            "function chart(rows){var c=FX.map(function(f){return rows.filter(function(r){return r.fx==f}).length});"
+            "var mx=Math.max.apply(null,c)||1;var cv=$('bi-chart');var ct=cv.getContext('2d');"
+            "var W=cv.width=cv.offsetWidth,H=cv.height;ct.clearRect(0,0,W,H);var bw=W/FX.length;"
+            "for(var i=0;i<FX.length;i++){var h=(c[i]/mx)*(H-30);ct.fillStyle=(F.fx==FX[i]?'#1e3a8a':'#2563eb');"
+            "ct.fillRect(i*bw+6,H-h-18,bw-12,h);ct.fillStyle='#475569';ct.font='10px sans-serif';ct.textAlign='center';"
+            "ct.fillText(FX[i],i*bw+bw/2,H-4);ct.fillText(c[i],i*bw+bw/2,H-h-22)}"
+            "cv.onclick=function(e){var x=e.offsetX;var idx=Math.floor(x/bw);if(idx>=0&&idx<FX.length){"
+            "F.fx=(F.fx==FX[idx]?'':FX[idx]);$('bi-fx').value=F.fx;page=0;render()}}}"
+            "function tbl(rows){var s=rows.slice().sort(function(a,b){var x=a[sortK],y=b[sortK];"
+            "if(x==null)return 1;if(y==null)return -1;if(typeof x=='number'){return sortA?x-y:y-x}"
+            "return sortA?(''+x).localeCompare(''+y):(''+y).localeCompare(''+x)});"
+            "var tot=s.length,pg=s.slice(page*PP,page*PP+PP);"
+            "$('bi-tbody').innerHTML=pg.map(function(r){return '<tr><td>'+r.o+'</td><td>'+r.uf+'</td><td>'+r.d+"
+            "'</td><td class=\\'r\\'>'+(r.km==null?'—':r.km)+'</td><td class=\\'r\\'>'+fmt(r.cand)+'</td><td>'+"
+            "r.conc+'</td><td>'+r.bal+'</td><td>'+(r.cls||'—')+'</td></tr>'}).join('');"
+            "var np=Math.max(1,Math.ceil(tot/PP));$('bi-pag-i').textContent='pág. '+(page+1)+'/'+np;"
+            "$('bi-count').textContent=tot.toLocaleString('pt-BR')+' registro(s)';}"
+            "function render(){var rows=flt();kpis(rows);chart(rows);tbl(rows)}"
+            "$('bi-busca').oninput=function(e){F.q=e.target.value.toLowerCase().trim();page=0;render()};"
+            "$('bi-uf').onchange=function(e){F.uf=e.target.value;page=0;render()};"
+            "$('bi-fx').onchange=function(e){F.fx=e.target.value;page=0;render()};"
+            "$('bi-bal').onchange=function(e){F.bal=e.target.value;page=0;render()};"
+            "$('bi-met').onchange=function(e){F.met=e.target.value;page=0;render()};"
+            "$('bi-reset').onclick=function(){F={uf:'',fx:'',bal:'',met:'',q:''};page=0;"
+            "['bi-busca','bi-uf','bi-fx','bi-bal','bi-met'].forEach(function(i){$(i).value=''});render()};"
+            "$('bi-prev').onclick=function(){if(page>0){page--;render()}};"
+            "$('bi-next').onclick=function(){page++;var t=flt().length;if(page*PP>=t)page--;render()};"
+            "Array.from(document.querySelectorAll('#bi-tbl th')).forEach(function(th){th.onclick=function(){"
+            "var k=th.getAttribute('data-k');if(k==sortK){sortA=!sortA}else{sortK=k;sortA=false}render()}});"
+            "window.addEventListener('resize',function(){chart(flt())});render();})();")
+        return _html, _css, _js
+    except Exception:
+        logger.error("[BI-DASHBOARD] Falha ao montar a camada BI", exc_info=True)
+        return "", "", ""
+
+
 def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) de nível profissional/BI:
     capa, NAVEGAÇÃO LATERAL (sumário), cartões executivos e seções analíticas ricas — Resumo, Distribuição de
@@ -4072,7 +4246,27 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 _p['Cand'] = _p['Municipio Destino'].map(df.assign(_i=_insc.fillna(0)).groupby('Municipio Destino')['_i'].sum()).fillna(0).astype(int)
             _rows = "".join("<tr><td>" + _he.escape(str(r['Municipio Destino'])) + f"</td><td class='r'>{int(r['Mun'])}</td>" + (f"<td class='r'>{int(r['Cand']):,}</td>" if _has_c else "") + f"<td class='r'>{r['DM']:.0f}</td></tr>" for _, r in _p.head(20).iterrows())
             _cab = "<th>Polo</th><th class='r'>Municípios</th>" + ("<th class='r'>Candidatos</th>" if _has_c else "") + "<th class='r'>Dist. média (km)</th>"
-            _sec.append(("polos", "Competitividade dos Polos", f'<p class="lead">Quantos municípios e candidatos cada polo concentra — os do topo são os mais demandados.</p><table><thead><tr>{_cab}</tr></thead><tbody>{_rows}</tbody></table>'))
+            # [SUNBURST - 184ª geração] Hierarquia UF → Polo (anel): a fatia de cada polo dentro do seu estado
+            # revela, num relance, quais polos concentram a demanda em cada UF. Usa candidatos quando há;
+            # senão, nº de municípios atendidos. Plotly embutido (offline).
+            _sun = ""
+            if 'UF Origem' in df.columns:
+                try:
+                    _peso_col = _insc.fillna(0) if _insc is not None else pd.Series(1, index=df.index)
+                    _hier = (df.assign(_w=_peso_col).groupby(['UF Origem', 'Municipio Destino'])['_w']
+                             .sum().reset_index())
+                    _hier = _hier[_hier['_w'] > 0]
+                    if len(_hier) > 1:
+                        _fs = px.sunburst(_hier, path=['UF Origem', 'Municipio Destino'], values='_w',
+                                          color='UF Origem',
+                                          color_discrete_sequence=px.colors.qualitative.Set2)
+                        _fs.update_layout(margin=dict(t=10, l=0, r=0, b=0), height=460)
+                        _sun = ('<p class="lead">Anel hierárquico <b>estado → local de prova</b>: o tamanho de '
+                                'cada fatia é o volume de ' + ('candidatos' if _insc is not None else
+                                'municípios') + ' atendidos. Clique numa UF para aprofundar.</p>' + _emb(_fs))
+                except Exception:
+                    _sun = ""
+            _sec.append(("polos", "Competitividade dos Polos", f'<p class="lead">Quantos municípios e candidatos cada polo concentra — os do topo são os mais demandados.</p>' + _sun + f'<table><thead><tr>{_cab}</tr></thead><tbody>{_rows}</tbody></table>'))
 
         if 'Municipio Concorrente' in df.columns:
             _cc = df['Municipio Concorrente'].astype(str).str.strip()
@@ -4161,6 +4355,11 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
 
         _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
         _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
+        # [BI-DASHBOARD - 184ª geração] Camada BI ANEXADA ao topo — o relatório original abaixo fica INTACTO.
+        _bi_html, _bi_css, _bi_js = _bi_dashboard_alocacao(df)
+        if _bi_html:
+            _nav = '<a href="#bi">📊 Dashboard BI</a>' + _nav
+            _corpo = _bi_html + _corpo
         _css = (
             ":root{--brand:#0f172a;--accent:#2563eb;--line:#e2e8f0;--muted:#64748b}"
             "*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;"
@@ -4187,6 +4386,7 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
             "@media(max-width:820px){.wrap{display:block}nav{position:static;width:auto;flex:none;max-height:none;"
             "display:flex;flex-wrap:wrap;gap:6px}nav .lbl{display:none}nav a{margin:0}}"
             "@media print{nav{display:none}section{break-inside:avoid}.cover{-webkit-print-color-adjust:exact}}"
+            + _bi_css
         )
         return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -4195,6 +4395,7 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_n:,} municípios · {_tot_cand:,} candidatos</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
                 f'<footer>Relatório autocontido · abre offline em qualquer navegador · gerado pela aplicação.</footer>'
+                f'<script>{_bi_js}</script>'
                 f'</body></html>')
     except Exception:
         logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório", exc_info=True)
@@ -8788,6 +8989,36 @@ def _montar_planilha_lote_xlsx(df_final):
     with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
         _renomear_colunas_exame(df_final).to_excel(_w, index=False, sheet_name="Rotas")
         try:
+            # [CAPA-LOTE - 184ª geração] Portada formatada (mesmo padrão da planilha de Locais): título grande,
+            # totais e metodologia. Isolada em try próprio — se falhar, a aba 'Rotas' já está escrita.
+            _dist0 = pd.to_numeric(df_final['Distancia'], errors='coerce') if 'Distancia' in df_final.columns else None
+            _nb0 = (int(df_final['Balsas'].astype(str).str.strip().str.lower().isin(
+                ['sim', 'yes', 'true', '1']).sum()) if 'Balsas' in df_final.columns else 0)
+            _npolos0 = df_final['Municipio Destino'].nunique() if 'Municipio Destino' in df_final.columns else 0
+            _cap = pd.DataFrame({"Estudo em Lote — Roteirização de Candidatos": [
+                "", "Relatório do processamento em lote de rotas origem → local de prova.",
+                "", f"Total de rotas: {len(df_final):,}",
+                f"Locais de prova (destinos) distintos: {_npolos0:,}",
+                f"Deslocamento médio: {_dist0.mean():.1f} km" if _dist0 is not None else "Deslocamento médio: —",
+                f"Deslocamento mediano: {_dist0.median():.1f} km" if _dist0 is not None else "",
+                f"Maior deslocamento: {_dist0.max():.1f} km" if _dist0 is not None else "",
+                f"Rotas que cruzam balsa: {_nb0:,}",
+                "", "Metodologia: menor rota viária real (Google → OSRM), com auditoria de plausibilidade "
+                "e classificação de qualidade da rota (🟢/🟡/🟠). Linha reta (Karney/WGS-84) só quando não há "
+                "rota viária, sempre sinalizada.",
+                "", "Abas: dado bruto (Rotas), indicadores (Resumo Executivo), faixas de distância, síntese por "
+                "UF, status das rotas e Metodologia/Referências.",
+                "", f"Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}."]})
+            _cap.to_excel(_w, index=False, sheet_name="Capa")
+            _wb0 = getattr(_w, "book", None)
+            if _wb0 is not None and hasattr(_wb0, "add_format"):
+                _ws0 = _w.sheets["Capa"]
+                _ws0.set_column("A:A", 96)
+                _ws0.write("A1", "Estudo em Lote — Roteirização de Candidatos",
+                           _wb0.add_format({"bold": True, "font_size": 20, "font_color": "#1e3a8a"}))
+        except Exception:
+            logger.error("[CAPA-LOTE] Falha ao montar a capa do Lote (aba 'Rotas' preservada)", exc_info=True)
+        try:
             _dist = pd.to_numeric(df_final['Distancia'], errors='coerce') if 'Distancia' in df_final.columns else None
             _reta = pd.to_numeric(df_final['Linha Reta'], errors='coerce') if 'Linha Reta' in df_final.columns else None
             _integ = pd.to_numeric(df_final['Integridade Geográfica'], errors='coerce') if 'Integridade Geográfica' in df_final.columns else None
@@ -11832,6 +12063,64 @@ def _aba_graficos(writer, stats, linhas):
             _g3.set_legend({"none": True})
             _g3.set_size({"width": 720, "height": 360})
             _ws.insert_chart("L4", _g3)
+        # [CMP-GRAFICOS+ - 184ª geração] Dois gráficos nativos adicionais no Comparador:
+        # (1) Pareto dos municípios que mais pesam na vantagem da referência (a spec fala dos "~114
+        #     municípios que concentram 80% da vantagem") — colunas de economia + linha de % acumulado;
+        # (2) pizza da distribuição de vitórias (aplicação × referência × empate).
+        try:
+            _perdas = []
+            for _l in (linhas or []):
+                _e = _l.get("Economia km")
+                if _e is not None and float(_e) < 0:  # referência levou mais perto → vantagem dela
+                    _perdas.append((str(_l.get("Municipio Origem", "—"))[:22], abs(float(_e)),
+                                    str(_l.get("UF", ""))))
+            _perdas.sort(key=lambda x: -x[1])
+            _perdas = _perdas[:15]
+            if _perdas:
+                _somap = sum(p[1] for p in _perdas) or 1.0
+                _acc, _s = [], 0.0
+                for _p in _perdas:
+                    _s += _p[1]; _acc.append(round(100.0 * _s / _somap, 2))
+                _dados.write_column("J1", [f"{p[0]}/{p[2]}" for p in _perdas])
+                _dados.write_column("K1", [round(p[1], 1) for p in _perdas])
+                _dados.write_column("M1", _acc)
+                _gp = _wb.add_chart({"type": "column"})
+                _gp.add_series({"name": "Vantagem da referência (km)",
+                                "categories": ["Graficos_dados", 0, 9, len(_perdas) - 1, 9],
+                                "values": ["Graficos_dados", 0, 10, len(_perdas) - 1, 10],
+                                "fill": {"color": "#dc2626"}})
+                _gl = _wb.add_chart({"type": "line"})
+                _gl.add_series({"name": "% acumulado",
+                                "categories": ["Graficos_dados", 0, 9, len(_perdas) - 1, 9],
+                                "values": ["Graficos_dados", 0, 12, len(_perdas) - 1, 12],
+                                "line": {"color": "#1e3a8a", "width": 2.25}, "y2_axis": True,
+                                "marker": {"type": "circle", "size": 5}})
+                _gp.combine(_gl)
+                _gp.set_title({"name": "Pareto: municípios que mais pesam na vantagem da referência"})
+                _gp.set_x_axis({"name": "município/UF"})
+                _gp.set_y_axis({"name": "km-candidato"})
+                _gp.set_y2_axis({"name": "% acumulado", "min": 0, "max": 100})
+                _gp.set_size({"width": 760, "height": 430})
+                _ws.insert_chart("B42", _gp)
+            _vd = {"Aplicação": 0, "Referência": 0, "Empate": 0}
+            for _l in (linhas or []):
+                _v = str(_l.get("Vencedor Distancia", "")).strip()
+                if _v in _vd:
+                    _vd[_v] += 1
+            if sum(_vd.values()) > 0:
+                _dados.write_column("O1", list(_vd.keys()))
+                _dados.write_column("P1", list(_vd.values()))
+                _gpie = _wb.add_chart({"type": "pie"})
+                _gpie.add_series({"name": "Distribuição de vitórias (distância)",
+                                  "categories": ["Graficos_dados", 0, 14, 2, 14],
+                                  "values": ["Graficos_dados", 0, 15, 2, 15],
+                                  "points": [{"fill": {"color": "#16a34a"}}, {"fill": {"color": "#dc2626"}},
+                                             {"fill": {"color": "#94a3b8"}}]})
+                _gpie.set_title({"name": "Distribuição de vitórias por distância"})
+                _gpie.set_size({"width": 520, "height": 400})
+                _ws.insert_chart("L42", _gpie)
+        except Exception:
+            logger.error("[CMP-GRAFICOS+] Falha nos gráficos adicionais do Comparador", exc_info=True)
     except Exception as _e:
         logger.error(f"[XLSX-PRO] Falha nos gráficos: {_e}")
 
@@ -13496,6 +13785,75 @@ def _estatisticas_comparacao(linhas, uf_para_regiao=None):
     }
 
 
+def _escrever_mapa_calor(writer, pares_uf_dist, nome_aba="Mapa de Calor UF"):
+    """[MAPA-CALOR - 184ª geração] NÚCLEO reutilizável: dado um iterável de (UF, distância_km), escreve uma
+    matriz UF × faixa de distância (nº de rotas) com FORMATAÇÃO CONDICIONAL (heatmap branco→vermelho). Serve
+    tanto ao Comparador quanto à planilha de Locais. Defensivo; usa xlsxwriter. Retorna nada."""
+    try:
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        import pandas as _pd
+        _df = _pd.DataFrame([{"UF": str(_u or "—").strip().upper()[:2] or "—",
+                              "d": _pd.to_numeric(_d, errors="coerce")} for _u, _d in pares_uf_dist])
+        _df = _df[_df["d"].notna()]
+        if _df.empty or _df["UF"].nunique() == 0:
+            return
+        _labs = ["0-50", "50-100", "100-150", "150-200", "200-300", "300-500", "500+"]
+        _df["faixa"] = _pd.cut(_df["d"], bins=[0, 50, 100, 150, 200, 300, 500, 10**12],
+                               labels=_labs, right=False)
+        _mat = _df.groupby(["UF", "faixa"], observed=False).size().unstack("faixa", fill_value=0)
+        _mat = _mat.reindex(columns=_labs, fill_value=0)
+        _mat["Total"] = _mat.sum(axis=1)
+        _mat = _mat.sort_values("Total", ascending=False)
+        _ws = _wb.add_worksheet(nome_aba)
+        writer.sheets[nome_aba] = _ws
+        _hd = _wb.add_format({"bold": True, "bg_color": "#1e3a8a", "font_color": "white",
+                              "align": "center", "border": 1})
+        _uf_fmt = _wb.add_format({"bold": True, "border": 1})
+        _cell = _wb.add_format({"border": 1, "align": "center"})
+        _ws.write("A1", "UF \\ Faixa (km)", _hd)
+        for _j, _lab in enumerate(_labs + ["Total"]):
+            _ws.write(0, _j + 1, _lab, _hd)
+        for _i, (_uf, _row) in enumerate(_mat.iterrows()):
+            _ws.write(_i + 1, 0, _uf, _uf_fmt)
+            for _j, _lab in enumerate(_labs + ["Total"]):
+                _ws.write(_i + 1, _j + 1, int(_row[_lab]), _cell)
+        _nrows = len(_mat)
+        if _nrows > 0:
+            _ws.conditional_format(1, 1, _nrows, len(_labs), {
+                "type": "3_color_scale", "min_color": "#ffffff", "mid_color": "#fca5a5",
+                "max_color": "#b91c1c"})
+        _ws.set_column("A:A", 14)
+        _ws.set_column(1, len(_labs) + 1, 10)
+        _ws.freeze_panes(1, 1)
+        _ws.write(_nrows + 3, 0, "Leitura: cada célula é o nº de rotas do estado naquela faixa de distância; "
+                  "quanto mais vermelho, mais rotas longas concentradas ali.")
+    except Exception:
+        logger.error("[MAPA-CALOR] Falha ao montar o mapa de calor UF × faixa (%s)", nome_aba, exc_info=True)
+
+
+def _aba_mapa_calor_uf(writer, linhas):
+    """[MAPA-CALOR - 184ª geração] Mapa de calor do Comparador — delega ao núcleo com (UF, Distancia
+    Aplicacao) de cada linha conciliada."""
+    if not linhas:
+        return
+    _escrever_mapa_calor(writer, ((_l.get("UF", ""), _l.get("Distancia Aplicacao")) for _l in linhas))
+
+
+def _aba_mapa_calor_alocacao(writer, df):
+    """[MAPA-CALOR - 184ª geração] Mapa de calor da planilha de Locais — delega ao núcleo com (UF Origem,
+    Distancia) do df final. Defensivo: sem as colunas, não faz nada."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return
+        if 'UF Origem' not in df.columns or 'Distancia' not in df.columns:
+            return
+        _escrever_mapa_calor(writer, zip(df['UF Origem'].tolist(), df['Distancia'].tolist()))
+    except Exception:
+        logger.error("[MAPA-CALOR] Falha no mapa de calor da alocação", exc_info=True)
+
+
 def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
     """[PERF - 139ª geração] Monta os bytes do .xlsx de 7 abas do Comparador UMA ÚNICA VEZ (no clique).
     Na 138ª eu montava isto dentro do bloco de exibição — ou seja, A CADA RERUN: 1,2 s de CPU bloqueante
@@ -13521,6 +13879,7 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
             }
             _aba_capa(_w, stats, aud, linhas, _meta_x)
             _aba_graficos(_w, stats, linhas)
+            _aba_mapa_calor_uf(_w, linhas)  # [MAPA-CALOR - 184ª geração]
 
             # [GUIA-PLANILHA - 170ª geração] O GUIA VEM PRIMEIRO. A planilha tinha 22 abas e NENHUMA se
             # explicava. O usuário abria "Ranking Estados" e não havia nada dizendo o que aquilo era.
@@ -14133,12 +14492,199 @@ def _preencher_vazios_exportacao(df):
                 _fill = 'N/A — Google não respondeu nesta medição'
             elif 'distrito' in _cl:
                 _fill = 'Não disponível (base IBGE)'
+            elif 'concorrente' in _cl or 'alternativa' in _cl or '2º' in _cl or '2o ' in _cl:
+                _fill = 'Sem 2º local viável no raio analisado'
+            elif any(_k in _cl for _k in ('link', 'url', 'mapa')):
+                _fill = 'Link indisponível'
+            elif any(_k in _cl for _k in ('tempo', 'duração', 'duracao')):
+                _fill = 'Tempo não estimado'
+            elif any(_k in _cl for _k in ('balsa', 'travessia')):
+                _fill = 'Não'
+            elif any(_k in _cl for _k in ('fonte', 'motor', 'método', 'metodo')):
+                _fill = 'Não informado'
+            elif any(_k in _cl for _k in ('lat', 'lon', 'coorden')):
+                _fill = 'Coordenada indisponível'
+            elif any(_k in _cl for _k in ('km', 'distância', 'distancia', 'sinuosidade', 'score', 'igq',
+                                          'índice', 'indice', 'reta')):
+                _fill = 'Não calculado'
             else:
                 _fill = '—'
             df[_c] = df[_c].astype(object).where(~_m, _fill)
         return df
     except Exception:
         return df
+
+
+def _abas_ricas_alocacao(writer, df):
+    """[EXPORT-RICO - 184ª geração] Eleva a planilha de Locais ao padrão VISUAL/analítico do Comparador:
+    Capa (portada), Gráficos nativos do Excel, Como Ler Cada Aba, Pareto dos polos (80/20) e Ranking de
+    Estados. Reusa df_final_alo (colunas internas). Defensivo: cada aba isolada em try; formatação com
+    xlsxwriter quando disponível. Retorna nada."""
+    try:
+        if df is None or len(df) == 0:
+            return
+        _wb = getattr(writer, "book", None)
+        _is_xlsx = _wb is not None and hasattr(_wb, "add_format")
+        _num = lambda c: pd.to_numeric(df[c], errors='coerce') if c in df.columns else None
+        _dist = _num('Distancia')
+        _insc = _num('Inscritos') if 'Inscritos' in df.columns else _num('Quantidade de Inscritos')
+        _tot_cand = int(_insc.fillna(0).sum()) if _insc is not None else len(df)
+        _npolos = df['Municipio Destino'].nunique() if 'Municipio Destino' in df.columns else 0
+
+        # ---------- CAPA / PORTADA ----------
+        _cap = pd.DataFrame({"Relatório de Alocação — Locais de Prova": [
+            "", "Painel executivo do estudo de alocação de candidatos a locais de aplicação de prova.",
+            "", f"Municípios de origem: {len(df):,}", f"Candidatos: {_tot_cand:,}",
+            f"Locais de prova (polos) utilizados: {_npolos:,}",
+            f"Deslocamento médio: {_dist.mean():.1f} km" if _dist is not None else "Deslocamento médio: —",
+            f"Deslocamento mediano: {_dist.median():.1f} km" if _dist is not None else "",
+            f"Maior deslocamento: {_dist.max():.1f} km" if _dist is not None else "",
+            "", "Metodologia: menor rota viária real (Google → OSRM), com auditoria de plausibilidade e "
+            "invariante verificado. Distâncias geodésicas por Karney (WGS-84).",
+            "", "Navegue pelas abas: dados linha a linha (Locais de Aplicacao), sínteses (Resumo Executivo, "
+            "Sintese por UF), competitividade (Competitividade dos Polos, Concorrentes, Pareto, Ranking "
+            "Estados), distribuição, municípios críticos, e Metodologia/Referências.",
+            "", f"Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}."]})
+        _cap.to_excel(writer, index=False, sheet_name="Capa")
+        if _is_xlsx:
+            _ws = writer.sheets["Capa"]
+            _tit = _wb.add_format({"bold": True, "font_size": 20, "font_color": "#1e3a8a"})
+            _ws.set_column("A:A", 96)
+            _ws.write("A1", "Relatório de Alocação — Locais de Prova", _tit)
+
+        # ---------- COMO LER CADA ABA ----------
+        _guia = [("Capa", "Sumário executivo do estudo: totais, deslocamentos e metodologia."),
+                 ("Locais de Aplicacao", "Uma linha por município de origem: vencedor, concorrente, distâncias, "
+                  "método da distância (✅ viária / 📏 linha reta), classificação da rota (🟢🟡🟠) e alertas."),
+                 ("Resumo Executivo", "Indicadores-chave em uma tabela (rotas, candidatos, deslocamentos, "
+                  "sinuosidade, balsa, integridade)."),
+                 ("Sintese por UF", "Rotas, candidatos e distâncias agregadas por estado."),
+                 ("Competitividade dos Polos", "Cada local de prova: municípios atendidos, candidatos, distâncias."),
+                 ("Concorrentes", "Quais municípios mais aparecem como 2ª opção (o concorrente do vencedor)."),
+                 ("Pareto dos Polos", "Curva 80/20: poucos polos concentram a maior parte dos candidatos."),
+                 ("Ranking Estados", "Estados ordenados por deslocamento médio — onde o candidato anda mais."),
+                 ("Distribuicao de Distancias", "Quantas rotas e candidatos em cada faixa de km."),
+                 ("Municipios Criticos", "Os 30 municípios de maior deslocamento — priorizar revisão."),
+                 ("Metodologia Cientifica / Referencias", "Método e fontes acadêmicas (padrão artigo científico)."),
+                 ("Graficos", "Gráficos nativos do Excel (barras/colunas) das principais visões.")]
+        pd.DataFrame(_guia, columns=["Aba", "O que mostra e como interpretar"]).to_excel(
+            writer, index=False, sheet_name="Como Ler Cada Aba")
+
+        # ---------- PARETO DOS POLOS ----------
+        if 'Municipio Destino' in df.columns and (_insc is not None or _dist is not None):
+            _peso = _insc.fillna(0) if _insc is not None else pd.Series(1, index=df.index)
+            _g = df.assign(_p=_peso).groupby('Municipio Destino')['_p'].sum().sort_values(ascending=False)
+            _g = _g[_g > 0]
+            if len(_g):
+                _tot = float(_g.sum())
+                _par = pd.DataFrame({
+                    "Local de Prova (Polo)": _g.index,
+                    "Candidatos": _g.values.astype(int) if _insc is not None else _g.values,
+                    "% do total": (100.0 * _g.values / _tot).round(2),
+                    "% acumulado": (100.0 * _g.cumsum().values / _tot).round(2)})
+                _par.to_excel(writer, index=False, sheet_name="Pareto dos Polos")
+
+        # ---------- RANKING DE ESTADOS ----------
+        if 'UF Origem' in df.columns and _dist is not None:
+            _r = df.assign(_d=_dist).groupby('UF Origem').agg(
+                Rotas=('_d', 'size'), Dist_media=('_d', 'mean'), Dist_max=('_d', 'max')).reset_index()
+            if _insc is not None:
+                _r['Candidatos'] = _r['UF Origem'].map(
+                    df.assign(_i=_insc.fillna(0)).groupby('UF Origem')['_i'].sum()).fillna(0).astype(int)
+            _r = _r.round(1).sort_values('Dist_media', ascending=False)
+            _r.insert(0, 'Posição', range(1, len(_r) + 1))
+            _r.rename(columns={'UF Origem': 'UF', 'Dist_media': 'Deslocamento médio (km)',
+                               'Dist_max': 'Maior deslocamento (km)'}).to_excel(
+                writer, index=False, sheet_name="Ranking Estados")
+
+        # ---------- GRÁFICOS NATIVOS ----------
+        if _is_xlsx and _dist is not None:
+            _dados = writer.book.add_worksheet("Graficos_dados")
+            _dados.hide()
+            # faixas de distância
+            _labs = ["0-50", "50-100", "100-150", "150-200", "200-300", "300-500", "500+"]
+            _cat = pd.cut(_dist.dropna(), bins=[0, 50, 100, 150, 200, 300, 500, 10**12], labels=_labs, right=False)
+            _cont = _cat.value_counts().reindex(_labs, fill_value=0)
+            _dados.write_column("A1", ["Faixa (km)"] + _labs)
+            _dados.write_column("B1", ["Rotas"] + [int(v) for v in _cont.values])
+            _wsg = writer.book.add_worksheet("Graficos")
+            _ch = writer.book.add_chart({"type": "column"})
+            _ch.add_series({"name": "Rotas por faixa de distância",
+                            "categories": ["Graficos_dados", 1, 0, len(_labs), 0],
+                            "values": ["Graficos_dados", 1, 1, len(_labs), 1],
+                            "fill": {"color": "#2563eb"}})
+            _ch.set_title({"name": "Distribuição de deslocamento (rotas por faixa de km)"})
+            _ch.set_x_axis({"name": "faixa (km)"})
+            _ch.set_y_axis({"name": "rotas"})
+            _ch.set_size({"width": 720, "height": 400})
+            _wsg.insert_chart("B2", _ch)
+            # top-10 polos por candidatos
+            if 'Municipio Destino' in df.columns:
+                _peso = _insc.fillna(0) if _insc is not None else pd.Series(1, index=df.index)
+                _top = df.assign(_p=_peso).groupby('Municipio Destino')['_p'].sum().sort_values(
+                    ascending=False).head(10)
+                if len(_top):
+                    _off = len(_labs) + 3
+                    _dados.write_column(f"A{_off}", ["Polo"] + [str(x)[:22] for x in _top.index])
+                    _dados.write_column(f"B{_off}", ["Candidatos"] + [int(v) for v in _top.values])
+                    _ch2 = writer.book.add_chart({"type": "bar"})
+                    _ch2.add_series({"name": "Top 10 polos por candidatos",
+                                     "categories": ["Graficos_dados", _off, 0, _off + len(_top) - 1, 0],
+                                     "values": ["Graficos_dados", _off, 1, _off + len(_top) - 1, 1],
+                                     "fill": {"color": "#16a34a"}})
+                    _ch2.set_title({"name": "Top 10 locais de prova por nº de candidatos"})
+                    _ch2.set_size({"width": 720, "height": 420})
+                    _wsg.insert_chart("B24", _ch2)
+            # [EXPORT-RICO+ - 184ª geração] Pareto como GRÁFICO (colunas de candidatos + linha de % acumulado
+            # em eixo secundário) e colunas de deslocamento médio por UF — gráficos nativos do Excel.
+            if 'Municipio Destino' in df.columns:
+                _peso = _insc.fillna(0) if _insc is not None else pd.Series(1, index=df.index)
+                _gp = df.assign(_p=_peso).groupby('Municipio Destino')['_p'].sum().sort_values(ascending=False)
+                _gp = _gp[_gp > 0].head(15)
+                if len(_gp):
+                    _totp = float(df.assign(_p=_peso).groupby('Municipio Destino')['_p'].sum().sum()) or 1.0
+                    _acc = (100.0 * _gp.cumsum() / _totp)
+                    _o2 = (len(_labs) + 3) + 12
+                    _dados.write_column(f"D{_o2}", ["Polo"] + [str(x)[:22] for x in _gp.index])
+                    _dados.write_column(f"E{_o2}", ["Candidatos"] + [int(v) for v in _gp.values])
+                    _dados.write_column(f"F{_o2}", ["% acumulado"] + [round(float(v), 2) for v in _acc.values])
+                    _chp = writer.book.add_chart({"type": "column"})
+                    _chp.add_series({"name": "Candidatos por polo",
+                                     "categories": ["Graficos_dados", _o2, 3, _o2 + len(_gp) - 1, 3],
+                                     "values": ["Graficos_dados", _o2, 4, _o2 + len(_gp) - 1, 4],
+                                     "fill": {"color": "#2563eb"}})
+                    _chl = writer.book.add_chart({"type": "line"})
+                    _chl.add_series({"name": "% acumulado",
+                                     "categories": ["Graficos_dados", _o2, 3, _o2 + len(_gp) - 1, 3],
+                                     "values": ["Graficos_dados", _o2, 5, _o2 + len(_gp) - 1, 5],
+                                     "line": {"color": "#dc2626", "width": 2.25}, "y2_axis": True,
+                                     "marker": {"type": "circle", "size": 5}})
+                    _chp.combine(_chl)
+                    _chp.set_title({"name": "Pareto dos polos (80/20): candidatos e % acumulado"})
+                    _chp.set_x_axis({"name": "polo (ordenado por candidatos)"})
+                    _chp.set_y_axis({"name": "candidatos"})
+                    _chp.set_y2_axis({"name": "% acumulado", "min": 0, "max": 100})
+                    _chp.set_size({"width": 760, "height": 430})
+                    _wsg.insert_chart("B47", _chp)
+            if 'UF Origem' in df.columns:
+                _guf = df.assign(_d=_dist).groupby('UF Origem')['_d'].mean().sort_values(ascending=False)
+                _guf = _guf.dropna()
+                if len(_guf):
+                    _o3 = (len(_labs) + 3) + 30
+                    _dados.write_column(f"H{_o3}", ["UF"] + [str(x) for x in _guf.index])
+                    _dados.write_column(f"I{_o3}", ["Deslocamento médio (km)"] + [round(float(v), 1) for v in _guf.values])
+                    _chu = writer.book.add_chart({"type": "column"})
+                    _chu.add_series({"name": "Deslocamento médio por UF",
+                                     "categories": ["Graficos_dados", _o3, 7, _o3 + len(_guf) - 1, 7],
+                                     "values": ["Graficos_dados", _o3, 8, _o3 + len(_guf) - 1, 8],
+                                     "fill": {"color": "#f59e0b"}})
+                    _chu.set_title({"name": "Deslocamento médio do candidato por estado (km)"})
+                    _chu.set_x_axis({"name": "UF"})
+                    _chu.set_y_axis({"name": "km"})
+                    _chu.set_size({"width": 760, "height": 400})
+                    _wsg.insert_chart("B71", _chu)
+    except Exception:
+        logger.error("[EXPORT-RICO] Falha ao montar abas ricas da alocação", exc_info=True)
 
 
 def _montar_abas_analiticas_alocacao(writer, df):
@@ -17623,9 +18169,19 @@ def _selecionar_hub_multicriterio(candidatos, params=None):
         except (TypeError, ValueError):
             _tm = None
         _dv = round(float(c.get('dist_viaria')), 3)
+        # [PLAUSIBILIDADE - 184ª geração] Rota REAL com sinuosidade ABSURDA (viária ≫ reta) é um DESVIO
+        # FANTASMA: o motor rodoviário contornou uma barreira natural (rio) por um trajeto que, na prática,
+        # é fluvial — mandando o candidato ~2× mais longe (caso Codajás→Manacapuru: 422 km, 2,48×, 53 h). O
+        # limiar é ALTO (4×) para JAMAIS punir estrada normal (sinuosidade típica 1,2–1,6×; serra ~2×). Uma
+        # rota assim é rebaixada na ordenação: perde para rota real plausível de maior viária, mas ainda
+        # vence o puro fallback geodésico (mantém-se acima de quem não tem rota alguma).
+        _LIMIAR_SINUOSIDADE = 4.0
+        _plausivel = True
+        if _dr and _dr > 0 and (_dv / _dr) > _LIMIAR_SINUOSIDADE:
+            _plausivel = False
         _validos.append({'hub': c.get('hub'), 'dist_viaria': _dv, 'dist_reta': _dr, 'tempo_min': _tm,
                          'balsa': bool(c.get('balsa')), 'modo': c.get('modo', ''),
-                         'rota_real': bool(c.get('rota_real', True)),
+                         'rota_real': bool(c.get('rota_real', True)), 'plausivel': _plausivel,
                          'sinuosidade': round(_dv / _dr, 4) if (_dr and _dr > 0) else None,
                          'custo_efetivo': _det["custo_efetivo_km"], 'componentes': _det})
     out = {'vencedor': None, 'igq_vencedor': None, 'custo_vencedor': None, 'ranking': [],
@@ -17649,7 +18205,14 @@ def _selecionar_hub_multicriterio(candidatos, params=None):
     # viária de fallback (≈ geodésica) subestima a rota real e não pode vencer uma rota real de maior viária
     # (era como o mais próximo em LINHA RETA vencia). Só quando NENHUM candidato tem rota real (destino sem
     # estrada) o de menor geodésica-fallback vence — o comportamento honesto para acesso fluvial/isolado.
+    # [PLAUSIBILIDADE - 184ª geração] Ordem de prioridade dos critérios:
+    #   0) rota REAL antes de fallback geodésico (já existia);
+    #   1) rota real PLAUSÍVEL antes de desvio fantasma (novo) — sinuosidade absurda vai para o fim das reais;
+    #   2) menor distância viária; 3) sem balsa; 4) menor tempo; 5) menor custo logístico.
+    # Assim, Codajás→Manaquiri (216 km, plausível) vence Manacapuru (422 km, 2,48× = fantasma), mas um
+    # desvio fantasma ainda supera quem não tem rota nenhuma (fallback puro).
     _validos.sort(key=lambda d: (not d.get('rota_real', True),
+                                 not d.get('plausivel', True),
                                  d['dist_viaria'],
                                  d['balsa'],
                                  d['tempo_min'] if d['tempo_min'] is not None else float('inf'),
@@ -18464,7 +19027,13 @@ def _validar_coerencia_viaria(df):
         _dc = pd.to_numeric(df['Distancia Concorrente'], errors='coerce')
         _mask = _dv.notna() & _dc.notna() & (_dc > 0) & (_dv > _dc)
         _n = int(_mask.sum())
-        if _n <= 0:
+        # [PLAUSIBILIDADE - 184ª geração] Desvio FANTASMA (sinuosidade > 4×) é sinalizado SEMPRE — inclusive
+        # quando não há nenhum vencedor>concorrente — pois é um destino genuinamente fluvial mesmo vencendo.
+        _mf = pd.Series(False, index=df.index)
+        if 'Linha Reta' in df.columns:
+            _rr = pd.to_numeric(df['Linha Reta'], errors='coerce')
+            _mf = _dv.notna() & _rr.notna() & (_rr > 0) & ((_dv / _rr) > 4.0)
+        if _n <= 0 and not _mf.any():
             return df
         df = df.copy()
         if 'Alerta Coerência Viária' not in df.columns:
@@ -18472,6 +19041,12 @@ def _validar_coerencia_viaria(df):
         df.loc[_mask, 'Alerta Coerência Viária'] = ("⚠️ vencedor com viária MAIOR que o concorrente — "
                                                     "provável acesso fluvial/rota rodoviária indisponível; "
                                                     "reprocessar ou tratar como acesso fluvial")
+        _sem_alerta = df['Alerta Coerência Viária'].astype(str).str.strip().isin(['', 'nan', '—'])
+        _mf2 = _mf & _sem_alerta
+        if _mf2.any():
+            df.loc[_mf2, 'Alerta Coerência Viária'] = ("🚢 desvio rodoviário implausível (> 4× a linha reta) "
+                                                       "— trajeto provavelmente fluvial na prática; distância "
+                                                       "rodoviária pode superestimar o deslocamento real")
         _ex, _cmo, _cmd = [], ('Municipio Origem' if 'Municipio Origem' in df.columns else None), \
             ('Municipio Destino' if 'Municipio Destino' in df.columns else None)
         for _, _r in df[_mask].head(5).iterrows():
@@ -18482,7 +19057,7 @@ def _validar_coerencia_viaria(df):
         logger.warning("[COERENCIA-VIARIA] %d rota(s) com viária do vencedor MAIOR que a do concorrente (modo "
                        "viária) — provável acesso fluvial/rota indisponível. Exemplos: %s. Coluna de alerta "
                        "adicionada; o painel de auditoria sinaliza cada caso e nomeia o hub de menor viária.",
-                       _n, "; ".join(_ex))
+                       _n, "; ".join(_ex)) if _n > 0 else None
         return df
     except Exception:
         return df
@@ -18563,6 +19138,72 @@ def _enriquecer_classificacao_rotas(df):
                             for _b, _m in zip(_base, _motivos)]
         return df
     except Exception:
+        return df
+
+
+def _garantir_concorrente_sempre(df, topk_map=None, resultados=None):
+    """[CONCORRENTE-SEMPRE - 184ª geração] GARANTE que TODA linha da planilha de Locais tenha um concorrente
+    (2º melhor local de prova) — nunca 'N/A'/vazio. Antes, quando o pipeline não populava o 2º colocado
+    (res[31] ausente), a coluna saía 'N/A'. Agora, para cada linha sem concorrente, busca no topk_map o polo
+    mais próximo DIFERENTE do vencedor e preenche nome, código IBGE, UF, coordenadas, linha reta e — se houver
+    rota em `resultados` — a distância viária. Aditivo e defensivo; retorna o df. Só atua onde falta."""
+    try:
+        if df is None or getattr(df, "empty", True) or 'Concorrente Analisado' not in df.columns:
+            return df
+        _vazio = df['Concorrente Analisado'].astype(str).str.strip().isin(
+            ['', 'nan', 'none', 'n/a', 'N/A', '—', 'None'])
+        if not _vazio.any() or not topk_map:
+            return df
+        df = df.copy()
+        _cod_col = 'Cod IBGE Origem' if 'Cod IBGE Origem' in df.columns else None
+        _mun_col = 'Municipio Origem' if 'Municipio Origem' in df.columns else None
+        _preenchidos = 0
+        for _i in df.index[_vazio]:
+            # chave do cliente no topk_map: tenta código IBGE de origem, depois nome
+            _chave = None
+            if _cod_col and str(df.at[_i, _cod_col]).strip():
+                _c = str(df.at[_i, _cod_col]).strip()
+                _chave = next((k for k in topk_map if str(k) == _c or str(k).lstrip("0") == _c.lstrip("0")), None)
+            if _chave is None and _mun_col:
+                _nm = str(df.at[_i, _mun_col]).strip().lower()
+                _chave = next((k for k in topk_map if str(k).strip().lower() == _nm), None)
+            if _chave is None:
+                continue
+            _venc = str(df.at[_i, 'Municipio Destino']).strip().lower() if 'Municipio Destino' in df.columns else ""
+            _venc_cod = str(df.at[_i, 'Cod IBGE Destino']).strip() if 'Cod IBGE Destino' in df.columns else ""
+            # 1º candidato do topk diferente do vencedor (por hub/código)
+            _alt = None
+            for _item in (topk_map.get(_chave) or []):
+                try:
+                    _reta_a, _hub_a = float(_item[0] or 0), str(_item[1]).strip()
+                except Exception:
+                    continue
+                if _hub_a.lower() == _venc or _hub_a == _venc_cod:
+                    continue
+                _alt = (_reta_a, _hub_a)
+                break
+            if not _alt:
+                continue
+            _reta_a, _hub_a = _alt
+            _nome_a = _resolver_nome_municipio(_hub_a)
+            df.at[_i, 'Concorrente Analisado'] = _nome_a
+            if 'Linha Reta Concorrente' in df.columns:
+                df.at[_i, 'Linha Reta Concorrente'] = round(_reta_a, 3) if _reta_a else df.at[_i, 'Linha Reta Concorrente']
+            # distância viária real do concorrente, se roteada
+            _r = (resultados or {}).get((_chave, _hub_a))
+            if _r and _r[0] and 'Distancia Concorrente' in df.columns:
+                df.at[_i, 'Distancia Concorrente'] = round(float(_r[0]), 2)
+                if 'Lat Concorrente' in df.columns and len(_r) > 21 and _r[21]:
+                    df.at[_i, 'Lat Concorrente'] = round(float(_r[21]), 6)
+                if 'Lon Concorrente' in df.columns and len(_r) > 22 and _r[22]:
+                    df.at[_i, 'Lon Concorrente'] = round(float(_r[22]), 6)
+            _preenchidos += 1
+        if _preenchidos:
+            logger.warning("[CONCORRENTE-SEMPRE] %d linha(s) estavam sem concorrente e foram preenchidas com o "
+                           "2º polo mais próximo do topk.", _preenchidos)
+        return df
+    except Exception:
+        logger.error("[CONCORRENTE-SEMPRE] Falha ao garantir concorrente", exc_info=True)
         return df
 
 
@@ -22871,6 +23512,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 # SEMPRE pelo NOME do município (nunca o código IBGE), em TODAS as linhas e em qualquer modo —
                 # aplicado antes de montar o export e a tela, para cobrir inclusive as linhas que o alinhamento
                 # por viária não tocou (ranking <2) e o modo linha reta.
+                # [CONCORRENTE-SEMPRE - 184ª geração] Garante concorrente em TODA linha (2º polo do topk) antes
+                # da resolução de nomes, para que o preenchido também vire nome de município legível.
+                df_final_alo = _garantir_concorrente_sempre(
+                    df_final_alo, st.session_state.get('alo_topk_map'), _resultados)
                 df_final_alo = _resolver_nomes_finais(df_final_alo)
                 # [XAI-ROTA - 184ª geração] Classificação da rota (🟢/🟡/🟠) + método EXPLÍCITO
                 # (✅ viária real / 📏 linha reta) + MOTIVO anexado às justificativas — em tela e planilha.
@@ -23025,6 +23670,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # [EXPORT-ANALITICO - 184ª geração] Camada ANALÍTICA sempre presente: Resumo Executivo,
                     # Síntese por UF, Competitividade dos Polos, Concorrentes, Distribuição de Distâncias e
                     # Municípios Críticos — computadas de df_final_alo, com valores completos (sem vazios).
+                    # [EXPORT-RICO - 184ª geração] Abas ricas no padrão do Comparador (capa, gráficos nativos,
+                    # como ler, Pareto, ranking de estados) — a capa vem logo após a aba principal.
+                    _abas_ricas_alocacao(writer, df_final_alo)
+                    _aba_mapa_calor_alocacao(writer, df_final_alo)  # [MAPA-CALOR - 184ª geração]
                     _montar_abas_analiticas_alocacao(writer, df_final_alo)
                     # [DASHBOARD - 177ª geração] AS ANÁLISES DO CANDIDATO vão para a planilha.
                     # Só quando há a coluna de INSCRITOS — sem ela, a planilha sai como sempre saiu.
