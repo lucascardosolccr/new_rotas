@@ -15996,19 +15996,27 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
 
     Retorna: dict {origem: {hub: dist_viaria_km, ...}} com as distâncias obtidas por matriz. Se a matriz
     falhar para uma origem, ela simplesmente não aparece no dict (o fluxo par-a-par tradicional assume).
-    Defensiva; não levanta exceção."""
+    Defensiva; não levanta exceção.
+
+    [PERF-MATRIZ - 184ª geração] As origens são processadas EM PARALELO no EXECUTOR_GLOBAL (o mesmo pool do
+    resto do pipeline). Cada origem é uma chamada de matriz independente e sem estado compartilhado, então a
+    paralelização é ganho PURO — as mesmas chamadas HTTP, apenas concorrentes em vez de enfileiradas. Reduz a
+    fase de descoberta de minutos para segundos, sem alterar nenhum resultado."""
     _mapa = {}
     try:
         if not dest_coords or not hubs_validos:
             return _mapa
-        for _orig, _oc in dest_coords.items():
+
+        def _processar_origem(_item):
+            """Processa UMA origem: monta candidatos, chama a matriz e aplica o filtro de sanidade física.
+            Retorna (origem, {hub: dist}) ou (origem, None). Pura em relação ao estado global."""
+            _orig, _oc = _item
             try:
                 _olat, _olon = float(_oc[0]), float(_oc[1])
             except Exception:
-                continue
+                return (_orig, None)
             if not _olat or not _olon or _olat == 0.0 or _olon == 0.0:
-                continue
-            # conjunto candidato: os mais próximos por reta (lista completa já ordenada)
+                return (_orig, None)
             _cands_reta = (topk_map_completo or {}).get(_orig) or []
             if _cands_reta:
                 _nomes = [h for (_r, h) in _cands_reta[:_max_hubs_por_origem]]
@@ -16020,38 +16028,50 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
                 if _hc and _hc[0] and _hc[1] and _hc[0] != 0.0 and _hc[1] != 0.0:
                     _dest_coords_matriz.append((_h, _hc[0], _hc[1]))
             if not _dest_coords_matriz:
-                continue
+                return (_orig, None)
             _dists = API_OSRM_Table(_olat, _olon, _dest_coords_matriz)
-            if _dists:
-                # [SANIDADE-MATRIZ - 184ª geração] Filtro de coerência física: a matriz pode, por snap ruim
-                # ou erro do OSRM, devolver uma distância viária MENOR que a linha reta geodésica — valor
-                # fisicamente impossível. Se aceito, esse "bogus" baixo viraria vencedor falso e empurraria
-                # o vencedor REAL para fora do shortlist. Aqui descartamos qualquer distância que viole o
-                # piso físico. A reta vem do topk_map_completo quando disponível; quando não (caminho de
-                # fallback sem topk), é calculada on-the-fly por Haversine — o filtro NUNCA deixa de rodar.
-                _reta_por_hub = {str(_h): float(_r) for (_r, _h) in _cands_reta} if _cands_reta else {}
-                _limpo = {}
-                _n_bogus = 0
-                for _h, _dv in _dists.items():
-                    _reta_h = _reta_por_hub.get(str(_h))
-                    if _reta_h is None:
-                        # reta ausente (fallback): calcula o piso geodésico on-the-fly
-                        _hc = hubs_validos.get(_h)
-                        if _hc and _hc[0] and _hc[1]:
-                            try:
-                                _reta_h = _haversine_km_consenso(_olat, _olon, float(_hc[0]), float(_hc[1]))
-                            except Exception:
-                                _reta_h = None
-                    if _reta_h is not None and _reta_h > 0 and float(_dv) < _reta_h * 0.999:
-                        _n_bogus += 1  # viária < reta: impossível → descarta o valor bogus
-                        continue
-                    _limpo[_h] = _dv
-                if _n_bogus:
-                    logger.warning("[SANIDADE-MATRIZ] %d distância(s) fisicamente impossíveis (viária < reta) "
-                                   "descartadas da matriz para '%s' — protege o shortlist de vencedor falso.",
-                                   _n_bogus, str(_orig)[:30])
-                if _limpo:
-                    _mapa[_orig] = _limpo
+            if not _dists:
+                return (_orig, None)
+            # [SANIDADE-MATRIZ - 184ª geração] Filtro de coerência física: descarta viária < reta (impossível).
+            _reta_por_hub = {str(_h): float(_r) for (_r, _h) in _cands_reta} if _cands_reta else {}
+            _limpo = {}
+            _n_bogus = 0
+            for _h, _dv in _dists.items():
+                _reta_h = _reta_por_hub.get(str(_h))
+                if _reta_h is None:
+                    _hc = hubs_validos.get(_h)
+                    if _hc and _hc[0] and _hc[1]:
+                        try:
+                            _reta_h = _haversine_km_consenso(_olat, _olon, float(_hc[0]), float(_hc[1]))
+                        except Exception:
+                            _reta_h = None
+                if _reta_h is not None and _reta_h > 0 and float(_dv) < _reta_h * 0.999:
+                    _n_bogus += 1
+                    continue
+                _limpo[_h] = _dv
+            if _n_bogus:
+                logger.warning("[SANIDADE-MATRIZ] %d distância(s) fisicamente impossíveis (viária < reta) "
+                               "descartadas da matriz para '%s' — protege o shortlist de vencedor falso.",
+                               _n_bogus, str(_orig)[:30])
+            return (_orig, _limpo if _limpo else None)
+
+        _itens = list(dest_coords.items())
+        try:
+            _futuros = {EXECUTOR_GLOBAL.submit(_processar_origem, _it): _it[0] for _it in _itens}
+            for _fut in as_completed(_futuros):
+                try:
+                    _org_r, _dist_r = _fut.result()
+                    if _dist_r:
+                        _mapa[_org_r] = _dist_r
+                except Exception:
+                    continue
+        except Exception:
+            # Se o executor falhar por qualquer motivo, degrada para sequencial (mesmo resultado).
+            logger.warning("[PERF-MATRIZ] Executor indisponível — matriz em modo sequencial.", exc_info=True)
+            for _it in _itens:
+                _org_r, _dist_r = _processar_origem(_it)
+                if _dist_r:
+                    _mapa[_org_r] = _dist_r
         return _mapa
     except Exception:
         logger.error("[MATRIZ-VIARIA] Falha ao descobrir vencedores por matriz", exc_info=True)
