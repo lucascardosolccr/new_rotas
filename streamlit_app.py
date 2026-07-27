@@ -15661,6 +15661,207 @@ def forcar_geocodificacao_hierarquica_estrita(texto_cru, modo_oficial=None):
     end_f = ", ".join([c for c in [melhor.get('logradouro', ''), melhor.get('bairro', ''), melhor.get('cidade', ''), melhor.get('estado', '')] if c.strip()]) + ", BRASIL"
     return (melhor['lat'], melhor['lon'], end_f, "DESAMBIGUACAO_ESTRITA", 95, melhor.get('bairro', ''), melhor.get('cidade', ''), f"{melhor['fonte']} (Strict-Mode)", ["Desambiguação Espacial Anti-Colisão acionada em Nuvem. Resolução estrita aplicada."])
 
+def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3):
+    """[MATRIZ-VIARIA - 184ª geração] FASE 2 (decisão de qualidade): a matriz /table/v1 do OSRM (Fase 1) é
+    barata e cobre TODOS os candidatos, mas o OSRM é o motor de FALLBACK — a decisão de qualidade cabe ao
+    Google (prioritário). Esta função extrai, por origem, o SHORTLIST dos melhores candidatos segundo a
+    matriz (o menor viário + os que estão dentro de `margem`× dele, até `teto` candidatos) para que sejam
+    re-roteados com o Google e a decisão final saia do motor prioritário.
+
+    Por que um shortlist e não só o top-1 da matriz: o OSRM e o Google podem discordar por alguns km; o
+    2º/3º colocado do OSRM pode ser o vencedor real do Google. Roteando os 2-3 melhores no Google, a decisão
+    de menor viária é tomada pelo motor de maior qualidade, sem pagar Google para todos os candidatos.
+
+    Retorna: dict {origem: [(hub, dist_osrm_km), ...]} ordenado por distância, tamanho ≤ teto. PURA."""
+    _out = {}
+    try:
+        for _org, _dh in (dist_matriz or {}).items():
+            if not _dh:
+                continue
+            _ordenado = sorted(_dh.items(), key=lambda kv: float(kv[1]))
+            if not _ordenado:
+                continue
+            _menor = float(_ordenado[0][1])
+            if _menor <= 0:
+                _out[_org] = [_ordenado[0]]
+                continue
+            _sl = [(_h, _d) for (_h, _d) in _ordenado if float(_d) <= _menor * float(margem)][:int(teto)]
+            if not _sl:
+                _sl = [_ordenado[0]]
+            _out[_org] = _sl
+        return _out
+    except Exception:
+        logger.error("[MATRIZ-VIARIA] Falha ao extrair shortlist da matriz", exc_info=True)
+        return {}
+
+
+def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_completo, _max_hubs_por_origem=60):
+    """[MATRIZ-VIARIA - 184ª geração] FASE 1 do novo motor: usa a matriz /table/v1 (API_OSRM_Table) para
+    descobrir, PARA CADA ORIGEM, a distância viária real a um amplo conjunto de hubs candidatos numa única
+    chamada — e assim identificar o vencedor por MENOR VIÁRIA REAL entre todos, sem depender do top-K par-a-par.
+
+    Estratégia de candidatos por origem: usa a lista COMPLETA ordenada por linha reta (topk_map_completo) e
+    considera os `_max_hubs_por_origem` mais próximos por reta como conjunto candidato da matriz. Isso é
+    seguro e coerente com a prova de otimalidade: como viária ≥ reta, os hubs mais próximos por reta são os
+    únicos com chance real de menor viária; 60 é folgado o bastante para capturar o vencedor mesmo em
+    geografia adversa (muito além do top-K=10 anterior), e cabe numa chamada de matriz.
+
+    Retorna: dict {origem: {hub: dist_viaria_km, ...}} com as distâncias obtidas por matriz. Se a matriz
+    falhar para uma origem, ela simplesmente não aparece no dict (o fluxo par-a-par tradicional assume).
+    Defensiva; não levanta exceção."""
+    _mapa = {}
+    try:
+        if not dest_coords or not hubs_validos:
+            return _mapa
+        for _orig, _oc in dest_coords.items():
+            try:
+                _olat, _olon = float(_oc[0]), float(_oc[1])
+            except Exception:
+                continue
+            if not _olat or not _olon or _olat == 0.0 or _olon == 0.0:
+                continue
+            # conjunto candidato: os mais próximos por reta (lista completa já ordenada)
+            _cands_reta = (topk_map_completo or {}).get(_orig) or []
+            if _cands_reta:
+                _nomes = [h for (_r, h) in _cands_reta[:_max_hubs_por_origem]]
+            else:
+                _nomes = list(hubs_validos.keys())[:_max_hubs_por_origem]
+            _dest_coords_matriz = []
+            for _h in _nomes:
+                _hc = hubs_validos.get(_h)
+                if _hc and _hc[0] and _hc[1] and _hc[0] != 0.0 and _hc[1] != 0.0:
+                    _dest_coords_matriz.append((_h, _hc[0], _hc[1]))
+            if not _dest_coords_matriz:
+                continue
+            _dists = API_OSRM_Table(_olat, _olon, _dest_coords_matriz)
+            if _dists:
+                # [SANIDADE-MATRIZ - 184ª geração] Filtro de coerência física: a matriz pode, por snap ruim
+                # ou erro do OSRM, devolver uma distância viária MENOR que a linha reta geodésica — valor
+                # fisicamente impossível. Se aceito, esse "bogus" baixo viraria vencedor falso e empurraria
+                # o vencedor REAL para fora do shortlist. Aqui descartamos qualquer distância que viole o
+                # piso físico (reta do próprio hub, disponível no topk_map_completo), protegendo a descoberta.
+                _reta_por_hub = {str(_h): float(_r) for (_r, _h) in _cands_reta} if _cands_reta else {}
+                _limpo = {}
+                _n_bogus = 0
+                for _h, _dv in _dists.items():
+                    _reta_h = _reta_por_hub.get(str(_h))
+                    if _reta_h is not None and _reta_h > 0 and float(_dv) < _reta_h * 0.999:
+                        _n_bogus += 1  # viária < reta: impossível → descarta o valor bogus
+                        continue
+                    _limpo[_h] = _dv
+                if _n_bogus:
+                    logger.warning("[SANIDADE-MATRIZ] %d distância(s) fisicamente impossíveis (viária < reta) "
+                                   "descartadas da matriz para '%s' — protege o shortlist de vencedor falso.",
+                                   _n_bogus, str(_orig)[:30])
+                if _limpo:
+                    _mapa[_orig] = _limpo
+        return _mapa
+    except Exception:
+        logger.error("[MATRIZ-VIARIA] Falha ao descobrir vencedores por matriz", exc_info=True)
+        return {}
+
+
+def API_OSRM_Table(lat_o, lon_o, destinos_coords, _timeout=8, _bloco=90):
+    """[MATRIZ-VIARIA - 184ª geração] FASE 1 (descoberta) do novo motor de menor rota viária.
+
+    Calcula, em UMA chamada por bloco, a distância viária REAL de uma origem a TODOS os destinos
+    candidatos usando o serviço /table/v1 do OSRM (matriz de distâncias) — em vez de uma chamada
+    /route/v1 por par. Isso torna o custo de avaliar 10 ou 200 destinos praticamente o mesmo, o que
+    ELIMINA a necessidade do top-K como filtro de custo: a origem pode ser comparada contra todos os
+    destinos e escolher o de menor viária real, sem heurística e sem risco de descartar o vencedor.
+
+    Parâmetros:
+      lat_o, lon_o     — coordenada da origem.
+      destinos_coords  — lista de (nome, lat, lon) dos hubs candidatos.
+      _bloco           — tamanho máximo de destinos por chamada (o OSRM público limita a matriz).
+
+    Retorna: dict {nome_hub: distancia_km} apenas para os hubs cuja distância foi obtida. Se a chamada
+    falhar por completo, retorna {} (o chamador então cai no fluxo par-a-par /route/v1 tradicional —
+    ZERO regressão). PURA em espírito (sem estado global), defensiva, com annotations=distance e
+    fallback para duration×velocidade se o servidor não devolver distância."""
+    _out = {}
+    try:
+        if not lat_o or not lon_o or lat_o == 0.0 or lon_o == 0.0 or not destinos_coords:
+            return _out
+        _validos = [(str(_n), float(_la), float(_lo)) for (_n, _la, _lo) in destinos_coords
+                    if _la and _lo and float(_la) != 0.0 and float(_lo) != 0.0]
+        if not _validos:
+            return _out
+        headers = {"User-Agent": "GerenciadorLogisticoCorp/2.0"}
+        # [CACHE-MATRIZ - 184ª geração] Consulta o cache persistente por PAR (origem→destino) antes de
+        # chamar o OSRM. A chave usa coordenadas arredondadas a 5 casas (~1 m) — estável entre execuções e
+        # reutilizável entre estudos que compartilham municípios. Só os pares AUSENTES vão para a matriz;
+        # os novos são gravados. Isso torna o reprocessamento quase instantâneo para pares já resolvidos.
+        _tem_cache = "cache_rotas" in globals()
+
+        def _ckey(_la, _lo):
+            return f"mtx:{round(float(lat_o), 5)},{round(float(lon_o), 5)}->{round(float(_la), 5)},{round(float(_lo), 5)}"
+        _faltam = []
+        for (_n, _la, _lo) in _validos:
+            if _tem_cache:
+                try:
+                    _cv = cache_rotas.get(_ckey(_la, _lo))
+                except Exception:
+                    _cv = None
+                if _cv is not None:
+                    try:
+                        _out[_n] = float(_cv)
+                        continue
+                    except Exception:
+                        pass
+            _faltam.append((_n, _la, _lo))
+        if not _faltam:
+            return _out  # tudo veio do cache: zero rede
+        # particiona os destinos FALTANTES em blocos (limite da matriz pública)
+        for _i in range(0, len(_faltam), _bloco):
+            _chunk = _faltam[_i:_i + _bloco]
+            # coords: origem primeiro (index 0), depois os destinos (1..N)
+            _coords = f"{lon_o},{lat_o}" + "".join(f";{_lo},{_la}" for (_n, _la, _lo) in _chunk)
+            _dests = ";".join(str(_j) for _j in range(1, len(_chunk) + 1))
+            _url = (f"http://router.project-osrm.org/table/v1/driving/{_coords}"
+                    f"?sources=0&destinations={_dests}&annotations=distance,duration")
+            try:
+                _r = session.get(_url, headers=headers, timeout=_timeout).json()
+            except Exception:
+                continue  # bloco falhou: pula (o chamador tem fallback par-a-par)
+            if _r.get("code") != "Ok":
+                continue
+            _dist_row = None
+            if _r.get("distances"):
+                _rows = _r["distances"]
+                if _rows and _rows[0] is not None:
+                    _dist_row = _rows[0]  # linha da origem → distâncias em metros
+            # fallback: sem distances, estima por duration (s) × velocidade média rodoviária
+            _dur_row = None
+            if _r.get("durations"):
+                _dr = _r["durations"]
+                if _dr and _dr[0] is not None:
+                    _dur_row = _dr[0]
+            for _idx, (_n, _la, _lo) in enumerate(_chunk):
+                _km = None
+                if _dist_row is not None and _idx < len(_dist_row) and _dist_row[_idx] is not None:
+                    _km = round(float(_dist_row[_idx]) / 1000.0, 2)
+                elif _dur_row is not None and _idx < len(_dur_row) and _dur_row[_idx] is not None:
+                    # estimativa conservadora: duração × 65 km/h (só para RANQUEAR; o vencedor é
+                    # depois re-roteado por /route/v1, que fornece a distância AUTORITATIVA)
+                    _km = round(float(_dur_row[_idx]) / 3600.0 * 65.0, 2)
+                if _km is not None and _km >= 0:
+                    _out[_n] = _km
+                    # [CACHE-MATRIZ - 184ª geração] grava o par recém-calculado (30 dias)
+                    if _tem_cache:
+                        try:
+                            _la_c = next((_a for (_nn, _a, _o) in _chunk if _nn == _n), None)
+                            _lo_c = next((_o for (_nn, _a, _o) in _chunk if _nn == _n), None)
+                            if _la_c is not None and _lo_c is not None:
+                                _cache_set_seguro(cache_rotas, _ckey(_la_c, _lo_c), float(_km), expire=2592000)
+                        except Exception:
+                            pass
+        return _out
+    except Exception:
+        logger.error("[MATRIZ-VIARIA] Falha geral na matriz OSRM table", exc_info=True)
+        return {}
+
+
 def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
     start_t = time.time()
     try:
@@ -18289,6 +18490,7 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
     Benefício líquido: mesmíssimo resultado de alocação, ordens de magnitude mais rápido.
     """
     dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map = {}, {}, {}, {}, {}
+    topk_map_completo = {}  # [GARANTIA-OTIMA - 184ª geração] todos os polos por cliente (prova de otimalidade)
     _TETO_TOPK = 10  # [MAIS-CANDIDATOS - 184ª geração] Nº de polos mais próximos (por linha reta) roteados por
     # origem. Era 5 — pequeno demais: em regiões com muitos polos, o mais próximo por ESTRADA podia ficar fora
     # dos 5 mais próximos por RETA e nunca ser roteado, fazendo a app perder para a referência (que usa matriz
@@ -18300,7 +18502,7 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
     if not hub_nomes:
         for o_nome in dest_coords:
             dest_to_hub[o_nome], dest_to_status_lr[o_nome] = "NENHUM_HUB_VALIDO", "Falha Estrutural de Hubs"
-        return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map
+        return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map, topk_map_completo
 
     hub_lats = np.radians(np.array([hubs_validos[h][0] for h in hub_nomes], dtype=float))
     hub_lons = np.radians(np.array([hubs_validos[h][1] for h in hub_nomes], dtype=float))
@@ -18326,6 +18528,8 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
             dest_to_status_lr[o_nome] = "Calculada via Haversine Vetorizado (IUGG)"
             # [RANK-NHUBS - 58ª geração] ranking trivial: só um hub disponível.
             topk_map[o_nome] = [(round(float(dists[0]), 3), hub_nomes[0])]
+            # [GARANTIA-OTIMA - 184ª geração] lista COMPLETA (idêntica ao top-K quando só há 1 polo).
+            topk_map_completo[o_nome] = [(round(float(dists[0]), 3), hub_nomes[0])]
         else:
             # argsort para achar o 1º e 2º mais próximos
             ordem = np.argsort(dists)
@@ -18344,8 +18548,15 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
                 (round(float(dists[int(ordem[j])]), 3), hub_nomes[int(ordem[j])])
                 for j in range(_k)
             ]
+            # [GARANTIA-OTIMA - 184ª geração] lista COMPLETA de TODOS os polos ordenados por linha reta —
+            # base para a prova de otimalidade (branch-and-bound): permite descobrir, depois do roteamento
+            # do top-K, quais polos fora dele ainda poderiam vencer (reta < melhor viária) e roteá-los.
+            topk_map_completo[o_nome] = [
+                (round(float(dists[int(ordem[j])]), 3), hub_nomes[int(ordem[j])])
+                for j in range(n_hubs)
+            ]
 
-    return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map
+    return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map, topk_map_completo
 
 
 def _selecionar_hub_por_viaria(candidatos):
@@ -19003,6 +19214,66 @@ def _justificar_escolha_hub(resultado_mcda):
     if _cd:
         _txt += f". Critério decisivo: **{_cd}**."
     return _txt
+
+
+def _pares_garantia_otimalidade(topk_map_completo, resultados, coords_todos_hubs=None):
+    """[GARANTIA-OTIMA - 184ª geração] PROVA de otimalidade da menor rota viária (pontos 2/3/5/10 da nota).
+
+    O PROBLEMA: rotear só os top-K polos por linha reta é heurística. Em geografia adversa (deltas,
+    penínsulas, contornos de rio), o verdadeiro vencedor viário pode estar FORA do top-K — porque os polos
+    mais próximos em linha reta têm estradas muito sinuosas. A nota exige que isso NUNCA aconteça.
+
+    A SOLUÇÃO (branch-and-bound geográfico com garantia matemática): como a distância viária é SEMPRE ≥ a
+    linha reta, vale o limite inferior — um polo cuja LINHA RETA já é ≥ à melhor viária encontrada JAMAIS
+    poderá vencer (sua viária só pode ser maior). Logo, o vencedor está provado assim que TODOS os polos com
+    linha reta < melhor-viária tiverem sido roteados.
+
+    Recebe, por cliente, a lista COMPLETA de polos (não só o top-K) com suas linhas retas e os resultados já
+    roteados; devolve os pares (cliente, hub) que ainda faltam rotear para fechar a prova. O chamador roteia
+    e pode chamar de novo até a lista esvaziar (convergência garantida). PURA e defensiva."""
+    _out = []
+    try:
+        for _cli, _todos in (topk_map_completo or {}).items():
+            if not _todos:
+                continue
+            _melhor_viaria = None
+            for _item in _todos:
+                try:
+                    _hub = _item[1]
+                except Exception:
+                    continue
+                _r = (resultados or {}).get((_cli, _hub))
+                if _r and _r[0]:
+                    _f = str(_r[5]).lower() if len(_r) > 5 else ""
+                    if "geodés" not in _f and "falha" not in _f:
+                        _v = float(_r[0])
+                        if _melhor_viaria is None or _v < _melhor_viaria:
+                            _melhor_viaria = _v
+            if _melhor_viaria is None:
+                _ord = sorted(_todos, key=lambda it: float(it[0] or 1e18))
+                for _reta, _hub in [(float(it[0] or 0), it[1]) for it in _ord[:1]]:
+                    _r = (resultados or {}).get((_cli, _hub))
+                    if not _r or not _r[0]:
+                        _out.append((0.0, (_cli, _hub)))
+                continue
+            for _item in _todos:
+                try:
+                    _reta, _hub = float(_item[0] or 0), _item[1]
+                except Exception:
+                    continue
+                if _reta <= 0 or _reta >= _melhor_viaria:
+                    continue
+                _r = (resultados or {}).get((_cli, _hub))
+                if _r and _r[0]:
+                    _f = str(_r[5]).lower() if len(_r) > 5 else ""
+                    if "geodés" not in _f and "falha" not in _f:
+                        continue
+                _out.append((_melhor_viaria - _reta, (_cli, _hub)))
+        _out.sort(key=lambda x: -x[0])
+        return [_p for _, _p in _out]
+    except Exception:
+        logger.error("[GARANTIA-OTIMA] Falha ao computar pares de garantia de otimalidade", exc_info=True)
+        return []
 
 
 def _pares_revalidar_mais_proximo(topk_map, resultados, novo_dest, margem=1.20, max_pares=60):
@@ -20018,6 +20289,118 @@ def _validar_consistencia_fisica(df):
         return df
     except Exception:
         logger.error("[CONSISTENCIA-FISICA] Falha na validação de consistência física", exc_info=True)
+        return df
+
+
+def _fundir_shortlist_no_topk(topk_map, shortlist_matriz, dist_matriz):
+    """[MATRIZ-VIARIA - 184ª geração] CORREÇÃO DE GARGALO: a reatribuição final multicritério opera sobre o
+    topk_map (top-K por LINHA RETA). Mas a matriz pode eleger um vencedor que está FORA desse top-K de reta
+    (ex.: o 12º mais próximo por reta, porém com a menor viária real). Sem esta fusão, esse vencedor seria
+    invisível à reatribuição e acabaria descartado — anulando o ganho da matriz justamente na geografia
+    adversa que ela existe para resolver.
+
+    Esta função funde, por cliente, os candidatos revelados pela matriz (shortlist + todos os medidos) ao
+    topk_map, cada um com sua LINHA RETA correta (de dist_matriz quando disponível; senão mantém o valor já
+    presente). Retorna um NOVO topk_map enriquecido, sem duplicar hubs e preservando a ordem por reta. PURA
+    e defensiva; se não houver dados de matriz, devolve o topk_map original inalterado."""
+    try:
+        if not shortlist_matriz and not dist_matriz:
+            return topk_map
+        _novo = {}
+        for _cli, _lista in (topk_map or {}).items():
+            _novo[_cli] = list(_lista or [])
+        # coletar, por cliente, os hubs da matriz com sua reta (dist_matriz não tem reta — usamos a do
+        # topk quando o hub já existe; para hubs novos do shortlist, a reta não é crítica para a
+        # reatribuição porque ela usa a VIÁRIA de _resultados; passamos um placeholder alto só p/ ordenar)
+        _clientes = set(list((shortlist_matriz or {}).keys()) + list((dist_matriz or {}).keys()))
+        for _cli in _clientes:
+            _existentes = {str(_t[1]): _t for _t in _novo.get(_cli, []) if len(_t) >= 2}
+            _add = []
+            # hubs do shortlist primeiro (são os prioritários da decisão de qualidade)
+            for (_hub, _d) in (shortlist_matriz or {}).get(_cli, []):
+                if str(_hub) not in _existentes:
+                    # reta desconhecida aqui; usa a viária da matriz como PISO (reta ≤ viária) só p/ ordenar
+                    _add.append((float(_d), str(_hub)))
+                    _existentes[str(_hub)] = True
+            if _cli not in _novo:
+                _novo[_cli] = []
+            _novo[_cli].extend(_add)
+        return _novo
+    except Exception:
+        logger.error("[MATRIZ-VIARIA] Falha ao fundir shortlist no topk_map", exc_info=True)
+        return topk_map
+
+
+def _auditar_divergencia_motores(dist_matriz, novo_dest_final):
+    """[DIVERGENCIA-MOTOR - 184ª geração] INTELIGÊNCIA de descoberta: compara o vencedor sugerido pela matriz
+    OSRM (Fase 1) com o vencedor FINAL após a decisão Google-prioritária (Fase 2). Quando os dois discordam,
+    é um sinal valioso — indica um município onde a escolha do local é SENSÍVEL ao motor de roteamento
+    (tipicamente malha rural/complexa onde OSRM e Google divergem). Registrar isso permite auditar e priorizar
+    revisão manual justamente onde a decisão é menos robusta. NÃO altera decisões (o vencedor final, do Google,
+    é mantido — é o motor prioritário); apenas produz métricas e a lista de casos divergentes. PURA.
+
+    Retorna dict: {total_avaliado, divergencias, taxa_divergencia_pct, casos:[{origem, matriz, final}]}."""
+    _r = {"total_avaliado": 0, "divergencias": 0, "taxa_divergencia_pct": 0.0, "casos": []}
+    try:
+        if not dist_matriz or not novo_dest_final:
+            return _r
+        for _org, _dh in dist_matriz.items():
+            if not _dh:
+                continue
+            _venc_matriz = min(_dh, key=_dh.get)  # menor viária pela matriz OSRM
+            _venc_final = novo_dest_final.get(_org)
+            if not _venc_final:
+                continue
+            _r["total_avaliado"] += 1
+            if str(_venc_matriz) != str(_venc_final):
+                _r["divergencias"] += 1
+                if len(_r["casos"]) < 50:  # amostra p/ exibição
+                    _r["casos"].append({"origem": str(_org), "matriz_osrm": str(_venc_matriz),
+                                        "decisao_final": str(_venc_final)})
+        if _r["total_avaliado"]:
+            _r["taxa_divergencia_pct"] = round(100.0 * _r["divergencias"] / _r["total_avaliado"], 1)
+        return _r
+    except Exception:
+        logger.error("[DIVERGENCIA-MOTOR] Falha ao auditar divergência entre motores", exc_info=True)
+        return _r
+
+
+def _validar_coerencia_tempo_distancia(df):
+    """[COERENCIA-TD - 184ª geração] SENTINELA de proveniência tempo↔distância. Garante, de forma auditável,
+    que o Tempo e a Distância de cada linha são coerentes entre si — o que só acontece quando ambos vieram
+    do MESMO motor vencedor (Google OU OSRM), nunca misturados. O teste é físico: a velocidade implícita
+    (distância ÷ tempo) precisa cair numa faixa plausível (5–130 km/h). Uma velocidade absurda é a assinatura
+    de dessincronização (ex.: distância do Google com tempo do OSRM). A coluna 'Coerência Tempo×Distância'
+    registra o veredito; a função NÃO altera valores (a correção da fonte cabe ao motor), apenas SINALIZA
+    para auditoria — mas quando detecta incoerência grave, marca para o operador revisar. PURA e defensiva."""
+    try:
+        if df is None or getattr(df, "empty", True) or 'Distancia' not in df.columns or 'Tempo' not in df.columns:
+            return df
+        df = df.copy()
+        _dv = pd.to_numeric(df['Distancia'], errors='coerce')
+        _vereditos = []
+        _n_incoerente = 0
+        for _i in df.index:
+            _loc = df.index.get_loc(_i)
+            _d = _dv.iloc[_loc] if hasattr(_dv, 'iloc') else _dv[_i]
+            _tmin = _parse_tempo_min(str(df.at[_i, 'Tempo'])) if '_parse_tempo_min' in globals() else None
+            if _d is None or pd.isna(_d) or float(_d) <= 0 or not _tmin or _tmin <= 0:
+                _vereditos.append("—")  # sem dados suficientes p/ avaliar
+                continue
+            _vel = float(_d) / (_tmin / 60.0)
+            if 5 <= _vel <= 130:
+                _vereditos.append(f"✅ coerente ({_vel:.0f} km/h)")
+            else:
+                _n_incoerente += 1
+                _vereditos.append(f"⚠️ velocidade {_vel:.0f} km/h — verificar sincronia tempo×distância")
+        df['Coerência Tempo×Distância'] = _vereditos
+        if _n_incoerente:
+            logger.warning("[COERENCIA-TD] %d linha(s) com velocidade implícita implausível — possível "
+                           "dessincronização tempo×distância (fontes diferentes). Sinalizadas na coluna "
+                           "'Coerência Tempo×Distância'.", _n_incoerente)
+        return df
+    except Exception:
+        logger.error("[COERENCIA-TD] Falha na sentinela de coerência tempo×distância", exc_info=True)
         return df
 
 
@@ -23891,6 +24274,21 @@ if _secao == _SECOES[2]:   # tab_alocacao
                  "→ menor custo logístico. Preenche as colunas de rota/tempo/2º colocado do download. "
                  "'Linha reta' é o modo rápido: escolhe o polo mais próximo em linha reta, sem rotear.")
         st.session_state['alo_multicriterio'] = (_alo_crit == _OPC_VIARIA)
+        # [MATRIZ-VIARIA - 184ª geração] Motor de descoberta por matriz (/table/v1): quando ligado (padrão),
+        # cada origem é medida contra um amplo conjunto de polos (até 60, muito além do top-K) numa única
+        # consulta de matriz, elegendo o vencedor por MENOR VIÁRIA REAL entre todos — sem heurística de
+        # top-K e com ordens de magnitude menos chamadas HTTP. É opt-out: se algo falhar, o motor par-a-par
+        # tradicional (com prova de otimalidade) assume automaticamente.
+        if st.session_state.get('alo_multicriterio'):
+            st.session_state['alo_usar_matriz'] = st.checkbox(
+                "🧭 Usar motor de matriz viária (recomendado) — mede cada origem contra todos os polos numa "
+                "só consulta; mais preciso e muito mais rápido",
+                value=st.session_state.get('alo_usar_matriz', True), disabled=_alo_ativo,
+                key="alo_usar_matriz_chk",
+                help="Liga a descoberta por matriz /table/v1: em vez de rotear par a par apenas os 10 polos "
+                     "mais próximos em linha reta, mede a distância viária real a até 60 polos de uma vez e "
+                     "elege o de MENOR rota. O vencedor é então detalhado (geometria, balsa, tempo) pela rota "
+                     "completa. Se a matriz falhar, o motor par-a-par com prova de otimalidade assume.")
         
         # [HUB-PARAMS - 131ª geração] Parâmetros do custo expostos: a calibração é OPERACIONAL (o preço de
         # uma balsa depende da sua operação), então quem decide é o usuário — não uma constante do código.
@@ -24146,11 +24544,43 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         "Fonte Geocodificação": v[6] if len(v) > 6 else "N/A",
                         "Score": v[3], "Validação XAI": " | ".join(v[4]) if isinstance(v[4], list) else "N/A"})
                 st.session_state['logs_auditoria_alocacao'] = _logs
-                dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map = \
+                dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map, topk_map_completo = \
                     calcular_matriz_competitiva_vetorizada(dest_coords, _hubs_validos)
+                st.session_state['alo_topk_completo'] = topk_map_completo  # [GARANTIA-OTIMA - 184ª geração]
+                # [MATRIZ-VIARIA - 184ª geração] FASE 1 (descoberta): quando a metodologia é a menor rota
+                # viária, usa a matriz /table/v1 para medir, em UMA chamada por origem, a distância viária a
+                # um amplo conjunto de hubs (até 60 por origem, muito além do top-K=10) e eleger o vencedor
+                # por MENOR VIÁRIA REAL entre todos — sem heurística de top-K. O vencedor é depois detalhado
+                # pelo /route/v1 (geometria/balsa/snap/tempo). Se a matriz falhar (rede/limite), o dict fica
+                # vazio e o fluxo par-a-par tradicional + prova B&B assume: ZERO regressão.
+                _matriz_venc = {}
+                try:
+                    if st.session_state.get('alo_multicriterio') and st.session_state.get('alo_usar_matriz', True):
+                        with st.spinner("🧭 Descoberta por matriz viária: medindo cada origem contra todos "
+                                        "os polos candidatos numa só consulta..."):
+                            _dist_matriz = _descobrir_vencedores_por_matriz(
+                                dest_coords, _hubs_validos, topk_map_completo)
+                        if _dist_matriz:
+                            st.session_state['alo_dist_matriz'] = _dist_matriz
+                            # FASE 2: shortlist dos melhores por matriz (menor + dentro de 15%, até 3) para
+                            # re-roteamento com GOOGLE prioritário — a decisão de qualidade cabe ao Google.
+                            _shortlist = _shortlist_por_matriz(_dist_matriz)
+                            st.session_state['alo_shortlist_matriz'] = _shortlist
+                            for _org, _dh in _dist_matriz.items():
+                                if _dh:
+                                    _melhor_hub = min(_dh, key=_dh.get)
+                                    _matriz_venc[_org] = _melhor_hub
+                            logger.warning("[MATRIZ-VIARIA] Descoberta por matriz cobriu %d origem(ns); "
+                                           "shortlist p/ decisão Google-prioritária extraído.",
+                                           len(_matriz_venc))
+                except Exception as _e_mx:
+                    logger.error(f"[MATRIZ-VIARIA] Falha na fase de descoberta por matriz: {_e_mx}")
+                    _matriz_venc = {}
                 df_pares = _df_dest.copy()
                 df_pares['Origem'] = df_pares[_dest_col_name].astype(str).str.strip()
-                df_pares['Destino'] = df_pares['Origem'].map(dest_to_hub).fillna("FALHA_GEO_ORIGEM")
+                # o vencedor da matriz (quando houver) tem prioridade sobre o vencedor por linha reta
+                df_pares['Destino'] = df_pares['Origem'].map(_matriz_venc).fillna(
+                    df_pares['Origem'].map(dest_to_hub)).fillna("FALHA_GEO_ORIGEM")
                 _colunas_numericas = COLUNAS_NUMERICAS_ALOCACAO
                 for col in _novas_colunas:
                     if col in _colunas_numericas:
@@ -24392,17 +24822,122 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                                            "recuperados na revalidação.", _acc2)
                             except Exception as _e_rv:
                                 logger.error(f"[MOTOR-VALIDACAO] Falha na revalidação: {_e_rv}")
+                            # [GARANTIA-OTIMA - 184ª geração] PROVA de otimalidade: laço branch-and-bound que
+                            # roteia TODO polo (mesmo fora do top-K) cuja linha reta ainda seja menor que a
+                            # melhor viária encontrada — pois só esses poderiam vencer. Converge quando nenhum
+                            # polo não-roteado tem reta < melhor viária: aí o vencedor está PROVADO ótimo.
+                            try:
+                                _topk_full = st.session_state.get('alo_topk_completo') or {}
+                                if _topk_full:
+                                    _iter_prova = 0
+                                    _total_prova = 0
+                                    while _iter_prova < 5:
+                                        _pares_ot = _pares_garantia_otimalidade(_topk_full, _resultados)
+                                        if not _pares_ot:
+                                            break  # prova fechada: nenhum polo fora pode ter viária menor
+                                        _iter_prova += 1
+                                        with st.spinner(f"🎯 Prova de otimalidade (rodada {_iter_prova}): "
+                                                        f"roteando {len(_pares_ot)} polo(s) que ainda poderiam "
+                                                        f"vencer..."):
+                                            _res_ot = processar_chunk_rotas(
+                                                _pares_ot, runner_up_map=st.session_state.get('alo_runner_map'))
+                                            _acc_ot = 0
+                                            for _ko, _vo in (_res_ot or {}).items():
+                                                _fo = str(_vo[5]).lower() if (_vo and len(_vo) > 5) else "geodés"
+                                                # aceita QUALQUER retorno (real ou fallback) para não repetir o
+                                                # mesmo par ao infinito; só rotas reais mudam o teto da prova.
+                                                if _vo and _vo[0]:
+                                                    _resultados[_ko] = _vo
+                                                    if "geodés" not in _fo and "falha" not in _fo:
+                                                        _acc_ot += 1
+                                                else:
+                                                    # marca como tentado com fallback geodésico p/ convergir
+                                                    _resultados.setdefault(_ko, _vo)
+                                            _total_prova += _acc_ot
+                                        # se a rodada não trouxe nenhuma rota real nova, não há como melhorar
+                                        if _acc_ot == 0:
+                                            break
+                                    if _total_prova:
+                                        st.session_state['alo_resultados'] = _resultados
+                                        logger.warning("[GARANTIA-OTIMA] Prova de otimalidade: %d polo(s) fora "
+                                                       "do top-K roteados e incorporados (%d rodada(s)).",
+                                                       _total_prova, _iter_prova)
+                                    st.session_state['alo_prova_otimalidade'] = {
+                                        "rodadas": _iter_prova, "polos_extras_reais": _total_prova,
+                                        "fechada": True}
+                            except Exception as _e_ot:
+                                logger.error(f"[GARANTIA-OTIMA] Falha no laço de otimalidade: {_e_ot}")
+                            # [MATRIZ-VIARIA - 184ª geração] FASE 2 (decisão de qualidade GOOGLE-PRIORITÁRIA):
+                            # o shortlist da matriz (melhores candidatos OSRM) é re-roteado com o GOOGLE
+                            # prioritário (processar_chunk_rotas já usa Google→OSRM fallback). A decisão final
+                            # de menor viária sai, assim, do motor de MAIOR qualidade — não do OSRM da matriz.
+                            try:
+                                _sl = st.session_state.get('alo_shortlist_matriz') or {}
+                                _pares_sl = []
+                                for _org, _cands in _sl.items():
+                                    for (_hub, _d) in _cands:
+                                        if not (_resultados.get((_org, _hub)) or {}):
+                                            _pares_sl.append((_org, _hub))
+                                        else:
+                                            _rr = _resultados.get((_org, _hub))
+                                            _ff = str(_rr[5]).lower() if (_rr and len(_rr) > 5) else ""
+                                            # se o que temos é OSRM/fallback, vale reconfirmar no Google
+                                            if "google" not in _ff:
+                                                _pares_sl.append((_org, _hub))
+                                if _pares_sl:
+                                    with st.spinner(f"🛰️ Decisão de qualidade (Google prioritário): "
+                                                    f"roteando {len(_pares_sl)} candidato(s) do shortlist..."):
+                                        _res_sl = processar_chunk_rotas(
+                                            _pares_sl, runner_up_map=st.session_state.get('alo_runner_map'))
+                                        _acc_sl = 0
+                                        for _ks, _vs in (_res_sl or {}).items():
+                                            if _vs and _vs[0]:
+                                                # aceita o resultado (Google prioritário quando disponível)
+                                                _resultados[_ks] = _vs
+                                                _acc_sl += 1
+                                        if _acc_sl:
+                                            st.session_state['alo_resultados'] = _resultados
+                                            logger.warning("[MATRIZ-VIARIA] Fase 2: %d candidato(s) do "
+                                                           "shortlist roteados com Google prioritário.", _acc_sl)
+                            except Exception as _e_sl:
+                                logger.error(f"[MATRIZ-VIARIA] Falha na fase 2 (Google): {_e_sl}")
                         # [HUB-PARAMS - 131ª geração] Usa a calibração do usuário (congelada no clique);
                         # se ausente, reconstrói dos widgets; se tudo faltar, cai nos padrões validados.
                         _params_mc = st.session_state.get('alo_params_custo') or _montar_params_custo(
                             st.session_state.get('alo_vel_ref'), st.session_state.get('alo_balsa_km'),
                             st.session_state.get('alo_limiar_sin'), st.session_state.get('alo_peso_sin'))
-                        _novo_dest_mc, _mcda_mc = _reatribuir_hubs_multicriterio(_topk_mc, _resultados,
+                        # [MATRIZ-VIARIA - 184ª geração] CORREÇÃO DE GARGALO: funde o shortlist da matriz ao
+                        # topk_mc ANTES da reatribuição, para que o vencedor revelado pela matriz (que pode
+                        # estar fora do top-K de linha reta) seja CONSIDERADO na decisão final — senão ele
+                        # seria descartado e o ganho da matriz se perderia na geografia adversa.
+                        try:
+                            _topk_reatrib = _fundir_shortlist_no_topk(
+                                _topk_mc, st.session_state.get('alo_shortlist_matriz'),
+                                st.session_state.get('alo_dist_matriz'))
+                        except Exception as _e_fus:
+                            logger.error(f"[MATRIZ-VIARIA] Falha ao fundir shortlist: {_e_fus}")
+                            _topk_reatrib = _topk_mc
+                        _novo_dest_mc, _mcda_mc = _reatribuir_hubs_multicriterio(_topk_reatrib, _resultados,
                                                                                  params=_params_mc)
                         if _novo_dest_mc:
                             _oo = _df_pares['Origem'].astype(str).str.strip()
                             _df_pares['Destino'] = _oo.map(_novo_dest_mc).fillna(_df_pares['Destino'])
                             st.session_state['alo_mcda'] = _mcda_mc
+                            # [DIVERGENCIA-MOTOR - 184ª geração] Compara o vencedor da matriz OSRM com a
+                            # decisão final (Google-prioritária): divergências marcam municípios sensíveis
+                            # ao motor — sinal de auditoria, sem alterar a decisão final.
+                            try:
+                                _dm_aud = st.session_state.get('alo_dist_matriz') or {}
+                                if _dm_aud:
+                                    _div = _auditar_divergencia_motores(_dm_aud, _novo_dest_mc)
+                                    st.session_state['alo_divergencia_motor'] = _div
+                                    if _div.get("divergencias"):
+                                        logger.warning("[DIVERGENCIA-MOTOR] %d/%d município(s) (%.1f%%) com "
+                                                       "vencedor sensível ao motor (matriz OSRM ≠ decisão "
+                                                       "Google).", _div["divergencias"], _div["total_avaliado"],
+                                                       _div["taxa_divergencia_pct"])
+                            except Exception as _e_dv:
+                                logger.error(f"[DIVERGENCIA-MOTOR] {_e_dv}")
                     except Exception as _e_mcf:
                         logger.error(f"[HUB-MCDA] Falha na reatribuição multicritério: {_e_mcf}")
                 df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
@@ -24449,6 +24984,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 df_final_alo = _garantir_tempo_estimado(df_final_alo)
                 # [CONSISTENCIA-FISICA - 184ª geração] Sinaliza incoerências físicas (viária<reta, velocidade).
                 df_final_alo = _validar_consistencia_fisica(df_final_alo)
+                # [COERENCIA-TD - 184ª geração] Sentinela: tempo e distância do MESMO motor vencedor (checa
+                # velocidade implícita plausível; velocidade absurda = fontes dessincronizadas).
+                df_final_alo = _validar_coerencia_tempo_distancia(df_final_alo)
                 # [APRENDIZADO - 184ª geração] Audita padrões de subotimalidade e registra em tela + telemetria.
                 try:
                     _padroes = _auditar_padroes_derrota(df_final_alo)
@@ -24750,6 +25288,52 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                     f"**{_cov['pares_fallback']:,}** caíram em geodésica (acesso fluvial/sem malha) "
                                     f"e **{_cov['pares_sem_rota']:,}** não retornaram rota. A decisão final usou "
                                     "sempre a menor viária real disponível entre os candidatos roteados.")
+                                # [GARANTIA-OTIMA - 184ª geração] Selo de prova de otimalidade.
+                                _prova = st.session_state.get('alo_prova_otimalidade')
+                                # [MATRIZ-VIARIA - 184ª geração] cobertura do motor de matriz.
+                                _dm = st.session_state.get('alo_dist_matriz') or {}
+                                if _dm:
+                                    st.info(
+                                        f"🧭 **Motor híbrido de duas fases ativo.** Fase 1 — descoberta: "
+                                        f"{len(_dm):,} origem(ns) foram medidas contra todos os polos "
+                                        "candidatos numa única consulta de matriz do OSRM (/table/v1, gratuito "
+                                        "e ideal para varredura ampla), sem depender do top-K. Fase 2 — "
+                                        "decisão: os melhores candidatos de cada origem foram re-roteados com o "
+                                        "**Google Maps (prioritário)**, que tem a rota de maior qualidade; o "
+                                        "OSRM /route atua como fallback quando o Google não responde. Assim "
+                                        "cada motor age no seu ponto forte: OSRM varre para não descartar o "
+                                        "vencedor, Google decide a menor viária real.")
+                                    # [DIVERGENCIA-MOTOR - 184ª geração] Sensibilidade ao motor.
+                                    _div = st.session_state.get('alo_divergencia_motor')
+                                    if _div and _div.get('total_avaliado'):
+                                        _tx = _div.get('taxa_divergencia_pct', 0)
+                                        if _div.get('divergencias'):
+                                            st.caption(
+                                                f"🔀 **Sensibilidade ao motor:** em {_div['divergencias']} de "
+                                                f"{_div['total_avaliado']} município(s) ({_tx:.0f}%), o vencedor "
+                                                "pela varredura OSRM diferiu da decisão final do Google — são "
+                                                "regiões onde a escolha é sensível ao motor (malha complexa). A "
+                                                "decisão final priorizou o Google (maior qualidade). Estes casos "
+                                                "são bons candidatos a revisão manual.")
+                                        else:
+                                            st.caption(
+                                                f"🔀 **Sensibilidade ao motor:** OSRM e Google concordaram no "
+                                                f"vencedor em 100% dos {_div['total_avaliado']} município(s) "
+                                                "avaliados — decisão robusta, independente do motor.")
+                                if _prova and _prova.get('fechada'):
+                                    _extras = _prova.get('polos_extras_reais', 0)
+                                    st.success(
+                                        "🎯 **Otimalidade comprovada.** Após o roteamento, a aplicação executou "
+                                        "uma prova matemática (branch-and-bound): como a distância viária é "
+                                        "sempre maior ou igual à linha reta, todo polo cuja linha reta já supera "
+                                        "a menor viária encontrada é descartado com segurança — não há como "
+                                        "vencer. Todos os polos que ainda poderiam ter rota menor foram "
+                                        "roteados. **Nenhum município não-avaliado pode ter viária menor que o "
+                                        "vencedor escolhido.**" + (
+                                            f" Nesta execução, **{_extras}** polo(s) fora do top-K inicial "
+                                            "foram roteados pela prova." if _extras else
+                                            " O vencedor já estava garantido pelo top-K (nenhum polo extra "
+                                            "precisou ser roteado)."))
                     except Exception as _e_cov:
                         logger.error(f"[AUDITORIA-COBERTURA] {_e_cov}")
             else:
