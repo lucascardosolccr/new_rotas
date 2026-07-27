@@ -9651,7 +9651,16 @@ def _montar_planilha_lote_xlsx(df_final):
     arquivo continua válido (defensivo). Retorna bytes."""
     _buf = io.BytesIO()
     with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
-        _renomear_colunas_exame(df_final).to_excel(_w, index=False, sheet_name="Rotas")
+        _df_rotas_lote = _renomear_colunas_exame(df_final)
+        _df_rotas_lote.to_excel(_w, index=False, sheet_name="Rotas")
+        # [EXPORT-PADRAO - 184ª geração] Padrão institucional na aba principal do Lote.
+        try:
+            _wb_lt = getattr(_w, "book", None)
+            if _wb_lt is not None and hasattr(_wb_lt, "add_format"):
+                _fmts_lt = _fmt_institucional(_wb_lt)
+                _estilizar_tabela_xlsx(_w.sheets.get("Rotas"), _wb_lt, _df_rotas_lote, _fmts_lt)
+        except Exception:
+            logger.error("[EXPORT-PADRAO] Falha ao estilizar aba Rotas do Lote", exc_info=True)
         try:
             # [CAPA-LOTE - 184ª geração] Portada formatada (mesmo padrão da planilha de Locais): título grande,
             # totais e metodologia. Isolada em try próprio — se falhar, a aba 'Rotas' já está escrita.
@@ -15179,6 +15188,180 @@ def _preencher_vazios_exportacao(df):
         return df
 
 
+_PALETA_XLSX = {
+    "azul_titulo": "#1e3a8a",     # azul institucional (títulos)
+    "azul_header": "#1e40af",     # cabeçalho de tabela
+    "azul_claro": "#dbeafe",      # faixa/subtítulo
+    "cinza_zebra": "#f1f5f9",     # linha zebrada
+    "verde": "#16a34a", "verde_bg": "#dcfce7",
+    "amarelo": "#ca8a04", "amarelo_bg": "#fef9c3",
+    "vermelho": "#dc2626", "vermelho_bg": "#fee2e2",
+    "texto": "#0f172a", "muted": "#475569", "linha": "#cbd5e1",
+}
+
+
+def _fmt_institucional(wb):
+    """[EXPORT-PADRAO - 184ª geração] Fábrica central de formatos xlsxwriter para o padrão institucional
+    único das planilhas (cabeçalhos, títulos, faixas, zebra, células de dado). Recebe o workbook e devolve
+    um dict de formatos reutilizáveis. Fonte Calibri, paleta sóbria azul-institucional. Defensivo: se o
+    workbook não suporta add_format, devolve dict vazio (o chamador degrada para texto puro)."""
+    try:
+        if wb is None or not hasattr(wb, "add_format"):
+            return {}
+        P = _PALETA_XLSX
+        _base = {"font_name": "Calibri", "font_size": 10, "border": 1, "border_color": P["linha"]}
+        return {
+            "titulo": wb.add_format({"font_name": "Calibri", "bold": True, "font_size": 20,
+                                     "font_color": P["azul_titulo"]}),
+            "subtitulo": wb.add_format({"font_name": "Calibri", "italic": True, "font_size": 11,
+                                        "font_color": P["muted"]}),
+            "faixa": wb.add_format({"font_name": "Calibri", "bold": True, "font_size": 12,
+                                    "font_color": "#ffffff", "bg_color": P["azul_titulo"],
+                                    "align": "left", "valign": "vcenter"}),
+            "header": wb.add_format({"font_name": "Calibri", "bold": True, "font_size": 10,
+                                     "font_color": "#ffffff", "bg_color": P["azul_header"],
+                                     "align": "center", "valign": "vcenter", "border": 1,
+                                     "border_color": "#ffffff", "text_wrap": True}),
+            "celula": wb.add_format(dict(_base, valign="vcenter")),
+            "celula_zebra": wb.add_format(dict(_base, valign="vcenter", bg_color=P["cinza_zebra"])),
+            "num": wb.add_format(dict(_base, valign="vcenter", num_format="#,##0.0")),
+            "num_zebra": wb.add_format(dict(_base, valign="vcenter", num_format="#,##0.0",
+                                            bg_color=P["cinza_zebra"])),
+            "int": wb.add_format(dict(_base, valign="vcenter", num_format="#,##0")),
+            "int_zebra": wb.add_format(dict(_base, valign="vcenter", num_format="#,##0",
+                                            bg_color=P["cinza_zebra"])),
+            "kpi_rotulo": wb.add_format({"font_name": "Calibri", "font_size": 10, "font_color": P["muted"],
+                                         "border": 1, "border_color": P["linha"], "valign": "vcenter"}),
+            "kpi_valor": wb.add_format({"font_name": "Calibri", "bold": True, "font_size": 13,
+                                        "font_color": P["azul_titulo"], "border": 1,
+                                        "border_color": P["linha"], "valign": "vcenter"}),
+            "nota": wb.add_format({"font_name": "Calibri", "italic": True, "font_size": 9,
+                                   "font_color": P["muted"], "text_wrap": True, "valign": "top"}),
+            "verde": wb.add_format({"bg_color": P["verde_bg"], "font_color": P["verde"], "border": 1,
+                                    "border_color": P["linha"]}),
+            "amarelo": wb.add_format({"bg_color": P["amarelo_bg"], "font_color": P["amarelo"], "border": 1,
+                                      "border_color": P["linha"]}),
+            "vermelho": wb.add_format({"bg_color": P["vermelho_bg"], "font_color": P["vermelho"], "border": 1,
+                                       "border_color": P["linha"]}),
+        }
+    except Exception:
+        logger.error("[EXPORT-PADRAO] Falha ao criar formatos institucionais", exc_info=True)
+        return {}
+
+
+def _estilizar_tabela_xlsx(ws, wb, df, fmts, primeira_linha=0, congelar=True, autofiltro=True, zebra=True,
+                           titulo_impressao=None):
+    """[EXPORT-PADRAO - 184ª geração] Aplica o padrão institucional a uma aba de TABELA já escrita pelo
+    pandas: reescreve o cabeçalho com estilo destacado, aplica congelamento do cabeçalho, autofiltro,
+    zebra striping e largura automática por coluna (limitada). `primeira_linha` é a linha 0-based onde o
+    cabeçalho do pandas está. Defensivo: silencioso se algo faltar. Retorna nada."""
+    try:
+        if ws is None or not fmts or df is None or getattr(df, "empty", True):
+            return
+        _cols = list(df.columns)
+        _hlin = primeira_linha
+        # cabeçalho estilizado
+        for _j, _c in enumerate(_cols):
+            ws.write(_hlin, _j, str(_c), fmts.get("header"))
+        # largura automática (título e conteúdo, com teto)
+        for _j, _c in enumerate(_cols):
+            _wmax = len(str(_c))
+            try:
+                _amostra = df[_c].astype(str).head(200)
+                _wmax = max(_wmax, int(_amostra.map(len).max() or 0))
+            except Exception:
+                pass
+            ws.set_column(_j, _j, min(max(_wmax + 3, 10), 52))
+        # zebra + bordas nas células de dado
+        if zebra:
+            _n = len(df)
+            for _i in range(_n):
+                _fmt_lin = fmts.get("celula_zebra") if (_i % 2) else fmts.get("celula")
+                for _j, _c in enumerate(_cols):
+                    _val = df.iloc[_i, _j]
+                    try:
+                        if pd.isna(_val):
+                            _val = ""
+                    except Exception:
+                        pass
+                    ws.write(_hlin + 1 + _i, _j, _val, _fmt_lin)
+        if congelar:
+            ws.freeze_panes(_hlin + 1, 0)
+        if autofiltro and _cols:
+            ws.autofilter(_hlin, 0, _hlin + len(df), len(_cols) - 1)
+        # [EXPORT-PADRAO - 184ª geração] Preparação para impressão/PDF: orientação, ajuste de largura,
+        # margens, cabeçalho/rodapé institucional com numeração de página e repetição do cabeçalho da
+        # tabela em toda página impressa. Silencioso se o writer não suportar.
+        try:
+            _titulo_imp = titulo_impressao or "Motor Nacional de Roteirização Inteligente"
+            ws.set_landscape()
+            ws.set_paper(9)  # A4
+            ws.set_margins(left=0.5, right=0.5, top=0.8, bottom=0.7)
+            ws.fit_to_pages(1, 0)  # 1 página de largura, altura livre
+            ws.repeat_rows(_hlin)  # repete o cabeçalho da tabela em cada página
+            ws.set_header(f'&L&"Calibri,Bold"&12&K1F3864{_titulo_imp}&R&D')
+            ws.set_footer('&LGerado pela aplicação&CPágina &P de &N&R&T')
+        except Exception:
+            pass
+    except Exception:
+        logger.error("[EXPORT-PADRAO] Falha ao estilizar tabela xlsx", exc_info=True)
+
+
+def _escrever_indice_navegavel(writer, abas, fmts=None, titulo="Índice do Relatório"):
+    """[EXPORT-PADRAO - 184ª geração] Cria uma aba 'Índice' clicável no início da planilha, com hyperlinks
+    internos para cada aba (navegação estilo sumário de relatório). `abas` é uma lista de (nome_aba,
+    descrição). Usa internal links do xlsxwriter ('internal:NomeAba!A1'). Defensivo. Retorna nada."""
+    try:
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format") or not abas:
+            return
+        _f = fmts or _fmt_institucional(_wb)
+        _ws = _wb.add_worksheet("Índice")
+        writer.sheets["Índice"] = _ws
+        _ws.hide_gridlines(2)
+        _ws.set_column("A:A", 4)
+        _ws.set_column("B:B", 42)
+        _ws.set_column("C:C", 66)
+        _ws.merge_range("B2:C2", titulo, _f.get("titulo"))
+        _ws.merge_range("B3:C3", "Clique em uma seção para navegar até a aba correspondente.",
+                        _f.get("subtitulo"))
+        _fmt_link = _wb.add_format({"font_name": "Calibri", "font_size": 11, "font_color": "#1d4ed8",
+                                    "underline": 1, "valign": "vcenter", "border": 1,
+                                    "border_color": _PALETA_XLSX["linha"]})
+        _fmt_num = _wb.add_format({"font_name": "Calibri", "bold": True, "font_size": 11,
+                                   "font_color": "#ffffff", "bg_color": _PALETA_XLSX["azul_titulo"],
+                                   "align": "center", "valign": "vcenter", "border": 1,
+                                   "border_color": "#ffffff"})
+        _linha = 4  # começa na linha 5 (0-based 4)
+        for _idx, (_nome, _desc) in enumerate(abas, start=1):
+            _safe = str(_nome).replace("'", "")
+            _ws.write(_linha, 0, _idx, _fmt_num)
+            _ws.write_url(_linha, 1, f"internal:'{_safe}'!A1", _fmt_link, string=str(_nome))
+            _ws.write(_linha, 2, str(_desc), _f.get("celula_zebra") if (_idx % 2) else _f.get("celula"))
+            _ws.set_row(_linha, 22)
+            _linha += 1
+        _ws.write(_linha + 1, 1, "Gerado pelo Motor Nacional de Roteirização Inteligente.", _f.get("nota"))
+    except Exception:
+        logger.error("[EXPORT-PADRAO] Falha ao escrever índice navegável", exc_info=True)
+
+
+def _escrever_aba_estilizada(writer, df, sheet_name, fmts=None):
+    """[EXPORT-PADRAO - 184ª geração] Escreve um DataFrame numa aba JÁ no padrão institucional (cabeçalho
+    destacado, congelamento, autofiltro, zebra, largura automática) — combinando to_excel + estilização numa
+    só chamada, para uniformizar todas as abas analíticas sem repetir código. Defensivo: se a estilização
+    falhar, a aba com os dados já está escrita. Retorna nada."""
+    try:
+        if df is None:
+            return
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        _wb = getattr(writer, "book", None)
+        if _wb is not None and hasattr(_wb, "add_format"):
+            _f = fmts or _fmt_institucional(_wb)
+            _estilizar_tabela_xlsx(writer.sheets.get(sheet_name), _wb, df, _f)
+    except Exception:
+        logger.error("[EXPORT-PADRAO] Falha ao escrever aba estilizada '%s'", str(sheet_name), exc_info=True)
+
+
 def _abas_ricas_alocacao(writer, df):
     """[EXPORT-RICO - 184ª geração] Eleva a planilha de Locais ao padrão VISUAL/analítico do Comparador:
     Capa (portada), Gráficos nativos do Excel, Como Ler Cada Aba, Pareto dos polos (80/20) e Ranking de
@@ -15388,7 +15571,7 @@ def _montar_abas_analiticas_alocacao(writer, df):
                 _res.append(("Candidatos afetados por balsa", f"{int(_insc[_b].fillna(0).sum()):,}"))
         if _integ is not None:
             _res.append(("Integridade geográfica média (0-100)", f"{_integ.mean():.0f}"))
-        pd.DataFrame(_res, columns=["Indicador", "Valor"]).to_excel(writer, index=False, sheet_name="Resumo Executivo")
+        _escrever_aba_estilizada(writer, pd.DataFrame(_res, columns=["Indicador", "Valor"]), "Resumo Executivo")
 
         if 'UF Origem' in df.columns and _dist is not None:
             _g = df.assign(_d=_dist).groupby('UF Origem').agg(
@@ -15400,7 +15583,7 @@ def _montar_abas_analiticas_alocacao(writer, df):
             _g = _g.round(1).sort_values('Rotas', ascending=False).rename(columns={
                 'UF Origem': 'UF', 'Dist_media': 'Dist. média (km)', 'Dist_max': 'Dist. máx (km)',
                 'Dist_total': 'Dist. total (km)'})
-            _g.to_excel(writer, index=False, sheet_name="Sintese por UF")
+            _escrever_aba_estilizada(writer, _g, "Sintese por UF")
 
         if 'Municipio Destino' in df.columns and _dist is not None:
             _p = df.assign(_d=_dist).groupby('Municipio Destino').agg(
@@ -15411,7 +15594,7 @@ def _montar_abas_analiticas_alocacao(writer, df):
             _p = _p.round(1).sort_values('Municipios', ascending=False).rename(columns={
                 'Municipio Destino': 'Local de Prova (Polo)', 'Municipios': 'Municípios atendidos',
                 'Dist_media': 'Dist. média (km)', 'Dist_max': 'Dist. máx (km)'})
-            _p.to_excel(writer, index=False, sheet_name="Competitividade dos Polos")
+            _escrever_aba_estilizada(writer, _p, "Competitividade dos Polos")
 
         if 'Municipio Concorrente' in df.columns:
             _c = df['Municipio Concorrente'].astype(str).str.strip()
@@ -15419,7 +15602,7 @@ def _montar_abas_analiticas_alocacao(writer, df):
             if len(_c):
                 _vc = _c.value_counts().reset_index()
                 _vc.columns = ['Alternativa (2º local de prova)', 'Vezes como 2º colocado']
-                _vc.head(50).to_excel(writer, index=False, sheet_name="Concorrentes")
+                _escrever_aba_estilizada(writer, _vc.head(50), "Concorrentes")
 
         if _dist is not None and _dist.notna().any():
             _labs = ["0-50", "50-100", "100-150", "150-200", "200-300", "300-500", "500+"]
@@ -15432,7 +15615,7 @@ def _montar_abas_analiticas_alocacao(writer, df):
                          if (_insc is not None and 'Inscritos' in _sub.columns) else len(_sub))
                 _rows.append({'Faixa (km)': _l, 'Rotas': len(_sub), 'Candidatos': _cand,
                               '% das rotas': round(100.0 * len(_sub) / _n, 1)})
-            pd.DataFrame(_rows).to_excel(writer, index=False, sheet_name="Distribuicao de Distancias")
+            _escrever_aba_estilizada(writer, pd.DataFrame(_rows), "Distribuicao de Distancias")
 
         if _dist is not None and 'Municipio Origem' in df.columns:
             _crit = df.assign(_d=_dist).nlargest(30, '_d')
@@ -15444,7 +15627,7 @@ def _montar_abas_analiticas_alocacao(writer, df):
             _oc['Distância (km)'] = _crit['_d'].round(1).values
             if _insc is not None and 'Inscritos' in _crit.columns:
                 _oc['Candidatos'] = pd.to_numeric(_crit['Inscritos'], errors='coerce').fillna(0).astype(int).values
-            _oc.to_excel(writer, index=False, sheet_name="Municipios Criticos")
+            _escrever_aba_estilizada(writer, _oc, "Municipios Criticos")
         _abas_metodologia_referencias(writer)  # [ARTIGO - 184ª geração]
     except Exception:
         logger.error("[EXPORT-ANALITICO] Falha ao montar abas analíticas da alocação", exc_info=True)
@@ -15739,12 +15922,21 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
                 # ou erro do OSRM, devolver uma distância viária MENOR que a linha reta geodésica — valor
                 # fisicamente impossível. Se aceito, esse "bogus" baixo viraria vencedor falso e empurraria
                 # o vencedor REAL para fora do shortlist. Aqui descartamos qualquer distância que viole o
-                # piso físico (reta do próprio hub, disponível no topk_map_completo), protegendo a descoberta.
+                # piso físico. A reta vem do topk_map_completo quando disponível; quando não (caminho de
+                # fallback sem topk), é calculada on-the-fly por Haversine — o filtro NUNCA deixa de rodar.
                 _reta_por_hub = {str(_h): float(_r) for (_r, _h) in _cands_reta} if _cands_reta else {}
                 _limpo = {}
                 _n_bogus = 0
                 for _h, _dv in _dists.items():
                     _reta_h = _reta_por_hub.get(str(_h))
+                    if _reta_h is None:
+                        # reta ausente (fallback): calcula o piso geodésico on-the-fly
+                        _hc = hubs_validos.get(_h)
+                        if _hc and _hc[0] and _hc[1]:
+                            try:
+                                _reta_h = _haversine_km_consenso(_olat, _olon, float(_hc[0]), float(_hc[1]))
+                            except Exception:
+                                _reta_h = None
                     if _reta_h is not None and _reta_h > 0 and float(_dv) < _reta_h * 0.999:
                         _n_bogus += 1  # viária < reta: impossível → descarta o valor bogus
                         continue
@@ -25140,11 +25332,36 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 
                 output_buffer = io.BytesIO()
                 with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
+                    # [EXPORT-PADRAO - 184ª geração] Índice navegável como PRIMEIRA aba (sumário clicável com
+                    # hyperlinks para todas as seções). Criado antes das demais para ficar no topo.
+                    try:
+                        _abas_indice = [
+                            ("Locais de Aplicacao", "Dados principais: cada município de origem e seu local de prova."),
+                            ("Resumo Executivo", "Indicadores gerais do estudo (visão gerencial)."),
+                            ("Sintese por UF", "Distâncias agregadas por estado."),
+                            ("Distribuicao de Distancias", "Quantos municípios em cada faixa de distância."),
+                            ("Competitividade dos Polos", "Concentração de candidatos por local de prova."),
+                            ("Concorrentes", "Segundo colocado de cada município (alternativa)."),
+                            ("Municipios Criticos", "Municípios com maior deslocamento (atenção logística)."),
+                            ("Metodologia", "Como os dados foram processados e as rotas calculadas."),
+                        ]
+                        _escrever_indice_navegavel(writer, _abas_indice)
+                    except Exception:
+                        logger.error("[EXPORT-PADRAO] Falha ao criar índice navegável", exc_info=True)
                     # [EXAMES - 134ª geração] Cabeçalhos traduzidos para o contexto de exames APENAS na exportação
                     # (sobre cópia). As chaves internas do df permanecem — renomeá-las quebraria a app inteira.
-                    _preencher_vazios_exportacao(
-                        _renomear_colunas_exame(df_final_alo)).to_excel(writer, index=False,
-                                                                  sheet_name="Locais de Aplicacao")
+                    _df_export_locais = _preencher_vazios_exportacao(_renomear_colunas_exame(df_final_alo))
+                    _df_export_locais.to_excel(writer, index=False, sheet_name="Locais de Aplicacao")
+                    # [EXPORT-PADRAO - 184ª geração] Padrão institucional na aba principal: cabeçalho
+                    # destacado, congelamento, autofiltro, zebra e largura automática das colunas.
+                    try:
+                        _wb_loc = getattr(writer, "book", None)
+                        if _wb_loc is not None and hasattr(_wb_loc, "add_format"):
+                            _fmts_loc = _fmt_institucional(_wb_loc)
+                            _ws_loc = writer.sheets.get("Locais de Aplicacao")
+                            _estilizar_tabela_xlsx(_ws_loc, _wb_loc, _df_export_locais, _fmts_loc)
+                    except Exception:
+                        logger.error("[EXPORT-PADRAO] Falha ao estilizar aba principal de Locais", exc_info=True)
                     # [EXPORT-ANALITICO - 184ª geração] Camada ANALÍTICA sempre presente: Resumo Executivo,
                     # Síntese por UF, Competitividade dos Polos, Concorrentes, Distribuição de Distâncias e
                     # Municípios Críticos — computadas de df_final_alo, com valores completos (sem vazios).
