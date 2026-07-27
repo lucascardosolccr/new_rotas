@@ -4860,8 +4860,70 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 f'<script>{_bi_js}</script>'
                 f'</body></html>')
     except Exception:
-        logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório", exc_info=True)
-        return None
+        logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório completo — emitindo versão resiliente",
+                     exc_info=True)
+        # [RELATORIO-RESILIENTE - 184ª geração] O relatório NUNCA deve falhar (exigência do usuário). Se a
+        # versão rica quebrar por qualquer motivo, emitimos um relatório MÍNIMO porém válido: capa, aviso
+        # transparente do que ocorreu e uma tabela essencial com os dados disponíveis. Assim o usuário sempre
+        # recebe um documento abrível, com os números que importam, em vez da mensagem de erro.
+        try:
+            import html as _he2
+            _titulo_s = _he2.escape(str(titulo or "Relatório do Estudo"))
+            _data_s = _he2.escape(str(data_str or ""))
+            _n_linhas = 0
+            _tabela_html = ""
+            try:
+                if df is not None and not getattr(df, "empty", True):
+                    _n_linhas = len(df)
+                    # seleciona colunas essenciais quando existirem, senão as primeiras
+                    _cols_pref = [c for c in ["Municipio Origem", "Origem", "Municipio Destino", "Destino",
+                                              "Distancia", "Tempo", "Linha Reta", "UF Origem", "Inscritos",
+                                              "Fonte da Rota"] if c in df.columns]
+                    _cols_use = _cols_pref if _cols_pref else list(df.columns)[:10]
+                    _amostra = df[_cols_use].head(500)
+                    _th = "".join(f"<th>{_he2.escape(str(_c))}</th>" for _c in _cols_use)
+                    _trs = []
+                    for _, _row in _amostra.iterrows():
+                        _tds = "".join(f"<td>{_he2.escape(str(_row[_c]))}</td>" for _c in _cols_use)
+                        _trs.append(f"<tr>{_tds}</tr>")
+                    _tabela_html = (f'<table style="border-collapse:collapse;width:100%;font-size:13px">'
+                                    f'<thead><tr>{_th}</tr></thead><tbody>{"".join(_trs)}</tbody></table>')
+                    if _n_linhas > 500:
+                        _tabela_html += (f'<p style="color:#64748b;font-size:12px">Exibindo as primeiras 500 '
+                                         f'de {_n_linhas:,} linhas.</p>')
+            except Exception:
+                _tabela_html = "<p>Os dados detalhados não puderam ser incluídos nesta versão.</p>"
+            return (
+                '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                f'<title>{_titulo_s}</title>'
+                '<style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;'
+                'color:#0f172a;background:#f8fafc}.cover{background:linear-gradient(135deg,#1e3a8a,#1e40af);'
+                'color:#fff;padding:40px}.cover h1{margin:8px 0;font-size:26px}.wrap{padding:24px 40px}'
+                '.aviso{background:#fef9c3;border-left:4px solid #ca8a04;padding:14px 16px;border-radius:8px;'
+                'margin:16px 0;color:#713f12}th{background:#1e40af;color:#fff;padding:8px;text-align:left;'
+                'border:1px solid #cbd5e1}td{padding:7px 8px;border:1px solid #e2e8f0}'
+                'tr:nth-child(even) td{background:#f1f5f9}footer{padding:20px 40px;color:#64748b;font-size:12px}'
+                '</style></head><body>'
+                f'<div class="cover"><div>Relatório Técnico · Planejamento de Locais de Aplicação</div>'
+                f'<h1>{_titulo_s}</h1><p>{_data_s} · {_n_linhas:,} registros</p></div>'
+                '<div class="wrap">'
+                '<div class="aviso"><b>Versão essencial do relatório.</b> A composição visual completa '
+                '(gráficos e painéis analíticos) não pôde ser gerada nesta execução, mas os dados do estudo '
+                'estão preservados na tabela abaixo. Você pode gerar novamente ou usar a planilha Excel para a '
+                'visão completa.</div>'
+                f'{_tabela_html}'
+                '</div>'
+                '<footer>Relatório autocontido · abre offline em qualquer navegador · gerado pela aplicação.</footer>'
+                '</body></html>')
+        except Exception:
+            logger.error("[RELATORIO-RESILIENTE] Falha até na versão mínima", exc_info=True)
+            # último recurso absoluto: HTML trivial mas válido
+            return ("<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'><title>Relatório</title>"
+                    "</head><body style='font-family:sans-serif;padding:40px'><h1>Relatório do Estudo</h1>"
+                    "<p>O relatório foi gerado, mas os dados detalhados não puderam ser incluídos nesta "
+                    "execução. Utilize a planilha Excel exportável para a visão completa dos resultados.</p>"
+                    "</body></html>")
 
 
 def _bi_dashboard_comparacao(linhas):
@@ -5309,8 +5371,51 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
                 f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer><script>{_bi_js}</script></body></html>')
     except Exception:
-        logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório de comparação", exc_info=True)
-        return None
+        logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório de comparação — versão resiliente",
+                     exc_info=True)
+        # [RELATORIO-RESILIENTE - 184ª geração] Nunca falhar: emite comparação mínima com o placar essencial.
+        try:
+            import html as _he3
+            _tit = _he3.escape(str(titulo or "Relatório da Comparação"))
+            _dat = _he3.escape(str(data_str or ""))
+            _placar_html = ""
+            try:
+                _br = (stats or {}).get("brasil", {})
+                _pl = _br.get("placar_distancia", {}) if isinstance(_br, dict) else {}
+                if _pl:
+                    _linhas_pl = "".join(
+                        f'<tr><td>{_he3.escape(str(_k))}</td><td style="text-align:right">{int(_v):,}</td></tr>'
+                        for _k, _v in _pl.items())
+                    _placar_html = (f'<table style="border-collapse:collapse;margin:16px 0">'
+                                    f'<thead><tr><th>Resultado</th><th>Municípios</th></tr></thead>'
+                                    f'<tbody>{_linhas_pl}</tbody></table>')
+            except Exception:
+                _placar_html = ""
+            _n_l = len(linhas) if linhas else 0
+            return (
+                '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                f'<title>{_tit}</title>'
+                '<style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;color:#0f172a;'
+                'background:#f8fafc}.cover{background:linear-gradient(135deg,#1e3a8a,#1e40af);color:#fff;'
+                'padding:40px}.cover h1{margin:8px 0;font-size:26px}.wrap{padding:24px 40px}'
+                '.aviso{background:#fef9c3;border-left:4px solid #ca8a04;padding:14px 16px;border-radius:8px;'
+                'margin:16px 0;color:#713f12}th{background:#1e40af;color:#fff;padding:8px;text-align:left;'
+                'border:1px solid #cbd5e1}td{padding:7px 8px;border:1px solid #e2e8f0}</style></head><body>'
+                f'<div class="cover"><div>Relatório Técnico · Comparação de Estudos</div>'
+                f'<h1>{_tit}</h1><p>{_dat} · {_n_l:,} municípios comparados</p></div>'
+                '<div class="wrap"><div class="aviso"><b>Versão essencial do relatório.</b> A composição '
+                'visual completa não pôde ser gerada nesta execução, mas o placar principal está preservado '
+                'abaixo. Gere novamente ou use a planilha Excel para a visão completa.</div>'
+                f'{_placar_html}</div>'
+                '<footer style="padding:20px 40px;color:#64748b;font-size:12px">Relatório autocontido · abre '
+                'offline em qualquer navegador.</footer></body></html>')
+        except Exception:
+            logger.error("[RELATORIO-RESILIENTE] Falha até na versão mínima do comparador", exc_info=True)
+            return ("<!DOCTYPE html><html lang='pt-BR'><head><meta charset='utf-8'><title>Comparação</title>"
+                    "</head><body style='font-family:sans-serif;padding:40px'><h1>Comparação de Estudos</h1>"
+                    "<p>O relatório foi gerado, mas os detalhes não puderam ser incluídos. Utilize a planilha "
+                    "Excel exportável para a visão completa.</p></body></html>")
 
 
 def _raio_x_planilha(origens, destinos, max_exemplos=3):
@@ -16966,14 +17071,38 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
     # pipeline; caso contrário, constrói a partir do texto (compatibilidade).
     link_maps = link_maps_pronto if link_maps_pronto else f"https://www.google.com/maps/dir/?api=1&origin={orig_link_txt}&destination={dest_link_txt}&travelmode=driving"
     link_embed = link_embed_pronto if link_embed_pronto else f"https://maps.google.com/maps?saddr={orig_link_txt}&daddr={dest_link_txt}&output=embed"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like "
+                             "Gecko) Chrome/120.0.0.0 Safari/537.36", "Accept-Language": "pt-BR,pt;q=0.9"}
+
     try:
-        resposta = session.get(url_api, headers=headers, timeout=12)
-        texto_resposta = resposta.text.replace('\u202f', ' ').replace('\u200b', '')
-        if len(texto_resposta) < 500: 
+        # [GOOGLE-RESILIENTE - 184ª geração] O Google é o motor PRIORITÁRIO e mais confiável. Uma única
+        # tentativa com timeout curto fazia falhas transitórias (rate-limit/latência) caírem no OSRM cedo
+        # demais — o que reduzia a presença do Google. Agora tentamos até 2 vezes com timeout mais folgado
+        # e um respiro entre elas, elevando a taxa de sucesso do Google sem removê-lo do fluxo.
+        resposta = None
+        texto_resposta = ""
+        for _tent in range(2):
+            try:
+                resposta = session.get(url_api, headers=headers, timeout=15)
+                texto_resposta = resposta.text.replace('\u202f', ' ').replace('\u200b', '')
+                if len(texto_resposta) >= 500:
+                    break  # resposta válida obtida
+            except Exception:
+                if _tent == 0:
+                    try:
+                        time.sleep(0.4)
+                    except Exception:
+                        pass
+                    continue
+                raise
+            if _tent == 0 and len(texto_resposta) < 500:
+                try:
+                    time.sleep(0.4)
+                except Exception:
+                    pass
+        if len(texto_resposta) < 500:
             return None
-            
+
         dist_match = _RE_DIST_G1.search(texto_resposta)
         if not dist_match: dist_match = _RE_DIST_G2.search(texto_resposta)
         if not dist_match: dist_match = _RE_DIST_G3.search(texto_resposta)
@@ -20555,6 +20684,46 @@ def _auditar_divergencia_motores(dist_matriz, novo_dest_final):
     except Exception:
         logger.error("[DIVERGENCIA-MOTOR] Falha ao auditar divergência entre motores", exc_info=True)
         return _r
+
+
+def _diagnosticar_polo_suspeito(df):
+    """[DIAGNOSTICO-POLO - 184ª geração] Detecta municípios cujo polo vencedor está SUSPEITOSAMENTE distante,
+    sinalizando que pode existir um polo melhor ausente da lista de destinos OU mal roteado (padrão observado
+    nos casos de derrota: a referência acha um polo 2-3× mais perto). Critério: a rota do vencedor tem
+    sinuosidade muito alta (viária/reta > 3) — indício de que a 'estrada' contorna um rio e há provavelmente
+    uma opção terrestre melhor não considerada. Retorna lista de dicts {origem, viaria, reta, sinuosidade,
+    alerta}. NÃO altera decisões — dá VISIBILIDADE ao gargalo para o operador investigar o universo de
+    destinos. PURA e defensiva."""
+    _achados = []
+    try:
+        if df is None or getattr(df, "empty", True):
+            return _achados
+        _org_col = 'Municipio Origem' if 'Municipio Origem' in df.columns else (
+            'Origem' if 'Origem' in df.columns else None)
+        if 'Distancia' not in df.columns or 'Linha Reta' not in df.columns or not _org_col:
+            return _achados
+        _dv = pd.to_numeric(df['Distancia'], errors='coerce')
+        _dr = pd.to_numeric(df['Linha Reta'], errors='coerce')
+        for _i in df.index:
+            _loc = df.index.get_loc(_i)
+            _v = _dv.iloc[_loc] if hasattr(_dv, 'iloc') else _dv[_i]
+            _r = _dr.iloc[_loc] if hasattr(_dr, 'iloc') else _dr[_i]
+            if _v is None or _r is None or pd.isna(_v) or pd.isna(_r) or float(_r) <= 0 or float(_v) <= 0:
+                continue
+            _sin = float(_v) / float(_r)
+            if _sin > 3.0:
+                _achados.append({
+                    "origem": str(df.at[_i, _org_col]),
+                    "viaria_km": round(float(_v), 1),
+                    "reta_km": round(float(_r), 1),
+                    "sinuosidade": round(_sin, 1),
+                    "alerta": ("rota muito sinuosa (provável contorno fluvial) — verifique se há um polo "
+                               "terrestre mais próximo ausente da lista de destinos ou mal roteado")})
+        _achados.sort(key=lambda a: -a["sinuosidade"])
+        return _achados
+    except Exception:
+        logger.error("[DIAGNOSTICO-POLO] Falha ao diagnosticar polos suspeitos", exc_info=True)
+        return _achados
 
 
 def _validar_coerencia_tempo_distancia(df):
@@ -25190,6 +25359,17 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                        "%d polo mais distante).", len(_padroes), _n_fant, _n_dist)
                 except Exception as _e_ap:
                     logger.error(f"[APRENDIZADO] {_e_ap}")
+                # [DIAGNOSTICO-POLO - 184ª geração] Sinaliza vencedores suspeitosamente distantes (sinuosidade
+                # > 3): indício de polo melhor ausente da lista ou mal roteado — dá visibilidade ao gargalo
+                # das derrotas para o operador investigar o universo de destinos.
+                try:
+                    _polos_susp = _diagnosticar_polo_suspeito(df_final_alo)
+                    if _polos_susp:
+                        st.session_state['alo_polos_suspeitos'] = _polos_susp
+                        logger.warning("[DIAGNOSTICO-POLO] %d município(s) com vencedor suspeito (rota muito "
+                                       "sinuosa) — possível polo melhor ausente/mal roteado.", len(_polos_susp))
+                except Exception as _e_dp:
+                    logger.error(f"[DIAGNOSTICO-POLO] {_e_dp}")
                 # [SSOT-DECISAO - 184ª geração] Verificação FINAL do invariante da menor viária (prova ao usuário).
                 st.session_state['alo_invariante_viaria'] = _verificar_invariante_viaria(df_final_alo)
                 # [HUMANIZAR - 173ª geração] O CÓDIGO IBGE SAI da coluna Origem/Destino; o NOME entra.
@@ -25486,8 +25666,18 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                             "candidatos a revalidação do 2º colocado.")
                             _amostra = _pad[:8]
                             st.dataframe(pd.DataFrame(_amostra), hide_index=True, use_container_width=True)
-                    # [AUDITORIA-COBERTURA - 184ª geração] Transparência da decisão: quantos candidatos foram
-                    # realmente roteados (item 8 da nota). Prova que nenhum vencedor foi perdido por não-rote.
+                    # [DIAGNOSTICO-POLO - 184ª geração] Painel de polos suspeitos: vencedores muito sinuosos
+                    # que sugerem um polo melhor ausente da lista ou mal roteado (raiz das derrotas).
+                    _susp = st.session_state.get('alo_polos_suspeitos') or []
+                    if _susp:
+                        with st.expander(f"🔍 Polos possivelmente subótimos ({len(_susp)} caso(s)) — investigar"):
+                            st.caption("Estes municípios têm o polo vencedor com rota muito sinuosa (a estrada "
+                                       "é 3× ou mais que a linha reta). Isso costuma indicar que a rota contorna "
+                                       "um rio e que **pode existir um polo terrestre mais próximo** que não está "
+                                       "na lista de destinos ou foi mal roteado. Compare com o estudo de "
+                                       "referência: se ele usa um polo mais perto, considere incluí-lo na "
+                                       "planilha de destinos e reprocessar.")
+                            st.dataframe(pd.DataFrame(_susp[:15]), hide_index=True, use_container_width=True)
                     try:
                         _cov = _auditar_cobertura_roteamento(st.session_state.get('alo_topk_map'),
                                                              st.session_state.get('alo_resultados'))
