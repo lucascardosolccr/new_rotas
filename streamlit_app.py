@@ -24648,8 +24648,12 @@ if _secao == _SECOES[1]:   # tab_processamento
                 _chunk_atual_num = _idx // CHUNK_SIZE + 1
                 
                 # Painel de monitoramento ao vivo (atualiza a cada chunk)
-                _feitos = len(_resultados)
-                _restantes = _total - _feitos
+                # [PROGRESSO-INDICE - 184ª geração] Progresso pelo ÍNDICE do loop (trabalho real percorrido),
+                # não por len(_resultados) — que subconta quando há pares equivalentes (dict dedup) e faria a
+                # barra "travar" sem o processamento estar travado. O índice sempre alcança o total.
+                _feitos = min(int(_idx), int(_total))
+                _feitos_rotas = len(_resultados)
+                _restantes = max(0, _total - _feitos)
                 _pct = (_feitos / _total) if _total else 1.0
                 _elapsed = time.time() - st.session_state['lote_start_clock']
                 _taxa_media = (_feitos / _elapsed) if _elapsed > 0 and _feitos > 0 else 0.0
@@ -25994,8 +25998,16 @@ if _secao == _SECOES[2]:   # tab_alocacao
             _total_chunks = max(1, math.ceil(_total / CHUNK_SIZE_ALO)) if _total > 0 else 1
             _chunk_num = _idx // CHUNK_SIZE_ALO + 1
             
-            _feitos = len(_resultados)
-            _restantes = _total - _feitos
+            # [PROGRESSO-INDICE - 184ª geração] O progresso é medido pelo ÍNDICE do loop (quantas tarefas já
+            # foram percorridas), NÃO por len(_resultados). Motivo: processar_chunk_rotas devolve um dict
+            # keyed por par (origem→destino); quando há pares equivalentes/duplicados, o dict deduplica e
+            # len(_resultados) fica ABAIXO do total de tarefas — fazendo a barra "travar" (ex.: em 50%) mesmo
+            # com o loop avançando e terminando normalmente. O índice reflete o trabalho REAL e sempre alcança
+            # o total, então a barra chega a 100% e o usuário não vê falso travamento. _feitos_rotas continua
+            # disponível para exibir quantas rotas únicas foram calculadas.
+            _feitos = min(int(_idx), int(_total))            # progresso real pelo índice do loop
+            _feitos_rotas = len(_resultados)                 # nº de rotas únicas calculadas (informativo)
+            _restantes = max(0, _total - _feitos)
             _pct = (_feitos / _total) if _total else 1.0
             _elapsed = time.time() - st.session_state['alo_start_clock']
             _taxa = (_feitos / _elapsed) if _elapsed > 0 and _feitos > 0 else 0.0
@@ -26006,7 +26018,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
             st.caption("🧭 **Etapa atual:** Roteamento competitivo (cálculo de rotas origem→hub e duelo com o 2º hub mais próximo)")
             st.progress(min(1.0, _pct))
             _a1, _a2, _a3, _a4 = st.columns(4)
-            _a1.metric("Registros Processados", f"{_feitos:,} / {_total:,}", help="Rotas únicas já processadas / total de registros.")
+            _a1.metric("Registros Processados", f"{_feitos:,} / {_total:,}",
+                       help=f"Tarefas de roteamento percorridas / total. Rotas únicas calculadas até agora: "
+                            f"{_feitos_rotas:,} (pode ser menor que os registros quando há pares equivalentes, "
+                            f"que não precisam ser recalculados).")
             _a2.metric("Restantes", f"{_restantes:,}", help="Registros ainda pendentes.")
             _a3.metric("Concluído", f"{_pct*100:.1f}%", help="Percentual concluído.")
             _a4.metric("Lote Atual", f"{_chunk_num} / {_total_chunks}", help="Chunk atual / total de chunks.")
