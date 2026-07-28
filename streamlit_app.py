@@ -25685,6 +25685,8 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 st.session_state['alo_chunk_idx'] = 0
                 st.session_state['alo_idx_fim_anterior'] = -1          # guarda anti-estagnação
                 st.session_state['alo_paradas_consecutivas'] = 0
+                st.session_state['alo_exec_conta'] = 0                 # teto de execuções (defesa em profundidade)
+                st.session_state['alo_finalizacao_forcada'] = False
                 st.session_state['alo_df_pares'] = df_pares
                 st.session_state['alo_total'] = len(pares_unicos_alo)
                 st.session_state['alo_runner_map'] = runner_up_map
@@ -25748,6 +25750,33 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 _t_alo = time.time()
                 _idx_local = _idx
                 _proc_alo = False
+                # [TETO-EXECUCOES - 184ª geração] Defesa em profundidade — GARANTIA DEFINITIVA de término.
+                # Independentemente da causa (rede, WebSocket, estagnação residual), o roteamento nunca pode
+                # rodar para sempre. Contamos as execuções (reruns) desta fase; se ultrapassarem um teto
+                # generoso mas finito, finalizamos à força com o que já foi roteado — os pares não roteados
+                # recebem fallback na finalização. O teto é dimensionado pelo volume: mesmo um estudo nacional
+                # cabe com folga, então este limite só dispara em cenários patológicos que, sem ele, travariam.
+                _exec_conta = st.session_state.get('alo_exec_conta', 0) + 1
+                st.session_state['alo_exec_conta'] = _exec_conta
+                # teto = margem de segurança sobre o nº mínimo de execuções necessárias (total / mini-lote),
+                # com piso de 300 e teto de 5000 — cobre qualquer estudo real com folga de várias vezes.
+                _exec_necessarias = max(1, math.ceil(_total / max(_MINI_ALO, 1)))
+                _TETO_EXEC = int(min(5000, max(300, _exec_necessarias * 8)))
+                if _exec_conta > _TETO_EXEC:
+                    logger.error("[TETO-EXECUCOES] Limite de %d execuções atingido (necessárias ~%d) — "
+                                 "finalizando à força para impedir travamento infinito. %d de %d registros "
+                                 "roteados; o restante receberá fallback.", _TETO_EXEC, _exec_necessarias,
+                                 len(_resultados), _total)
+                    # marca os pares ainda não roteados para fallback e finaliza
+                    for _tp in _tarefas[_idx_local:]:
+                        _par_pend = _tp[1] if isinstance(_tp, tuple) and len(_tp) > 1 else None
+                        if _par_pend and _par_pend not in _resultados:
+                            _resultados[_par_pend] = None
+                    st.session_state['alo_resultados'] = _resultados
+                    st.session_state['alo_chunk_idx'] = _total
+                    st.session_state['alo_finalizacao_forcada'] = True
+                    _ir_finalizar = True
+                    _idx_local = _total  # impede a entrada no laço abaixo
                 # [ANTI-ESTAGNACAO - 184ª geração] Guarda contra travamento: se, ao FIM de uma execução, o
                 # índice não avançou em relação ao fim da execução ANTERIOR (rotas que estouram o orçamento
                 # sem completar — típico de pares em regiões com timeout de rede repetido), o processamento
@@ -25853,6 +25882,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         st.session_state['alo_chunk_idx'] = 0
                         st.session_state['alo_idx_fim_anterior'] = -1        # reset do guarda anti-estagnação
                         st.session_state['alo_paradas_consecutivas'] = 0
+                        st.session_state['alo_exec_conta'] = 0              # cada fase tem seu próprio teto finito
                         _ir_finalizar = False          # volta para a fase de roteamento com os sobreviventes
                 except Exception as _e_poda:
                     logger.error(f"[PODA] Falha na 2ª rodada (poda); seguindo sem ela: {_e_poda}")
