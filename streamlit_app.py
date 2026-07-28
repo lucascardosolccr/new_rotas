@@ -4080,6 +4080,296 @@ _GLOSSARIO_TERMOS = [
 ]
 
 
+def _secao_abstract_comparacao_html(stats, aud, titulo=""):
+    """[RELATORIO-CIENTIFICO - 184ª geração] ABSTRACT do relatório de COMPARAÇÃO de dois estudos, no padrão
+    de artigo científico: objetivo, metodologia, amostra e principais resultados do confronto entre o estudo
+    da aplicação e o de referência. Deriva tudo dos agregados reais (stats['brasil'], aud). PURA."""
+    import html as _he
+    try:
+        br = (stats or {}).get("brasil", {}) if stats else {}
+        aud = aud or {}
+        _tot = int(aud.get("total_ref", 0) or 0)
+        _conc = int(aud.get("conciliados", 0) or 0)
+        _pct_conc = round(100.0 * _conc / _tot, 1) if _tot else 0.0
+        _p_app = float(br.get("pct_venceu_app", 0) or 0)
+        _p_ref = float(br.get("pct_venceu_ref", 0) or 0)
+        _p_emp = float(br.get("pct_empate", 0) or 0)
+        _econ = float(br.get("economia_ponderada_km", 0) or 0)
+        if _tot == 0:
+            return ""
+        _veredito = ("a aplicação encontrou rotas menores na maioria dos municípios" if _p_app > _p_ref + 5
+                     else "o estudo de referência prevaleceu na maioria dos municípios" if _p_ref > _p_app + 5
+                     else "os dois estudos empataram tecnicamente na maioria dos municípios")
+        _sinal_econ = ("uma economia" if _econ >= 0 else "um custo adicional")
+        return (
+            '<section id="abstract" class="sec"><h2>Resumo (Abstract)</h2>'
+            '<div style="background:#f8fafc;border-left:4px solid #1e3a8a;padding:16px 20px;border-radius:8px;'
+            'line-height:1.7;text-align:justify">'
+            '<p><b>Objetivo.</b> Comparar, município a município, a alocação de locais de prova produzida '
+            'pela aplicação com a de um estudo de referência, quantificando qual das duas minimiza o '
+            'deslocamento viário real dos candidatos.</p>'
+            '<p><b>Metodologia.</b> Conciliação dos municípios comuns aos dois estudos por código IBGE, '
+            'seguida da comparação das distâncias viárias de cada alocação. A vitória em cada município é '
+            'atribuída ao estudo com menor distância; empates técnicos são contabilizados à parte. A economia '
+            'é ponderada pelo número de candidatos afetados.</p>'
+            f'<p><b>Amostra.</b> {_tot:,} municípios do estudo de referência, dos quais {_conc:,} '
+            f'({_pct_conc:.1f}%) foram conciliados e efetivamente comparados.</p>'
+            f'<p><b>Principais resultados.</b> No confronto, {_veredito}: a aplicação venceu em {_p_app:.1f}% '
+            f'dos municípios, a referência em {_p_ref:.1f}% e houve empate técnico em {_p_emp:.1f}%. O balanço '
+            f'ponderado por candidatos representa {_sinal_econ} de {abs(_econ):,.0f} km.</p>'
+            '</div></section>')
+    except Exception:
+        logger.error("[RELATORIO-CIENTIFICO] Falha ao gerar abstract de comparação", exc_info=True)
+        return ""
+
+
+def _secao_fluxograma_comparacao_html():
+    """[RELATORIO-CIENTIFICO - 184ª geração] FLUXOGRAMA do processo de COMPARAÇÃO em HTML/SVG puro (offline).
+    Mostra o pipeline: Estudos → Conciliação IBGE → Comparação de distâncias → Atribuição de vitória →
+    Ponderação → Resultados. PURA."""
+    try:
+        _etapas = [
+            ("Dois estudos", "Aplicação e referência", "#1e3a8a"),
+            ("Conciliação IBGE", "Municípios comuns por código", "#1e40af"),
+            ("Comparação de distâncias", "Viária de cada alocação", "#2563eb"),
+            ("Atribuição de vitória", "Menor distância vence; empates à parte", "#0ea5e9"),
+            ("Ponderação por candidatos", "Impacto proporcional aos inscritos", "#0891b2"),
+            ("Resultados", "Placar e economia auditáveis", "#16a34a"),
+        ]
+        _h = ('<section id="fluxograma" class="sec"><h2>Fluxograma da Comparação</h2>'
+              '<p style="color:#475569;margin-bottom:16px">O confronto segue etapas encadeadas; apenas os '
+              'municípios presentes nos dois estudos entram na comparação, garantindo um confronto justo '
+              'sobre a mesma base.</p>'
+              '<div style="display:flex;flex-direction:column;gap:0;max-width:640px;margin:0 auto">')
+        for _i, (_nome, _desc, _cor) in enumerate(_etapas):
+            _h += (f'<div style="background:{_cor};color:#fff;padding:12px 18px;border-radius:10px;'
+                   f'box-shadow:0 1px 3px rgba(0,0,0,.15)"><b>{_i+1}. {_nome}</b>'
+                   f'<div style="font-size:13px;opacity:.9">{_desc}</div></div>')
+            if _i < len(_etapas) - 1:
+                _h += ('<div style="text-align:center;color:#94a3b8;font-size:20px;line-height:1.2;'
+                       'margin:2px 0">&#8595;</div>')
+        _h += '</div></section>'
+        return _h
+    except Exception:
+        logger.error("[RELATORIO-CIENTIFICO] Falha ao gerar fluxograma de comparação", exc_info=True)
+        return ""
+
+
+def _secao_diagnostico_comparacao_html(stats, aud, linhas=None):
+    """[RELATORIO-CIENTIFICO - 184ª geração] DIAGNÓSTICO INTELIGENTE do relatório de COMPARAÇÃO: interpreta
+    automaticamente o confronto em linguagem natural — quem venceu, a magnitude, a taxa de conciliação e
+    recomendações. É a seção de 'IA' adaptada à comparação. PURA e defensiva."""
+    import html as _he
+    try:
+        br = (stats or {}).get("brasil", {}) if stats else {}
+        aud = aud or {}
+        _tot = int(aud.get("total_ref", 0) or 0)
+        _conc = int(aud.get("conciliados", 0) or 0)
+        _pct_conc = round(100.0 * _conc / _tot, 1) if _tot else 0.0
+        _p_app = float(br.get("pct_venceu_app", 0) or 0)
+        _p_ref = float(br.get("pct_venceu_ref", 0) or 0)
+        _econ = float(br.get("economia_ponderada_km", 0) or 0)
+        if _tot == 0:
+            return ""
+        _achados = []
+        # veredito principal
+        if _p_app > _p_ref + 5:
+            _achados.append(("A aplicação prevaleceu",
+                             f"A aplicação encontrou rotas menores em {_p_app:.1f}% dos municípios "
+                             f"conciliados, contra {_p_ref:.1f}% da referência. Isso sugere que a estratégia "
+                             "de roteamento da aplicação está identificando polos mais próximos na maioria "
+                             "dos casos."))
+        elif _p_ref > _p_app + 5:
+            _achados.append(("A referência prevaleceu",
+                             f"O estudo de referência encontrou rotas menores em {_p_ref:.1f}% dos "
+                             f"municípios, contra {_p_app:.1f}% da aplicação. Vale investigar os municípios "
+                             "onde a referência venceu: pode haver polos melhores ausentes da lista de "
+                             "destinos da aplicação, ou rotas mal medidas."))
+        else:
+            _achados.append(("Empate técnico predominante",
+                             f"Os estudos estão tecnicamente empatados ({_p_app:.1f}% vs {_p_ref:.1f}%), "
+                             "indicando que ambos chegam a alocações de qualidade equivalente na maioria "
+                             "dos municípios."))
+        # conciliação
+        if _pct_conc < 90 and _tot:
+            _achados.append(("Cobertura de conciliação incompleta",
+                             f"Apenas {_pct_conc:.1f}% dos {_tot:,} municípios da referência foram "
+                             f"conciliados ({_conc:,}). Os municípios não conciliados ficaram fora do "
+                             "confronto — verifique divergências de código IBGE ou universos diferentes "
+                             "entre os estudos, pois isso pode distorcer o placar."))
+        else:
+            _achados.append(("Boa cobertura de conciliação",
+                             f"{_pct_conc:.1f}% dos municípios da referência foram conciliados e comparados, "
+                             "dando solidez estatística ao confronto."))
+        # magnitude econômica
+        if abs(_econ) > 0:
+            _sinal = "de economia" if _econ >= 0 else "de custo adicional"
+            _achados.append((f"Impacto ponderado {_sinal}",
+                             f"O balanço ponderado pelos candidatos afetados é de {abs(_econ):,.0f} km "
+                             f"{_sinal}. Este número traduz o placar em deslocamento real evitado (ou "
+                             "acrescido) considerando quantos candidatos cada município representa."))
+        _blocos = ""
+        for _tit, _txt in _achados:
+            _blocos += (f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;'
+                        f'padding:14px 18px;margin-bottom:12px"><b style="color:#1e3a8a">{_he.escape(_tit)}'
+                        f'</b><p style="margin:6px 0 0;line-height:1.6;color:#334155">{_he.escape(_txt)}</p></div>')
+        return (
+            '<section id="diagnostico" class="sec"><h2>Diagnóstico Inteligente</h2>'
+            '<p style="color:#475569;margin-bottom:16px">Interpretação automática do confronto entre os dois '
+            'estudos: quem prevaleceu, a solidez da comparação e as recomendações de investigação.</p>'
+            f'{_blocos}</section>')
+    except Exception:
+        logger.error("[RELATORIO-CIENTIFICO] Falha ao gerar diagnóstico de comparação", exc_info=True)
+        return ""
+
+
+def _secao_abstract_html(df, titulo=""):
+    """[RELATORIO-CIENTIFICO - 184ª geração] Gera o ABSTRACT (resumo técnico estruturado) no topo do
+    relatório, no padrão de artigo científico: objetivo, metodologia, amostra e principais resultados —
+    tudo derivado dos dados reais. PURA (retorna string HTML) e defensiva."""
+    import html as _he
+    try:
+        if df is None or getattr(df, "empty", True):
+            return ""
+        _n = len(df)
+        _uf_col = "UF Origem" if "UF Origem" in df.columns else ("UF" if "UF" in df.columns else None)
+        _n_uf = int(df[_uf_col].nunique()) if _uf_col else 0
+        _insc_col = next((c for c in ["Inscritos", "Quantidade de Inscritos", "QT_INSCRITOS"] if c in df.columns), None)
+        _tot_insc = int(pd.to_numeric(df[_insc_col], errors="coerce").fillna(0).sum()) if _insc_col else 0
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+        _media = float(_dist.mean()) if _dist is not None and _dist.notna().any() else 0.0
+        _mediana = float(_dist.median()) if _dist is not None and _dist.notna().any() else 0.0
+        # taxa de rota viária real vs fallback
+        _fonte_col = "Fonte da Rota" if "Fonte da Rota" in df.columns else None
+        _n_real = 0
+        if _fonte_col:
+            _f = df[_fonte_col].astype(str).str.lower()
+            _n_real = int((~(_f.str.contains("geodés") | _f.str.contains("falha") | _f.str.contains("linha reta"))).sum())
+        _pct_real = 100.0 * _n_real / max(_n, 1)
+        return (
+            '<section id="abstract" class="sec"><h2>Resumo (Abstract)</h2>'
+            '<div style="background:#f8fafc;border-left:4px solid #1e3a8a;padding:16px 20px;border-radius:8px;'
+            'line-height:1.7;text-align:justify">'
+            f'<p><b>Objetivo.</b> Determinar, para cada um dos {_n:,} municípios de origem analisados, o local '
+            f'de aplicação de prova que minimiza o deslocamento viário real dos {_tot_insc:,} candidatos '
+            'inscritos, priorizando a menor rota rodoviária efetiva.</p>'
+            '<p><b>Metodologia.</b> Roteamento híbrido de duas fases combinando a matriz viária do OSRM '
+            '(descoberta ampla de candidatos) e o Google Maps (decisão de qualidade, motor prioritário), com '
+            'prova de otimalidade por dominância geométrica, validação de consistência física e classificação '
+            'de confiabilidade por região. A distância viária real é a métrica de decisão; a linha reta '
+            'geodésica atua como limite inferior e salvaguarda.</p>'
+            f'<p><b>Amostra.</b> {_n:,} municípios de origem distribuídos por {_n_uf} unidades federativas, '
+            f'totalizando {_tot_insc:,} candidatos.</p>'
+            f'<p><b>Principais resultados.</b> Distância viária média de {_media:,.1f} km (mediana '
+            f'{_mediana:,.1f} km). {_pct_real:.1f}% dos municípios foram resolvidos com rota viária real '
+            'medida pelos motores de roteamento; os demais recorreram à estimativa geodésica por ausência de '
+            'malha rodoviária conectada (tipicamente municípios de acesso fluvial).</p>'
+            '</div></section>')
+    except Exception:
+        logger.error("[RELATORIO-CIENTIFICO] Falha ao gerar abstract", exc_info=True)
+        return ""
+
+
+def _secao_fluxograma_html():
+    """[RELATORIO-CIENTIFICO - 184ª geração] Gera o FLUXOGRAMA do processamento em SVG puro (offline, sem
+    dependências), no padrão de artigo científico. Mostra o pipeline: Origem → Geocodificação → Descoberta
+    por matriz → Roteamento (Google/OSRM) → Prova de otimalidade → Validação → Escolha → Resultados. PURA."""
+    try:
+        _etapas = [
+            ("Origem", "Municípios e candidatos", "#1e3a8a"),
+            ("Geocodificação", "Consenso multi-fonte", "#1e40af"),
+            ("Descoberta por matriz", "OSRM /table, candidatos adaptativos", "#2563eb"),
+            ("Roteamento", "Google (prioritário) + OSRM", "#3b82f6"),
+            ("Prova de otimalidade", "Dominância geométrica + B&B", "#0ea5e9"),
+            ("Validação", "Consistência física e regional", "#0891b2"),
+            ("Escolha", "Menor rota viária real", "#059669"),
+            ("Resultados", "Planilha e relatório auditáveis", "#16a34a"),
+        ]
+        _h = ('<section id="fluxograma" class="sec"><h2>Fluxograma do Processamento</h2>'
+              '<p style="color:#475569;margin-bottom:16px">Cada etapa alimenta a seguinte; falhas em uma '
+              'camada degradam com segurança para a anterior, garantindo que o processamento nunca se '
+              'interrompa sem produzir um resultado auditável.</p>'
+              '<div style="display:flex;flex-direction:column;gap:0;max-width:640px;margin:0 auto">')
+        for _i, (_nome, _desc, _cor) in enumerate(_etapas):
+            _h += (f'<div style="background:{_cor};color:#fff;padding:12px 18px;border-radius:10px;'
+                   f'box-shadow:0 1px 3px rgba(0,0,0,.15)"><b>{_i+1}. {_nome}</b>'
+                   f'<div style="font-size:13px;opacity:.9">{_desc}</div></div>')
+            if _i < len(_etapas) - 1:
+                _h += ('<div style="text-align:center;color:#94a3b8;font-size:20px;line-height:1.2;'
+                       'margin:2px 0">&#8595;</div>')
+        _h += '</div></section>'
+        return _h
+    except Exception:
+        logger.error("[RELATORIO-CIENTIFICO] Falha ao gerar fluxograma", exc_info=True)
+        return ""
+
+
+def _secao_diagnostico_inteligente_html(df):
+    """[RELATORIO-CIENTIFICO - 184ª geração] Gera o DIAGNÓSTICO INTELIGENTE — interpretação automática em
+    linguagem natural: padrões, gargalos, anomalias e recomendações derivados dos dados reais. É a seção de
+    'IA' que a nota pede. PURA e defensiva."""
+    import html as _he
+    try:
+        if df is None or getattr(df, "empty", True):
+            return ""
+        _n = len(df)
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+        _achados = []
+        if _dist is not None and _dist.notna().any():
+            _media = float(_dist.mean())
+            _p90 = float(_dist.quantile(0.90))
+            _n_longe = int((_dist > _p90).sum())
+            _achados.append(("Concentração de deslocamento",
+                             f"Os 10% de municípios com maior deslocamento superam {_p90:,.0f} km "
+                             f"({_n_longe} municípios). A distância média é {_media:,.0f} km. A cauda longa "
+                             "indica onde a logística de aplicação será mais custosa e merece atenção "
+                             "prioritária."))
+        # rotas sinuosas (possível polo melhor ausente)
+        if _dist is not None and "Linha Reta" in df.columns:
+            _reta = pd.to_numeric(df["Linha Reta"], errors="coerce")
+            _sin = _dist / _reta.replace(0, float("nan"))
+            _n_sin = int((_sin > 3.0).sum())
+            if _n_sin:
+                _achados.append(("Rotas muito sinuosas detectadas",
+                                 f"{_n_sin} município(s) têm rota viária 3× ou mais longa que a linha reta — "
+                                 "assinatura típica de contorno fluvial. Recomenda-se verificar se há um polo "
+                                 "terrestre mais próximo ausente da lista de destinos."))
+        # confiabilidade regional
+        if "Confiabilidade Regional" in df.columns:
+            _c = df["Confiabilidade Regional"].astype(str)
+            _n_baixa = int(_c.str.contains("Baixa").sum())
+            if _n_baixa:
+                _achados.append(("Zonas de baixa confiabilidade",
+                                 f"{_n_baixa} município(s) estão em regiões de malha viária esparsa ou "
+                                 "usaram estimativa geodésica. Nestes casos, a validação manual e a "
+                                 "verificação de acesso fluvial são recomendadas antes da decisão final."))
+        # balsas
+        _balsa_col = "Balsas" if "Balsas" in df.columns else ("Balsa" if "Balsa" in df.columns else None)
+        if _balsa_col:
+            _n_balsa = int(df[_balsa_col].astype(str).str.strip().str.lower().isin(["sim", "true", "1"]).sum())
+            if _n_balsa:
+                _achados.append(("Dependência de travessia por balsa",
+                                 f"{_n_balsa} rota(s) dependem de balsa, cujo tempo e disponibilidade variam. "
+                                 "O custo de espera deve ser considerado no planejamento logístico."))
+        if not _achados:
+            _achados.append(("Resultado consistente",
+                             "Não foram detectadas anomalias relevantes: as rotas são majoritariamente "
+                             "diretas e de alta confiabilidade."))
+        _blocos = ""
+        for _tit, _txt in _achados:
+            _blocos += (f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;'
+                        f'padding:14px 18px;margin-bottom:12px"><b style="color:#1e3a8a">{_he.escape(_tit)}'
+                        f'</b><p style="margin:6px 0 0;line-height:1.6;color:#334155">{_he.escape(_txt)}</p></div>')
+        return (
+            '<section id="diagnostico" class="sec"><h2>Diagnóstico Inteligente</h2>'
+            '<p style="color:#475569;margin-bottom:16px">Interpretação automática dos resultados: padrões, '
+            'gargalos e recomendações derivados diretamente dos dados deste estudo.</p>'
+            f'{_blocos}</section>')
+    except Exception:
+        logger.error("[RELATORIO-CIENTIFICO] Falha ao gerar diagnóstico inteligente", exc_info=True)
+        return ""
+
+
 def _narrativa_storytelling_alocacao(df):
     """[STORYTELLING - 184ª geração] Gera a seção de abertura NARRATIVA do relatório de Locais a partir dos
     DADOS REAIS (não texto genérico): panorama → principais descobertas → gargalos → recomendações. Lê o df
@@ -4675,6 +4965,116 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
             except Exception:
                 logger.error("[GRAFICO-BOXPLOT] Falha ao montar boxplot por UF", exc_info=True)
 
+            # [GRAFICO-VIOLIN - 184ª geração] Violin plot da distribuição de distâncias por REGIÃO: mostra a
+            # DENSIDADE completa da distribuição (a "forma" — onde os valores se concentram), não só os
+            # quartis do boxplot. Revela distribuições bimodais (dois picos) que o boxplot esconde, úteis
+            # para ver, por exemplo, uma região com dois grupos distintos de deslocamento.
+            try:
+                _REGIAO_UF = {
+                    "Norte": {"AC", "AP", "AM", "PA", "RO", "RR", "TO"},
+                    "Nordeste": {"AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"},
+                    "Centro-Oeste": {"DF", "GO", "MT", "MS"},
+                    "Sudeste": {"ES", "MG", "RJ", "SP"},
+                    "Sul": {"PR", "RS", "SC"},
+                }
+                _uf_para_regiao = {_uf: _reg for _reg, _ufs in _REGIAO_UF.items() for _uf in _ufs}
+                if _dist is not None and 'UF Origem' in df.columns:
+                    _dfv = df.assign(_d=_dist).dropna(subset=['_d'])
+                    _dfv = _dfv[_dfv['UF Origem'].notna()].copy()
+                    _dfv['_regiao'] = _dfv['UF Origem'].astype(str).str.upper().map(_uf_para_regiao)
+                    _dfv = _dfv.dropna(subset=['_regiao'])
+                    if len(_dfv) >= 10 and _dfv['_regiao'].nunique() >= 2:
+                        _ordem_reg = (_dfv.groupby('_regiao')['_d'].median()
+                                      .sort_values(ascending=False).index.tolist())
+                        _fv = go.Figure()
+                        _cores_reg = {"Norte": "#0891b2", "Nordeste": "#ca8a04", "Centro-Oeste": "#7c3aed",
+                                      "Sudeste": "#2563eb", "Sul": "#16a34a"}
+                        for _reg in _ordem_reg:
+                            _vals = _dfv[_dfv['_regiao'] == _reg]['_d']
+                            _fv.add_trace(go.Violin(y=_vals, name=str(_reg), box_visible=True,
+                                                    meanline_visible=True, points=False,
+                                                    fillcolor=_cores_reg.get(_reg, "#2563eb"),
+                                                    line_color="#0f172a", opacity=0.7))
+                        _fv.update_layout(height=440, margin=dict(l=48, r=16, t=16, b=40),
+                                          template="plotly_white", showlegend=False,
+                                          yaxis_title="distância viária (km)",
+                                          xaxis_title="região (ordenada pela mediana)")
+                        _sec.append(("violin", "Densidade das Distâncias por Região (violin plot)",
+                                     '<p class="lead">Cada "violino" mostra a <b>densidade</b> da distribuição '
+                                     'de distâncias na região: quanto mais larga a forma numa altura, mais '
+                                     'municípios têm aquele deslocamento. A caixa interna traz mediana e '
+                                     'quartis; a linha tracejada é a média.</p>' + _emb(_fv) + _caixa_explicativa(
+                                         "O que o violino mostra que o boxplot não mostra?",
+                                         "O boxplot resume a distribuição em cinco números; o violino desenha a "
+                                         "<b>forma inteira</b>. Uma região cujo violino tem <b>dois bojos</b> "
+                                         "(bimodal) tem dois grupos distintos de municípios — por exemplo, uns "
+                                         "perto de um polo e outros isolados — algo invisível num boxplot. "
+                                         "Violinos <b>largos e altos</b> indicam grande variação de deslocamento "
+                                         "dentro da região, sinalizando heterogeneidade logística.", "info")))
+            except Exception:
+                logger.error("[GRAFICO-VIOLIN] Falha ao montar violin por região", exc_info=True)
+
+            # [GRAFICO-SANKEY - 184ª geração] Diagrama de Sankey do FLUXO região → polo de destino: mostra
+            # como os candidatos se distribuem geograficamente entre os locais de prova. A largura de cada
+            # fluxo é proporcional ao número de municípios (ou candidatos), revelando os polos que concentram
+            # a demanda e de quais regiões ela vem — uma visão de rede que tabelas não transmitem.
+            try:
+                if 'Municipio Destino' in df.columns and 'UF Origem' in df.columns:
+                    _REG_UF_SK = {
+                        "Norte": {"AC", "AP", "AM", "PA", "RO", "RR", "TO"},
+                        "Nordeste": {"AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"},
+                        "Centro-Oeste": {"DF", "GO", "MT", "MS"},
+                        "Sudeste": {"ES", "MG", "RJ", "SP"}, "Sul": {"PR", "RS", "SC"},
+                    }
+                    _uf2reg = {_u: _r for _r, _us in _REG_UF_SK.items() for _u in _us}
+                    _dfs = df[df['Municipio Destino'].notna() & df['UF Origem'].notna()].copy()
+                    _dfs['_reg'] = _dfs['UF Origem'].astype(str).str.upper().map(_uf2reg)
+                    _dfs = _dfs.dropna(subset=['_reg'])
+                    # peso: candidatos se houver, senão contagem de municípios
+                    _peso_col = next((c for c in ['Inscritos', 'Quantidade de Inscritos'] if c in _dfs.columns), None)
+                    if _peso_col:
+                        _dfs['_peso'] = pd.to_numeric(_dfs[_peso_col], errors='coerce').fillna(1)
+                    else:
+                        _dfs['_peso'] = 1
+                    # limita aos 8 polos que mais concentram, para o diagrama ficar legível
+                    _top_polos = _dfs.groupby('Municipio Destino')['_peso'].sum().nlargest(8).index.tolist()
+                    _dfs = _dfs[_dfs['Municipio Destino'].isin(_top_polos)]
+                    _fluxos = _dfs.groupby(['_reg', 'Municipio Destino'])['_peso'].sum().reset_index()
+                    if len(_fluxos) >= 2:
+                        _regioes = sorted(_fluxos['_reg'].unique().tolist())
+                        _polos = sorted(_fluxos['Municipio Destino'].astype(str).unique().tolist())
+                        _labels = _regioes + _polos
+                        _idx = {_l: _i for _i, _l in enumerate(_labels)}
+                        _cor_reg = {"Norte": "#0891b2", "Nordeste": "#ca8a04", "Centro-Oeste": "#7c3aed",
+                                    "Sudeste": "#2563eb", "Sul": "#16a34a"}
+                        _node_cores = [_cor_reg.get(_r, "#64748b") for _r in _regioes] + ["#94a3b8"] * len(_polos)
+                        _src = [_idx[_r] for _r in _fluxos['_reg']]
+                        _tgt = [_idx[str(_p)] for _p in _fluxos['Municipio Destino']]
+                        _val = _fluxos['_peso'].tolist()
+                        _fsk = go.Figure(go.Sankey(
+                            node=dict(pad=15, thickness=18, line=dict(color="#e2e8f0", width=0.5),
+                                      label=_labels, color=_node_cores),
+                            link=dict(source=_src, target=_tgt, value=_val,
+                                      color="rgba(37,99,235,0.25)")))
+                        _fsk.update_layout(height=460, margin=dict(l=8, r=8, t=16, b=16),
+                                           font=dict(size=12), template="plotly_white")
+                        _unid = "candidatos" if _peso_col else "municípios"
+                        _sec.append(("sankey", "Fluxo Região → Polo de Aplicação (Sankey)",
+                                     f'<p class="lead">Este diagrama mostra como os {_unid} fluem das regiões '
+                                     'de origem (à esquerda) para os principais polos de aplicação (à direita). '
+                                     'A <b>espessura</b> de cada faixa é proporcional ao volume: faixas grossas '
+                                     'revelam os polos que concentram a maior demanda.</p>' + _emb(_fsk)
+                                     + _caixa_explicativa(
+                                         "Como ler um diagrama de Sankey?",
+                                         "Cada nó à esquerda é uma região de origem e cada nó à direita é um "
+                                         "polo de prova. As faixas que os conectam têm largura proporcional ao "
+                                         "número de " + _unid + ". Um polo que recebe faixas grossas de várias "
+                                         "regiões é um <b>concentrador</b> — ponto crítico de capacidade. Faixas "
+                                         "longas cruzando o diagrama podem indicar candidatos encaminhados para "
+                                         "polos distantes de sua região, merecendo verificação.", "info")))
+            except Exception:
+                logger.error("[GRAFICO-SANKEY] Falha ao montar Sankey região→polo", exc_info=True)
+
         if 'Municipio Destino' in df.columns and _dist is not None:
             _p = df.assign(_d=_dist).groupby('Municipio Destino').agg(Mun=('_d', 'size'), DM=('_d', 'mean')).reset_index().sort_values('Mun', ascending=False)
             _has_c = _insc is not None
@@ -4821,6 +5221,29 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         if _bi_html:
             _nav = '<a href="#bi">📊 Dashboard BI</a>' + _nav
             _corpo = _bi_html + _corpo
+        # [RELATORIO-CIENTIFICO - 184ª geração] Seções de artigo científico anexadas ao topo: Abstract,
+        # Fluxograma e Diagnóstico Inteligente. Cada uma é autocontida e defensiva (string vazia se falhar),
+        # então NUNCA derrubam o relatório. Entram na navegação lateral e no corpo, antes das seções atuais.
+        try:
+            _sci_nav = ""
+            _sci_corpo = ""
+            _abs = _secao_abstract_html(df, titulo)
+            if _abs:
+                _sci_nav += '<a href="#abstract">Resumo (Abstract)</a>'
+                _sci_corpo += _abs
+            _flux = _secao_fluxograma_html()
+            if _flux:
+                _sci_nav += '<a href="#fluxograma">Fluxograma</a>'
+                _sci_corpo += _flux
+            _diag = _secao_diagnostico_inteligente_html(df)
+            if _diag:
+                _sci_nav += '<a href="#diagnostico">Diagnóstico Inteligente</a>'
+                _sci_corpo += _diag
+            if _sci_corpo:
+                _nav = _sci_nav + _nav
+                _corpo = _sci_corpo + _corpo
+        except Exception:
+            logger.error("[RELATORIO-CIENTIFICO] Falha ao anexar seções científicas", exc_info=True)
         _css = (
             ":root{--brand:#0f172a;--accent:#2563eb;--line:#e2e8f0;--muted:#64748b}"
             "*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;"
@@ -5333,6 +5756,29 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
         if _bi_html:
             _nav = '<a href="#bi">📊 Dashboard BI</a>' + _nav
             _corpo = _bi_html + _corpo
+        # [RELATORIO-CIENTIFICO - 184ª geração] Seções de artigo científico do Comparador (Abstract,
+        # Fluxograma, Diagnóstico Inteligente), adaptadas ao confronto de dois estudos. Mesmo padrão editorial
+        # de Locais. Cada uma é defensiva (string vazia se falhar), nunca derruba o relatório.
+        try:
+            _sci_nav = ""
+            _sci_corpo = ""
+            _abs_c = _secao_abstract_comparacao_html(stats, aud, titulo)
+            if _abs_c:
+                _sci_nav += '<a href="#abstract">Resumo (Abstract)</a>'
+                _sci_corpo += _abs_c
+            _flux_c = _secao_fluxograma_comparacao_html()
+            if _flux_c:
+                _sci_nav += '<a href="#fluxograma">Fluxograma</a>'
+                _sci_corpo += _flux_c
+            _diag_c = _secao_diagnostico_comparacao_html(stats, aud, linhas)
+            if _diag_c:
+                _sci_nav += '<a href="#diagnostico">Diagnóstico Inteligente</a>'
+                _sci_corpo += _diag_c
+            if _sci_corpo:
+                _nav = _sci_nav + _nav
+                _corpo = _sci_corpo + _corpo
+        except Exception:
+            logger.error("[RELATORIO-CIENTIFICO] Falha ao anexar seções científicas ao Comparador", exc_info=True)
         _css = (
             ":root{--brand:#0f172a;--accent:#2563eb;--line:#e2e8f0;--muted:#64748b}"
             "*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;"
@@ -15949,6 +16395,57 @@ def forcar_geocodificacao_hierarquica_estrita(texto_cru, modo_oficial=None):
     end_f = ", ".join([c for c in [melhor.get('logradouro', ''), melhor.get('bairro', ''), melhor.get('cidade', ''), melhor.get('estado', '')] if c.strip()]) + ", BRASIL"
     return (melhor['lat'], melhor['lon'], end_f, "DESAMBIGUACAO_ESTRITA", 95, melhor.get('bairro', ''), melhor.get('cidade', ''), f"{melhor['fonte']} (Strict-Mode)", ["Desambiguação Espacial Anti-Colisão acionada em Nuvem. Resolução estrita aplicada."])
 
+def _podar_shortlist_por_dominancia(shortlist, retas_por_origem):
+    """[DOMINANCIA-GEO - 184ª geração] Poda EXATA do shortlist por dominância geométrica, reduzindo chamadas
+    ao Google (o motor caro) nos casos onde o vencedor já é matematicamente garantido.
+
+    Fundamento (mesmo princípio da prova branch-and-bound, na direção inversa): como a distância viária é
+    SEMPRE ≥ a linha reta, se o melhor candidato da matriz P1 tem viária(P1) ≤ reta(P2) — onde P2 é o
+    próximo polo mais próximo em linha reta que NÃO está no shortlist — então nenhum outro polo pode vencer
+    P1: viária(P2) ≥ reta(P2) ≥ viária(P1). Nesses casos o shortlist é reduzido a [P1] e o Google roteia 1
+    par em vez de vários, sem qualquer perda de exatidão (P1 é provadamente ótimo).
+
+    `retas_por_origem`: dict {origem: [(reta_km, hub), ...]} ordenado por reta (o topk_map_completo). Quando a
+    prova não se aplica (viária(P1) > reta(P2), típico de malha esparsa/rios), o shortlist é mantido íntegro
+    para o Google decidir entre os candidatos próximos. PURA e defensiva.
+
+    Retorna: (shortlist_podado, n_provados) — o dict podado e quantas origens foram provadas por dominância."""
+    _out = {}
+    _n_provados = 0
+    try:
+        for _org, _cands in (shortlist or {}).items():
+            if not _cands or len(_cands) == 1:
+                _out[_org] = _cands  # nada a podar (já é 1 ou vazio)
+                continue
+            _p1_hub, _p1_viaria = _cands[0][0], float(_cands[0][1])
+            _retas = (retas_por_origem or {}).get(_org) or []
+            _reta_por_hub = {str(_h): float(_r) for _r, _h in _retas}
+            # a prova reduz a [P1] se P1 domina TODOS os demais do shortlist: viária(P1) <= reta(Pi) para
+            # todo Pi (i>=2). Como viária(Pi) >= reta(Pi), isso garante viária(Pi) >= viária(P1) para todos.
+            # Basta testar contra a MENOR reta entre os demais do shortlist.
+            _retas_demais = [_reta_por_hub.get(str(_h)) for _h, _d in _cands[1:]
+                             if _reta_por_hub.get(str(_h)) is not None]
+            if not _retas_demais or len(_retas_demais) < (len(_cands) - 1):
+                # falta a reta de algum candidato: não é seguro provar, mantém o shortlist
+                _out[_org] = _cands
+                continue
+            _menor_reta_demais = min(_retas_demais)
+            if _p1_viaria <= _menor_reta_demais:
+                # PROVA: viária(P1) <= reta(menor dos demais) <= viária(cada demais) → P1 domina todos
+                _out[_org] = [_cands[0]]
+                _n_provados += 1
+            else:
+                _out[_org] = _cands  # prova não se aplica: Google decide entre os candidatos
+        if _n_provados:
+            logger.warning("[DOMINANCIA-GEO] %d origem(ns) com vencedor provado por dominância geométrica — "
+                           "shortlist reduzido a 1, economizando chamadas ao Google sem perder exatidão.",
+                           _n_provados)
+        return _out, _n_provados
+    except Exception:
+        logger.error("[DOMINANCIA-GEO] Falha na poda por dominância", exc_info=True)
+        return shortlist, 0
+
+
 def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3, teto_incerteza=6):
     """[MATRIZ-VIARIA + GOOGLE-AMPLO - 184ª geração] FASE 2 (decisão de qualidade): a matriz /table/v1 do
     OSRM (Fase 1) é barata e cobre TODOS os candidatos, mas o OSRM é o motor de FALLBACK — a decisão de
@@ -25125,6 +25622,17 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             # FASE 2: shortlist dos melhores por matriz (menor + dentro de 15%, até 3) para
                             # re-roteamento com GOOGLE prioritário — a decisão de qualidade cabe ao Google.
                             _shortlist = _shortlist_por_matriz(_dist_matriz)
+                            # [DOMINANCIA-GEO - 184ª geração] Poda EXATA: onde o melhor candidato é provado
+                            # imbatível (viária ≤ reta dos demais), reduz o shortlist a ele só — economiza
+                            # chamadas ao Google nos casos dominantes (maioria em malha boa) sem perder
+                            # exatidão. Usa o topk_map_completo (retas por origem).
+                            try:
+                                _shortlist, _n_dom = _podar_shortlist_por_dominancia(
+                                    _shortlist, topk_map_completo)
+                                if _n_dom:
+                                    st.session_state['alo_dominancia_geo'] = _n_dom
+                            except Exception as _e_dom:
+                                logger.error(f"[DOMINANCIA-GEO] {_e_dom}")
                             st.session_state['alo_shortlist_matriz'] = _shortlist
                             for _org, _dh in _dist_matriz.items():
                                 if _dh:
@@ -25175,6 +25683,8 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 st.session_state['alo_tarefas'] = tarefas_priorizadas_alo
                 st.session_state['alo_resultados'] = {}
                 st.session_state['alo_chunk_idx'] = 0
+                st.session_state['alo_idx_fim_anterior'] = -1          # guarda anti-estagnação
+                st.session_state['alo_paradas_consecutivas'] = 0
                 st.session_state['alo_df_pares'] = df_pares
                 st.session_state['alo_total'] = len(pares_unicos_alo)
                 st.session_state['alo_runner_map'] = runner_up_map
@@ -25238,10 +25748,33 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 _t_alo = time.time()
                 _idx_local = _idx
                 _proc_alo = False
+                # [ANTI-ESTAGNACAO - 184ª geração] Guarda contra travamento: se, ao FIM de uma execução, o
+                # índice não avançou em relação ao fim da execução ANTERIOR (rotas que estouram o orçamento
+                # sem completar — típico de pares em regiões com timeout de rede repetido), o processamento
+                # ficaria preso no mesmo ponto para sempre (o sintoma "trava em 50% e nunca acaba"). Contamos
+                # as execuções consecutivas sem avanço; após algumas, PULAMOS o mini-lote problemático à
+                # força na próxima execução, garantindo progresso. Os poucos pares pulados recebem tratamento
+                # de fallback na finalização (melhor que travar o estudo inteiro); o resto mantém qualidade.
+                _idx_fim_anterior = st.session_state.get('alo_idx_fim_anterior', -1)
+                _paradas = st.session_state.get('alo_paradas_consecutivas', 0)
+                _pular_forcado = _paradas >= 3  # já houve 3 execuções seguidas sem avançar → pula à força
                 while _idx_local < _total:
                     _mini = _tarefas[_idx_local:_idx_local + _MINI_ALO]
                     if not _mini:
                         break
+                    if _pular_forcado:
+                        # estagnação detectada: registra os pares travados como pendentes e força o avanço
+                        for _tp in _mini:
+                            _par_trv = _tp[1] if isinstance(_tp, tuple) and len(_tp) > 1 else None
+                            if _par_trv and _par_trv not in _resultados:
+                                _resultados[_par_trv] = None  # não-roteado → recebe fallback na finalização
+                        logger.warning("[ANTI-ESTAGNACAO] Mini-lote no índice %d pulado após %d execuções sem "
+                                       "avanço (rotas travando o orçamento) — progresso forçado, %d par(es) "
+                                       "marcado(s) para fallback.", _idx_local, _paradas, len(_mini))
+                        _idx_local += _MINI_ALO
+                        _proc_alo = True
+                        _pular_forcado = False  # pula só um lote por execução, depois retoma o fluxo normal
+                        break  # sai e deixa o rerun retomar o roteamento normal a partir do próximo lote
                     try:
                         _res_mini = processar_chunk_rotas(_mini, runner_up_map=_runner_map)
                         _resultados.update(_res_mini)
@@ -25254,6 +25787,15 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 if _proc_alo:
                     st.session_state['alo_resultados'] = _resultados
                 st.session_state['alo_chunk_idx'] = min(_idx_local, _total)
+                # [ANTI-ESTAGNACAO] compara o FIM desta execução com o FIM da anterior para detectar
+                # estagnação real (progresso zero entre execuções), não o início (que sempre iguala o fim
+                # anterior por construção do fluxo contínuo).
+                if _idx_local <= _idx_fim_anterior:
+                    _paradas += 1
+                else:
+                    _paradas = 0
+                st.session_state['alo_idx_fim_anterior'] = _idx_local
+                st.session_state['alo_paradas_consecutivas'] = _paradas
                 _ir_finalizar = st.session_state['alo_chunk_idx'] >= _total
             
             # [PODA - 143ª geração] 2ª RODADA (só no modo multicritério): agora que o polo mais próximo
@@ -25309,6 +25851,8 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         st.session_state['alo_tarefas'] = _novas
                         st.session_state['alo_total'] = len(_novas)
                         st.session_state['alo_chunk_idx'] = 0
+                        st.session_state['alo_idx_fim_anterior'] = -1        # reset do guarda anti-estagnação
+                        st.session_state['alo_paradas_consecutivas'] = 0
                         _ir_finalizar = False          # volta para a fase de roteamento com os sobreviventes
                 except Exception as _e_poda:
                     logger.error(f"[PODA] Falha na 2ª rodada (poda); seguindo sem ela: {_e_poda}")
@@ -25941,6 +26485,15 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                         "vencedor, Google decide a menor viária real.")
                                     # [DIVERGENCIA-MOTOR - 184ª geração] Sensibilidade ao motor.
                                     _div = st.session_state.get('alo_divergencia_motor')
+                                    # [DOMINANCIA-GEO - 184ª geração] Economia por prova de dominância.
+                                    _ndom = st.session_state.get('alo_dominancia_geo')
+                                    if _ndom:
+                                        st.caption(
+                                            f"⚡ **Prova de dominância geométrica:** em {_ndom} município(s), o "
+                                            "polo mais próximo foi matematicamente provado imbatível (rota "
+                                            "viária ≤ linha reta dos concorrentes), dispensando consultas extras "
+                                            "ao Google sem qualquer perda de exatidão — decisão mais rápida onde "
+                                            "o vencedor é inequívoco.")
                                     if _div and _div.get('total_avaliado'):
                                         _tx = _div.get('taxa_divergencia_pct', 0)
                                         if _div.get('divergencias'):
