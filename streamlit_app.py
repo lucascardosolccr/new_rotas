@@ -17699,7 +17699,63 @@ _UA_ROTACAO_GOOGLE = [
 ]
 
 
-def _circuit_breaker_google(estado, sucesso, agora, _limiar_falhas=5, _cooldown_s=20.0):
+class _CronometroEtapas:
+    """[BENCHMARK - 184ª geração] Cronômetro leve de etapas para medir e reportar o tempo de cada fase do
+    processamento (a instrumentação de benchmark que permite quantificar ganhos, como pede a boa prática de
+    engenharia de performance). Overhead desprezível (só time.perf_counter por marca). Uso:
+
+        crono = _CronometroEtapas()
+        crono.marcar("geocodificação")
+        ... trabalho ...
+        crono.marcar("roteamento")
+        ... trabalho ...
+        crono.fim()
+        crono.resumo()  # dict {etapa: segundos} + total
+
+    Puro em relação ao estado global; não faz I/O. Seguro para uso em qualquer fluxo."""
+    __slots__ = ("_t0", "_ultima", "_marca_nome", "_tempos", "_ordem")
+
+    def __init__(self):
+        import time as _t
+        self._t0 = _t.perf_counter()
+        self._ultima = self._t0
+        self._marca_nome = None
+        self._tempos = {}
+        self._ordem = []
+
+    def marcar(self, nome):
+        """Fecha a etapa anterior (se houver) e abre uma nova com o nome dado."""
+        import time as _t
+        _agora = _t.perf_counter()
+        if self._marca_nome is not None:
+            _dt = _agora - self._ultima
+            self._tempos[self._marca_nome] = self._tempos.get(self._marca_nome, 0.0) + _dt
+            if self._marca_nome not in self._ordem:
+                self._ordem.append(self._marca_nome)
+        self._marca_nome = str(nome)
+        self._ultima = _agora
+
+    def fim(self):
+        """Fecha a última etapa aberta."""
+        self.marcar(None)
+        self._marca_nome = None
+
+    def resumo(self):
+        """Retorna dict {etapa: segundos (arredondado)} na ordem de ocorrência, com o total."""
+        import time as _t
+        _total = _t.perf_counter() - self._t0
+        _out = {_e: round(self._tempos.get(_e, 0.0), 3) for _e in self._ordem}
+        _out["_total"] = round(_total, 3)
+        return _out
+
+    def resumo_pct(self):
+        """Retorna dict {etapa: (segundos, pct_do_total)} — útil para ver onde o tempo é gasto."""
+        _r = self.resumo()
+        _tot = _r.get("_total", 0.0) or 1.0
+        return {_e: (_s, round(100.0 * _s / _tot, 1)) for _e, _s in _r.items() if _e != "_total"}
+
+
+def _circuit_breaker_google(estado, sucesso, agora, _limiar_falhas=3, _cooldown_s=45.0):
     """[CIRCUIT-BREAKER - 184ª geração] Máquina de estados do disjuntor (circuit breaker) do Google, um padrão
     consagrado de engenharia de confiabilidade (Nygard, "Release It!"). Objetivo: MAXIMIZAR a participação do
     Google sem a API oficial, atacando a causa real do bloqueio — o martelamento. Quando o scraper começa a
@@ -17812,25 +17868,34 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
         # que é tecnicamente possível sem chave, sem removê-lo do fluxo.
         resposta = None
         texto_resposta = ""
-        _MAX_TENT_G = 3
+        # [GOOGLE-RAPIDO - 184ª geração] Correção crítica de desempenho: quando o Google está bloqueado, cada
+        # tentativa esperava o timeout inteiro (15s) × 3 perfis = 45s+ por par — o que tornava o estudo
+        # inviável (55s/registro, ETA de dezenas de horas). Agora o timeout é CURTO (4s): uma resposta real
+        # do Google chega bem antes disso; se não chegou em 4s, é bloqueio/latência e insistir só desperdiça
+        # tempo. Além disso, o número de tentativas é ADAPTATIVO à saúde do Google (via disjuntor): quando o
+        # Google vem falhando, fazemos só 1 tentativa (desiste rápido e deixa o OSRM, que é rápido, assumir);
+        # quando está saudável, até 2 tentativas com perfis diferentes. Melhor OSRM em 2s que esperar 45s por
+        # um Google que não vem.
+        _TIMEOUT_G = 4
+        _MAX_TENT_G = 2 if _google_pode_chamar() else 1
         for _tent in range(_MAX_TENT_G):
             _headers_tent = _headers_google_rotativo(_tent)
             try:
-                resposta = session.get(url_api, headers=_headers_tent, timeout=15)
+                resposta = session.get(url_api, headers=_headers_tent, timeout=_TIMEOUT_G)
                 texto_resposta = resposta.text.replace('\u202f', ' ').replace('\u200b', '')
                 if len(texto_resposta) >= 500:
                     break  # resposta válida obtida
             except Exception:
                 if _tent < _MAX_TENT_G - 1:
                     try:
-                        time.sleep(0.4)
+                        time.sleep(0.2)
                     except Exception:
                         pass
                     continue
                 raise
             if _tent < _MAX_TENT_G - 1 and len(texto_resposta) < 500:
                 try:
-                    time.sleep(0.4)
+                    time.sleep(0.2)
                 except Exception:
                     pass
         if len(texto_resposta) < 500:
@@ -26388,7 +26453,18 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # uma nova chance nos pares que caíram só no OSRM/fallback (o rate-limit do Google pode já
                     # ter resetado). Recupera participação do Google de forma segura (respeita o disjuntor,
                     # não martela). Opt-in via toggle; roda com teto para não reintroduzir lentidão.
-                    if st.session_state.get('alo_segunda_passada_google', True):
+                    # [SEGUNDA-PASSADA-GOOGLE] Só vale a pena se o Google participou de forma relevante no
+                    # estudo. Se o Google está bloqueado (participação ~nula), reprocessar centenas de pares
+                    # nele só desperdiça tempo esperando timeouts — cada tentativa falha. Medimos a
+                    # participação AQUI (antes da segunda passada) para decidir com precisão; abaixo de um
+                    # piso, pulamos a fase inteira (o disjuntor também barra as chamadas, mas evitar a
+                    # varredura poupa tempo).
+                    try:
+                        _part_previa = _diagnosticar_participacao_motores(df_final_alo) or {}
+                    except Exception:
+                        _part_previa = {}
+                    _google_vivo = (_part_previa.get('pct_google', 0) >= 3) if _part_previa else _google_pode_chamar()
+                    if st.session_state.get('alo_segunda_passada_google', True) and _google_vivo:
                         try:
                             _teto_2pass = 400  # limite de reprocessamentos para controlar tempo/rede
                             df_final_alo, _n_rec_g = _segunda_passada_google(df_final_alo, _max_pares=_teto_2pass)
