@@ -3051,6 +3051,41 @@ METRICAS_DISTANCIA = {
 
 _LOCK_METRICAS = threading.Lock()
 
+# [CIRCUIT-BREAKER - 184ª geração] Estado global thread-safe do disjuntor do Google. O roteamento é paralelo
+# (múltiplas threads chamando o scraper), então o estado do breaker é compartilhado e protegido por lock. Ver
+# _circuit_breaker_google (máquina de estados pura) e _google_pode_chamar/_google_registrar_resultado (acesso
+# thread-safe usados pelo scraper). Quando o Google está saudável, o breaker fica 'fechado' e é transparente.
+_LOCK_GOOGLE_CB = threading.Lock()
+_GOOGLE_CB_ESTADO = {"status": "fechado", "falhas_seguidas": 0, "aberto_ate": 0.0}
+
+
+def _google_pode_chamar(agora=None):
+    """Consulta thread-safe se o disjuntor permite chamar o Google agora. Aplica transições por tempo (ex.:
+    aberto→meio_aberto após o cooldown). Retorna bool."""
+    import time as _t
+    _now = agora if agora is not None else _t.time()
+    try:
+        with _LOCK_GOOGLE_CB:
+            global _GOOGLE_CB_ESTADO
+            # avalia transição por tempo sem registrar resultado de chamada (sucesso=None)
+            _GOOGLE_CB_ESTADO, _pode = _circuit_breaker_google(_GOOGLE_CB_ESTADO, None, _now)
+            return bool(_pode)
+    except Exception:
+        return True  # em dúvida, permite (nunca bloqueia o Google por erro do próprio breaker)
+
+
+def _google_registrar_resultado(sucesso, agora=None):
+    """Registra thread-safe o resultado de uma chamada ao Google (True/False), atualizando o disjuntor."""
+    import time as _t
+    _now = agora if agora is not None else _t.time()
+    try:
+        with _LOCK_GOOGLE_CB:
+            global _GOOGLE_CB_ESTADO
+            _GOOGLE_CB_ESTADO, _ = _circuit_breaker_google(_GOOGLE_CB_ESTADO, bool(sucesso), _now)
+    except Exception:
+        pass
+
+
 def _incrementar_metrica(campo: str, valor: int = 1):
     with _LOCK_METRICAS:
         METRICAS_DISTANCIA[campo] += valor
@@ -17649,6 +17684,94 @@ def obter_coordenadas_e_endereco_oficial(localidade):
 # ==============================================================================
 # MOTOR DE ROTEAMENTO EXTREMO E PIPELINE UNIFICADO
 # ==============================================================================
+_UA_ROTACAO_GOOGLE = [
+    # desktop Chrome / Windows
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/120.0.0.0 Safari/537.36"),
+    # desktop Safari / macOS
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+     "Version/17.1 Safari/605.1.15"),
+    # mobile Chrome / Android
+    ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/119.0.0.0 Mobile Safari/537.36"),
+    # Firefox / Windows
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"),
+]
+
+
+def _circuit_breaker_google(estado, sucesso, agora, _limiar_falhas=5, _cooldown_s=20.0):
+    """[CIRCUIT-BREAKER - 184ª geração] Máquina de estados do disjuntor (circuit breaker) do Google, um padrão
+    consagrado de engenharia de confiabilidade (Nygard, "Release It!"). Objetivo: MAXIMIZAR a participação do
+    Google sem a API oficial, atacando a causa real do bloqueio — o martelamento. Quando o scraper começa a
+    falhar em série (o Google impôs rate-limit), continuar chamando em rajada AGRAVA o bloqueio. O disjuntor
+    detecta a sequência de falhas e ABRE: suspende as chamadas ao Google por um curto intervalo (deixando o
+    rate-limit do Google resetar), período em que o roteamento usa apenas o OSRM. Após o intervalo, entra em
+    MEIO-ABERTO e testa uma chamada; se voltar a funcionar, FECHA e retoma o Google normalmente.
+
+    Estados: 'fechado' (Google ativo, normal), 'aberto' (Google suspenso temporariamente), 'meio_aberto'
+    (testando recuperação). Quando FECHADO e o Google saudável, o disjuntor é transparente (zero impacto).
+
+    Parâmetros:
+      estado: dict {status, falhas_seguidas, aberto_ate} — o estado persistente do breaker (mutado e
+              retornado); na primeira chamada pode vir vazio/None.
+      sucesso: bool — se a última chamada ao Google teve sucesso (None se não houve chamada, ex.: já estava
+               aberto — nesse caso só avalia transição por tempo).
+      agora: float — timestamp atual (time.time()).
+
+    Retorna: (estado_atualizado, pode_chamar_google) — o dict de estado e um bool indicando se o Google deve
+    ser chamado na PRÓXIMA tentativa. PURA (só depende dos argumentos) e defensiva."""
+    try:
+        _e = dict(estado) if estado else {}
+        _status = _e.get("status", "fechado")
+        _falhas = int(_e.get("falhas_seguidas", 0))
+        _aberto_ate = float(_e.get("aberto_ate", 0.0))
+
+        if _status == "aberto":
+            # suspenso: só reabre para teste quando o cooldown expira
+            if agora >= _aberto_ate:
+                _status = "meio_aberto"
+                _pode = True  # permite UMA chamada de teste
+            else:
+                _pode = False  # ainda no intervalo de proteção → usa só OSRM
+            _e.update({"status": _status, "falhas_seguidas": _falhas, "aberto_ate": _aberto_ate})
+            return _e, _pode
+
+        # fechado ou meio_aberto: processa o resultado da chamada que ocorreu
+        if sucesso is True:
+            _falhas = 0
+            _status = "fechado"  # recuperou (ou seguiu saudável)
+        elif sucesso is False:
+            _falhas += 1
+            if _status == "meio_aberto":
+                # teste falhou: reabre imediatamente por mais um cooldown
+                _status = "aberto"
+                _aberto_ate = agora + _cooldown_s
+                _e.update({"status": _status, "falhas_seguidas": _falhas, "aberto_ate": _aberto_ate})
+                return _e, False
+            if _falhas >= _limiar_falhas:
+                # muitas falhas seguidas: ABRE o disjuntor para o Google respirar
+                _status = "aberto"
+                _aberto_ate = agora + _cooldown_s
+                _e.update({"status": _status, "falhas_seguidas": _falhas, "aberto_ate": _aberto_ate})
+                return _e, False
+        # sucesso is None (sem chamada) → mantém o estado como está
+        _e.update({"status": _status, "falhas_seguidas": _falhas, "aberto_ate": _aberto_ate})
+        return _e, True
+    except Exception:
+        logger.error("[CIRCUIT-BREAKER] Falha na máquina de estados do disjuntor do Google", exc_info=True)
+        return (estado or {"status": "fechado", "falhas_seguidas": 0, "aberto_ate": 0.0}), True
+
+
+def _headers_google_rotativo(_tentativa):
+    """[GOOGLE-RESILIENTE - 184ª geração] Retorna cabeçalhos HTTP para o scraper do Google variando o
+    User-Agent conforme a tentativa. Quando o Google passa a bloquear um perfil de navegador (rate-limit por
+    assinatura de UA — causa comum de o Google "parar de responder" num ambiente), tentar com um perfil
+    diferente pode recuperar a resposta sem qualquer mudança de infraestrutura. Determinístico e puro."""
+    _ua = _UA_ROTACAO_GOOGLE[_tentativa % len(_UA_ROTACAO_GOOGLE)]
+    return {"User-Agent": _ua, "Accept-Language": "pt-BR,pt;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+
+
 def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=None, link_embed_pronto=None):
     cache_key = f"GOOG_{CACHE_VERSION}_{origem_texto}|{destino_texto}|{usar_coordenadas}"
     if cache_key in cache_google: 
@@ -17659,7 +17782,16 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
             _geo_c = _cached[6] if len(_cached) > 6 else ""  # [VIS-GOOGLE-GEO] preserva geometria
             return (_cached[0], _cached[1], link_maps_pronto, _cached[3], _cached[4], link_embed_pronto or _cached[5], _geo_c)
         return _cached
-        
+
+    # [CIRCUIT-BREAKER - 184ª geração] Antes de chamar o scraper, consulta o disjuntor. Se o Google vem
+    # falhando em série (rate-limit), o disjuntor está ABERTO e suspendemos a chamada por um curto intervalo
+    # — evitando o martelamento que agrava o bloqueio e deixando o rate-limit do Google resetar. Nesse
+    # período o roteamento usa o OSRM (o chamador já trata res_google=None). Quando o Google está saudável, o
+    # disjuntor está fechado e isto é transparente. O cache acima é consultado ANTES do disjuntor: uma rota
+    # que o Google já respondeu continua sendo servida mesmo com o disjuntor aberto.
+    if not _google_pode_chamar():
+        return None
+
     orig_link_txt = requests.utils.quote(origem_texto)
     dest_link_txt = requests.utils.quote(destino_texto)
     origem_param_scraper = f"{lat_o},{lon_o}" if usar_coordenadas else orig_link_txt
@@ -17670,36 +17802,39 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
     # pipeline; caso contrário, constrói a partir do texto (compatibilidade).
     link_maps = link_maps_pronto if link_maps_pronto else f"https://www.google.com/maps/dir/?api=1&origin={orig_link_txt}&destination={dest_link_txt}&travelmode=driving"
     link_embed = link_embed_pronto if link_embed_pronto else f"https://maps.google.com/maps?saddr={orig_link_txt}&daddr={dest_link_txt}&output=embed"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like "
-                             "Gecko) Chrome/120.0.0.0 Safari/537.36", "Accept-Language": "pt-BR,pt;q=0.9"}
 
     try:
-        # [GOOGLE-RESILIENTE - 184ª geração] O Google é o motor PRIORITÁRIO e mais confiável. Uma única
-        # tentativa com timeout curto fazia falhas transitórias (rate-limit/latência) caírem no OSRM cedo
-        # demais — o que reduzia a presença do Google. Agora tentamos até 2 vezes com timeout mais folgado
-        # e um respiro entre elas, elevando a taxa de sucesso do Google sem removê-lo do fluxo.
+        # [GOOGLE-RESILIENTE - 184ª geração] O Google é o motor PRIORITÁRIO. Sem a API oficial (que exige
+        # chave paga), o scraper é a única via — e sua principal causa de falha em produção é o Google impor
+        # rate-limit/bloqueio à assinatura do navegador (User-Agent) do ambiente. Por isso tentamos até 3
+        # vezes, cada uma com um PERFIL DE NAVEGADOR DIFERENTE (desktop/mobile/Firefox) e um respiro entre
+        # elas: se o Google bloqueou um perfil, outro pode passar. Isso maximiza a participação do Google no
+        # que é tecnicamente possível sem chave, sem removê-lo do fluxo.
         resposta = None
         texto_resposta = ""
-        for _tent in range(2):
+        _MAX_TENT_G = 3
+        for _tent in range(_MAX_TENT_G):
+            _headers_tent = _headers_google_rotativo(_tent)
             try:
-                resposta = session.get(url_api, headers=headers, timeout=15)
+                resposta = session.get(url_api, headers=_headers_tent, timeout=15)
                 texto_resposta = resposta.text.replace('\u202f', ' ').replace('\u200b', '')
                 if len(texto_resposta) >= 500:
                     break  # resposta válida obtida
             except Exception:
-                if _tent == 0:
+                if _tent < _MAX_TENT_G - 1:
                     try:
                         time.sleep(0.4)
                     except Exception:
                         pass
                     continue
                 raise
-            if _tent == 0 and len(texto_resposta) < 500:
+            if _tent < _MAX_TENT_G - 1 and len(texto_resposta) < 500:
                 try:
                     time.sleep(0.4)
                 except Exception:
                     pass
         if len(texto_resposta) < 500:
+            _google_registrar_resultado(False)  # [CIRCUIT-BREAKER] resposta vazia = sinal de bloqueio/rate-limit
             return None
 
         dist_match = _RE_DIST_G1.search(texto_resposta)
@@ -17753,9 +17888,11 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
             geo_google = _extrair_geometria_google(texto_resposta, lat_o, lon_o, lat_d, lon_d)
             res = (km_puro, tempo_str, link_maps, envolve_balsa, score_google, link_embed, geo_google)
             cache_google.set(cache_key, res, expire=2592000)
+            _google_registrar_resultado(True)  # [CIRCUIT-BREAKER] sucesso → mantém/fecha o disjuntor
             return res
     except Exception: 
         pass
+    _google_registrar_resultado(False)  # [CIRCUIT-BREAKER] falha → conta para eventual abertura do disjuntor
     return None
 
 @_lru_cache(maxsize=32)
@@ -21344,6 +21481,135 @@ def _fundir_shortlist_no_topk(topk_map, shortlist_matriz, dist_matriz):
     except Exception:
         logger.error("[MATRIZ-VIARIA] Falha ao fundir shortlist no topk_map", exc_info=True)
         return topk_map
+
+
+def _segunda_passada_google(df, _max_pares=None):
+    """[SEGUNDA-PASSADA-GOOGLE - 184ª geração] Aumenta a participação REAL do Google sem martelar seu
+    rate-limit. Toda rota já passa pelo Google e pelo OSRM no pipeline (o Google é o motor prioritário); mas
+    quando o Google impõe rate-limit temporário, parte dos pares cai só no OSRM naquele instante. Esta função
+    roda AO FIM do estudo: identifica os pares resolvidos apenas por OSRM (ou fallback) e faz UMA NOVA
+    tentativa no Google — que, passado o tempo, pode já ter liberado o rate-limit. Se o Google agora responde
+    E sua rota é fisicamente válida, o valor é adotado (com a regra de sempre: Google prioritário, só perde
+    se o OSRM for 2%+ menor). Isso recupera participação do Google de forma SEGURA: não aumenta a rajada
+    (roda depois, espaçado), respeita o disjuntor, e nunca piora um resultado (só troca se o Google vier
+    melhor/coerente).
+
+    Retorna: (df_atualizado, n_recuperados) — o df com as rotas eventualmente melhoradas pelo Google e quantos
+    pares o Google recuperou. Defensiva; se algo falhar, devolve o df original.
+
+    Observação de segurança: esta função depende de rede (chama o scraper). No pipeline real ela roda no
+    ambiente do usuário; em teste isolado é exercida com um cliente injetado. Só reprocessa pares cujo
+    resultado atual NÃO é Google, preservando tudo que o Google já havia decidido."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return df, 0
+        if "Fonte da Rota" not in df.columns or "Distancia" not in df.columns:
+            return df, 0
+        _f = df["Fonte da Rota"].astype(str).str.lower()
+        # candidatos à recuperação: tudo que NÃO veio do Google (OSRM puro ou fallback)
+        _mask_nao_google = ~_f.str.contains("google")
+        _idx_alvo = list(df.index[_mask_nao_google])
+        if _max_pares is not None:
+            _idx_alvo = _idx_alvo[:int(_max_pares)]
+        if not _idx_alvo:
+            return df, 0
+        _n_rec = 0
+        for _i in _idx_alvo:
+            # só tenta se o disjuntor permitir (respeita a proteção anti-bloqueio)
+            if not _google_pode_chamar():
+                break  # disjuntor aberto: não adianta insistir agora
+            try:
+                _o_lat = float(df.at[_i, "Lat Origem"]) if "Lat Origem" in df.columns else None
+                _o_lon = float(df.at[_i, "Lon Origem"]) if "Lon Origem" in df.columns else None
+                _d_lat = float(df.at[_i, "Lat Destino"]) if "Lat Destino" in df.columns else None
+                _d_lon = float(df.at[_i, "Lon Destino"]) if "Lon Destino" in df.columns else None
+                _reta = float(df.at[_i, "Linha Reta"]) if "Linha Reta" in df.columns else 0.0
+            except Exception:
+                continue
+            if not all(v not in (None, 0.0) for v in (_o_lat, _o_lon, _d_lat, _d_lon)):
+                continue
+            _mun_o = str(df.at[_i, "Municipio Origem"]) if "Municipio Origem" in df.columns else ""
+            _mun_d = str(df.at[_i, "Municipio Destino"]) if "Municipio Destino" in df.columns else ""
+            _res_g = extrair_dados_reais_google(_mun_o, _mun_d, _o_lat, _o_lon, _d_lat, _d_lon, _reta,
+                                                usar_coordenadas=True)
+            if not _res_g:
+                continue
+            _km_g = _res_g[0]
+            if not _viaria_fisicamente_possivel(_km_g, _reta):
+                continue  # Google veio fisicamente impossível: ignora, mantém o atual
+            # adota o Google se ele for melhor OU se o atual não era rota real (fallback)
+            _km_atual = None
+            try:
+                _km_atual = float(df.at[_i, "Distancia"])
+            except Exception:
+                _km_atual = None
+            _fonte_atual = str(df.at[_i, "Fonte da Rota"]).lower()
+            _era_fallback = ("geodés" in _fonte_atual) or ("falha" in _fonte_atual)
+            if _era_fallback or (_km_atual is not None and _km_g <= _km_atual * 1.02):
+                # Google recupera este par: atualiza distância e fonte (demais colunas pareadas seguem no
+                # fluxo normal do builder; aqui priorizamos a métrica de decisão — a menor viária real).
+                df.at[_i, "Distancia"] = round(float(_km_g), 1)
+                df.at[_i, "Fonte da Rota"] = "Google Maps"
+                _n_rec += 1
+        if _n_rec:
+            logger.warning("[SEGUNDA-PASSADA-GOOGLE] Google recuperou %d rota(s) que haviam caído no OSRM/"
+                           "fallback — participação do Google aumentada sem martelar o rate-limit.", _n_rec)
+        return df, _n_rec
+    except Exception:
+        logger.error("[SEGUNDA-PASSADA-GOOGLE] Falha na segunda passada do Google", exc_info=True)
+        return df, 0
+
+
+def _diagnosticar_participacao_motores(df):
+    """[PARTICIPACAO-MOTOR - 184ª geração] Mede a participação REAL de cada motor de roteamento no resultado
+    final e diagnostica quando o Google está anormalmente ausente — a queixa recorrente de "o Google parou de
+    participar". Como o motor Google é um scraper de endpoint (não a API oficial), o Google pode passar a
+    bloquear/alterar as respostas em produção, fazendo sua taxa despencar sem que nada no código tenha mudado.
+    Esta função dá VISIBILIDADE a isso: conta as fontes, calcula percentuais e emite um veredito acionável.
+
+    Retorna dict {total, n_google, n_osrm, n_fallback, pct_google, pct_osrm, pct_fallback, veredito, nivel}.
+    PURA e defensiva."""
+    try:
+        if df is None or getattr(df, "empty", True) or "Fonte da Rota" not in df.columns:
+            return {}
+        _f = df["Fonte da Rota"].astype(str).str.lower()
+        _n = len(df)
+        _n_google = int(_f.str.contains("google").sum())
+        _n_osrm = int((_f.str.contains("osrm") & ~_f.str.contains("google")).sum())
+        _n_fallback = int((_f.str.contains("geodés") | _f.str.contains("falha") |
+                           _f.str.contains("linha reta")).sum())
+        _pct_g = 100.0 * _n_google / max(_n, 1)
+        _pct_o = 100.0 * _n_osrm / max(_n, 1)
+        _pct_f = 100.0 * _n_fallback / max(_n, 1)
+        # veredito acionável sobre a participação do Google
+        if _n == 0:
+            _veredito, _nivel = "Sem dados para diagnosticar.", "info"
+        elif _pct_g < 5:
+            _veredito = ("Participação do Google praticamente nula. O motor Google (scraper) provavelmente "
+                         "está sendo bloqueado ou teve seu formato de resposta alterado em produção. O "
+                         "roteamento seguiu válido pelo OSRM, mas para restaurar o Google como motor "
+                         "prioritário de forma estável, a via definitiva é a API oficial do Google (com "
+                         "chave). Verifique também conectividade e rate-limit do ambiente.")
+            _nivel = "erro"
+        elif _pct_g < 30:
+            _veredito = ("Participação do Google reduzida. O scraper está respondendo apenas em parte dos "
+                         "casos — comum quando o Google impõe rate-limit ao ambiente. O OSRM cobriu o "
+                         "restante. A API oficial eliminaria essa instabilidade.")
+            _nivel = "aviso"
+        elif _pct_g < 60:
+            _veredito = ("Participação equilibrada entre Google e OSRM. O Google está atuando de forma "
+                         "relevante; o OSRM complementa onde o Google não respondeu.")
+            _nivel = "info"
+        else:
+            _veredito = ("Google é o motor predominante, como esperado. O OSRM atua como complemento e "
+                         "auditoria.")
+            _nivel = "ok"
+        return {"total": _n, "n_google": _n_google, "n_osrm": _n_osrm, "n_fallback": _n_fallback,
+                "pct_google": round(_pct_g, 1), "pct_osrm": round(_pct_o, 1),
+                "pct_fallback": round(_pct_f, 1), "veredito": _veredito, "nivel": _nivel}
+    except Exception:
+        logger.error("[PARTICIPACAO-MOTOR] Falha ao diagnosticar participação dos motores", exc_info=True)
+        return {}
 
 
 def _auditar_divergencia_motores(dist_matriz, novo_dest_final):
@@ -25346,6 +25612,21 @@ if _secao == _SECOES[2]:   # tab_alocacao
                      "muitos polos próximos; menos quando o mais próximo domina) e elege o de MENOR rota. O "
                      "vencedor é confirmado pelo Google. Processa em lotes para manter a memória controlada e "
                      "a aba estável. Se algo falhar, o motor par-a-par com prova de otimalidade assume.")
+            # [SEGUNDA-PASSADA-GOOGLE - 184ª geração] Toggle: nova tentativa do Google, ao fim do estudo, nos
+            # pares que caíram só no OSRM. Aumenta a participação do Google de forma segura (espera o
+            # rate-limit resetar em vez de martelar). Ligado por padrão; desligue para o estudo mais rápido.
+            st.session_state['alo_segunda_passada_google'] = st.checkbox(
+                "🔁 Segunda tentativa do Google nos pares que caíram no OSRM (recomendado) — recupera a "
+                "participação do Google sem sobrecarregá-lo",
+                value=st.session_state.get('alo_segunda_passada_google', True), disabled=_alo_ativo,
+                key="alo_segunda_passada_google_chk",
+                help="Toda rota já passa pelo Google e pelo OSRM durante o processamento (o Google é "
+                     "prioritário). Quando o Google impõe rate-limit temporário, alguns pares ficam só com o "
+                     "OSRM naquele instante. Esta opção, ao FIM do estudo, tenta o Google novamente nesses "
+                     "pares — quando o rate-limit já pode ter liberado — e adota a rota do Google se ela for "
+                     "válida e melhor. Respeita o disjuntor de proteção (não insiste se o Google está "
+                     "bloqueado) e tem um teto para não deixar o estudo lento. Só melhora: nunca piora uma "
+                     "rota existente.")
         
         # [HUB-PARAMS - 131ª geração] Parâmetros do custo expostos: a calibração é OPERACIONAL (o preço de
         # uma balsa depende da sua operação), então quem decide é o usuário — não uma constante do código.
@@ -26088,6 +26369,18 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # real. Roda com as viárias REAIS já populadas (após o alinhamento do concorrente) e ANTES da
                     # validação — se sobrou algum caso com vencedor de viária maior que o 2º, ele é TROCADO aqui,
                     # e a validação seguinte confirma que não resta inconsistência (deve zerar os alertas).
+                    # [SEGUNDA-PASSADA-GOOGLE - 184ª geração] Antes de eleger o vencedor final, dá ao Google
+                    # uma nova chance nos pares que caíram só no OSRM/fallback (o rate-limit do Google pode já
+                    # ter resetado). Recupera participação do Google de forma segura (respeita o disjuntor,
+                    # não martela). Opt-in via toggle; roda com teto para não reintroduzir lentidão.
+                    if st.session_state.get('alo_segunda_passada_google', True):
+                        try:
+                            _teto_2pass = 400  # limite de reprocessamentos para controlar tempo/rede
+                            df_final_alo, _n_rec_g = _segunda_passada_google(df_final_alo, _max_pares=_teto_2pass)
+                            if _n_rec_g:
+                                st.session_state['alo_recuperados_google'] = _n_rec_g
+                        except Exception as _e_2p:
+                            logger.error(f"[SEGUNDA-PASSADA-GOOGLE] {_e_2p}")
                     _inv_antes_viaria = _verificar_invariante_viaria(df_final_alo)
                     df_final_alo = _forcar_menor_viaria_vencedor(df_final_alo)
                     st.session_state['alo_correcoes_viaria'] = int(_inv_antes_viaria.get('violacoes', 0))
@@ -26125,6 +26418,14 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 # roteamento por região (Amazônia/ilhas/balsa têm malha mais fraca) — transparência sobre
                 # onde confiar mais ou menos, sem alterar nenhuma decisão.
                 df_final_alo = _aplicar_confiabilidade_regional(df_final_alo)
+                # [PARTICIPACAO-MOTOR - 184ª geração] Diagnostica quanto o Google participou de fato — dá
+                # visibilidade à queixa "o Google parou de participar" com veredito acionável.
+                try:
+                    _part_mot = _diagnosticar_participacao_motores(df_final_alo)
+                    if _part_mot:
+                        st.session_state['alo_participacao_motor'] = _part_mot
+                except Exception as _e_pm:
+                    logger.error(f"[PARTICIPACAO-MOTOR] {_e_pm}")
                 # [APRENDIZADO - 184ª geração] Audita padrões de subotimalidade e registra em tela + telemetria.
                 try:
                     _padroes = _auditar_padroes_derrota(df_final_alo)
@@ -26445,6 +26746,45 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             st.dataframe(pd.DataFrame(_amostra), hide_index=True, use_container_width=True)
                     # [DIAGNOSTICO-POLO - 184ª geração] Painel de polos suspeitos: vencedores muito sinuosos
                     # que sugerem um polo melhor ausente da lista ou mal roteado (raiz das derrotas).
+                    # [PARTICIPACAO-MOTOR - 184ª geração] Painel de participação dos motores com veredito.
+                    _pm = st.session_state.get('alo_participacao_motor') or {}
+                    if _pm and _pm.get('total'):
+                        _emoji_pm = {"ok": "🟢", "info": "🔵", "aviso": "🟡", "erro": "🔴"}.get(_pm.get('nivel'), "⚪")
+                        with st.expander(f"🛰️ Participação dos motores de roteamento "
+                                         f"({_emoji_pm} Google {_pm['pct_google']:.0f}% · "
+                                         f"OSRM {_pm['pct_osrm']:.0f}%)"):
+                            st.caption("Quanto cada motor participou do resultado final. O Google é o motor "
+                                       "prioritário quando responde; o OSRM cobre o restante e serve de "
+                                       "auditoria e redundância.")
+                            _c1_pm, _c2_pm, _c3_pm = st.columns(3)
+                            _c1_pm.metric("Google Maps", f"{_pm['pct_google']:.0f}%", f"{_pm['n_google']:,} rotas")
+                            _c2_pm.metric("OSRM", f"{_pm['pct_osrm']:.0f}%", f"{_pm['n_osrm']:,} rotas")
+                            _c3_pm.metric("Fallback geodésico", f"{_pm['pct_fallback']:.0f}%",
+                                          f"{_pm['n_fallback']:,} rotas")
+                            # [SEGUNDA-PASSADA-GOOGLE] informa quantas rotas o Google recuperou na 2ª tentativa.
+                            _rec_g = st.session_state.get('alo_recuperados_google')
+                            if _rec_g:
+                                st.success(f"🔁 A segunda tentativa do Google recuperou {_rec_g:,} rota(s) que "
+                                           "haviam caído no OSRM/fallback — a participação do Google acima já "
+                                           "inclui essa recuperação.")
+                            _nivel_pm = _pm.get('nivel')
+                            if _nivel_pm == "erro":
+                                st.error(_pm['veredito'])
+                            elif _nivel_pm == "aviso":
+                                st.warning(_pm['veredito'])
+                            else:
+                                st.info(_pm['veredito'])
+                            # [CIRCUIT-BREAKER] informa se o disjuntor do Google chegou a abrir na sessão.
+                            try:
+                                _cb_est = _GOOGLE_CB_ESTADO
+                                if _cb_est and _cb_est.get('status') != 'fechado':
+                                    st.caption("⚡ O disjuntor de proteção do Google esteve ativo nesta sessão: "
+                                               "ao detectar falhas em série (rate-limit), o sistema suspendeu "
+                                               "temporariamente as chamadas ao Google para não agravar o "
+                                               "bloqueio, usando o OSRM nesse intervalo e retomando o Google "
+                                               "em seguida. É um comportamento de proteção esperado, não um erro.")
+                            except Exception:
+                                pass
                     _susp = st.session_state.get('alo_polos_suspeitos') or []
                     if _susp:
                         with st.expander(f"🔍 Polos possivelmente subótimos ({len(_susp)} caso(s)) — investigar"):
