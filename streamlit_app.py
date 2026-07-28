@@ -15949,18 +15949,19 @@ def forcar_geocodificacao_hierarquica_estrita(texto_cru, modo_oficial=None):
     end_f = ", ".join([c for c in [melhor.get('logradouro', ''), melhor.get('bairro', ''), melhor.get('cidade', ''), melhor.get('estado', '')] if c.strip()]) + ", BRASIL"
     return (melhor['lat'], melhor['lon'], end_f, "DESAMBIGUACAO_ESTRITA", 95, melhor.get('bairro', ''), melhor.get('cidade', ''), f"{melhor['fonte']} (Strict-Mode)", ["Desambiguação Espacial Anti-Colisão acionada em Nuvem. Resolução estrita aplicada."])
 
-def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3):
-    """[MATRIZ-VIARIA - 184ª geração] FASE 2 (decisão de qualidade): a matriz /table/v1 do OSRM (Fase 1) é
-    barata e cobre TODOS os candidatos, mas o OSRM é o motor de FALLBACK — a decisão de qualidade cabe ao
-    Google (prioritário). Esta função extrai, por origem, o SHORTLIST dos melhores candidatos segundo a
-    matriz (o menor viário + os que estão dentro de `margem`× dele, até `teto` candidatos) para que sejam
-    re-roteados com o Google e a decisão final saia do motor prioritário.
+def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3, teto_incerteza=6):
+    """[MATRIZ-VIARIA + GOOGLE-AMPLO - 184ª geração] FASE 2 (decisão de qualidade): a matriz /table/v1 do
+    OSRM (Fase 1) é barata e cobre TODOS os candidatos, mas o OSRM é o motor de FALLBACK — a decisão de
+    qualidade cabe ao Google (prioritário). Esta função extrai, por origem, o SHORTLIST dos melhores
+    candidatos segundo a matriz para re-roteamento com o Google, e a decisão final sai do motor prioritário.
 
-    Por que um shortlist e não só o top-1 da matriz: o OSRM e o Google podem discordar por alguns km; o
-    2º/3º colocado do OSRM pode ser o vencedor real do Google. Roteando os 2-3 melhores no Google, a decisão
-    de menor viária é tomada pelo motor de maior qualidade, sem pagar Google para todos os candidatos.
+    [GOOGLE-AMPLO] O teto é ADAPTATIVO à incerteza: quando muitos polos estão praticamente empatados pela
+    matriz (janela estreita), a decisão é sensível e vale roteá-los TODOS no Google — o motor de maior
+    qualidade — em vez de confiar na ordem do OSRM. Assim o Google roteia e decide MAIS casos exatamente
+    onde importa, sem gastar Google onde o 1º já domina. É a forma viável de dar mais poder ao Google sem
+    uma matriz-Google (que não existe no scraper): ampliar sua atuação onde ela muda o resultado.
 
-    Retorna: dict {origem: [(hub, dist_osrm_km), ...]} ordenado por distância, tamanho ≤ teto. PURA."""
+    Retorna: dict {origem: [(hub, dist_osrm_km), ...]} ordenado por distância. PURA."""
     _out = {}
     try:
         for _org, _dh in (dist_matriz or {}).items():
@@ -15973,7 +15974,13 @@ def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3):
             if _menor <= 0:
                 _out[_org] = [_ordenado[0]]
                 continue
-            _sl = [(_h, _d) for (_h, _d) in _ordenado if float(_d) <= _menor * float(margem)][:int(teto)]
+            # candidatos dentro da margem de qualidade (empate real pela matriz)
+            _na_margem = [(_h, _d) for (_h, _d) in _ordenado if float(_d) <= _menor * float(margem)]
+            # [GOOGLE-AMPLO] teto adaptativo: muitos empatados → amplia p/ o Google decidir todos eles
+            _teto_ef = int(teto)
+            if len(_na_margem) >= 4:
+                _teto_ef = int(teto_incerteza)  # decisão sensível: dá mais poder ao Google
+            _sl = _na_margem[:_teto_ef]
             if not _sl:
                 _sl = [_ordenado[0]]
             _out[_org] = _sl
@@ -15981,6 +15988,46 @@ def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3):
     except Exception:
         logger.error("[MATRIZ-VIARIA] Falha ao extrair shortlist da matriz", exc_info=True)
         return {}
+
+
+def _n_candidatos_adaptativo(uf, cands_reta, _base=40, _max=90, _min=20):
+    """[MATRIZ-ADAPTATIVA - 184ª geração] Decide DINAMICAMENTE quantos polos a matriz deve medir para uma
+    origem, conforme a região e a incerteza logística (pontos 6 e 9 da nota). Fundamento: em regiões de malha
+    esparsa (Amazônia Legal) ou quando há muitos polos empatados por linha reta, o vencedor viário pode estar
+    mais fundo na lista — vale medir mais candidatos. Onde o polo mais próximo domina com folga, poucos
+    bastam, economizando chamadas. Isso torna a matriz mais precisa onde importa e mais rápida onde é óbvio.
+
+    Sinais usados:
+      • Amazônia Legal → amplia (malha fraca, rios, acesso indireto).
+      • Empate por linha reta (vários polos numa janela estreita) → amplia (decisão sensível).
+      • Domínio claro do 1º colocado → reduz (baixa incerteza).
+
+    Retorna um inteiro no intervalo [_min, _max]. PURA e defensiva."""
+    try:
+        _uf = str(uf or "").strip().upper()[:2]
+        _n = _base
+        _amazonia = _uf in _UF_AMAZONIA_LEGAL
+        if _amazonia:
+            _n += 25  # malha esparsa: vale medir mais fundo
+        # análise de empate: quantos polos estão dentro de 1.3× a menor reta?
+        _retas = []
+        try:
+            _retas = sorted(float(_r) for (_r, _h) in (cands_reta or []) if _r is not None)
+        except Exception:
+            _retas = []
+        if len(_retas) >= 2 and _retas[0] > 0:
+            _janela = _retas[0] * 1.3
+            _empatados = sum(1 for _r in _retas if _r <= _janela)
+            if _empatados >= 5:
+                _n += 20  # muitos candidatos próximos: decisão sensível, amplia
+            elif _empatados >= 3:
+                _n += 10
+            elif _empatados <= 1 and not _amazonia:
+                _n -= 15  # 1º colocado domina com folga: baixa incerteza, reduz
+        return int(max(_min, min(_max, _n)))
+    except Exception:
+        logger.error("[MATRIZ-ADAPTATIVA] Falha ao calcular nº adaptativo de candidatos", exc_info=True)
+        return _base
 
 
 def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_completo, _max_hubs_por_origem=60):
@@ -16018,10 +16065,25 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
             if not _olat or not _olon or _olat == 0.0 or _olon == 0.0:
                 return (_orig, None)
             _cands_reta = (topk_map_completo or {}).get(_orig) or []
+            # [MATRIZ-ADAPTATIVA - 184ª geração] Nº de candidatos DINÂMICO por região/incerteza (amplia na
+            # Amazônia e em empates; reduz quando o 1º domina). Extrai a UF do endereço da origem (v[2]).
+            _uf_orig = ""
+            try:
+                _end_o = str(_oc[2]) if len(_oc) > 2 else ""
+                _partes = [p.strip() for p in _end_o.split(",")]
+                for _p in _partes:
+                    if len(_p) == 2 and _p.upper() in _UF_AMAZONIA_LEGAL:
+                        _uf_orig = _p.upper()
+                        break
+                    if len(_p) == 2 and _p.isalpha():
+                        _uf_orig = _p.upper()
+            except Exception:
+                _uf_orig = ""
+            _n_cand = _n_candidatos_adaptativo(_uf_orig, _cands_reta)
             if _cands_reta:
-                _nomes = [h for (_r, h) in _cands_reta[:_max_hubs_por_origem]]
+                _nomes = [h for (_r, h) in _cands_reta[:_n_cand]]
             else:
-                _nomes = list(hubs_validos.keys())[:_max_hubs_por_origem]
+                _nomes = list(hubs_validos.keys())[:_n_cand]
             _dest_coords_matriz = []
             for _h in _nomes:
                 _hc = hubs_validos.get(_h)
@@ -16056,22 +16118,42 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
             return (_orig, _limpo if _limpo else None)
 
         _itens = list(dest_coords.items())
+        # [PERF-MATRIZ - 184ª geração] Processa em LOTES limitados em vez de submeter todas as origens de uma
+        # vez. Submeter milhares de futures simultâneos retém todos os closures + resultados na memória ao
+        # mesmo tempo, o que pode estourar a RAM (OOM) em ambientes com limite baixo (ex.: Streamlit Cloud) e
+        # fazer o processo ser encerrado. Com lotes, o paralelismo (velocidade) é mantido, mas o pico de
+        # memória fica controlado: cada lote é resolvido e liberado antes do próximo. O tamanho do lote é
+        # ADAPTATIVO ao volume: estudos muito grandes usam lotes menores, mantendo os futures/resultados
+        # simultâneos sob controle independente da escala — reforço contra o encerramento por memória.
+        _n_orig_total = len(_itens)
+        if _n_orig_total > 1500:
+            _TAM_LOTE = 100
+        elif _n_orig_total > 600:
+            _TAM_LOTE = 150
+        else:
+            _TAM_LOTE = 200
         try:
-            _futuros = {EXECUTOR_GLOBAL.submit(_processar_origem, _it): _it[0] for _it in _itens}
-            for _fut in as_completed(_futuros):
-                try:
-                    _org_r, _dist_r = _fut.result()
-                    if _dist_r:
-                        _mapa[_org_r] = _dist_r
-                except Exception:
-                    continue
+            for _ini in range(0, len(_itens), _TAM_LOTE):
+                _lote = _itens[_ini:_ini + _TAM_LOTE]
+                _futuros = {EXECUTOR_GLOBAL.submit(_processar_origem, _it): _it[0] for _it in _lote}
+                for _fut in as_completed(_futuros):
+                    try:
+                        _org_r, _dist_r = _fut.result()
+                        if _dist_r:
+                            _mapa[_org_r] = _dist_r
+                    except Exception:
+                        continue
+                _futuros = None  # libera o lote antes do próximo (controle de memória)
         except Exception:
             # Se o executor falhar por qualquer motivo, degrada para sequencial (mesmo resultado).
             logger.warning("[PERF-MATRIZ] Executor indisponível — matriz em modo sequencial.", exc_info=True)
             for _it in _itens:
-                _org_r, _dist_r = _processar_origem(_it)
-                if _dist_r:
-                    _mapa[_org_r] = _dist_r
+                try:
+                    _org_r, _dist_r = _processar_origem(_it)
+                    if _dist_r:
+                        _mapa[_org_r] = _dist_r
+                except Exception:
+                    continue
         return _mapa
     except Exception:
         logger.error("[MATRIZ-VIARIA] Falha ao descobrir vencedores por matriz", exc_info=True)
@@ -19225,6 +19307,101 @@ def _preservar_ranking_polos(mcda_cliente, top=3, params=None):
             _linha["melhor_que_o_vencedor_em"] = len(_pq.get("contra") or [])
         _out.append(_linha)
     return _out
+
+
+_UF_AMAZONIA_LEGAL = {"AC", "AP", "AM", "MA", "MT", "PA", "RO", "RR", "TO"}
+
+
+def _classificar_confiabilidade_regional(uf, sinuosidade=None, balsa=False, fonte=None):
+    """[REGIAO-ADAPTATIVA - 184ª geração] Inteligência adaptativa por região (itens 3 e 9 da nota de
+    roteamento). Classifica a CONFIABILIDADE do roteamento viário conforme a região e sinais da rota, SEM
+    alterar a decisão do vencedor — apenas dá transparência sobre onde confiar mais ou menos. Fundamento
+    técnico: a malha OSM/OSRM é esparsa na Amazônia Legal (rios, poucas estradas mapeadas, componentes
+    desconectados); regiões com balsa e alta sinuosidade têm rota terrestre menos direta. Reconhecer isso é
+    honestidade sobre a incerteza — não inventa precisão, sinaliza sua ausência.
+
+    Retorna dict {nivel, regiao, motivo, recomendacao} com nivel ∈ {'alta','media','baixa'}. PURA."""
+    try:
+        _uf = str(uf or "").strip().upper()[:2]
+        _sin = None
+        try:
+            _sin = float(sinuosidade) if sinuosidade is not None else None
+        except Exception:
+            _sin = None
+        _fonte = str(fonte or "").lower()
+        _amazonia = _uf in _UF_AMAZONIA_LEGAL
+        _fallback = ("geodés" in _fonte) or ("falha" in _fonte) or ("linha reta" in _fonte)
+        # baixa confiabilidade: fallback geodésico (sem rota real) OU Amazônia com rota muito sinuosa
+        if _fallback:
+            return {"nivel": "baixa", "regiao": "fallback geodésico",
+                    "motivo": "sem rota viária real — distância em linha reta",
+                    "recomendacao": "validar manualmente; verificar acesso fluvial ou polo alternativo"}
+        if _amazonia and _sin is not None and _sin > 2.5:
+            return {"nivel": "baixa", "regiao": "Amazônia Legal",
+                    "motivo": "malha viária esparsa e rota muito sinuosa (provável contorno fluvial)",
+                    "recomendacao": "conferir se há polo terrestre mais próximo ausente da lista de destinos"}
+        # média: Amazônia (malha naturalmente mais fraca) ou presença de balsa
+        if _amazonia:
+            return {"nivel": "media", "regiao": "Amazônia Legal",
+                    "motivo": "região de malha viária menos densa que a média nacional",
+                    "recomendacao": "resultado utilizável; atenção redobrada em municípios ribeirinhos"}
+        if balsa:
+            return {"nivel": "media", "regiao": "travessia por balsa",
+                    "motivo": "rota depende de balsa (tempo e disponibilidade variáveis)",
+                    "recomendacao": "considerar o custo de espera/travessia na decisão logística"}
+        if _sin is not None and _sin > 3.0:
+            return {"nivel": "media", "regiao": "rota sinuosa",
+                    "motivo": "trajeto terrestre bem mais longo que a linha reta",
+                    "recomendacao": "verificar se há alternativa mais direta"}
+        return {"nivel": "alta", "regiao": "malha consolidada",
+                "motivo": "região com boa cobertura viária e rota direta",
+                "recomendacao": "resultado de alta confiabilidade"}
+    except Exception:
+        logger.error("[REGIAO-ADAPTATIVA] Falha ao classificar confiabilidade regional", exc_info=True)
+        return {"nivel": "media", "regiao": "—", "motivo": "—", "recomendacao": "—"}
+
+
+def _aplicar_confiabilidade_regional(df):
+    """[REGIAO-ADAPTATIVA - 184ª geração] Aplica a classificação de confiabilidade regional a cada linha do
+    resultado, criando a coluna 'Confiabilidade Regional' (alta/média/baixa + motivo). Usa UF de origem,
+    sinuosidade (viária/reta), balsa e fonte da rota. NÃO altera nenhuma decisão — só anexa transparência.
+    Retorna o df com a coluna nova. Defensivo."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return df
+        df = df.copy()
+        _uf_col = "UF Origem" if "UF Origem" in df.columns else ("UF" if "UF" in df.columns else None)
+        _dv = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+        _dr = pd.to_numeric(df["Linha Reta"], errors="coerce") if "Linha Reta" in df.columns else None
+        _fonte_col = "Fonte da Rota" if "Fonte da Rota" in df.columns else None
+        _balsa_col = "Balsas" if "Balsas" in df.columns else ("Balsa" if "Balsa" in df.columns else None)
+        _niveis, _motivos = [], []
+        for _i in df.index:
+            _loc = df.index.get_loc(_i)
+            _uf = df.at[_i, _uf_col] if _uf_col else ""
+            _sin = None
+            if _dv is not None and _dr is not None:
+                _v = _dv.iloc[_loc] if hasattr(_dv, "iloc") else _dv[_i]
+                _r = _dr.iloc[_loc] if hasattr(_dr, "iloc") else _dr[_i]
+                try:
+                    if _v and _r and float(_r) > 0:
+                        _sin = float(_v) / float(_r)
+                except Exception:
+                    _sin = None
+            _balsa = False
+            if _balsa_col:
+                _balsa = str(df.at[_i, _balsa_col]).strip().lower() in ("sim", "true", "1", "com balsa")
+            _fonte = df.at[_i, _fonte_col] if _fonte_col else ""
+            _c = _classificar_confiabilidade_regional(_uf, sinuosidade=_sin, balsa=_balsa, fonte=_fonte)
+            _label = {"alta": "🟢 Alta", "media": "🟡 Média", "baixa": "🔴 Baixa"}.get(_c["nivel"], "⚪ —")
+            _niveis.append(_label)
+            _motivos.append(_c["motivo"])
+        df["Confiabilidade Regional"] = _niveis
+        df["Confiabilidade — Motivo"] = _motivos
+        return df
+    except Exception:
+        logger.error("[REGIAO-ADAPTATIVA] Falha ao aplicar confiabilidade regional", exc_info=True)
+        return df
 
 
 def _decompor_custo_hub(dist_viaria, dist_reta=None, tempo_min=None, balsa=False, params=None):
@@ -24655,21 +24832,23 @@ if _secao == _SECOES[2]:   # tab_alocacao
                  "→ menor custo logístico. Preenche as colunas de rota/tempo/2º colocado do download. "
                  "'Linha reta' é o modo rápido: escolhe o polo mais próximo em linha reta, sem rotear.")
         st.session_state['alo_multicriterio'] = (_alo_crit == _OPC_VIARIA)
-        # [MATRIZ-VIARIA - 184ª geração] Motor de descoberta por matriz (/table/v1): quando ligado (padrão),
-        # cada origem é medida contra um amplo conjunto de polos (até 60, muito além do top-K) numa única
-        # consulta de matriz, elegendo o vencedor por MENOR VIÁRIA REAL entre todos — sem heurística de
-        # top-K e com ordens de magnitude menos chamadas HTTP. É opt-out: se algo falhar, o motor par-a-par
-        # tradicional (com prova de otimalidade) assume automaticamente.
+        # [MATRIZ-ADAPTATIVA - 184ª geração] Motor de descoberta ampla por matriz (/table/v1): LIGADO por
+        # padrão. Mede cada origem contra um conjunto ADAPTATIVO de polos (amplia na Amazônia e em empates,
+        # reduz onde o 1º domina — via _n_candidatos_adaptativo), elege o vencedor por MENOR VIÁRIA REAL e
+        # entrega o shortlist ao Google (decisão de qualidade). A estabilidade é garantida pelo processamento
+        # em LOTES (_TAM_LOTE) que controla a memória; se algo falhar, o motor par-a-par + prova de
+        # otimalidade assume automaticamente (zero regressão). É a inteligência logística central da app.
         if st.session_state.get('alo_multicriterio'):
             st.session_state['alo_usar_matriz'] = st.checkbox(
-                "🧭 Usar motor de matriz viária (recomendado) — mede cada origem contra todos os polos numa "
-                "só consulta; mais preciso e muito mais rápido",
+                "🧭 Descoberta ampla por matriz viária (recomendado) — mede cada origem contra um conjunto "
+                "adaptativo de polos, ampliando a busca onde há mais incerteza (Amazônia, empates, balsas)",
                 value=st.session_state.get('alo_usar_matriz', True), disabled=_alo_ativo,
                 key="alo_usar_matriz_chk",
-                help="Liga a descoberta por matriz /table/v1: em vez de rotear par a par apenas os 10 polos "
-                     "mais próximos em linha reta, mede a distância viária real a até 60 polos de uma vez e "
-                     "elege o de MENOR rota. O vencedor é então detalhado (geometria, balsa, tempo) pela rota "
-                     "completa. Se a matriz falhar, o motor par-a-par com prova de otimalidade assume.")
+                help="Inteligência logística que roda ANTES do roteamento definitivo: mede a distância viária "
+                     "a um conjunto adaptativo de polos de uma vez (mais candidatos na Amazônia e quando há "
+                     "muitos polos próximos; menos quando o mais próximo domina) e elege o de MENOR rota. O "
+                     "vencedor é confirmado pelo Google. Processa em lotes para manter a memória controlada e "
+                     "a aba estável. Se algo falhar, o motor par-a-par com prova de otimalidade assume.")
         
         # [HUB-PARAMS - 131ª geração] Parâmetros do custo expostos: a calibração é OPERACIONAL (o preço de
         # uma balsa depende da sua operação), então quem decide é o usuário — não uma constante do código.
@@ -25368,6 +25547,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 # [COERENCIA-TD - 184ª geração] Sentinela: tempo e distância do MESMO motor vencedor (checa
                 # velocidade implícita plausível; velocidade absurda = fontes dessincronizadas).
                 df_final_alo = _validar_coerencia_tempo_distancia(df_final_alo)
+                # [REGIAO-ADAPTATIVA - 184ª geração] Inteligência adaptativa: classifica a confiabilidade do
+                # roteamento por região (Amazônia/ilhas/balsa têm malha mais fraca) — transparência sobre
+                # onde confiar mais ou menos, sem alterar nenhuma decisão.
+                df_final_alo = _aplicar_confiabilidade_regional(df_final_alo)
                 # [APRENDIZADO - 184ª geração] Audita padrões de subotimalidade e registra em tela + telemetria.
                 try:
                     _padroes = _auditar_padroes_derrota(df_final_alo)
@@ -25698,6 +25881,32 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                        "referência: se ele usa um polo mais perto, considere incluí-lo na "
                                        "planilha de destinos e reprocessar.")
                             st.dataframe(pd.DataFrame(_susp[:15]), hide_index=True, use_container_width=True)
+                    # [REGIAO-ADAPTATIVA - 184ª geração] Resumo da confiabilidade regional do roteamento.
+                    try:
+                        if 'Confiabilidade Regional' in df_final_alo.columns:
+                            _conf = df_final_alo['Confiabilidade Regional'].astype(str)
+                            _n_baixa = int(_conf.str.contains('Baixa').sum())
+                            _n_media = int(_conf.str.contains('Média').sum())
+                            _n_alta = int(_conf.str.contains('Alta').sum())
+                            _tot_c = max(len(df_final_alo), 1)
+                            with st.expander(f"🧭 Confiabilidade regional do roteamento "
+                                             f"(🟢 {_n_alta} · 🟡 {_n_media} · 🔴 {_n_baixa})"):
+                                st.caption("Classificação automática da confiabilidade por região, sem alterar "
+                                           "nenhuma decisão. A malha viária é mais esparsa na Amazônia Legal "
+                                           "(rios, poucas estradas mapeadas) e em rotas com balsa ou muito "
+                                           "sinuosas — ali o roteamento tem incerteza maior. Isto dá "
+                                           "transparência sobre onde os resultados merecem conferência extra.")
+                                _pct_alta = 100.0 * _n_alta / _tot_c
+                                st.markdown(
+                                    f"- 🟢 **Alta confiabilidade:** {_n_alta} município(s) ({_pct_alta:.0f}%) — "
+                                    "malha consolidada, rota direta.\n"
+                                    f"- 🟡 **Média:** {_n_media} — Amazônia Legal, balsa ou rota sinuosa; "
+                                    "resultado utilizável com atenção.\n"
+                                    f"- 🔴 **Baixa:** {_n_baixa} — fallback geodésico ou rota muito sinuosa na "
+                                    "Amazônia; recomenda-se validação manual e verificação de acesso fluvial ou "
+                                    "polo alternativo.")
+                    except Exception as _e_cr:
+                        logger.error(f"[REGIAO-ADAPTATIVA] {_e_cr}")
                     try:
                         _cov = _auditar_cobertura_roteamento(st.session_state.get('alo_topk_map'),
                                                              st.session_state.get('alo_resultados'))
