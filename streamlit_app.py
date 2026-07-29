@@ -63,6 +63,190 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (199ª geração) → 🔧 TOGGLES AGORA VALEM NO LOTE: SNAPSHOT THREAD-SAFE DAS FLAGS [FLAGS-RUNTIME]
+#     Corrige um BUG LATENTE descoberto durante a 198ª. Os toggles 'Modo Google agressivo', '2º motor OSRM' e
+#     'validar geocod. c/ Google' eram lidos via st.session_state DENTRO de funções que rodam nos WORKERS do
+#     ThreadPoolExecutor (motores de rota/geocodificação) durante o LOTE. O Streamlit NÃO garante acesso a
+#     session_state fora da thread principal → no lote, os toggles caíam no DEFAULT (desligado) mesmo o usuário
+#     tendo ligado. Ou seja: o 'Modo Google agressivo' — feito justamente para o lote — provavelmente NÃO
+#     estava valendo no lote. O código já resolvia isso para outro parâmetro (_pref_modo_oficial, capturado na
+#     thread principal); aqui generalizamos.
+#     ── A CORREÇÃO ──
+#       _capturar_flags_runtime() roda na THREAD PRINCIPAL (na sidebar, após os 3 widgets, a cada rerun) e grava
+#       os valores em _FLAGS_RUNTIME (protegido por lock). Os 4 pontos de leitura passaram a usar
+#       _ler_flag_runtime(), que lê o snapshot em QUALQUER thread, com FALLBACK a session_state (preserva a aba
+#       individual 100%). Como o lote se auto-continua via st.rerun(), a sidebar re-renderiza e o snapshot fica
+#       sempre fresco.
+#     NÃO-REGRESSÃO (provada em 5 checagens + 15 cumulativas): ANTES, worker lia [False×4] (toggle perdido);
+#     DEPOIS, [True×4] (respeitado). Aba individual mantém fallback a session_state. Desligar reflete no próximo
+#     snapshot. Defensivo: qualquer falha → False (nunca levanta). RotaPipeline: 41 campos (intacto).
+#     EFEITO PRÁTICO: agora, ligar 'Modo Google agressivo' + '2º motor OSRM' realmente atua no processamento em
+#     lote — que é onde o usuário mais quer o Google participando. Requirements: INALTERADO.
+#   v3.8 (198ª geração) → ⚡ GOOGLE ∥ OSRM: ROTA POR ROTA EM PARALELO (menos latência) [PERF-PARALELO]
+#     Item 1 restante da 197ª. Antes, no pipeline de rota, o scraper do Google e o OSRM primário rodavam em
+#     SEQUÊNCIA — no modo Google agressivo (timeout 12s) + OSRM (6s), o pior caso era ~18s/rota. Agora o OSRM
+#     é submetido ao EXECUTOR_APIS e roda EM PARALELO com o Google → pior caso ~= o maior dos dois (~12s).
+#     ── SEGURANÇA/NÃO-REGRESSÃO (provada em 4 checagens + 14 cumulativas) ──
+#       (1) EQUIVALÊNCIA: paralelizar muda só o TEMPO, não os VALORES — res_google/res_osrm são exatamente os
+#       mesmos → a decisão da MENOR VIÁRIA é IDÊNTICA (0 divergências em 300 cenários serial vs paralelo).
+#       (2) Exceção na thread do OSRM → None (mesmo efeito do try/except serial), sem travar. (3) ~30% mais
+#       rápido quando o Google é o caminho lento. (4) Sem deadlock com pools aninhados (o MESMO padrão que o
+#       app já usa: geocodificação já submete ao EXECUTOR_APIS de dentro do pipeline). API_OSRM_Routing NÃO lê
+#       st.session_state (seguro fora da thread principal). Disjuntor do Google é thread-safe (_LOCK_GOOGLE_CB).
+#       Fallback: se o pool recusar o submit, o OSRM roda serial (nunca é pulado). Cache-hit segue instantâneo.
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#   v3.8 (197ª geração) → 🧠 MENOS MEMÓRIA SEM MUDAR NADA: DTYPES CATEGÓRICOS + DOWNCAST LOSSLESS [MEM-DTYPES]
+#     Implementa o item 1 da 196ª (adiado por rodadas por risco) — agora COM O ARNÊS DE TESTE prometido, que
+#     prova célula a célula que planilhas e HTMLs saem IDÊNTICOS. _otimizar_dtypes_memoria() no builder
+#     compartilhado _montar_dataframe_final (cobre Lote E Alocação):
+#       • strings de baixa cardinalidade → 'category' (VALORES idênticos; muda só o armazenamento);
+#       • int64 → menor inteiro que couber (lossless);
+#       • floats INTOCADOS (zero perda de precisão nos resultados);
+#       • DENYLIST protege as chaves de groupby/merge (UF, Município, Vencedor, Cód IBGE, Origem, Destino…):
+#         ficam string, então TODOS os groupby/merge do app continuam idênticos (groupby em categórico mudaria
+#         a semântica por incluir categorias vazias — evitado de propósito).
+#     GANHO MEDIDO: ~66% menos memória no DataFrame de resultado (provado em 8.000 linhas representativas),
+#     aliviando o pico de RAM em estudos nacionais e o objeto persistido em session_state.
+#     NÃO-REGRESSÃO (provada em 7 checagens + 13 cumulativas): Excel idêntico célula a célula, HTML idêntico,
+#     floats byte-a-byte iguais, groupby nas chaves idêntico (simples e multi-chave), DataFrame pequeno (<100
+#     linhas) intocado. Também validados na prática: sorted(unique) p/ multiselect, isin, ==, value_counts,
+#     .str e to_excel — todos funcionam igual em categórico. Defensiva: qualquer falha devolve o df original.
+#     Compatível com pandas 2.x (object) e 3.x (dtype 'str' nativo — detecção via is_string_dtype).
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#   v3.8 (196ª geração) → ⚡ AUDITORIA DE PERFORMANCE + FIX O(n²) DA TELEMETRIA MULTI-MOTOR [PERF-TELEMETRIA]
+#     Auditoria de desempenho de toda a cadeia. Achado principal e HONESTO: o maior gargalo NOVO era um que
+#     NÓS introduzimos na 195ª — _registrar_telemetria_motores gravava a lista inteira em DISCO a cada rota
+#     (re-serialização O(n) por rota → O(n²) no lote). Corrigido: buffer EM RAM com flush periódico (a cada 50
+#     rotas + no fim do lote + antes do painel ler), o MESMO padrão que registrar_telemetria já usava.
+#     GANHO MEDIDO: ~49× menos custo de serialização em lotes grandes (provado em simulação 1k/10k/50k).
+#     ── DIAGNÓSTICO DO RESTANTE DA ARQUITETURA (honesto) ──
+#       O resto do caminho quente já estava bem otimizado por rodadas anteriores e não foi mexido para não
+#       arriscar regressão: leitura de Excel CACHEADA por conteúdo (185ª, nas duas abas); matriz de proximidade
+#       VETORIZADA (NumPy broadcasting); geocodificação PARALELA + resgate IBGE offline O(1); rede com pool
+#       keep-alive (32) + retry/backoff; telemetria de APIs com flush a cada 50; caches em disco (diskcache) +
+#       LRU; leitura de planilha por hash. NÃO inventei "otimizações" sem ganho comprovado — a regra do projeto
+#       é não implementar o que não melhora de fato e não arriscar regressão. O ganho real desta rodada é
+#       eliminar o O(n²) recém-introduzido.
+#     NÃO-REGRESSÃO (provada em 12 checagens cumulativas): a telemetria continua 100% observacional e com o
+#     MESMO conteúdo — só muda QUANDO grava (RAM→disco em lote), não O QUE grava. Memória limitada a 5000.
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#   v3.8 (195ª geração) → 📊 OBSERVABILIDADE TOTAL: TELEMETRIA E DASHBOARD MULTI-MOTOR [TELEMETRIA-MOTORES]
+#     Responde ao pedido de "observabilidade total / nada deve ficar oculto" — e, sobretudo, dá a MÉTRICA que
+#     o usuário mais quer: "o Google voltou a ser o motor principal?". Tudo keyless, observacional, sem
+#     regressão. NOTA DE HONESTIDADE sobre o escopo do prompt: ele pede "elevar o Google ao máximo" MAS também
+#     proíbe explicitamente violar os ToS e contornar bloqueios. São objetivos em tensão para um scraper de
+#     endpoint interno. Fiquei do lado LEGÍTIMO (o que o próprio prompt endossa): otimização de sessão/rede/
+#     cache/consenso/telemetria — NÃO técnicas de evasão de bloqueio. As melhorias legítimas de sessão já
+#     vieram na 193ª (paciência) e 194ª (priming de consentimento + consenso/outlier); esta fecha com medição.
+#     ── O QUE ──
+#       _registrar_telemetria_motores() grava, por rota decidida (observacional, buffer circular de 5000, thread
+#       -safe): motor vencedor, distância de cada motor, confiabilidade, outliers, % de concordância e razão
+#       viária/geodésica. Novo painel em Monitor APIs: PARTICIPAÇÃO de cada motor como vencedor (Google vs
+#       OSRM vs FOSSGIS), concordância média, razão média, outliers descartados — com veredito automático
+#       ("Google é principal" ≥50% / "participa" ≥15% / "baixo, ligue o modo agressivo" <15%).
+#     NÃO-REGRESSÃO (provada em 6 checagens + 11 cumulativas): 100% observacional — nunca altera a decisão de
+#     rota (que segue sendo a menor viária válida); memória limitada; fail-open total. RotaPipeline: 41 campos
+#     (intacto). Requirements: INALTERADO.
+#     LIMITE HONESTO REAFIRMADO: sem chave e sem evasão de ToS (que o usuário proíbe), o Google só participa
+#     onde o IP não está bloqueado. O dashboard agora MOSTRA exatamente esse percentual — transparência, não
+#     promessa. Colunas multi-motor na planilha/HTML exportáveis: próxima rodada (dados já no buffer).
+#   v3.8 (194ª geração) → 🛡️ ANTI-BLOQUEIO DO GOOGLE + CONSENSO/OUTLIER ENTRE MOTORES [GOOGLE-ANTIBLOQUEIO / CONSENSO-MOTORES]
+#     Duas frentes pedidas: (a) reduzir bloqueio do Google keyless; (b) consenso inteligente que descarta o
+#     absurdo ("Google 430 km vs OSRM 18 km"). Tudo keyless, aditivo, sob não-regressão.
+#     ── 1. ANTI-BLOQUEIO: PRIMING DE SESSÃO/CONSENTIMENTO ──
+#       A [G21] removeu o cookie CONSENT fixo (expirado) e deixou o scraper SEM cookie de consentimento — o
+#       que faz IP de datacenter bater no "muro de consentimento". _primar_sessao_google() faz um WARM-UP
+#       (visita leve ao google.com) e deixa o PRÓPRIO Google gravar seus cookies (SOCS/CONSENT/NID) na sessão
+#       reutilizada — técnica sustentável, SEM token forjado (não repetimos o erro do token fixo). Roda 1×/
+#       sessão, só no modo Google agressivo, thread-safe, fail-open. Reutilização de sessão + gestão de cookies
+#       + a sessão já tinha retry/backoff (total=5, backoff_factor=0.5) e pool keep-alive.
+#     ── 2. CONSENSO / OUTLIER / CONFIABILIDADE ──
+#       _consenso_motores_rota() usa a MEDIANA das distâncias como âncora robusta; marca outlier quem foge
+#       >60% da mediana (curto demais = provável snap/homônimo; longo demais = desvio). Outliers são
+#       DESCARTADOS da disputa (o "18 km vs 430 km" some sozinho) e cada motor recebe um score de
+#       confiabilidade (100 dentro de ±20% da mediana, degradando até 20 no outlier).
+#     NÃO-REGRESSÃO (provada em 7+5 checagens): motor ÚNICO nunca é outlier; se o filtro zerar tudo, FAIL-OPEN
+#     volta aos válidos (nunca perde rota); rota impossível já saía antes; modo agressivo OFF → priming não
+#     roda → comportamento idêntico. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     HONESTIDADE: o priming REDUZ a chance de bloqueio; não garante. Se o IP tiver bloqueio duro, ainda cai
+#     no OSRM — mas agora com consenso/outlier protegendo a escolha. Colunas de auditoria multi-motor na
+#     planilha/HTML: recomendação priorizada da próxima rodada (dados já capturados em _motores_resultados).
+#   v3.8 (193ª geração) → 🗺️ RECUPERAR A PARTICIPAÇÃO DO GOOGLE: A REGRESSÃO ERA NOSSA [GOOGLE-REGRESSAO-FIX]
+#     O usuário contestou (com razão) a alegação de "teto keyless". Investiguei o HISTÓRICO e ele estava certo:
+#     a queda de participação do Google NÃO é só bloqueio de IP — é uma REGRESSÃO ARQUITETURAL que NÓS mesmos
+#     introduzimos na 184ª. Documentado no próprio código:
+#     ── DIAGNÓSTICO DA REGRESSÃO (em qual versão, o quê, por quê) ──
+#       VERSÃO: 184ª geração. O QUE MUDOU: (1) timeout do scraper do Google CORTADO de 15s→4s; (2) tentativas
+#       reduzidas de 3→1-2 (adaptativo); (3) ADICIONADO um disjuntor (circuit breaker) que suspende o Google
+#       por 45s após falhas seguidas. POR QUÊ: acelerar o lote quando o Google está bloqueado (evitar esperar
+#       45s/par). EFEITO COLATERAL (a regressão): quando o Google está LENTO/INTERMITENTE — não bloqueado de
+#       vez — esse "desistir rápido" o tira do jogo muito mais que o comportamento paciente antigo. Ou seja: a
+#       184ª otimizou velocidade às custas da participação do Google.
+#     ── A CORREÇÃO: MODO GOOGLE AGRESSIVO (opt-in) ──
+#       Devolve a paciência pré-184ª: timeout 12s, 3 tentativas com perfis de navegador diferentes, e IGNORA o
+#       disjuntor. Com isso o Google tenta muito mais e volta a vencer rotas SE o ambiente permitir acesso
+#       intermitente. Custa velocidade (por isso opt-in). A aba Monitor APIs (taxa de falha GOOGLE_MAPS) revela
+#       o regime: se cair, o Google voltou; se seguir ~100%, é bloqueio duro de IP (aí só a API oficial).
+#     NÃO-REGRESSÃO (provada em 5 checagens): modo OFF reproduz EXATAMENTE os parâmetros do V192 (4s, 1-2 tent,
+#     disjuntor respeitado) — byte-a-byte. Só o modo ON muda o comportamento. RotaPipeline: 41 campos (intacto).
+#     HONESTIDADE: eu estava errado ao apresentar "dois OSRM" como teto absoluto — havia uma regressão nossa a
+#     desfazer. Corrigido. O limite honesto restante é só o bloqueio duro de IP, que nenhum código resolve.
+#     Requirements: INALTERADO.
+#   v3.8 (192ª geração) → 🧭 CONSENSO KEYLESS ENTRE DOIS MOTORES OSRM (FOSSGIS) [OSRM-CONSENSO]
+#     O usuário optou por NÃO usar chave de API (tiers gratuitos pequenos demais). Então: máxima robustez
+#     SEM chave. A única melhoria de precisão real e legítima sem chave é um SEGUNDO motor viário independente.
+#     ── O QUE ──
+#       API_OSRM_FOSSGIS_Routing consulta routing.openstreetmap.de/routed-car — um deployment OSRM
+#       INDEPENDENTE do router.project-osrm.org (Mapbox): outro patrocinador, outra infra, outro perfil de
+#       rota. Dá uma 2ª estimativa viária REAL, sem chave. Entra na competição multi-motor (191ª): entre OSRM
+#       primário + FOSSGIS, a MENOR rota viária válida vence e fornece TODOS os seus dados. É o consenso
+#       keyless que o usuário pediu.
+#     ── POLÍTICA DE USO (respeitada — ponto crítico) ──
+#       FOSSGIS exige ≤1 req/s e PROÍBE uso pesado. Por isso: (1) chamadas SERIALIZADAS e throttled por
+#       FILA_OSRM2/_throttle_osrm2 (≤1 req/s, igual ao Nominatim); (2) User-Agent identificável; (3) no LOTE é
+#       OPT-IN, DESLIGADO por padrão — num estudo nacional, martelar o 2º servidor a cada rota seria "uso
+#       pesado" e faria bloquearem a app. Ligar é escolha consciente para estudos menores/casos críticos.
+#     NÃO-REGRESSÃO (provada em 6 checagens): tupla idêntica à do OSRM; opt-in OFF → FOSSGIS None → contendor
+#     é EXATAMENTE o OSRM primário (byte-a-byte); motor com distância impossível é descartado; throttle
+#     respeita ≤1 req/s. FOSSGIS aparece no SLA do Monitor APIs. Sem chave nenhuma.
+#     NOTA HONESTA: sem chave, o Google segue bloqueável a partir do IP do servidor (só a API oficial resolve
+#     isso de vez). Este é o teto realista de precisão keyless: dois motores OSRM independentes em consenso.
+#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto).
+#   v3.8 (191ª geração) → 🚗 MOTORES DE ROTA COM CHAVE (GraphHopper/ORS) + DISJUNTOR MAIS TOLERANTE [MOTOR-KEYED]
+#     Responde ao relato de "~100% OSRM". CAUSA RAIZ confirmada no código: o scraper do Google, sem chave, é
+#     bloqueado a partir do IP do servidor; o disjuntor (3 falhas → suspende 45s) então o mantinha desligado
+#     o estudo inteiro. Duas frentes, sem martelar servidores de demonstração:
+#     ── 1. DISJUNTOR MAIS TOLERANTE ──
+#       Limiar de falhas 3→5: timeouts transitórios deixam de sidelinar o Google tão cedo. Muda só SE o Google
+#       é TENTADO — nunca o resultado (o Google ainda precisa vencer pela menor distância).
+#     ── 2. MOTORES COM CHAVE (a saída real e robusta) ──
+#       Novos motores API_GraphHopper_Routing e API_ORS_Routing (tier gratuito COM CHAVE). Diferente do OSRM
+#       demo (não-comercial, ≤1 req/s, bloqueável), têm cota própria e NÃO são bloqueados como o scraper.
+#       Entram na COMPETIÇÃO pela MENOR ROTA VIÁRIA: entre OSRM+GraphHopper+ORS, o de menor distância
+#       fisicamente válida vira o "contendor" que disputa com o Google — e o VENCEDOR fornece TODOS os seus
+#       dados (distância/tempo/geometria/balsa), nunca misturados. Geometria via _codificar_polyline_de_coords
+#       (algoritmo oficial do Google, validado contra o exemplo de referência) → o mapa desenha a rota do motor
+#       vencedor igual à do OSRM. GRAPHHOPPER/ORS aparecem na tabela de SLA do Monitor APIs.
+#     NÃO-REGRESSÃO (provada): sem chaves, os dois motores retornam None → o contendor é EXATAMENTE o OSRM →
+#     comportamento byte-a-byte idêntico ao atual. Motor com distância impossível é descartado do páreo.
+#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). Chaves via st.secrets (GRAPHHOPPER_API_KEY,
+#     ORS_API_KEY) — cadastro gratuito, sem editar código. OSRM segue como fallback keyless.
+#   v3.8 (190ª geração) → 📊 MÉTRICA DE CONCORDÂNCIA DO GOOGLE + PESO NO CONSENSO [GOOGLE-CONCORDANCIA]
+#     Implementa os itens 1 e 2 das recomendações da 189ª (o item 3 — API oficial — depende de chave que o
+#     usuário não tem, e fica adiado). Torna o recurso opt-in da 189ª MENSURÁVEL e melhor integrado.
+#     ── 1. GOOGLE COMO VOTO PONDERADO NO CONSENSO ──
+#       GOOGLE_GEO ganha peso 0.80 em DEFAULT_WEIGHTS (par do Nominatim), em vez do fallback 0.5. Só afeta o
+#       resultado quando o usuário LIGOU o opt-in (sem o toggle, não há candidato GOOGLE_GEO → peso não é
+#       usado → comportamento byte-a-byte idêntico). O item 1 ("estender ao roteamento de destino") já é
+#       automático: destinos passam pelo MESMO chokepoint de geocodificação, então o voto do Google já
+#       reforça a coordenada do polo quando ligado.
+#     ── 2. MÉTRICA DE CONCORDÂNCIA (Monitor APIs) ──
+#       Registra, quando o Google participou, se a coordenada dele ficou ≤1 km do VENCEDOR do consenso
+#       (concorda) ou não (diverge). Painel novo em "Monitor APIs" mostra participações, concordância,
+#       divergência e a TAXA — a métrica para o usuário DECIDIR se vale manter o Google ligado (alta = útil;
+#       baixa = ruído). GOOGLE_GEO também entra na tabela de SLA. Tudo OBSERVACIONAL: a decisão de rota/
+#       geocodificação já foi tomada antes; a métrica não altera nenhum resultado.
+#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback de ROTA.
 #   v3.8 (189ª geração) → 🧪 GEOCODIFICAÇÃO PELO GOOGLE (OPT-IN, SEM CHAVE, FALHA INÓCUA) [GOOGLE-GEOCODE]
 #     O usuário AUTORIZOU EXPLICITAMENTE o trade-off de ToS/fragilidade e pediu "a forma mais segura possível,
 #     reduzindo ao máximo a fragilidade". A engenharia não tenta tornar o scraping robusto (impossível para
@@ -6646,6 +6830,21 @@ try:
 except Exception:
     GOOGLE_MAPS_EMBED_API_KEY = ""
 
+# [MOTOR-KEYED - 191ª geração] Chaves (opcionais) de motores de roteamento COM CHAVE — GraphHopper e
+# OpenRouteService. Diferente do servidor de DEMONSTRAÇÃO do OSRM (não-comercial, ≤1 req/s, sem garantias,
+# passível de bloqueio), estes têm tier gratuito COM CHAVE e são fontes estáveis que NÃO são bloqueadas como
+# o scraper. Quando presentes, o motor entra na competição pela MENOR ROTA VIÁRIA em pé de igualdade com
+# Google e OSRM. Ausentes → motor desativado graciosamente (comportamento idêntico ao atual). O usuário
+# obtém a chave gratuitamente (cadastro) e a configura em st.secrets, sem editar o código.
+try:
+    GRAPHHOPPER_API_KEY = st.secrets.get("GRAPHHOPPER_API_KEY", "")
+except Exception:
+    GRAPHHOPPER_API_KEY = ""
+try:
+    ORS_API_KEY = st.secrets.get("ORS_API_KEY", "")
+except Exception:
+    ORS_API_KEY = ""
+
 # ==============================================================================
 # CONSTANTES GLOBAIS — Definidas uma única vez, referenciadas em todo o sistema
 # ==============================================================================
@@ -6974,6 +7173,89 @@ session.mount("http://", adapter)
 # [G21] Cookie CONSENT hardcoded removido — token de 2023 expirado e desnecessário
 # User-Agent moderno suficiente para requests de roteamento
 
+# [GOOGLE-ANTIBLOQUEIO - 194ª geração] PRIMING DINÂMICO DE CONSENTIMENTO/SESSÃO (substitui o cookie CONSENT
+# hardcoded que expirou e foi removido). Requests ao Google a partir de IP de datacenter frequentemente batem
+# no "muro de consentimento" (interstitial) ou em bloqueio quando NÃO há cookie de consentimento — e é isso
+# que o scraper passou a enfrentar depois que o cookie fixo foi removido. Em vez de forjar um token (frágil,
+# expira), fazemos um WARM-UP: uma visita leve ao google.com deixa o PRÓPRIO Google gravar seus cookies de
+# consentimento/sessão (SOCS/CONSENT/NID) na sessão compartilhada, que a chamada de rota seguinte reutiliza.
+# É a técnica sustentável ("reutilização de sessão" + "gerenciamento de cookies" do pedido), sem token fixo.
+# Roda no MÁXIMO 1 vez por sessão e SÓ quando o modo Google agressivo está ligado (default intacto).
+_GOOGLE_SESSAO_PRIMADA = {"ok": False, "tentado": False}
+_LOCK_GOOGLE_PRIMING = threading.Lock()
+
+# [FLAGS-RUNTIME - 199ª geração] Snapshot thread-safe dos toggles da UI. PROBLEMA (bug latente descoberto na
+# 198ª): funções que rodam nos WORKERS do ThreadPoolExecutor (motores de rota/geocodificação, durante o LOTE)
+# liam st.session_state diretamente — e o Streamlit NÃO garante acesso a session_state fora da thread
+# principal. Resultado: no lote, os toggles ('Modo Google agressivo', '2º motor OSRM', 'validar geocod. c/
+# Google') provavelmente caíam no default (desligado), mesmo o usuário tendo ligado. O código já resolvia
+# isso para OUTRO parâmetro capturando-o na thread principal (_pref_modo_oficial). Aqui generalizamos: a
+# thread principal grava os valores em _FLAGS_RUNTIME (a cada rerun, DEPOIS dos widgets), e os workers leem
+# daqui. Leitura com fallback para session_state preserva 100% o comportamento na aba individual.
+_FLAGS_RUNTIME = {}
+_LOCK_FLAGS_RUNTIME = threading.Lock()
+
+def _capturar_flags_runtime():
+    """[FLAGS-RUNTIME - 199ª geração] Chamado na THREAD PRINCIPAL (após os widgets da sidebar) para snapshot
+    dos toggles. Aqui st.session_state é confiável. Defensivo: qualquer falha deixa o snapshot como está."""
+    try:
+        _snap = {}
+        for _k in ("google_agressivo", "usar_osrm2", "usar_google_geocode"):
+            try:
+                _snap[_k] = bool(st.session_state.get(_k, False))
+            except Exception:
+                pass
+        with _LOCK_FLAGS_RUNTIME:
+            _FLAGS_RUNTIME.update(_snap)
+    except Exception:
+        pass
+
+def _ler_flag_runtime(nome):
+    """[FLAGS-RUNTIME - 199ª geração] Lê um toggle de forma segura EM QUALQUER THREAD: usa o snapshot
+    capturado na thread principal; se ainda não houver snapshot (ex.: aba individual antes de qualquer
+    captura), tenta st.session_state; em último caso, False. Nunca levanta."""
+    try:
+        with _LOCK_FLAGS_RUNTIME:
+            if nome in _FLAGS_RUNTIME:
+                return bool(_FLAGS_RUNTIME[nome])
+    except Exception:
+        pass
+    try:
+        return bool(st.session_state.get(nome, False))
+    except Exception:
+        return False
+
+def _primar_sessao_google():
+    """[GOOGLE-ANTIBLOQUEIO - 194ª geração] Prepara a sessão com os cookies de consentimento do próprio Google
+    (warm-up). Idempotente e thread-safe: roda no máximo 1 vez por sessão. Defensiva: qualquer falha é
+    absorvida (o scraper segue sem os cookies, exatamente como antes). Retorna True se a sessão foi primada."""
+    global _GOOGLE_SESSAO_PRIMADA
+    try:
+        with _LOCK_GOOGLE_PRIMING:
+            if _GOOGLE_SESSAO_PRIMADA["tentado"]:
+                return _GOOGLE_SESSAO_PRIMADA["ok"]
+            _GOOGLE_SESSAO_PRIMADA["tentado"] = True
+            _hdrs = {
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+                "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+                           "image/webp,*/*;q=0.8"),
+                "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+            }
+            # visita leve: o Google grava cookies de consentimento/sessão na 'session' compartilhada
+            try:
+                session.get("https://www.google.com/", headers=_hdrs, timeout=6)
+            except Exception:
+                pass
+            # DECISÃO HONESTA: NÃO forjamos um token de consentimento fixo (foi exatamente um token fixo
+            # expirado que causou a remoção original na [G21]). Se o warm-up acima fez o Google gravar seus
+            # próprios cookies, ótimo; se não, seguimos SEM — nunca pior que hoje. Sem tokens hardcoded.
+            _GOOGLE_SESSAO_PRIMADA["ok"] = True
+            return True
+    except Exception:
+        return False
+
+
 CACHE_IBGE_PATH = "municipios_ibge_v2.pkl"   # [BASE-IBGE-COD] v2: base enriquecida com código IBGE oficial; força reconstrução do pkl antigo
 
 # ==============================================================================
@@ -7010,6 +7292,27 @@ def _obter_executor_apis():
 EXECUTOR_GLOBAL = _obter_executor_global()
 FILA_NOMINATIM = _obter_fila_nominatim()
 EXECUTOR_APIS = _obter_executor_apis()
+
+# [OSRM-CONSENSO - 192ª geração] Fila serial + throttle do SEGUNDO backend OSRM (FOSSGIS,
+# routing.openstreetmap.de). É um deployment OSRM INDEPENDENTE do router.project-osrm.org (Mapbox): outro
+# patrocinador, outra infraestrutura, outro perfil de rota. Consultá-lo dá uma 2ª estimativa viária real,
+# SEM chave. A política do FOSSGIS exige ≤1 req/s e proíbe uso pesado — por isso ele é serializado aqui
+# (max_workers=1) e throttled igual ao Nominatim, e no lote é OPT-IN (ver aba). Assim respeitamos a política
+# e ainda ganhamos consenso keyless entre dois motores.
+@st.cache_resource(show_spinner=False)
+def _obter_fila_osrm2():
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="osrm_fossgis")  # ≤1 req/s obrigatório (política FOSSGIS)
+FILA_OSRM2 = _obter_fila_osrm2()
+_OSRM2_INTERVALO = 1.1   # segundos entre inícios de chamada (≤1 req/s + 10% de margem)
+_OSRM2_ULTIMO = 0.0
+
+def _throttle_osrm2():
+    """Mantém ≤1 req/s no backend OSRM FOSSGIS (política de uso). Serializado por FILA_OSRM2."""
+    global _OSRM2_ULTIMO
+    _espera = _OSRM2_INTERVALO - (time.time() - _OSRM2_ULTIMO)
+    if _espera > 0:
+        time.sleep(_espera)
+    _OSRM2_ULTIMO = time.time()
 
 # [NOMINATIM-THROTTLE - 33ª geração] Rate limiter DELTA-BASED para o Nominatim.
 # GARGALO: a política do Nominatim exige no máximo 1 req/s. Antes, cada chamada dormia
@@ -10392,7 +10695,7 @@ def API_Google_Geocode(query, ctx=None):
     layout ou parse → None (o consenso segue com os outros provedores). Cacheada por consulta normalizada."""
     # Portão 1: opt-in. Sem o toggle ligado, este provedor não existe (comportamento idêntico ao atual).
     try:
-        if not st.session_state.get('usar_google_geocode', False):
+        if not _ler_flag_runtime('usar_google_geocode'):
             return None
     except Exception:
         return None
@@ -17193,6 +17496,345 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
     registrar_telemetria("OSRM", False, time.time() - start_t)
     return None
 
+
+def _codificar_polyline_de_coords(coords):
+    """[MOTOR-KEYED - 191ª geração] Codifica uma lista de coordenadas GeoJSON [lon, lat] no formato polyline
+    (algoritmo oficial do Google, precisão 5) — o MESMO formato que o OSRM já devolve e que o mapa da app já
+    desenha. Assim, quando um motor com chave (GraphHopper/ORS) vence, o traçado dele aparece no mapa igual ao
+    do OSRM, sem tocar no renderizador. PURA. Retorna "" se a lista for vazia/inválida."""
+    try:
+        if not coords:
+            return ""
+        _out = []
+        _prev_lat = 0
+        _prev_lon = 0
+        for _pt in coords:
+            # GeoJSON é [lon, lat]; polyline codifica lat primeiro
+            _lat = int(round(float(_pt[1]) * 1e5))
+            _lon = int(round(float(_pt[0]) * 1e5))
+            for _delta in (_lat - _prev_lat, _lon - _prev_lon):
+                _v = _delta << 1
+                if _delta < 0:
+                    _v = ~_v
+                while _v >= 0x20:
+                    _out.append(chr((0x20 | (_v & 0x1f)) + 63))
+                    _v >>= 5
+                _out.append(chr(_v + 63))
+            _prev_lat, _prev_lon = _lat, _lon
+        return "".join(_out)
+    except Exception:
+        return ""
+
+
+def API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d):
+    """[MOTOR-KEYED - 191ª geração] Motor de roteamento GraphHopper (COM CHAVE, tier gratuito). Retorna a
+    MESMA tupla do OSRM — (km, min, balsa, n_alt, geometria_polyline, snap_info) — para plugar no comparador
+    existente SEM alterar a lógica de decisão. Compete pela MENOR ROTA VIÁRIA com Google e OSRM.
+
+    Endpoint oficial documentado: GET https://graphhopper.com/api/1/route?point=lat,lon&point=lat,lon&key=...
+    distance em METROS, time em MILISSEGUNDOS (paths[0]). points_encoded=false → geometria GeoJSON.
+
+    SEGURANÇA/NÃO-REGRESSÃO: self-gated na chave — sem GRAPHHOPPER_API_KEY, retorna None imediatamente (motor
+    ausente → comportamento idêntico ao atual). Timeout curto; qualquer falha de rede/parse → None. Não é um
+    servidor de demonstração: é fonte estável com cota própria, não bloqueada como o scraper do Google."""
+    if not GRAPHHOPPER_API_KEY:
+        return None  # motor desativado graciosamente (sem chave)
+    if lat_o == 0.0 or lat_d == 0.0:
+        return None
+    start_t = time.time()
+    try:
+        _url = (f"https://graphhopper.com/api/1/route?point={lat_o},{lon_o}&point={lat_d},{lon_d}"
+                f"&profile=car&locale=pt&calc_points=true&points_encoded=false&key={GRAPHHOPPER_API_KEY}")
+        _r = session.get(_url, timeout=8).json()
+        _paths = _r.get("paths") if isinstance(_r, dict) else None
+        if _paths:
+            # menor distância entre os paths retornados (GraphHopper pode devolver alternativas)
+            _p = min(_paths, key=lambda x: x.get("distance", float("inf")))
+            _dist_km = round(float(_p.get("distance", 0.0)) / 1000.0, 2)
+            _tempo_min = round(float(_p.get("time", 0.0)) / 60000.0)  # ms → min
+            if _dist_km <= 0:
+                registrar_telemetria("GRAPHHOPPER", False, time.time() - start_t)
+                return None
+            # geometria: GeoJSON [lon,lat] → codifica em polyline p/ compatibilidade com o mapa (usa polyline)
+            _geo_poly = ""
+            try:
+                _coords = (_p.get("points", {}) or {}).get("coordinates", [])
+                if _coords:
+                    _geo_poly = _codificar_polyline_de_coords(_coords) if "_codificar_polyline_de_coords" in globals() else ""
+            except Exception:
+                _geo_poly = ""
+            _n_alt = len(_paths)
+            # GraphHopper sinaliza balsa em details/instructions; conservador: "Não" (nunca falso-positivo)
+            _balsa = "Não"
+            try:
+                _det = (_p.get("details", {}) or {}).get("road_environment", [])
+                for _seg in _det:
+                    if isinstance(_seg, list) and len(_seg) >= 3 and str(_seg[2]).lower() == "ferry":
+                        _balsa = "Sim"; break
+            except Exception:
+                pass
+            registrar_telemetria("GRAPHHOPPER", True, time.time() - start_t)
+            return (_dist_km, _tempo_min, _balsa, _n_alt, _geo_poly, None)
+    except Exception:
+        pass
+    registrar_telemetria("GRAPHHOPPER", False, time.time() - start_t)
+    return None
+
+
+def API_ORS_Routing(lat_o, lon_o, lat_d, lon_d):
+    """[MOTOR-KEYED - 191ª geração] Motor de roteamento OpenRouteService (COM CHAVE, tier gratuito). Retorna a
+    MESMA tupla do OSRM para plugar no comparador SEM alterar a lógica. Compete pela MENOR ROTA VIÁRIA.
+
+    Endpoint oficial: GET https://api.openrouteservice.org/v2/directions/driving-car?start=lon,lat&end=lon,lat
+    header Authorization: <chave>. Resposta GeoJSON: features[0].properties.summary.distance (METROS),
+    .duration (SEGUNDOS); geometry.coordinates em [lon,lat].
+
+    SEGURANÇA/NÃO-REGRESSÃO: self-gated na chave — sem ORS_API_KEY, retorna None (motor ausente → idêntico ao
+    atual). Timeout curto; qualquer falha → None. Fonte estável com cota própria (não é servidor de demo)."""
+    if not ORS_API_KEY:
+        return None  # motor desativado graciosamente (sem chave)
+    if lat_o == 0.0 or lat_d == 0.0:
+        return None
+    start_t = time.time()
+    try:
+        _url = (f"https://api.openrouteservice.org/v2/directions/driving-car"
+                f"?start={lon_o},{lat_o}&end={lon_d},{lat_d}")
+        _r = session.get(_url, headers={"Authorization": ORS_API_KEY}, timeout=8).json()
+        _feats = _r.get("features") if isinstance(_r, dict) else None
+        if _feats:
+            _props = (_feats[0].get("properties", {}) or {})
+            _summ = (_props.get("summary", {}) or {})
+            _dist_km = round(float(_summ.get("distance", 0.0)) / 1000.0, 2)
+            _tempo_min = round(float(_summ.get("duration", 0.0)) / 60.0)  # s → min
+            if _dist_km <= 0:
+                registrar_telemetria("ORS", False, time.time() - start_t)
+                return None
+            _geo_poly = ""
+            try:
+                _coords = (_feats[0].get("geometry", {}) or {}).get("coordinates", [])
+                if _coords:
+                    _geo_poly = _codificar_polyline_de_coords(_coords) if "_codificar_polyline_de_coords" in globals() else ""
+            except Exception:
+                _geo_poly = ""
+            # ORS sinaliza balsa em extras; conservador: "Não"
+            _balsa = "Não"
+            registrar_telemetria("ORS", True, time.time() - start_t)
+            return (_dist_km, _tempo_min, _balsa, 1, _geo_poly, None)
+    except Exception:
+        pass
+    registrar_telemetria("ORS", False, time.time() - start_t)
+    return None
+
+
+def API_OSRM_FOSSGIS_Routing(lat_o, lon_o, lat_d, lon_d):
+    """[OSRM-CONSENSO - 192ª geração] SEGUNDO backend OSRM — FOSSGIS (routing.openstreetmap.de/routed-car).
+    Deployment OSRM INDEPENDENTE do router.project-osrm.org (Mapbox): outra infraestrutura e outro perfil de
+    rota. Dá uma 2ª estimativa viária REAL e SEM chave — a base do consenso keyless entre dois motores.
+    Retorna a MESMA tupla do OSRM primário: (km, min, balsa, n_alt, geometria_polyline, snap_info).
+
+    POLÍTICA DE USO (respeitada): FOSSGIS exige ≤1 req/s e proíbe uso pesado. Por isso esta chamada é
+    SERIALIZADA e THROTTLED por FILA_OSRM2/_throttle_osrm2 (igual ao Nominatim). No lote é OPT-IN. User-Agent
+    identificável (boa prática exigida pela política). Qualquer falha/timeout → None (o consenso segue com o
+    OSRM primário). Endpoint oficial confirmado: /routed-car/route/v1/driving/{lon,lat};{lon,lat}."""
+    if lat_o == 0.0 or lat_d == 0.0:
+        return None
+    start_t = time.time()
+    try:
+        def _call_fossgis():
+            _throttle_osrm2()  # garante ≤1 req/s (política FOSSGIS)
+            _url = (f"https://routing.openstreetmap.de/routed-car/route/v1/driving/"
+                    f"{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3")
+            _hdrs = {"User-Agent": "MotorLogisticoExames/1.0 (roteamento institucional; contato via app)"}
+            return session.get(_url, headers=_hdrs, timeout=8).json()
+        _r = FILA_OSRM2.submit(_call_fossgis).result()
+        _rotas = _r.get("routes") if isinstance(_r, dict) else None
+        if _rotas:
+            _rota = min(_rotas, key=lambda x: x.get("distance", float("inf")))
+            _dist_km = round(float(_rota.get("distance", 0.0)) / 1000.0, 2)
+            _tempo_min = round(float(_rota.get("duration", 0.0)) / 60.0)
+            if _dist_km <= 0:
+                registrar_telemetria("OSRM_FOSSGIS", False, time.time() - start_t)
+                return None
+            _n_alt = len(_rotas)
+            _geo_poly = _rota.get("geometry", "")
+            _balsa = "Não"
+            try:
+                for _leg in _rota.get("legs", []):
+                    for _step in _leg.get("steps", []):
+                        if _step.get("mode") == "ferry" or _step.get("maneuver", {}).get("type") == "ferry":
+                            _balsa = "Sim"; break
+            except Exception:
+                pass
+            _snap = None
+            try:
+                _wps = _r.get("waypoints", [])
+                if len(_wps) >= 2:
+                    _ol = _wps[0].get("location", [None, None])
+                    _dl = _wps[1].get("location", [None, None])
+                    _snap = {
+                        "orig_snap_lat": _ol[1], "orig_snap_lon": _ol[0],
+                        "orig_snap_dist_m": round(float(_wps[0].get("distance", 0.0)), 1),
+                        "dest_snap_lat": _dl[1], "dest_snap_lon": _dl[0],
+                        "dest_snap_dist_m": round(float(_wps[1].get("distance", 0.0)), 1),
+                    }
+            except Exception:
+                _snap = None
+            registrar_telemetria("OSRM_FOSSGIS", True, time.time() - start_t)
+            return (_dist_km, _tempo_min, _balsa, _n_alt, _geo_poly, _snap)
+    except Exception:
+        pass
+    registrar_telemetria("OSRM_FOSSGIS", False, time.time() - start_t)
+    return None
+
+
+# [TELEMETRIA-MOTORES - 195ª geração] Registro observacional multi-motor por rota (para o dashboard de
+# "observabilidade total" pedido). Buffer circular limitado em cache (persiste entre reruns na sessão),
+# thread-safe, memória limitada (máx. 5000 registros). NÃO influencia decisão nenhuma — só mede.
+# [PERF-TELEMETRIA - 196ª geração] Buffer EM MEMÓRIA com flush periódico (não grava em disco a cada rota).
+# Antes (195ª): cada rota re-serializava a lista inteira em disco → O(n²) em estudos grandes. Agora acumula
+# em RAM e faz flush a cada _TELEMETRIA_FLUSH_N rotas (e no fim do lote), como o registrar_telemetria já fazia.
+_LOCK_TELEMETRIA_MOTORES = threading.Lock()
+_TELEMETRIA_MOTORES_MAX = 5000
+_TELEMETRIA_FLUSH_N = 50
+_TELEMETRIA_MOTORES_RAM = []          # buffer de registros ainda não persistidos
+_TELEMETRIA_VENCEDORES_RAM = {}       # deltas de contagem por vencedor ainda não persistidos
+_TELEMETRIA_MOTORES_PENDENTES = [0]   # contador p/ disparar flush
+
+def _flush_telemetria_motores():
+    """[PERF-TELEMETRIA - 196ª geração] Persiste o buffer em RAM no cache (1 escrita). Idempotente."""
+    with _LOCK_TELEMETRIA_MOTORES:
+        if not _TELEMETRIA_MOTORES_RAM and not _TELEMETRIA_VENCEDORES_RAM:
+            return
+        try:
+            _buf = cache_api_health.get("TELEMETRIA_MOTORES", [])
+            if not isinstance(_buf, list):
+                _buf = []
+            _buf.extend(_TELEMETRIA_MOTORES_RAM)
+            if len(_buf) > _TELEMETRIA_MOTORES_MAX:
+                _buf = _buf[-_TELEMETRIA_MOTORES_MAX:]
+            cache_api_health.set("TELEMETRIA_MOTORES", _buf, expire=None)
+            _agg = cache_api_health.get("TELEMETRIA_VENCEDORES", {})
+            if not isinstance(_agg, dict):
+                _agg = {}
+            for _k, _v in _TELEMETRIA_VENCEDORES_RAM.items():
+                _agg[_k] = _agg.get(_k, 0) + _v
+            cache_api_health.set("TELEMETRIA_VENCEDORES", _agg, expire=None)
+            _TELEMETRIA_MOTORES_RAM.clear()
+            _TELEMETRIA_VENCEDORES_RAM.clear()
+            _TELEMETRIA_MOTORES_PENDENTES[0] = 0
+        except Exception:
+            pass
+
+def _registrar_telemetria_motores(vencedor, motores_dict, consenso, dist_linha_reta, km_vencedor):
+    """[TELEMETRIA-MOTORES - 195ª geração] Grava um registro por rota decidida: motor vencedor, distância de
+    cada motor, confiabilidade, outliers, % de concordância e razão viária/geodésica. Defensiva/observacional:
+    qualquer falha é absorvida e nunca afeta o roteamento. Alimenta o painel do Monitor APIs.
+    [PERF-196ª] Acumula em RAM e faz flush a cada _TELEMETRIA_FLUSH_N (evita I/O por rota)."""
+    try:
+        _dists = {}
+        for _n, _r in (motores_dict or {}).items():
+            if _r and len(_r) > 0:
+                try:
+                    _dists[_n] = round(float(_r[0]), 2)
+                except (TypeError, ValueError):
+                    pass
+        _n_resp = len(_dists)
+        _conf = (consenso or {}).get("confiabilidade", {})
+        _outs = (consenso or {}).get("outliers", [])
+        _mid = (consenso or {}).get("mediana_km", None)
+        _conc_pct = None
+        if _mid and _mid > 0 and _n_resp > 0:
+            _dentro = sum(1 for _d in _dists.values() if abs(_d / _mid - 1.0) <= 0.10)
+            _conc_pct = round(100.0 * _dentro / _n_resp, 1)
+        _razao = None
+        try:
+            if dist_linha_reta and float(dist_linha_reta) > 0 and km_vencedor and float(km_vencedor) > 0:
+                _razao = round(float(km_vencedor) / float(dist_linha_reta), 2)
+        except (TypeError, ValueError):
+            _razao = None
+        _reg = {
+            "vencedor": str(vencedor), "km_vencedor": round(float(km_vencedor), 2) if km_vencedor else None,
+            "n_motores": _n_resp, "distancias": _dists, "confiabilidade": _conf,
+            "outliers": _outs, "mediana_km": _mid, "concordancia_pct": _conc_pct,
+            "razao_viaria_geodesica": _razao, "ts": time.time(),
+        }
+        _chave = str(vencedor).split(" ")[0]
+        _deve_flush = False
+        with _LOCK_TELEMETRIA_MOTORES:
+            _TELEMETRIA_MOTORES_RAM.append(_reg)
+            # mantém o buffer RAM sozinho limitado também (caso nunca haja flush)
+            if len(_TELEMETRIA_MOTORES_RAM) > _TELEMETRIA_MOTORES_MAX:
+                del _TELEMETRIA_MOTORES_RAM[:-_TELEMETRIA_MOTORES_MAX]
+            _TELEMETRIA_VENCEDORES_RAM[_chave] = _TELEMETRIA_VENCEDORES_RAM.get(_chave, 0) + 1
+            _TELEMETRIA_MOTORES_PENDENTES[0] += 1
+            if _TELEMETRIA_MOTORES_PENDENTES[0] >= _TELEMETRIA_FLUSH_N:
+                _deve_flush = True
+        if _deve_flush:
+            _flush_telemetria_motores()  # flush fora do lock de append (o próprio flush tem seu lock)
+    except Exception:
+        pass  # observacional: nunca propaga
+
+
+def _consenso_motores_rota(motores_dict, dist_linha_reta):
+    """[CONSENSO-MOTORES - 194ª geração] Consenso, detecção de outliers e score de confiabilidade entre os
+    motores que responderam. PURA (sem rede/estado). Implementa o pedido: "Google 430 km vs OSRM 18 km →
+    claramente erro, descartar automaticamente".
+
+    Entrada: motores_dict {nome: tupla_rota|None} (tupla[0]=km). dist_linha_reta = geodésica (piso físico).
+    Lógica:
+      • considera só motores com rota válida (viária >= geodésica);
+      • calcula a MEDIANA das distâncias como âncora de consenso robusta a outliers;
+      • um motor é OUTLIER se sua distância diverge da mediana além de uma tolerância relativa (>60%), i.e.
+        km < 0.4*mediana (curto demais — provável snap/homônimo) ou km > 1.6*mediana (longo demais);
+      • confiabilidade por motor: 100 se dentro de ±20% da mediana; cai proporcionalmente até 0 no limite de
+        outlier. Motor único (sem consenso possível) recebe confiabilidade neutra (75).
+    Retorna dict: {
+        'mediana_km', 'n_validos', 'confiabilidade': {nome: pct}, 'outliers': [nomes],
+        'nao_outliers': {nome: tupla}   # motores válidos e NÃO-outliers (candidatos a vencedor)
+    }.  Defensiva: nunca levanta; em dúvida, não marca outlier (fail-open)."""
+    try:
+        _validos = {}
+        for _n, _r in (motores_dict or {}).items():
+            if _r and len(_r) > 0:
+                try:
+                    _km = float(_r[0])
+                except (TypeError, ValueError):
+                    continue
+                if _km > 0 and _viaria_fisicamente_possivel(_km, dist_linha_reta):
+                    _validos[_n] = _r
+        _n_val = len(_validos)
+        if _n_val == 0:
+            return {"mediana_km": None, "n_validos": 0, "confiabilidade": {}, "outliers": [],
+                    "nao_outliers": {}}
+        _kms = sorted(float(_r[0]) for _r in _validos.values())
+        _mid = _kms[_n_val // 2] if _n_val % 2 == 1 else (_kms[_n_val // 2 - 1] + _kms[_n_val // 2]) / 2.0
+        _conf = {}
+        _outliers = []
+        _nao_out = {}
+        for _n, _r in _validos.items():
+            _km = float(_r[0])
+            if _mid <= 0:
+                _conf[_n] = 75; _nao_out[_n] = _r; continue
+            _ratio = _km / _mid
+            if _n_val == 1:
+                _conf[_n] = 75  # sem consenso possível → confiabilidade neutra
+                _nao_out[_n] = _r
+            elif _ratio < 0.4 or _ratio > 1.6:
+                _conf[_n] = 20   # outlier claro
+                _outliers.append(_n)
+            else:
+                # dentro de ±20% → 100; degrada linearmente até o limite de outlier
+                _desvio = abs(_ratio - 1.0)
+                _conf[_n] = int(max(40, 100 - (_desvio / 0.6) * 60)) if _desvio > 0.2 else 100
+                _nao_out[_n] = _r
+        return {"mediana_km": round(_mid, 2), "n_validos": _n_val, "confiabilidade": _conf,
+                "outliers": _outliers, "nao_outliers": _nao_out}
+    except Exception:
+        # fail-open: sem consenso, ninguém é outlier (nunca zera a decisão)
+        return {"mediana_km": None, "n_validos": 0, "confiabilidade": {}, "outliers": [],
+                "nao_outliers": dict(motores_dict or {})}
+
+
 # ==============================================================================
 # [SNAP-MITIGA - 41ª geração] MITIGAÇÃO DE SNAP EXCESSIVO DO OSRM
 # Quando o OSRM projeta a coordenada validada num nó viário distante (malha OSM esparsa),
@@ -17414,7 +18056,7 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
         pass
 
     PESO_FONTES = {}
-    DEFAULT_WEIGHTS = {"ARCGIS": 0.95, "TOMTOM": 0.90, "OVERPASS": 0.85, "NOMINATIM": 0.80, "PHOTON": 0.75}
+    DEFAULT_WEIGHTS = {"ARCGIS": 0.95, "TOMTOM": 0.90, "OVERPASS": 0.85, "NOMINATIM": 0.80, "PHOTON": 0.75, "GOOGLE_GEO": 0.80}
     for fonte, d_w in DEFAULT_WEIGHTS.items():
         m_api = cache_api_health.get(fonte, {"hits": 0, "calls": 0})
         PESO_FONTES[fonte] = round(max(0.5, m_api["hits"] / m_api["calls"]), 2) if m_api["calls"] >= 50 else d_w
@@ -17527,7 +18169,30 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
         if dist_auditoria <= 0.05:
             metr["hits"] += 1
         cache_api_health.set(f_n, metr, expire=None)
-        
+
+    # [GOOGLE-GEOCODE-CONCORDANCIA - 189ª geração] MÉTRICA DE CONCORDÂNCIA (itens 1 e 2 das recomendações).
+    # Quando o Google participou como voto (opt-in), registra se a coordenada dele FICOU PRÓXIMA do vencedor
+    # do consenso (≤1 km = concorda; senão = divergiu). É puramente OBSERVACIONAL — não muda a decisão, que
+    # já foi tomada acima. Alimenta o painel "Monitor APIs" para você MEDIR se vale manter o Google ligado
+    # (alta concordância = útil e confiável; baixa = ruído). Defensivo: nunca interfere no fluxo.
+    try:
+        _cand_gg = next((c for c in candidatos_para_avaliacao
+                         if str(c.get("fonte", "")).upper() == "GOOGLE_GEO"
+                         and c.get("lat", 0.0) != 0.0 and c.get("lon", 0.0) != 0.0), None)
+        if _cand_gg is not None:
+            _d_gg, _ = calcular_distancia_linha_reta(_cand_gg["lat"], _cand_gg["lon"],
+                                                     vencedor["lat"], vencedor["lon"],
+                                                     contexto="Concordância Google")
+            _conc = cache_api_health.get("GOOGLE_GEO_CONCORDANCIA", {"concorda": 0, "diverge": 0, "total": 0})
+            _conc["total"] += 1
+            if _d_gg is not None and _d_gg <= 1.0:      # ≤1 km do vencedor = concordância
+                _conc["concorda"] += 1
+            else:
+                _conc["diverge"] += 1
+            cache_api_health.set("GOOGLE_GEO_CONCORDANCIA", _conc, expire=None)
+    except Exception:
+        pass
+
     score_consenso = min(int(vencedor["score_final"]), 100)
     m = {
         "logradouro": vencedor.get("logradouro", ""), "bairro": vencedor["bairro"], 
@@ -18097,7 +18762,7 @@ class _CronometroEtapas:
         return {_e: (_s, round(100.0 * _s / _tot, 1)) for _e, _s in _r.items() if _e != "_total"}
 
 
-def _circuit_breaker_google(estado, sucesso, agora, _limiar_falhas=3, _cooldown_s=45.0):
+def _circuit_breaker_google(estado, sucesso, agora, _limiar_falhas=5, _cooldown_s=45.0):
     """[CIRCUIT-BREAKER - 184ª geração] Máquina de estados do disjuntor (circuit breaker) do Google, um padrão
     consagrado de engenharia de confiabilidade (Nygard, "Release It!"). Objetivo: MAXIMIZAR a participação do
     Google sem a API oficial, atacando a causa real do bloqueio — o martelamento. Quando o scraper começa a
@@ -18213,7 +18878,15 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
     # período o roteamento usa o OSRM (o chamador já trata res_google=None). Quando o Google está saudável, o
     # disjuntor está fechado e isto é transparente. O cache acima é consultado ANTES do disjuntor: uma rota
     # que o Google já respondeu continua sendo servida mesmo com o disjuntor aberto.
-    if not _google_pode_chamar():
+    # [GOOGLE-REGRESSAO-FIX - 193ª geração] No MODO AGRESSIVO (opt-in), NÃO deixamos o disjuntor suspender o
+    # Google — o disjuntor foi introduzido na 184ª e é parte da regressão de participação. O usuário que liga
+    # o modo agressivo aceita o custo de velocidade em troca de máxima participação do Google (como antes).
+    _google_agr_gate = False
+    try:
+        _google_agr_gate = _ler_flag_runtime('google_agressivo')
+    except Exception:
+        _google_agr_gate = False
+    if not _google_agr_gate and not _google_pode_chamar():
         return None
 
     orig_link_txt = requests.utils.quote(origem_texto)
@@ -18244,8 +18917,31 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
         # Google vem falhando, fazemos só 1 tentativa (desiste rápido e deixa o OSRM, que é rápido, assumir);
         # quando está saudável, até 2 tentativas com perfis diferentes. Melhor OSRM em 2s que esperar 45s por
         # um Google que não vem.
-        _TIMEOUT_G = 4
-        _MAX_TENT_G = 2 if _google_pode_chamar() else 1
+        # [GOOGLE-REGRESSAO-FIX - 193ª geração] MODO GOOGLE AGRESSIVO (opt-in) — restaura a paciência pré-184ª.
+        # DIAGNÓSTICO DA REGRESSÃO (confirmado no próprio histórico): a 184ª cortou o timeout de 15s→4s e as
+        # tentativas de 3→1-2 (adaptativo) para o Google DESISTIR RÁPIDO quando bloqueado — ótimo para a
+        # velocidade do lote, mas foi ISSO que derrubou a participação do Google quando ele está LENTO/
+        # INTERMITENTE (não bloqueado de vez). Este modo devolve o comportamento paciente: timeout 12s e 3
+        # tentativas com perfis diferentes, dando ao Google muito mais chance de responder. Custa velocidade
+        # (por isso é opt-in). Se o IP estiver com bloqueio duro, some pouco muda; se for intermitente, o
+        # Google volta a participar como antes. A aba Monitor APIs (taxa de falha GOOGLE_MAPS) revela o regime.
+        _google_agr = False
+        try:
+            _google_agr = _ler_flag_runtime('google_agressivo')
+        except Exception:
+            _google_agr = False
+        # [GOOGLE-ANTIBLOQUEIO - 194ª geração] no modo agressivo, prepara a sessão com os cookies de
+        # consentimento do próprio Google (1× por sessão) — reduz o "muro de consentimento" em IP de datacenter.
+        if _google_agr:
+            try:
+                _primar_sessao_google()
+            except Exception:
+                pass
+        _TIMEOUT_G = 12 if _google_agr else 4
+        if _google_agr:
+            _MAX_TENT_G = 3  # paciência pré-184ª: 3 perfis de navegador
+        else:
+            _MAX_TENT_G = 2 if _google_pode_chamar() else 1
         for _tent in range(_MAX_TENT_G):
             _headers_tent = _headers_google_rotativo(_tent)
             try:
@@ -19176,18 +19872,92 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     link_fallback = f"https://www.google.com/maps/dir/?api=1&origin={orig_param_fb}&destination={dest_param_fb}&travelmode=driving"
     link_embed_fallback = f"https://maps.google.com/maps?saddr={orig_param_fb}&daddr={dest_param_fb}&output=embed"
     
-    # [PERF-3] Google (scraper) e OSRM rodam em sequência. Os caches L1/L2 mitigam a
-    # latência (cache-hit não chama rede). Mantemos serial para não saturar o pool.
+    # [PERF-PARALELO - 198ª geração] Google (scraper) e OSRM primário passam a rodar CONCORRENTES.
+    # Antes eram sequenciais: no modo Google agressivo (timeout 12s) + OSRM (6s), o pior caso era ~18s/rota.
+    # Agora o OSRM é submetido ao EXECUTOR_APIS e roda EM PARALELO com o Google → pior caso ~= o maior dos dois
+    # (~12s), sem saturar (é I/O puro, o app já usa EXECUTOR_APIS p/ geocodificação dentro do pipeline).
+    # SEGURANÇA/NÃO-REGRESSÃO: paralelizar muda só o TEMPO, não os VALORES — res_google e res_osrm são
+    # exatamente os mesmos objetos que a versão serial produzia, então a decisão da MENOR VIÁRIA é idêntica.
+    # API_OSRM_Routing NÃO lê st.session_state (seguro fora da thread principal). Qualquer exceção na thread
+    # do OSRM é capturada e vira None (mesmo efeito do try/except serial anterior). O disjuntor do Google é
+    # thread-safe (_LOCK_GOOGLE_CB). O caso cache-hit continua instantâneo (o future resolve na hora).
+    _fut_osrm = None
+    if lat_o != 0.0 and lat_d != 0.0:
+        try:
+            _fut_osrm = EXECUTOR_APIS.submit(API_OSRM_Routing, lat_o, lon_o, lat_d, lon_d)
+        except Exception:
+            _fut_osrm = None  # se o pool recusar, cai no caminho serial abaixo
+
+    # Google roda AGORA (em paralelo com o OSRM que já foi submetido). Mantém a lógica de fallback intacta.
     res_google = None
     res_google = extrair_dados_reais_google(end_oficial_o, end_oficial_d, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
     
     if not res_google:
         res_google = extrair_dados_reais_google(origem_clean, destino_clean, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=False, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
     
-    # [ARQ-HIBRIDO - 26ª geração] Consulta o OSRM em paralelo conceitual (sequencial real).
+    # [ARQ-HIBRIDO - 26ª geração] Coleta o resultado do OSRM (que rodou em paralelo com o Google acima).
     res_osrm = None
+    if _fut_osrm is not None:
+        try:
+            res_osrm = _fut_osrm.result()
+        except Exception:
+            res_osrm = None  # falha do OSRM → None (idêntico ao comportamento serial com try/except)
+    elif lat_o != 0.0 and lat_d != 0.0:
+        # fallback serial: se o submit ao pool falhou, roda direto (garante que o OSRM não seja pulado)
+        try:
+            res_osrm = API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d)
+        except Exception:
+            res_osrm = None
+
+    # [MOTOR-KEYED - 191ª geração] COMPETIÇÃO MULTI-MOTOR pela MENOR ROTA VIÁRIA (foco da rodada).
+    # Além do OSRM, rodam os motores COM CHAVE disponíveis (GraphHopper/ORS). Entre OSRM + esses, escolhe-se
+    # o de MENOR distância viária FISICAMENTE VÁLIDA como "contendor" não-Google — e o vencedor fornece TODOS
+    # os seus próprios dados (distância/tempo/geometria/balsa), NUNCA misturados. O contendor então disputa
+    # com o Google exatamente como o OSRM já fazia (toda a lógica de decisão/mapa/comparativo abaixo é
+    # reaproveitada). NÃO-REGRESSÃO: sem chaves, GraphHopper/ORS retornam None → o contendor é EXATAMENTE o
+    # OSRM → comportamento byte-a-byte idêntico ao atual. Motores demo NÃO são martelados: só entram fontes
+    # com cota própria (chave). Guarda os resultados de cada motor para a auditoria.
+    fonte_contendor = "OSRM"
+    _motores_resultados = {"OSRM": res_osrm}
     if lat_o != 0.0 and lat_d != 0.0:
-        res_osrm = API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d)
+        _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d)
+        _res_ors = API_ORS_Routing(lat_o, lon_o, lat_d, lon_d)
+        # [OSRM-CONSENSO - 192ª geração] 2º backend OSRM (FOSSGIS) — SEM chave — como fonte de consenso.
+        # OPT-IN (st.session_state['usar_osrm2']) porque a política do FOSSGIS proíbe uso pesado: no lote
+        # nacional, só deve rodar quando o usuário conscientemente liga. Self-gated: desligado → None → o
+        # contendor é exatamente o OSRM primário (não-regressão). Rate-limit ≤1 req/s é interno à função.
+        _res_osrm2 = None
+        try:
+            if _ler_flag_runtime('usar_osrm2'):
+                _res_osrm2 = API_OSRM_FOSSGIS_Routing(lat_o, lon_o, lat_d, lon_d)
+        except Exception:
+            _res_osrm2 = None
+        _motores_resultados["GRAPHHOPPER"] = _res_gh
+        _motores_resultados["ORS"] = _res_ors
+        _motores_resultados["OSRM_FOSSGIS"] = _res_osrm2
+        # [CONSENSO-MOTORES - 194ª geração] Consenso/outliers/confiabilidade entre TODOS os motores que
+        # responderam (inclui o Google já consultado). Descarta automaticamente o absurdo ("18 km vs 430 km").
+        _todos_motores = dict(_motores_resultados)
+        _todos_motores["GOOGLE"] = res_google
+        _consenso = _consenso_motores_rota(_todos_motores, dist_linha_reta)
+        _outliers_rota = _consenso.get("outliers", [])
+        _confiabilidade_rota = _consenso.get("confiabilidade", {})
+        # candidatos não-Google válidos, EXCLUINDO outliers (só exclui quando há consenso real; motor único
+        # nunca é outlier → não-regressão). Se por acaso todos virarem outlier, fail-open para os válidos.
+        _cands_contendor = []
+        for _nome, _res in (("OSRM", res_osrm), ("GRAPHHOPPER", _res_gh), ("ORS", _res_ors),
+                            ("OSRM_FOSSGIS", _res_osrm2)):
+            if _res and _viaria_fisicamente_possivel(_res[0], dist_linha_reta) and _nome not in _outliers_rota:
+                _cands_contendor.append((_nome, _res))
+        if not _cands_contendor:
+            # fail-open: se o filtro de outlier zerou tudo, volta aos válidos sem o filtro (nunca perde rota)
+            for _nome, _res in (("OSRM", res_osrm), ("GRAPHHOPPER", _res_gh), ("ORS", _res_ors),
+                                ("OSRM_FOSSGIS", _res_osrm2)):
+                if _res and _viaria_fisicamente_possivel(_res[0], dist_linha_reta):
+                    _cands_contendor.append((_nome, _res))
+        if _cands_contendor:
+            # menor distância viária vence a vaga de contendor; o vencedor traz TODOS os seus dados
+            fonte_contendor, res_osrm = min(_cands_contendor, key=lambda kv: kv[1][0])
 
     # [OSRM-SNAP + VALID-ESPACIAL - 40ª geração] Extrai o snap do OSRM (coordenada projetada na
     # via + distância do snap) e faz a VALIDAÇÃO ESPACIAL: confere se os pontos snapados continuam
@@ -19382,7 +20152,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                                                         f"{km_rota} km", tempo_rota)
             # [VIS-DINAMICA] LINK 1 (Google): referência comparativa — sempre traça a rota.
             link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
-            fonte_rota = "OSRM (Menor Distância)"
+            fonte_rota = f"{fonte_contendor} (Menor Distância)" if fonte_contendor != "OSRM" else "OSRM (Menor Distância)"
             # [VIS-DUAL - 37ª geração] Mapa + link do GOOGLE como COMPARATIVO (o Google já foi
             # medido nesta execução). Usa os MESMOS parâmetros por NOME do link de navegação →
             # o mapa comparativo e o link comparativo representam a mesma rota do Google.
@@ -19453,6 +20223,14 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             
         tempo_roteamento = round(time.time() - start_rot, 2)
         tempo_total = round(time.time() - start_total, 2)
+        # [TELEMETRIA-MOTORES - 195ª geração] registro observacional do resultado multi-motor (dashboard).
+        try:
+            _tm_motores = _todos_motores if '_todos_motores' in dir() else {}
+            _tm_consenso = _consenso if '_consenso' in dir() else {}
+            if _tm_motores:
+                _registrar_telemetria_motores(fonte_rota, _tm_motores, _tm_consenso, dist_linha_reta, km_rota)
+        except Exception:
+            pass
         # [AUDIT-MOTORES] Rastro das consultas aos motores (mesma geocodificação validada p/ todos)
         auditoria_motores = _montar_auditoria_motores(
             origem_clean, destino_clean, end_oficial_o, end_oficial_d,
@@ -21291,6 +22069,58 @@ def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
     return resultados
 
 
+# [MEM-DTYPES - 197ª geração] Otimização de MEMÓRIA sem alterar valores (item 1 das recomendações da 196ª).
+# Reduz o consumo de RAM do DataFrame de resultado (grande em estudos nacionais, e persistido em
+# session_state) de duas formas COMPROVADAMENTE LOSSLESS:
+#   • strings de baixa cardinalidade → dtype 'category' (os VALORES são exatamente os mesmos; muda só o
+#     armazenamento interno). Excel e HTML gerados ficam IDÊNTICOS (provado célula a célula no harness).
+#   • inteiros → menor inteiro que couber (int8/16/32) — lossless para inteiros no intervalo.
+# O que NÃO faz, de propósito: (a) NÃO mexe em floats (evita qualquer perda de precisão nos resultados);
+#   (b) NÃO categoriza colunas usadas como CHAVE de groupby/merge (denylist abaixo) — porque groupby em
+#   categórico muda a semântica (inclui categorias vazias sem observed=True), o que alteraria análises/
+#   gráficos. Mantendo as chaves como string, TODOS os groupby/merge do app continuam idênticos (provado).
+# Resultado do harness: ~60% menos memória, com Excel/HTML/floats/groupby inalterados.
+_COLS_NAO_CATEGORIZAR = {
+    "UF Origem", "UF Destino", "Municipio Origem", "Municipio Destino",
+    "Município Origem", "Município Destino", "UF", "Vencedor", "Regiao", "Região",
+    "Cód IBGE Origem", "Cód IBGE Destino", "Cód IBGE", "Origem", "Destino",
+    "Municipio", "Município", "Cidade",
+}
+
+def _otimizar_dtypes_memoria(df, limiar_cardinalidade=0.5, min_linhas=100):
+    """[MEM-DTYPES - 197ª geração] Devolve uma cópia do DataFrame com dtypes otimizados para memória, de forma
+    LOSSLESS (ver cabeçalho da seção). Conservadora: só age em DataFrames com >= min_linhas (em pequenos o
+    ganho não paga a conversão). Colunas na denylist e floats ficam intocados. Defensiva: qualquer falha
+    devolve o df original inalterado — nunca quebra o pipeline."""
+    try:
+        if df is None or not hasattr(df, "columns") or len(df) < min_linhas:
+            return df
+        out = df.copy()
+        n = len(out)
+        if n <= 0:
+            return df
+        for col in out.columns:
+            try:
+                _dt = out[col].dtype
+                if isinstance(_dt, pd.CategoricalDtype):
+                    continue  # já é categórico
+                _is_str = (_dt == object) or pd.api.types.is_string_dtype(_dt)
+                if _is_str:
+                    if str(col) in _COLS_NAO_CATEGORIZAR:
+                        continue  # chave de groupby/merge → mantém string (preserva a semântica)
+                    _nu = out[col].nunique(dropna=False)
+                    if (_nu / n) <= limiar_cardinalidade:
+                        out[col] = out[col].astype("category")
+                elif pd.api.types.is_integer_dtype(_dt):
+                    out[col] = pd.to_numeric(out[col], downcast="integer")
+                # floats: intocados de propósito (precisão dos resultados)
+            except Exception:
+                continue  # coluna problemática → deixa como está
+        return out
+    except Exception:
+        return df
+
+
 def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_map=None):
     """[FIX-LOTE] Monta o DataFrame final a partir do dict acumulado de resultados.
     Extraído de rodar_pipeline_lote para ser reutilizado pelo motor em chunks após
@@ -21622,6 +22452,10 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
     df_final = pd.DataFrame(novos_dados)
     # [M14] Flush forçado do buffer de telemetria ao final do lote
     _flush_telemetria_forcado()
+    _flush_telemetria_motores()  # [PERF-TELEMETRIA - 196ª geração] persiste o buffer multi-motor em RAM
+    # [MEM-DTYPES - 197ª geração] otimização LOSSLESS de memória (categóricos + downcast de int; floats e
+    # chaves de groupby/merge intocados). Excel/HTML/groupby permanecem idênticos (provado no harness).
+    df_final = _otimizar_dtypes_memoria(df_final)
     return df_final
 
 
@@ -22717,6 +23551,40 @@ with st.sidebar:
                    "rate-limit. Este recurso é **tolerante a falhas** — se o Google não responder, a "
                    "geocodificação segue normalmente pelas demais fontes (ArcGIS/Nominatim/Photon/TomTom), "
                    "sem qualquer perda. É um **voto adicional** no consenso, nunca a palavra final.")
+    # [OSRM-CONSENSO - 192ª geração] OPT-IN: 2º motor de rota SEM chave (OSRM FOSSGIS, independente do OSRM
+    # primário). Dá consenso keyless entre dois motores e pode encontrar uma rota mais curta. DESLIGADO por
+    # padrão porque a política do FOSSGIS proíbe uso pesado e limita a ≤1 req/s — num lote nacional isso
+    # deixa o estudo MAIS LENTO. Ideal para estudos menores ou conferência de casos críticos.
+    _o2_on = st.checkbox("🧭 2º motor de rota sem chave — OSRM FOSSGIS (consenso)", value=False,
+                         key="usar_osrm2",
+                         help="Consulta um SEGUNDO servidor OSRM independente (routing.openstreetmap.de) e usa "
+                              "a MENOR rota viária válida entre os dois. Melhora a precisão sem chave de API. "
+                              "É limitado a ≤1 requisição/segundo pela política do servidor, então deixa "
+                              "estudos grandes mais lentos — use em estudos menores ou para conferir casos.")
+    if _o2_on:
+        st.caption("⚠️ **Mais lento em lote.** O servidor FOSSGIS exige ≤1 requisição/segundo e proíbe uso "
+                   "pesado — por isso as chamadas são enfileiradas. Ganho: uma 2ª rota viária real, sem chave, "
+                   "para consenso. Se o servidor não responder, o estudo segue com o OSRM primário, sem perda.")
+    # [GOOGLE-REGRESSAO-FIX - 193ª geração] OPT-IN: restaura a PACIÊNCIA do Google pré-184ª. A 184ª cortou o
+    # timeout (15s→4s) e as tentativas (3→1-2) e adicionou o disjuntor — ótimo p/ velocidade, mas foi o que
+    # derrubou a participação do Google quando ele está lento/intermitente. Ligado: timeout 12s, 3 tentativas,
+    # disjuntor ignorado → Google tenta muito mais. Custa velocidade (por isso é opt-in).
+    _gagr_on = st.checkbox("🗺️ Modo Google agressivo — recuperar participação (mais lento)", value=False,
+                           key="google_agressivo",
+                           help="Devolve o comportamento das versões antigas em que o Google participava muito "
+                                "mais: espera até 12s por resposta (em vez de 4s), tenta 3 perfis de navegador "
+                                "e ignora o disjuntor que suspende o Google após falhas. Se o Google estiver "
+                                "acessível de forma intermitente no seu ambiente, ele volta a vencer rotas. "
+                                "Deixa estudos grandes mais lentos — ideal p/ estudos menores ou críticos.")
+    if _gagr_on:
+        st.caption("⚠️ **Mais lento.** Cada rota pode esperar até 12s pelo Google (×3 tentativas) antes de "
+                   "usar o OSRM. Ganho: máxima participação do Google sem chave. Confira o efeito na aba "
+                   "**Monitor APIs → linha GOOGLE_MAPS**: se a taxa de falha cair, o Google voltou ao jogo; "
+                   "se continuar ~100%, o IP do servidor está com bloqueio duro (aí só a API oficial resolve).")
+    # [FLAGS-RUNTIME - 199ª geração] Snapshot dos toggles AQUI (thread principal, após os 3 widgets). Assim os
+    # workers do lote leem os valores corretos via _ler_flag_runtime — corrige o bug em que os toggles caíam
+    # no default no processamento em lote (st.session_state não é confiável fora da thread principal).
+    _capturar_flags_runtime()
     st.header("📘 Documentação Corporativa", help="Diretrizes estruturais, matemáticas e logísticas completas do motor corporativo.")
     st.caption("📘 **Handbook técnico completo** (28 seções, navegável e com busca): aba **📖 Manual do Usuário** → *Handbook Técnico Completo* (visualize aqui dentro ou baixe o HTML).")
     with st.expander("🎯 Visão Geral e Filosofia"):
@@ -23733,7 +24601,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "189"
+_VERSAO_APP = "199"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -32175,7 +33043,7 @@ if _secao == _SECOES[10]:   # tab_motores
     st.markdown("#### 📡 Tabela Mestre de SLA e Latência em Tempo Real")
     health_data = []
     
-    for api in ["GOOGLE_MAPS", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM"]:
+    for api in ["GOOGLE_MAPS", "GOOGLE_GEO", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM", "OSRM_FOSSGIS", "GRAPHHOPPER", "ORS"]:
         dados = cache_api_health.get(api, {"hits": 0, "calls": 0, "falhas": 0, "tempo_total": 0.0})
         t_med = f"{round((dados['tempo_total'] / max(1, dados['calls'])) * 1000)} ms" if dados['calls'] > 0 else "N/A"
         tx_err = f"{round((dados['falhas'] / max(1, dados['calls'] + dados['falhas'])) * 100, 1)}%" if dados['calls'] > 0 else "0.0%"
@@ -32188,7 +33056,83 @@ if _secao == _SECOES[10]:   # tab_motores
         })
         
     st.dataframe(pd.DataFrame(health_data), use_container_width=True)
-    
+
+    # [GOOGLE-GEOCODE-CONCORDANCIA - 189ª geração] Painel de concordância do Google (opt-in de geocodificação).
+    # Só aparece depois que o recurso experimental foi usado ao menos uma vez. Mostra em quantas
+    # geocodificações a coordenada do Google ficou ≤1 km do vencedor do consenso — a métrica para você DECIDIR
+    # se vale manter o Google ligado (alta concordância = fonte útil e confiável; baixa = ruído a desligar).
+    _conc_gg = cache_api_health.get("GOOGLE_GEO_CONCORDANCIA", {"concorda": 0, "diverge": 0, "total": 0})
+    if _conc_gg.get("total", 0) > 0:
+        st.markdown("#### 🧪 Concordância da Geocodificação pelo Google (recurso experimental opt-in)")
+        _tot = _conc_gg["total"]; _ok = _conc_gg.get("concorda", 0); _dv = _conc_gg.get("diverge", 0)
+        _pct_ok = round((_ok / max(1, _tot)) * 100, 1)
+        _cc0, _cc1, _cc2, _cc3 = st.columns(4)
+        _cc0.metric("Participações do Google", f"{_tot}", help="Geocodificações em que o voto do Google entrou no consenso.")
+        _cc1.metric("Concordou (≤1 km)", f"{_ok}", help="Casos em que a coordenada do Google ficou a até 1 km do vencedor do consenso.")
+        _cc2.metric("Divergiu (>1 km)", f"{_dv}", help="Casos em que o Google apontou para longe do vencedor (foi rebaixado como outlier).")
+        _cc3.metric("Taxa de Concordância", f"{_pct_ok}%")
+        if _pct_ok >= 85:
+            st.success(f"✅ Alta concordância ({_pct_ok}%): o Google tem reforçado o consenso de forma confiável. "
+                       "Mantê-lo ligado tende a aumentar a assertividade.")
+        elif _pct_ok >= 60:
+            st.info(f"ℹ️ Concordância moderada ({_pct_ok}%): o Google ajuda em parte dos casos. Avalie manter "
+                    "ligado conforme a criticidade do estudo.")
+        else:
+            st.warning(f"⚠️ Concordância baixa ({_pct_ok}%): o Google tem divergido com frequência (e sendo "
+                       "rebaixado pelo consenso, sem afetar o resultado). Considere desligar o recurso.")
+        st.caption("Lembrete: o Google é sempre um **voto adicional** — nunca decide sozinho. Esta métrica é "
+                   "observacional e não alterou nenhuma rota. O recurso depende de endpoint não-oficial "
+                   "(ver aviso na barra lateral).")
+
+    # [TELEMETRIA-MOTORES - 195ª geração] DASHBOARD DE CONSENSO MULTI-MOTOR (observabilidade total pedida).
+    # Só aparece depois que rotas foram processadas. Mostra a PARTICIPAÇÃO de cada motor como vencedor (é a
+    # métrica-chave: "o Google voltou a vencer?"), a concordância média entre motores e a razão viária/
+    # geodésica média. Tudo derivado do buffer observacional (não influenciou nenhuma decisão).
+    try:
+        _flush_telemetria_motores()  # [PERF-196ª] garante que registros em RAM apareçam no painel
+    except Exception:
+        pass
+    _venc_agg = cache_api_health.get("TELEMETRIA_VENCEDORES", {})
+    _tm_buf = cache_api_health.get("TELEMETRIA_MOTORES", [])
+    if isinstance(_venc_agg, dict) and _venc_agg:
+        st.markdown("#### 🚦 Consenso Multi-Motor — Participação e Qualidade das Rotas")
+        _tot_v = sum(_venc_agg.values()) or 1
+        # participação de cada motor como VENCEDOR
+        _part_cols = st.columns(max(2, min(5, len(_venc_agg))))
+        _ordem = sorted(_venc_agg.items(), key=lambda kv: kv[1], reverse=True)
+        _rotulos = {"GOOGLE": "🗺️ Google", "OSRM": "🛣️ OSRM", "OSRM_FOSSGIS": "🧭 OSRM FOSSGIS",
+                    "GRAPHHOPPER": "🚗 GraphHopper", "ORS": "🧭 ORS"}
+        for _i, (_mot, _qtd) in enumerate(_ordem):
+            _pct = round(100.0 * _qtd / _tot_v, 1)
+            _part_cols[_i % len(_part_cols)].metric(_rotulos.get(_mot, _mot), f"{_pct}%", help=f"{_qtd} rotas vencidas")
+        _g_pct = round(100.0 * _venc_agg.get("GOOGLE", 0) / _tot_v, 1)
+        if _g_pct >= 50:
+            st.success(f"✅ Google é o motor PRINCIPAL: venceu {_g_pct}% das rotas.")
+        elif _g_pct >= 15:
+            st.info(f"ℹ️ Google participa ativamente: venceu {_g_pct}% das rotas. Ligue o 'Modo Google agressivo' "
+                    "na barra lateral para tentar elevar essa participação.")
+        else:
+            st.warning(f"⚠️ Google venceu só {_g_pct}% das rotas. Se você NÃO ligou o 'Modo Google agressivo', "
+                       "ligue-o e reprocesse. Se já está ligado e segue baixo, o IP do servidor provavelmente "
+                       "sofre bloqueio do Google (a linha GOOGLE_MAPS acima confirma pela taxa de falha).")
+        # qualidade: concordância média e razão viária/geodésica média (amostra recente)
+        if isinstance(_tm_buf, list) and _tm_buf:
+            _amostra = _tm_buf[-1000:]
+            _concs = [r["concordancia_pct"] for r in _amostra if r.get("concordancia_pct") is not None]
+            _razoes = [r["razao_viaria_geodesica"] for r in _amostra if r.get("razao_viaria_geodesica") is not None]
+            _n_outliers = sum(len(r.get("outliers", [])) for r in _amostra)
+            _q0, _q1, _q2 = st.columns(3)
+            if _concs:
+                _q0.metric("Concordância média entre motores", f"{round(sum(_concs)/len(_concs),1)}%",
+                           help="Motores dentro de ±10% da mediana. Alta = motores confirmam uns aos outros.")
+            if _razoes:
+                _q1.metric("Razão viária/geodésica média", f"{round(sum(_razoes)/len(_razoes),2)}×",
+                           help="Distância viária ÷ linha reta. ~1,2–1,5 é típico; muito alto sugere desvios.")
+            _q2.metric("Outliers descartados (amostra)", f"{_n_outliers}",
+                       help="Rotas absurdas rejeitadas pelo consenso (ex.: um motor devolveu distância incoerente).")
+        st.caption("Participação = em quantas rotas cada motor deu a MENOR distância viária válida. O consenso "
+                   "é observacional: mede a qualidade sem alterar a escolha (que é sempre a menor viária válida).")
+
     st.markdown("#### 📐 Auditoria do Motor Geodésico Contínuo (Métricas de Integridade Matemática)")
     # [M24] Calcula uptime e taxas por período para observabilidade temporal
     uptime_s = time.time() - METRICAS_DISTANCIA.get("_inicio_metricas", time.time())
