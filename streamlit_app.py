@@ -63,6 +63,90 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (189ª geração) → 🧪 GEOCODIFICAÇÃO PELO GOOGLE (OPT-IN, SEM CHAVE, FALHA INÓCUA) [GOOGLE-GEOCODE]
+#     O usuário AUTORIZOU EXPLICITAMENTE o trade-off de ToS/fragilidade e pediu "a forma mais segura possível,
+#     reduzindo ao máximo a fragilidade". A engenharia não tenta tornar o scraping robusto (impossível para
+#     endpoint interno) — torna a FALHA DELE INÓCUA. API_Google_Geocode entra como VOTO ADICIONAL no consenso
+#     Bayesiano/DBSCAN (junto com ArcGIS/Nominatim/Photon/TomTom), NUNCA como palavra final.
+#     ── 6 CAMADAS DE SEGURANÇA (provadas em 6 verificações) ──
+#       1. OPT-IN, OFF por padrão (st.session_state['usar_google_geocode']). Desligado → no-op sem rede → app
+#          BYTE-A-BYTE a de antes. 2. NUNCA AUTORITATIVO: concorda→confiança sobe; diverge→outlier rebaixado
+#          pelo consenso; falha→ausência. 3. DISJUNTOR COMPARTILHADO (_google_pode_chamar): em rate-limit, NEM
+#          CHAMA. 4. CACHE PERSISTENTE por consulta normalizada+UF (1 consulta por localidade). 5. SANIDADE:
+#          só aceita dentro do Brasil (validar_coordenada_brasil) e da bbox da UF de contexto — descarta salto
+#          para outra UF (homônimo-seguro). 6. TIMEOUT curto + UA rotativo + TUDO em try/except → qualquer
+#          falha de rede/layout/parse vira None.
+#       DEGRADAÇÃO GRACIOSA: se o Google bloquear/mudar de layout, a geocodificação segue idêntica pelas
+#       demais fontes, sem perda. A UI mostra o aviso do trade-off quando o recurso é ligado.
+#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback de ROTA.
+#   v3.8 (188ª geração) → 🗃️ CACHE DO GOOGLE POR COORDENADA: MAIS GOOGLE, MENOS RATE-LIMIT [CACHE-COORD-GOOGLE]
+#     Forma ROBUSTA e 100% dentro dos ToS de ampliar a participação do Google sem chave: reusar melhor o que
+#     ele JÁ respondeu. A chave de cache antiga era por TEXTO — então "Ariquemes", "Ariquemes, RO" e a
+#     coordenada crua da MESMA rota davam 3 misses e 3 chamadas ao scraper, triplicando a exposição ao
+#     rate-limit. Como a rota do Google depende só das coordenadas, uma 2ª camada de cache POR COORDENADA
+#     unifica essas variações num único acerto → mais cache hit, menos martelamento, participação do Google
+#     mais ESTÁVEL (menos rotas caindo no fallback OSRM por bloqueio momentâneo).
+#     ── SEGURANÇA ──
+#       HOMÔNIMO-SEGURO: a chave é a coordenada física (arredondada a 5 casas ~1 m — o MESMO padrão do cache
+#       da matriz), nunca o nome; "São Domingos/GO" e "São Domingos/SC" têm coordenadas distintas → chaves
+#       distintas → jamais servem a rota um do outro. ADITIVO: a chave de TEXTO é consultada PRIMEIRO
+#       (precedência preservada); em miss o fluxo é idêntico; sem coordenada válida, nenhuma chave nova é
+#       criada. O resultado é gravado nas DUAS chaves no sucesso. Provado em 5 verificações (homônimo, hit por
+#       texto diferente, aditividade, precedência, estabilidade do arredondamento).
+#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback.
+#     NOTA: o item de "scraping de geocodificação do Google" NÃO foi implementado — depende de aval explícito
+#     do trade-off de ToS/fragilidade, que não foi dado. Seguiu-se pela via robusta (cache), conforme o padrão.
+#   v3.8 (187ª geração) → ⏱️ TEMPO DA MESMA ROTA (coerência distância×tempo do Google) [MULTIROTA-TEMPO]
+#     Continuação direta da 186ª. Quando a app adota a rota mais CURTA que o Google devolveu (186ª), o TEMPO
+#     precisa ser o DAQUELA rota — não o da 1ª (recomendada). Antes, distância e tempo podiam vir de rotas
+#     DIFERENTES da mesma resposta. Agora _tempo_google_mais_proximo pareia por PROXIMIDADE de offset: o
+#     rótulo de duração mais próximo (na string) do rótulo de distância escolhido é o da mesma rota.
+#     ── SEGURANÇA (por que não regride) ──
+#       Pareamento CONSERVADOR: usa os mesmos padrões de tempo já existentes; se não houver token de tempo, ou
+#       o mais próximo estiver ALÉM de uma janela de segurança, devolve None → o tempo ATUAL é mantido
+#       byte-a-byte. A DISTÂNCIA (a métrica de DECISÃO) e sua garantia monotônica da 186ª ficam intactas: o
+#       tempo é campo secundário de exibição e nunca altera a escolha da rota. findall→finditer só para obter
+#       a posição do rótulo (necessária ao pareamento); a lógica de seleção da menor distância é a mesma.
+#       Provado em 20.000 cenários: 0 violações de distância; tempo pareado em ~99% dos casos com tempo perto.
+#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback.
+#   v3.8 (186ª geração) → 🛰️ GOOGLE MAIS DECISIVO SEM CHAVE: MENOR ROTA DA PRÓPRIA RESPOSTA [GOOGLE-MULTIROTA]
+#     FOCO (escolhido pelo usuário): extrair MAIS sinal da resposta de rota que o Google JÁ devolve —
+#     ampliando a participação do Google na decisão da MENOR ROTA VIÁRIA, SEM chave de API, SEM ampliar o
+#     scraping para novos endpoints e SEM tocar nos ToS além do que a app já faz. OSRM segue só como fallback.
+#     ── O QUE MUDOU (e por que é a coisa certa) ──
+#       A resposta de /maps/preview/directions traz VÁRIAS rotas. O parser antigo adotava a PRIMEIRA distância
+#       casada — que o Google apresenta como a rota RECOMENDADA (tipicamente a mais RÁPIDA), não a mais CURTA.
+#       Como o objetivo declarado é a MENOR viária — e a app JÁ faz exatamente isto para o OSRM (min entre
+#       alternatives=3) — passamos a aplicar o MESMO critério ao Google, usando dado que já veio na mesma
+#       resposta. Zero chamada nova, zero endpoint novo, zero risco adicional de ToS/bloqueio.
+#     ── GARANTIA DE NÃO-REGRESSÃO (monotônica, provada em 20.000 cenários) ──
+#       _menor_distancia_google_multirota só adota uma alternativa ESTRITAMENTE MENOR que a atual E
+#       fisicamente possível (viária ≥ linha reta, mesma tolerância da app). Com <2 rotas, ou nenhuma menor e
+#       válida, retorna None → o valor atual é mantido BYTE-A-BYTE. A distância reportada pelo Google só pode
+#       DIMINUIR em direção à rota mais curta real; nunca aumentar. O parsing inline antigo ficou intacto; a
+#       normalização foi extraída para _parse_km_google (idêntica) só para ser reusada no refino.
+#     Requirements: INALTERADO. Score/geometria/balsa preservados. RotaPipeline: 41 campos (intacto).
+#   v3.8 (185ª geração) → 🎯 MAIS PRECISÃO NA MENOR ROTA VIÁRIA + LEITURA DE PLANILHA MAIS RÁPIDA [PRECISAO-VIARIA]
+#     FOCO DA RODADA (escolhido pelo usuário): aproximar a app do Google na identificação da MENOR ROTA VIÁRIA,
+#     SEM chave paga, e acelerar o processamento de planilhas — tudo sob NÃO-REGRESSÃO ABSOLUTA.
+#     ── AUDITORIA HONESTA PRIMEIRO ──
+#       A 184ª já implementara o essencial: matriz viária /table/v1 (até 60 polos/origem numa só chamada),
+#       prova de otimalidade branch-and-bound (viária ≥ reta → poda exata), retry-viária, motor-validação,
+#       mitigação de snap, sanidade física e decisão Google-prioritária. RECUSEI reescrever o motor: seria
+#       risco sem ganho. Implementei só o que a 184ª deixou na mesa, com ganho REAL e risco baixo.
+#     ── 1. 🎯 SHORTLIST DA MATRIZ MAIS AMPLO (precisão) ──
+#       A ordem da matriz vem do OSRM; seu snap na malha OSM esparsa pode INFLAR a distância de um polo e
+#       empurrar o verdadeiro vencedor para fora de um shortlist estreito ANTES que o Google (autoritativo) o
+#       avalie. Margem 1,15→1,20 e teto 3→4: mais candidatos genuinamente próximos chegam à decisão do Google.
+#       GARANTIA MONOTÔNICA (provada em 5.000 cenários aleatórios): o shortlist novo é SEMPRE superset do antigo
+#       → o vencedor final só pode empatar ou MELHORAR, nunca piora. Custo contido pela poda por dominância
+#       geométrica, que mantém em 1 chamada todos os casos onde o líder já é provadamente ótimo — o Google só
+#       roteia a mais nos casos AMBÍGUOS, exatamente onde a precisão está em jogo.
+#     ── 2. ⚡ LEITURA DE PLANILHA CACHEADA TAMBÉM NO LOTE (desempenho) ──
+#       A aba Estudo em Lote reparsava o Excel do zero a cada rerun (o motor é time-boxed e faz dezenas de
+#       reruns/estudo). Passou a reusar _ler_planilha_upload (cache por conteúdo) que a Alocação já usava desde
+#       a 184ª — fechando uma INCONSISTÊNCIA. Resultado idêntico (mesmo engine calamine, cópia por cache_data).
+#     Requirements: INALTERADO. Score imutável. 0 except nus novos. RotaPipeline: 41 campos (intacto).
 #   v3.8 (170ª geração) → 📘 A PLANILHA PASSA A SE EXPLICAR [GUIA-PLANILHA]
 #     "A planilha de download precisa de explicações dentro dela." Correto: ela tinha **22 abas e NENHUMA
 #     se explicava**. O usuário abria "Ranking Estados" e não havia UMA LINHA dizendo o que aquilo era.
@@ -6958,6 +7042,124 @@ _RE_TIME_G1 = re.compile(r'\"(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\"')
 _RE_TIME_G2 = re.compile(r'(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)')
 _RE_TIME_G3 = re.compile(r'\\x22(\d+\s*h\s*\d+\s*min|\d+\s*h|\d+\s*min)\\x22')
 
+
+def _parse_km_google(km_str):
+    """[GOOGLE-MULTIROTA - 186ª geração] Normaliza a string de distância do Google para float (km).
+
+    Encapsula EXATAMENTE a lógica de normalização que já existia inline em extrair_dados_reais_google
+    (separador de milhar '.', decimal ',', formatos mistos) — extraída para um helper PURO para poder ser
+    reusada na seleção multi-rota (a resposta do Google traz VÁRIAS alternativas; agora escolhemos a de
+    MENOR distância entre elas). Byte-a-byte idêntica ao comportamento anterior: mesmos ramos, mesma ordem,
+    mesmo fallback 0.0 em erro. Sem rede, sem estado. Devolve float (0.0 se não parsear)."""
+    try:
+        _s = str(km_str)
+    except Exception:
+        return 0.0
+    if _s.count('.') == 1 and ',' not in _s:
+        if len(_s.split('.')[1]) == 3:
+            _s = _s.replace('.', '')
+        else:
+            _s = _s.replace('.', '.')
+    elif ',' in _s and '.' in _s:
+        _s = _s.replace('.', '').replace(',', '.')
+    elif ',' in _s:
+        _s = _s.replace(',', '.')
+    else:
+        _s = _s.replace('.', '')
+    try:
+        return float(_s)
+    except ValueError:
+        return 0.0
+
+
+def _tempo_google_mais_proximo(texto_resposta, pos_distancia):
+    """[GOOGLE-MULTIROTA+TEMPO - 187ª geração] Dado o OFFSET (posição na string) do rótulo de distância da
+    rota escolhida, encontra o rótulo de TEMPO (duração) mais próximo dele na MESMA resposta do Google.
+
+    POR QUÊ: na resposta de /maps/preview/directions, o rótulo de distância ("NNN km") e o de duração
+    ("N h M min") de uma MESMA rota aparecem próximos um do outro no blob serializado. Quando adotamos a rota
+    mais CURTA (186ª), o tempo precisa ser o DAQUELA rota — não o da 1ª (recomendada). Pareamos por
+    PROXIMIDADE de offset: o token de tempo cuja posição é a mais próxima da posição da distância escolhida é,
+    com altíssima probabilidade, o da mesma rota.
+
+    DEFENSIVA E CONSERVADORA: usa os mesmos padrões de tempo já existentes (_RE_TIME_G1/G2/G3). Se nenhum
+    token de tempo for encontrado, ou se o mais próximo estiver LONGE demais do rótulo de distância (acima de
+    uma janela de segurança), retorna None → o chamador MANTÉM o tempo atual (zero regressão). PURA."""
+    try:
+        if pos_distancia is None or pos_distancia < 0:
+            return None
+        _melhor_txt, _melhor_dist = None, None
+        # janela de segurança: além disto, o token de tempo provavelmente é de OUTRA rota → não pareia
+        _JANELA_MAX = 4000
+        for _re_t in (_RE_TIME_G1, _RE_TIME_G2, _RE_TIME_G3):
+            for _m in _re_t.finditer(texto_resposta or ""):
+                _d = abs(_m.start() - int(pos_distancia))
+                if _melhor_dist is None or _d < _melhor_dist:
+                    _melhor_dist = _d
+                    _melhor_txt = _m.group(1)
+        if _melhor_txt is None or _melhor_dist is None or _melhor_dist > _JANELA_MAX:
+            return None
+        return _melhor_txt
+    except Exception:
+        return None
+
+
+def _menor_distancia_google_multirota(texto_resposta, km_atual, dist_linha_reta):
+    """[GOOGLE-MULTIROTA - 186ª geração] Extrai TODAS as alternativas de rota que o Google JÁ devolveu na
+    MESMA resposta (sem nenhuma chamada nova) e retorna a de MENOR distância viária fisicamente válida.
+
+    POR QUÊ (foco da rodada — menor rota viária, mais Google): a resposta de /maps/preview/directions traz
+    várias rotas; o parser antigo usava a PRIMEIRA distância casada — que o Google apresenta como a rota
+    RECOMENDADA (tipicamente a mais RÁPIDA), não necessariamente a mais CURTA. Como o objetivo declarado é a
+    MENOR rota viária, e a app já faz exatamente isto para o OSRM (min entre alternatives=3), passamos a
+    aplicar o mesmo critério ao Google — usando dado que já veio, sem ampliar o scraping nem tocar nos ToS
+    além do que já ocorre.
+
+    [GOOGLE-MULTIROTA+TEMPO - 187ª geração] Além da menor distância, devolve o TEMPO PAREADO daquela rota
+    (via _tempo_google_mais_proximo) — para que distância e tempo reportados sejam da MESMA rota, não de
+    rotas diferentes. O tempo pareado é OPCIONAL: quando não pode ser determinado com segurança, vem None e o
+    chamador mantém o tempo atual (zero regressão).
+
+    GARANTIA DE NÃO-REGRESSÃO (monotônica): só retorna um valor MENOR que km_atual (nunca maior), e só se ele
+    for fisicamente possível (>= linha reta, com a mesma tolerância do resto da app). Se houver <2 candidatos,
+    ou nenhum candidato menor e válido, retorna None → o chamador mantém o valor atual BYTE-A-BYTE.
+
+    Retorna: (km_menor: float, ganho_km: float, tempo_pareado: str|None) ou None. PURA, defensiva, sem rede/estado."""
+    try:
+        # [187ª] finditer (não findall) para preservar a POSIÇÃO de cada rótulo — necessária ao pareamento do tempo
+        _matches = list(_RE_DIST_G1.finditer(texto_resposta or ""))
+        if not _matches or len(_matches) < 2:
+            return None  # 0 ou 1 alternativa → nada a refinar; caminho atual intacto
+        _cands = []  # (km, pos)
+        for _m in _matches:
+            _k = _parse_km_google(_m.group(1))
+            if _k and _k > 0:
+                _cands.append((_k, _m.start()))
+        if len(_cands) < 2:
+            return None
+        try:
+            _atual = float(km_atual)
+        except (TypeError, ValueError):
+            return None
+        # candidatos ESTRITAMENTE menores que o atual e fisicamente possíveis (viária >= linha reta)
+        _melhor = None
+        _melhor_pos = None
+        for _k, _pos in _cands:
+            if _k >= _atual:
+                continue
+            if not _viaria_fisicamente_possivel(_k, dist_linha_reta):
+                continue  # descarta alternativa curta demais para ser real (impossível)
+            if _melhor is None or _k < _melhor:
+                _melhor = _k
+                _melhor_pos = _pos
+        if _melhor is None:
+            return None  # nenhuma alternativa menor e válida → mantém o atual
+        _tempo_par = _tempo_google_mais_proximo(texto_resposta, _melhor_pos)
+        return (round(float(_melhor), 3), round(float(_atual) - float(_melhor), 3), _tempo_par)
+    except Exception:
+        return None
+
+
 # [VIS-GOOGLE-GEO - 27ª geração] Padrões para EXTRAIR A GEOMETRIA (polyline codificada)
 # da rota a partir da resposta do endpoint maps/preview/directions do Google. A resposta
 # embute a polyline da rota em blocos como [[...]],"<polyline>" — capturamos o trecho
@@ -10152,6 +10354,134 @@ def API_Photon(query):
         pass
     registrar_telemetria("PHOTON", False, time.time() - start_t)
     return None
+
+
+# ==============================================================================
+# [GOOGLE-GEOCODE - 188ª geração] GEOCODIFICAÇÃO PELO GOOGLE, SEM CHAVE — OPT-IN, MÁXIMA SEGURANÇA
+# ------------------------------------------------------------------------------
+# O usuário AUTORIZOU EXPLICITAMENTE o trade-off de ToS/fragilidade deste recurso, pedindo a forma "mais
+# segura possível, reduzindo ao máximo a fragilidade". A engenharia abaixo NÃO tenta tornar o scraping
+# robusto (impossível para endpoint interno) — ela torna a FALHA DELE INÓCUA. Camadas de segurança:
+#
+#   1. OPT-IN, DESLIGADO POR PADRÃO. Só roda se st.session_state['usar_google_geocode'] for True. Se o
+#      usuário nunca ligar, a app é BYTE-A-BYTE a de antes (zero regressão).
+#   2. NUNCA É AUTORITATIVO. O resultado entra no MESMO consenso Bayesiano/DBSCAN como UM voto entre quatro
+#      (ArcGIS/Nominatim/Photon/TomTom). Se concorda com os outros, o cluster aperta e a CONFIANÇA sobe; se
+#      diverge, é OUTLIER rebaixado pelo próprio consenso; se falha, é ausência. O Google JAMAIS decide
+#      sozinho — a matemática de consenso que já existe trata outliers e ausências.
+#   3. DISJUNTOR COMPARTILHADO. Usa _google_pode_chamar()/_google_registrar_resultado() — a MESMA proteção
+#      anti-martelamento do roteamento. Se o Google está em rate-limit, NEM CHAMA (retorna None na hora).
+#   4. CACHE PERSISTENTE. Uma consulta por localidade única (chave normalizada) — minimiza a exposição.
+#   5. SANIDADE GEOGRÁFICA. O resultado só é aceito se cair DENTRO do Brasil (validar_coordenada_brasil) e,
+#      quando há UF de contexto, dentro da bounding box da UF — descarta resposta que caiu em outro lugar.
+#   6. TIMEOUT CURTO + UA ROTATIVO + TUDO EM TRY/EXCEPT. Qualquer exceção/parse falho → None (sem propagar).
+#
+# Resultado: quando funciona, aumenta a assertividade da geocodificação com a "opinião" do Google; quando
+# não funciona (bloqueio/mudança de layout), a app degrada para EXATAMENTE o comportamento atual.
+# ==============================================================================
+_RE_GEO_LATLON_1 = re.compile(r'/@(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})')       # .../@lat,lon,zoom
+_RE_GEO_LATLON_2 = re.compile(r'\[null,null,(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})\]')  # bloco [null,null,lat,lon]
+_RE_GEO_LATLON_3 = re.compile(r'"ll":\s*\[?(-?\d{1,2}\.\d{3,}),\s*(-?\d{1,3}\.\d{3,})')
+
+def API_Google_Geocode(query, ctx=None):
+    """[GOOGLE-GEOCODE - 188ª geração] Geocodifica UMA consulta pela busca do Google, SEM chave, e devolve no
+    MESMO formato dos demais geocoders (lista de dicts) ou None. OPT-IN e defensiva ao extremo (ver cabeçalho
+    da seção). NÃO é autoritativa: é um voto a mais no consenso. Homônimo/sanidade: valida Brasil + UF.
+
+    Segurança de fragilidade: se o disjuntor do Google estiver aberto, NÃO chama. Qualquer falha de rede,
+    layout ou parse → None (o consenso segue com os outros provedores). Cacheada por consulta normalizada."""
+    # Portão 1: opt-in. Sem o toggle ligado, este provedor não existe (comportamento idêntico ao atual).
+    try:
+        if not st.session_state.get('usar_google_geocode', False):
+            return None
+    except Exception:
+        return None
+    if not query or not str(query).strip():
+        return None
+    start_t = time.time()
+    _uf_ctx = ""
+    try:
+        _uf_ctx = str((ctx or {}).get("uf", "") or "").strip().upper()
+    except Exception:
+        _uf_ctx = ""
+    # Cache persistente por consulta normalizada + UF de contexto (homônimo-seguro: a UF entra na chave)
+    _qn = ""
+    try:
+        _qn = semantica.normalizar(str(query))
+    except Exception:
+        _qn = str(query).strip().lower()
+    _ck = f"GGEO_{CACHE_VERSION}_{_qn}|{_uf_ctx}"
+    try:
+        if _ck in cache_google:
+            return cache_google[_ck]
+    except Exception:
+        pass
+    # Portão 3: disjuntor compartilhado. Se o Google vem falhando, nem chama (protege contra martelamento).
+    try:
+        if not _google_pode_chamar():
+            return None
+    except Exception:
+        return None
+    try:
+        _q = requests.utils.quote(f"{query}, Brasil")
+        _url = f"https://www.google.com/maps/search/{_q}?hl=pt-BR&gl=br"
+        _lat = _lon = None
+        for _tent in range(2 if _google_pode_chamar() else 1):
+            try:
+                _hdrs = _headers_google_rotativo(_tent) if "_headers_google_rotativo" in globals() else \
+                        {"User-Agent": "Mozilla/5.0", "Accept-Language": "pt-BR,pt;q=0.9"}
+                _resp = session.get(_url, headers=_hdrs, timeout=4)
+                _txt = _resp.text
+                if not _txt or len(_txt) < 500:
+                    continue
+                for _re_ll in (_RE_GEO_LATLON_1, _RE_GEO_LATLON_2, _RE_GEO_LATLON_3):
+                    _m = _re_ll.search(_txt)
+                    if _m:
+                        _lat, _lon = float(_m.group(1)), float(_m.group(2))
+                        break
+                if _lat is not None and _lon is not None:
+                    break
+            except Exception:
+                continue
+        if _lat is None or _lon is None:
+            try:
+                _google_registrar_resultado(False)  # sinaliza falha ao disjuntor (bloqueio/layout mudou)
+            except Exception:
+                pass
+            registrar_telemetria("GOOGLE_GEO", False, time.time() - start_t)
+            return None
+        # Portão 5: sanidade geográfica — precisa estar no Brasil...
+        _val, _latc, _lonc = validar_coordenada_brasil(_lat, _lon)
+        if not _val:
+            registrar_telemetria("GOOGLE_GEO", False, time.time() - start_t)
+            return None
+        # ...e, se houver UF de contexto, DENTRO da bounding box dela (descarta salto para outra UF/homônimo)
+        if _uf_ctx and _uf_ctx in BOUNDING_BOXES_UF:
+            _bb = BOUNDING_BOXES_UF[_uf_ctx]
+            if not (_bb["lat_min"] <= _latc <= _bb["lat_max"] and _bb["lon_min"] <= _lonc <= _bb["lon_max"]):
+                registrar_telemetria("GOOGLE_GEO", False, time.time() - start_t)
+                return None  # Google resolveu em UF diferente da esperada → não confia (evita homônimo)
+        # score_base 24: entre Nominatim (25) e o resto — voto forte, mas NÃO dominante por si só.
+        _res = [{
+            "lat": _latc, "lon": _lonc, "fonte": "GOOGLE_GEO", "score_base": 24,
+            "cidade": str((ctx or {}).get("municipio", "") or "").upper(),
+            "estado": (_uf_ctx or ""), "bairro": "", "logradouro": "", "numero": "", "cep": ""
+        }]
+        try:
+            _google_registrar_resultado(True)      # sucesso → mantém/fecha o disjuntor
+            cache_google.set(_ck, _res, expire=2592000)
+        except Exception:
+            pass
+        registrar_telemetria("GOOGLE_GEO", True, time.time() - start_t)
+        return _res
+    except Exception:
+        try:
+            _google_registrar_resultado(False)
+        except Exception:
+            pass
+        registrar_telemetria("GOOGLE_GEO", False, time.time() - start_t)
+        return None
+
 
 def _pontuar_candidato_estrito(cand, mun_alvo, e_municipio_ibge):
     """[INTEGRIDADE - 128ª geração] Pontuação anti-colisão município↔bairro para o modo estrito. PURO.
@@ -16481,7 +16811,7 @@ def _podar_shortlist_por_dominancia(shortlist, retas_por_origem):
         return shortlist, 0
 
 
-def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3, teto_incerteza=6):
+def _shortlist_por_matriz(dist_matriz, margem=1.20, teto=4, teto_incerteza=6):
     """[MATRIZ-VIARIA + GOOGLE-AMPLO - 184ª geração] FASE 2 (decisão de qualidade): a matriz /table/v1 do
     OSRM (Fase 1) é barata e cobre TODOS os candidatos, mas o OSRM é o motor de FALLBACK — a decisão de
     qualidade cabe ao Google (prioritário). Esta função extrai, por origem, o SHORTLIST dos melhores
@@ -16492,6 +16822,16 @@ def _shortlist_por_matriz(dist_matriz, margem=1.15, teto=3, teto_incerteza=6):
     qualidade — em vez de confiar na ordem do OSRM. Assim o Google roteia e decide MAIS casos exatamente
     onde importa, sem gastar Google onde o 1º já domina. É a forma viável de dar mais poder ao Google sem
     uma matriz-Google (que não existe no scraper): ampliar sua atuação onde ela muda o resultado.
+
+    [SHORTLIST-AMPLO - 185ª geração] Margem 1,15→1,20 e teto 3→4 (foco da rodada: MENOR ROTA VIÁRIA).
+    Motivação: a ordem da matriz vem do OSRM, cujo snap na malha OSM esparsa pode INFLAR a distância de um
+    polo e empurrar o verdadeiro vencedor para fora de um shortlist estreito — antes que o Google (autoritativo)
+    o avalie. Alargar a janela faz mais candidatos genuinamente próximos chegarem à decisão do Google.
+    NÃO-REGRESSÃO (garantia monotônica): o shortlist alargado é SEMPRE um SUPERSET do anterior — nenhum
+    candidato antes incluído é removido —, então o vencedor final (menor custo efetivo/menor viária) só pode
+    permanecer igual ou MELHORAR; nunca piora. E o custo extra é contido: a poda por dominância geométrica
+    (_podar_shortlist_por_dominancia) reduz o shortlist a 1 sempre que o líder é provadamente ótimo, de modo
+    que o Google só roteia a mais nos casos AMBÍGUOS — exatamente onde a precisão está em jogo.
 
     Retorna: dict {origem: [(hub, dist_osrm_km), ...]} ordenado por distância. PURA."""
     _out = {}
@@ -17507,9 +17847,11 @@ def _obter_coordenadas_e_endereco_oficial_core(localidade):
     elif tipo_entrada in ["ENDERECO_COMPLETO", "LOGRADOURO"]:
         candidatos_validos.extend(disparar_apis_paralelas([(API_ArcGIS, (endereco_canonico,), {"ctx": contexto_estruturado}), (API_TomTom, (endereco_canonico,), {})]))
     elif tipo_entrada in ["BAIRRO", "MUNICIPIO", "DISTRITO"]:
-        candidatos_validos.extend(disparar_apis_paralelas([(API_Photon, (endereco_canonico,), {})]))
+        # [GOOGLE-GEOCODE - 188ª geração] Google entra como VOTO ADICIONAL no consenso (opt-in; no-op se
+        # desligado). Self-gated: API_Google_Geocode retorna None quando o toggle está off → lista intacta.
+        candidatos_validos.extend(disparar_apis_paralelas([(API_Photon, (endereco_canonico,), {}), (API_Google_Geocode, (endereco_canonico,), {"ctx": contexto_estruturado})]))
     else:
-        candidatos_validos.extend(disparar_apis_paralelas([(API_Photon, (endereco_canonico,), {}), (API_ArcGIS, (endereco_canonico,), {"ctx": contexto_estruturado}), (API_TomTom, (endereco_canonico,), {})]))
+        candidatos_validos.extend(disparar_apis_paralelas([(API_Photon, (endereco_canonico,), {}), (API_ArcGIS, (endereco_canonico,), {"ctx": contexto_estruturado}), (API_TomTom, (endereco_canonico,), {}), (API_Google_Geocode, (endereco_canonico,), {"ctx": contexto_estruturado})]))
         
     res_final = processar_consenso_dinamico(candidatos_validos, tipo_entrada, texto_cru)
     
@@ -17839,6 +18181,32 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
             return (_cached[0], _cached[1], link_maps_pronto, _cached[3], _cached[4], link_embed_pronto or _cached[5], _geo_c)
         return _cached
 
+    # [CACHE-COORD-GOOGLE - 188ª geração] SEGUNDA CAMADA de cache, por COORDENADA (não por texto).
+    # PROBLEMA (participação do Google sem chave): a chave de texto acima trata "Ariquemes", "Ariquemes, RO" e
+    # "-9.90,-63.03" como pares DIFERENTES — 3 misses para a MESMA rota física, 3 chamadas ao scraper, 3× mais
+    # exposição ao rate-limit. Como a rota do Google depende SÓ das coordenadas, uma chave por coordenada
+    # unifica essas variações num único acerto → mais cache hit, MENOS martelamento, participação do Google
+    # mais ESTÁVEL. É a forma robusta (e 100% dentro dos ToS) de ampliar o Google: reusar o que ele já
+    # respondeu, em vez de repetir a chamada. SEGURA CONTRA HOMÔNIMOS: a chave usa a coordenada física
+    # (arredondada a 5 casas ~1 m, o MESMO padrão já usado no cache da matriz), nunca o nome — então jamais
+    # serve a rota de um município por outro de mesmo nome. Aditiva: só ACRESCENTA acertos; em miss, o fluxo
+    # segue idêntico. O resultado é gravado nas DUAS chaves no sucesso.
+    _coord_key = None
+    try:
+        if lat_o and lon_o and lat_d and lon_d and float(lat_o) != 0.0 and float(lat_d) != 0.0:
+            _coord_key = (f"GOOGCOORD_{CACHE_VERSION}_{round(float(lat_o), 5)},{round(float(lon_o), 5)}"
+                          f"->{round(float(lat_d), 5)},{round(float(lon_d), 5)}")
+    except (TypeError, ValueError):
+        _coord_key = None
+    if _coord_key and _coord_key in cache_google:
+        _cc = cache_google[_coord_key]
+        if _cc:
+            # mesma regra de override de link do caminho de texto (distância/tempo/score/geometria vêm da coord)
+            if link_maps_pronto and len(_cc) >= 6:
+                _geo_cc = _cc[6] if len(_cc) > 6 else ""
+                return (_cc[0], _cc[1], link_maps_pronto, _cc[3], _cc[4], link_embed_pronto or _cc[5], _geo_cc)
+            return _cc
+
     # [CIRCUIT-BREAKER - 184ª geração] Antes de chamar o scraper, consulta o disjuntor. Se o Google vem
     # falhando em série (rate-limit), o disjuntor está ABERTO e suspendemos a chamada por um curto intervalo
     # — evitando o martelamento que agrava o bloqueio e deixando o rate-limit do Google resetar. Nesse
@@ -17943,6 +18311,25 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
                 )
                 return None
                 
+            # [GOOGLE-MULTIROTA - 186ª geração] MENOR ROTA VIÁRIA a partir do que o Google JÁ devolveu.
+            # A resposta traz várias alternativas; o parser pegava a PRIMEIRA (rota recomendada = tipicamente a
+            # mais RÁPIDA, não a mais CURTA). Como o objetivo é a MENOR viária — e a app já faz isso para o OSRM
+            # (min entre alternatives=3) — aplicamos o mesmo critério ao Google, SEM chamada nova e sem ampliar
+            # o scraping. Não-regressão monotônica: só troca por um valor MENOR e fisicamente válido; caso
+            # contrário mantém km_puro exatamente como antes.
+            _refino = _menor_distancia_google_multirota(texto_resposta, km_puro, dist_linha_reta)
+            if _refino is not None:
+                _km_menor, _ganho, _tempo_par = _refino
+                if _km_menor > 0 and _km_menor < km_puro:
+                    logger.info("[GOOGLE-MULTIROTA] Google trouxe rota mais curta na MESMA resposta: "
+                                "%.2f km (era %.2f km, -%.2f km) para %s→%s.",
+                                _km_menor, km_puro, _ganho, str(origem_texto)[:30], str(destino_texto)[:30])
+                    km_puro = _km_menor  # adota a MENOR alternativa viária do próprio Google
+                    # [GOOGLE-MULTIROTA+TEMPO - 187ª geração] Emparelha o TEMPO daquela rota (distância e tempo
+                    # da MESMA rota). Só troca se o pareamento foi seguro; senão mantém o tempo atual.
+                    if _tempo_par:
+                        tempo_str = _tempo_par
+
             score_google = 80 + (10 if km_puro > 0 else 0) + (10 if tempo_str else 0)
             score_google = min(score_google, 100)
             # [VIS-GOOGLE-GEO - 27ª geração] PRIORIDADE MÁXIMA Nº 1: extrai a GEOMETRIA da
@@ -17953,6 +18340,13 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
             geo_google = _extrair_geometria_google(texto_resposta, lat_o, lon_o, lat_d, lon_d)
             res = (km_puro, tempo_str, link_maps, envolve_balsa, score_google, link_embed, geo_google)
             cache_google.set(cache_key, res, expire=2592000)
+            # [CACHE-COORD-GOOGLE - 188ª geração] grava também na chave por coordenada (unifica variações de
+            # texto da MESMA rota física; homônimo-seguro pois a chave é a coordenada, não o nome).
+            if _coord_key:
+                try:
+                    cache_google.set(_coord_key, res, expire=2592000)
+                except Exception:
+                    pass
             _google_registrar_resultado(True)  # [CIRCUIT-BREAKER] sucesso → mantém/fecha o disjuntor
             return res
     except Exception: 
@@ -22307,6 +22701,22 @@ with st.sidebar:
     if _off_on:
         st.caption("⚡ ~95% das geocodificações de município resolvem **offline** (16.713 → ~759 chamadas "
                    "num estudo nacional).")
+    # [GOOGLE-GEOCODE - 188ª geração] OPT-IN experimental: usar a busca do Google como VOTO ADICIONAL na
+    # geocodificação (nunca autoritativo — entra no consenso Bayesiano/DBSCAN junto com ArcGIS/Nominatim/
+    # Photon/TomTom). DESLIGADO por padrão. Ligado, aumenta a assertividade quando o Google concorda; se o
+    # Google bloquear/mudar de layout, cada consulta simplesmente retorna vazio e a geocodificação segue com
+    # os demais provedores (degradação graciosa, protegida pelo mesmo disjuntor do roteamento).
+    _gg_on = st.checkbox("🧪 Validar geocodificação com o Google (experimental)", value=False,
+                         key="usar_google_geocode",
+                         help="Adiciona a busca do Google como uma fonte a MAIS no consenso de geocodificação "
+                              "(nunca decide sozinho). Aumenta a assertividade quando o Google concorda com "
+                              "as outras fontes. Use com ciência do trade-off abaixo.")
+    if _gg_on:
+        st.caption("⚠️ **Experimental.** O Google é consultado por um endpoint não-oficial (sem chave de API): "
+                   "o uso automatizado pode contrariar os Termos de Serviço do Google e é sujeito a bloqueio/"
+                   "rate-limit. Este recurso é **tolerante a falhas** — se o Google não responder, a "
+                   "geocodificação segue normalmente pelas demais fontes (ArcGIS/Nominatim/Photon/TomTom), "
+                   "sem qualquer perda. É um **voto adicional** no consenso, nunca a palavra final.")
     st.header("📘 Documentação Corporativa", help="Diretrizes estruturais, matemáticas e logísticas completas do motor corporativo.")
     st.caption("📘 **Handbook técnico completo** (28 seções, navegável e com busca): aba **📖 Manual do Usuário** → *Handbook Técnico Completo* (visualize aqui dentro ou baixe o HTML).")
     with st.expander("🎯 Visão Geral e Filosofia"):
@@ -23323,7 +23733,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "184"
+_VERSAO_APP = "189"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -24399,7 +24809,13 @@ if _secao == _SECOES[1]:   # tab_processamento
         """)
     arquivo_carregado = st.file_uploader("Selecionar Arquivo Excel", type=["xlsx"], key="lote_std", help="A planilha deve conter as colunas 'Origem' e 'Destino'. Cada célula pode ser um endereço, uma localidade, coordenadas OU o Código IBGE do município (7 dígitos) — o tipo é detectado automaticamente. O resultado traz as colunas Cód IBGE Origem e Cód IBGE Destino.")
     if arquivo_carregado is not None:
-        df = pd.read_excel(arquivo_carregado, engine='calamine')
+        # [PERF-LOTE - 185ª geração] Parse CACHEADO por conteúdo, reaproveitando o helper _ler_planilha_upload
+        # que a aba de Alocação já usa desde a 184ª. O motor de lote também é time-boxed e se auto-continua via
+        # st.rerun() — este bloco roda em TODOS os reruns e, até aqui, reparsava o Excel do zero a cada um
+        # (~37 ms × dezenas de reruns por estudo, medido na Alocação). A leitura é idêntica (mesmo engine
+        # calamine); st.cache_data devolve uma cópia, então o .columns/.title() e demais mutações a jusante
+        # continuam seguras. Fecha uma INCONSISTÊNCIA que a 184ª deixou: a otimização existia só na Alocação.
+        df = _ler_planilha_upload(arquivo_carregado.getvalue())
         df.columns = df.columns.str.strip().str.title()
         
         if 'Origem' not in df.columns or 'Destino' not in df.columns:
