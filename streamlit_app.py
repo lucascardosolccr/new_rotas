@@ -63,6 +63,24 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (204ª geração) → 🔑 API OFICIAL DO GOOGLE (ROUTES API) COMO MOTOR PRINCIPAL — LÍCITA, SEM BLOQUEIO [GOOGLE-OFICIAL]
+#     O caminho DENTRO DOS TOS para restaurar o Google como motor principal a partir de qualquer IP (inclusive
+#     datacenter/Streamlit Cloud, onde o scraper é bloqueado). Nova função API_Google_Directions_Oficial usa a
+#     Routes API (POST routes.googleapis.com/directions/v2:computeRoutes — sucessora da Directions legada,
+#     obrigatória p/ projetos novos desde mar/2025) e devolve a MESMA tupla de 7 campos do scraper, populando
+#     res_google. Integração: se GOOGLE_MAPS_API_KEY existir em st.secrets, a API oficial é a fonte PRINCIPAL
+#     do Google; o scraper vira fallback; o OSRM segue como consenso/fallback final. A decisão NÃO muda — o
+#     resultado oficial entra na lógica que já prioriza o Google (margem de 2% a favor), então o Google volta a
+#     VENCER quando responde. routingPreference=TRAFFIC_UNAWARE mantém a chamada na SKU 'Essentials' (cota grátis
+#     maior / mais barata).
+#     NÃO-REGRESSÃO (17 provas cumulativas + prova dedicada): SEM a chave, API_Google_Directions_Oficial retorna
+#     None imediatamente → o fluxo cai no scraper exatamente como antes → comportamento 100% idêntico ao atual.
+#     As 2 chamadas de fallback ao scraper permanecem intactas. Telemetria registra como GOOGLE_MAPS (aparece no
+#     Monitor APIs). Tupla validada: km no índice 0 (compatível com a decisão), tempo formatado, geometria
+#     (encodedPolyline) para o mapa. Timeout curto; qualquer falha HTTP/parse → None (fallback intacto).
+#     PONTO DE PLUGAGEM: usuário obtém a chave no Google Cloud Console, ativa a Routes API, e configura
+#     GOOGLE_MAPS_API_KEY em st.secrets (Streamlit) — SEM expor a chave no código/GitHub. Requirements: INALTERADO.
+#     RotaPipeline: 41 campos (intacto).
 #   v3.8 (203ª geração) → 🔧 BUG DE CACHE DE REGEX CORRIGIDO: _regex_palavra REALMENTE cacheia agora [PERF-REGEX]
 #     Auditoria de velocidade focada no MICRO (loop interno). ACHADO REAL: _regex_palavra tinha docstring
 #     dizendo "compilado e CACHEADO para evitar recompilação", mas o corpo NÃO tinha cache — recompilava o
@@ -6971,6 +6989,17 @@ try:
     ORS_API_KEY = st.secrets.get("ORS_API_KEY", "")
 except Exception:
     ORS_API_KEY = ""
+
+# [GOOGLE-OFICIAL - 204ª geração] Chave da API OFICIAL do Google Maps (Routes API). Quando presente, a app
+# passa a obter a rota do Google pela API PAGA/OFICIAL (dentro dos ToS, sem bloqueio de IP) em vez do scraper
+# — restaurando o Google como motor PRINCIPAL de forma confiável, inclusive a partir de IP de datacenter
+# (Streamlit Cloud). Ausente → comportamento 100% idêntico ao atual (usa o scraper como antes). O resultado
+# oficial alimenta EXATAMENTE a mesma lógica de decisão que já prioriza o Google (margem de 2% a favor),
+# então o Google volta a vencer quando responde. Configurada em st.secrets, sem expor a chave no código.
+try:
+    GOOGLE_MAPS_API_KEY = st.secrets.get("GOOGLE_MAPS_API_KEY", "")
+except Exception:
+    GOOGLE_MAPS_API_KEY = ""
 
 # ==============================================================================
 # CONSTANTES GLOBAIS — Definidas uma única vez, referenciadas em todo o sistema
@@ -17428,6 +17457,90 @@ def _codificar_polyline_de_coords(coords):
         return ""
 
 
+def API_Google_Directions_Oficial(lat_o, lon_o, lat_d, lon_d, link_maps_pronto=None, link_embed_pronto=None):
+    """[GOOGLE-OFICIAL - 204ª geração] Rota pela API OFICIAL do Google (Routes API — computeRoutes), a via
+    lícita e sem bloqueio para usar o Google como motor principal a partir de qualquer IP (inclusive
+    datacenter/Streamlit Cloud). Retorna a MESMA tupla de 7 campos do scraper do Google —
+    (km, tempo_str, link_maps, balsa, score, link_embed, geometria) — para popular res_google e entrar na
+    EXATA lógica de decisão existente, que já prioriza o Google (margem de 2%). Assim o Google volta a vencer
+    quando responde, sem tocar na arquitetura.
+
+    Endpoint (Routes API, o sucessor da Directions legada — obrigatório para projetos novos desde mar/2025):
+      POST https://routes.googleapis.com/directions/v2:computeRoutes
+      Headers: X-Goog-Api-Key, Content-Type: application/json,
+               X-Goog-FieldMask: routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline
+      routingPreference=TRAFFIC_UNAWARE mantém a chamada na SKU 'Essentials' (mais barata / cota grátis maior).
+
+    SEGURANÇA/NÃO-REGRESSÃO: self-gated na chave — sem GOOGLE_MAPS_API_KEY, retorna None imediatamente
+    (comportamento 100% idêntico ao atual). Timeout curto; qualquer falha de rede/HTTP/parse → None (o fluxo
+    então cai no scraper/again e, por fim, no OSRM — as camadas de fallback seguem intactas)."""
+    if not GOOGLE_MAPS_API_KEY:
+        return None  # sem chave oficial → usa o caminho antigo (scraper). Zero mudança.
+    if lat_o == 0.0 or lat_d == 0.0:
+        return None
+    start_t = time.time()
+    try:
+        _url = "https://routes.googleapis.com/directions/v2:computeRoutes"
+        _headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+            "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
+        }
+        _body = {
+            "origin": {"location": {"latLng": {"latitude": float(lat_o), "longitude": float(lon_o)}}},
+            "destination": {"location": {"latLng": {"latitude": float(lat_d), "longitude": float(lon_d)}}},
+            "travelMode": "DRIVE",
+            "routingPreference": "TRAFFIC_UNAWARE",
+            "computeAlternativeRoutes": False,
+            "languageCode": "pt-BR",
+            "units": "METRIC",
+        }
+        _r = session.post(_url, headers=_headers, json=_body, timeout=8)
+        if _r.status_code != 200:
+            registrar_telemetria("GOOGLE_MAPS", False, time.time() - start_t)
+            return None
+        _j = _r.json()
+        _rotas = _j.get("routes") if isinstance(_j, dict) else None
+        if not _rotas:
+            registrar_telemetria("GOOGLE_MAPS", False, time.time() - start_t)
+            return None
+        _rt = _rotas[0]
+        _dist_km = round(float(_rt.get("distanceMeters", 0.0)) / 1000.0, 2)
+        if _dist_km <= 0:
+            registrar_telemetria("GOOGLE_MAPS", False, time.time() - start_t)
+            return None
+        # duration vem como string tipo "1234s" → minutos
+        _dur_raw = str(_rt.get("duration", "0s")).replace("s", "").strip()
+        _tempo_str = ""
+        try:
+            _tempo_min = max(1, round(float(_dur_raw) / 60.0))
+            if _tempo_min >= 60:
+                _h, _m = _tempo_min // 60, _tempo_min % 60
+                _tempo_str = f"{_h} h {_m} min" if _m else f"{_h} h"
+            else:
+                _tempo_str = f"{_tempo_min} min"
+        except (TypeError, ValueError):
+            _tempo_str = ""
+        # geometria: polyline codificado (mesmo formato que o mapa já consome)
+        _geo = ""
+        try:
+            _geo = ((_rt.get("polyline", {}) or {}).get("encodedPolyline", "")) or ""
+        except Exception:
+            _geo = ""
+        # links padrão do Google (mesma convenção usada no scraper), usando os prontos quando fornecidos
+        _link_maps = link_maps_pronto or f"https://www.google.com/maps/dir/?api=1&origin={lat_o},{lon_o}&destination={lat_d},{lon_d}&travelmode=driving"
+        _link_embed = link_embed_pronto or ""
+        # balsa: a Routes API sinaliza ferry em travelAdvisory; conservador "Não" (nunca falso-positivo) sem
+        # pedir o campo extra (mantém a SKU barata). O OSRM/consenso ainda detecta balsa quando relevante.
+        _balsa = "Não"
+        _score = 1  # nº de alternativas (pedimos 1); mantém o mesmo tipo do scraper
+        registrar_telemetria("GOOGLE_MAPS", True, time.time() - start_t)
+        return (_dist_km, _tempo_str, _link_maps, _balsa, _score, _link_embed, _geo)
+    except Exception:
+        registrar_telemetria("GOOGLE_MAPS", False, time.time() - start_t)
+        return None
+
+
 def API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d):
     """[MOTOR-KEYED - 191ª geração] Motor de roteamento GraphHopper (COM CHAVE, tier gratuito). Retorna a
     MESMA tupla do OSRM — (km, min, balsa, n_alt, geometria_polyline, snap_info) — para plugar no comparador
@@ -19784,7 +19897,17 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
 
     # Google roda AGORA (em paralelo com o OSRM que já foi submetido). Mantém a lógica de fallback intacta.
     res_google = None
-    res_google = extrair_dados_reais_google(end_oficial_o, end_oficial_d, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
+    # [GOOGLE-OFICIAL - 204ª geração] Se houver chave da API OFICIAL, ela é a fonte PRINCIPAL do Google (lícita,
+    # sem bloqueio de IP). O resultado entra em res_google e segue a MESMA decisão que já prioriza o Google.
+    # Sem chave, _api_google_oficial devolve None e o fluxo cai no scraper de sempre (zero mudança).
+    if GOOGLE_MAPS_API_KEY:
+        try:
+            res_google = API_Google_Directions_Oficial(lat_o, lon_o, lat_d, lon_d,
+                                                        link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
+        except Exception:
+            res_google = None
+    if not res_google:
+        res_google = extrair_dados_reais_google(end_oficial_o, end_oficial_d, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
     
     if not res_google:
         res_google = extrair_dados_reais_google(origem_clean, destino_clean, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=False, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
@@ -24430,7 +24553,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "203"
+_VERSAO_APP = "204"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
