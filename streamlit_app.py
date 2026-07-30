@@ -63,6 +63,24 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (207ª geração) → 🚑 CORRIGE O TRAVAMENTO REAL: SERVIDOR PÚBLICO DO OSRM COM FAIL-FAST [HOTFIX-OSRM-HANG]
+#     DIAGNÓSTICO CORRETO (a 206ª tratou o suspeito errado): o app travava em 0 registros na FASE DE MATRIZ da
+#     Alocação — e essa fase chama API_OSRM_Table → servidor PÚBLICO router.project-osrm.org, um caminho que
+#     NÃO passa pelas minhas mudanças recentes (204/205/206) nem pelas chaves. O servidor de DEMONSTRAÇÃO do
+#     OSRM não tem garantias: quando fica lento ou devolve 429 (rate-limit), a sessão padrão (Retry total=5,
+#     backoff 0.5 + timeout 8) fazia UM bloco levar ~40-50s; no 1º lote de centenas de origens, isso EMPACAVA
+#     tudo (cronômetro congelado, 0 registros). Não era regressão de código — é a fragilidade do servidor
+#     público gratuito.
+#     CORREÇÃO: sessão FAIL-FAST dedicada ao OSRM público (session_osrm_publico: Retry total=1, sem backoff,
+#     timeout (connect 3s, read 6s)) usada na MATRIZ e no ROTEAMENTO OSRM. Se o servidor estiver ruim, cada
+#     chamada falha em segundos e o fluxo DEGRADA graciosamente (fallback par-a-par / ranqueia pelo que houver
+#     / Google assume) em vez de travar. Quando o servidor responde, o resultado é IDÊNTICO — só muda o
+#     comportamento sob falha (travar → degradar).
+#     NÃO-REGRESSÃO (guarantees cumulativas): mesma URL, mesma resposta quando o servidor funciona; RotaPipeline
+#     41 campos; requirements INALTERADO.
+#     A LIÇÃO E A SAÍDA DEFINITIVA: enquanto o roteamento depender do servidor PÚBLICO gratuito, ele é um ponto
+#     único de fragilidade (fora do nosso controle). O OSRM PRÓPRIO (Docker) elimina isso de vez — sem servidor
+#     público no caminho, sem rate-limit, sem travar. É a correção estrutural; este hotfix é o paliativo robusto.
 #   v3.8 (206ª geração) → 🚑 REVERTE O FAN-OUT DA 205ª (que travou o app) + BLINDA O TIMEOUT DO GOOGLE OFICIAL [HOTFIX-205]
 #     A 205ª paralelizou TODOS os motores secundários (OSRM+GraphHopper+ORS+FOSSGIS) submetendo cada um ao
 #     EXECUTOR_APIS de dentro de CADA worker do pipeline. PROBLEMA em produção (Streamlit Cloud, 1 vCPU): o
@@ -7343,6 +7361,24 @@ retry_strategy = Retry(total=5, backoff_factor=0.5, status_forcelist=[429, 500, 
 adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=32, pool_maxsize=32)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
+
+# [HOTFIX-OSRM-HANG - 207ª geração] Sessão FAIL-FAST dedicada ao servidor PÚBLICO do OSRM
+# (router.project-osrm.org). PROBLEMA observado (app travando em 0 registros na fase de matriz da Alocação):
+# o servidor público de DEMONSTRAÇÃO do OSRM não tem garantias e frequentemente fica lento/indisponível ou
+# devolve 429 (rate-limit). Com a sessão padrão (Retry total=5, backoff=0.5 + timeout 8), UM bloco de matriz
+# rate-limitado podia bloquear o worker por ~40-50s (8s × tentativas + backoff), e no 1º lote de centenas de
+# origens isso EMPACAVA o processamento inteiro (cronômetro congelado). Esta sessão NÃO faz retry-storm:
+# no máximo 1 tentativa extra rápida, sem backoff longo. Assim, se o servidor público estiver ruim, cada
+# bloco FALHA RÁPIDO e o chamador degrada de forma graciosa (cai no fallback par-a-par / ranqueia pelo que
+# tiver), em vez de travar. NÃO altera resultado quando o servidor responde — só muda o comportamento sob
+# falha (trava → degrada). É paliativo; a solução definitiva de robustez é o OSRM próprio (sem servidor
+# público no caminho).
+session_osrm_publico = requests.Session()
+_retry_osrm_ff = Retry(total=1, backoff_factor=0, status_forcelist=[500, 502, 503, 504],
+                       raise_on_status=False)
+_adapter_osrm_ff = HTTPAdapter(max_retries=_retry_osrm_ff, pool_connections=32, pool_maxsize=32)
+session_osrm_publico.mount("https://", _adapter_osrm_ff)
+session_osrm_publico.mount("http://", _adapter_osrm_ff)
 # [G21] Cookie CONSENT hardcoded removido — token de 2023 expirado e desnecessário
 # User-Agent moderno suficiente para requests de roteamento
 
@@ -17343,7 +17379,9 @@ def API_OSRM_Table(lat_o, lon_o, destinos_coords, _timeout=8, _bloco=90):
             _url = (f"http://router.project-osrm.org/table/v1/driving/{_coords}"
                     f"?sources=0&destinations={_dests}&annotations=distance,duration")
             try:
-                _r = session.get(_url, headers=headers, timeout=_timeout).json()
+                # [HOTFIX-OSRM-HANG - 207ª] sessão fail-fast + timeout (connect, read) curto: se o servidor
+                # público estiver ruim/rate-limitado, falha rápido e o chamador degrada (não trava o lote).
+                _r = session_osrm_publico.get(_url, headers=headers, timeout=(3.05, min(_timeout, 6))).json()
             except Exception:
                 continue  # bloco falhou: pula (o chamador tem fallback par-a-par)
             if _r.get("code") != "Ok":
@@ -17397,7 +17435,9 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
         # mesma rota. Custo de rede desprezível (mesma requisição, +payload da geometria).
         url = f"http://router.project-osrm.org/route/v1/driving/{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3"
         headers = {"User-Agent": "GerenciadorLogisticoCorp/2.0"}
-        r = session.get(url, headers=headers, timeout=6).json()
+        # [HOTFIX-OSRM-HANG - 207ª] sessão fail-fast + timeout curto (connect, read): servidor público ruim
+        # falha rápido em vez de retry-storm; o Google/consenso assume. Não muda resultado quando responde.
+        r = session_osrm_publico.get(url, headers=headers, timeout=(3.05, 6)).json()
         
         if r.get("code") == "Ok" and r.get("routes"):
             # Seleciona explicitamente a rota de menor distância entre todas as alternativas
@@ -24570,7 +24610,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "206"
+_VERSAO_APP = "207"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
