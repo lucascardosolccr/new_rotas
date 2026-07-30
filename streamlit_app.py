@@ -63,6 +63,24 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (209ª geração) → 🩺 CAUSA RAIZ DO "NÃO PROCESSA COM CHAVE": Retry-After congelava o worker [HOTFIX-CHAVES-TRAVAM]
+#     DIAGNÓSTICO CONFIRMADO POR TESTE DO USUÁRIO: com as chaves (Google oficial + GraphHopper) o app parava de
+#     processar TUDO — inclusive o Validador Rápido de rota única; SEM as chaves, voltava a funcionar. Isso
+#     descartou matriz/lote/escala e isolou a causa nas CHAMADAS COM CHAVE. Causa raiz: as APIs com chave
+#     usavam a sessão HTTP padrão, cujo Retry tinha respect_retry_after_header=True (default do urllib3). A
+#     chave GRATUITA do GraphHopper estoura a cota rápido e responde 429 com header 'Retry-After' (que pode ser
+#     dezenas/centenas de segundos, às vezes até 3600). O urllib3 OBEDECIA o header e DORMIA dentro da chamada
+#     — congelando o worker por minutos/horas. Como isso acontecia em TODA rota, o app inteiro "não processava".
+#     CORREÇÃO (3 camadas): (1) GraphHopper e (2) Google oficial passam a usar a sessão FAIL-FAST
+#     (session_osrm_publico): 429 fora do forcelist → não retenta 429; respect_retry_after_header=False →
+#     nunca dorme por ordem do servidor; timeout curto. Assim, chave com cota estourada = engine ignorado
+#     NAQUELA rota (None), não app travado. (3) Defesa em profundidade: a sessão PRINCIPAL também recebeu
+#     respect_retry_after_header=False, para que NENHUM servidor (geocoder etc.) possa forçar um sono longo.
+#     NÃO-REGRESSÃO (guarantees + prova dedicada): sem chave, nada muda; com chave saudável, funciona igual
+#     (só não dorme mais por Retry-After); o backoff próprio (curto) segue tratando erros transitórios reais.
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     LIÇÃO: toda chamada a API externa (ainda mais com chave de tier gratuito) precisa de fail-fast e de
+#     IGNORAR Retry-After grande — senão o servidor remoto pode, sozinho, travar a aplicação inteira.
 #   v3.8 (208ª geração) → 🚦 DISJUNTOR DA MATRIZ: a Alocação nunca mais trava esperando o OSRM público [MATRIZ-DISJUNTOR]
 #     CAUSA RAIZ do travamento em "0 registros" (refinando o diagnóstico da 207ª): a fase de MATRIZ da Alocação
 #     roda SÍNCRONA na thread principal, dentro de um st.spinner, ANTES de qualquer registro ser contado — e
@@ -7367,7 +7385,12 @@ def realizar_manutencao_logs_google():
 realizar_manutencao_logs_google()
 
 session = requests.Session()
-retry_strategy = Retry(total=5, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+# [HOTFIX-CHAVES-TRAVAM - 209ª geração] respect_retry_after_header=False: sem isso, um 429/503 com header
+# 'Retry-After: 3600' faria o urllib3 DORMIR até 1h dentro da chamada — travando o worker (foi um dos
+# fatores do app "não processar" com chaves ativas). Com False, o backoff próprio (curto) manda; nunca dorme
+# por ordem do servidor. O total=5/backoff=0.5 segue para erros transitórios reais (5xx), mas limitado.
+retry_strategy = Retry(total=5, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504],
+                       respect_retry_after_header=False)
 # [PERF-NET - 33ª geração] pool_maxsize alinhado ao TETO de workers (32). O pool de rotas
 # pode chegar a min(32, cpu*4)=32 threads, todas batendo no MESMO host (OSRM/Google) na
 # fase de roteamento — a fase de rede dominante em lotes cidade-a-cidade (geocodificação
@@ -7392,7 +7415,7 @@ session.mount("http://", adapter)
 # público no caminho).
 session_osrm_publico = requests.Session()
 _retry_osrm_ff = Retry(total=1, backoff_factor=0, status_forcelist=[500, 502, 503, 504],
-                       raise_on_status=False)
+                       raise_on_status=False, respect_retry_after_header=False)
 _adapter_osrm_ff = HTTPAdapter(max_retries=_retry_osrm_ff, pool_connections=32, pool_maxsize=32)
 session_osrm_publico.mount("https://", _adapter_osrm_ff)
 session_osrm_publico.mount("http://", _adapter_osrm_ff)
@@ -17593,7 +17616,9 @@ def API_Google_Directions_Oficial(lat_o, lon_o, lat_d, lon_d, link_maps_pronto=N
             "languageCode": "pt-BR",
             "units": "METRIC",
         }
-        _r = session.post(_url, headers=_headers, json=_body, timeout=(4, 8))
+        # [HOTFIX-CHAVES-TRAVAM - 209ª geração] sessão FAIL-FAST (sem retry-storm) + timeout curto: se a chave
+        # do Google estiver com quota/rate-limit (429), retorna rápido em vez de acumular retries que travavam o app.
+        _r = session_osrm_publico.post(_url, headers=_headers, json=_body, timeout=(4, 8))
         if _r.status_code != 200:
             registrar_telemetria("GOOGLE_MAPS", False, time.time() - start_t)
             return None
@@ -17658,7 +17683,10 @@ def API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d):
     try:
         _url = (f"https://graphhopper.com/api/1/route?point={lat_o},{lon_o}&point={lat_d},{lon_d}"
                 f"&profile=car&locale=pt&calc_points=true&points_encoded=false&key={GRAPHHOPPER_API_KEY}")
-        _r = session.get(_url, timeout=8).json()
+        # [HOTFIX-CHAVES-TRAVAM - 209ª geração] sessão FAIL-FAST (sem retry-storm) + timeout curto: a chave
+        # gratuita do GraphHopper tem cota baixa e devolve 429 rápido; com a sessão padrão (Retry total=5,
+        # backoff), cada 429 virava ~45s de espera POR ROTA, travando o app. Fail-fast → 429 vira None na hora.
+        _r = session_osrm_publico.get(_url, timeout=(3.05, 6)).json()
         _paths = _r.get("paths") if isinstance(_r, dict) else None
         if _paths:
             # menor distância entre os paths retornados (GraphHopper pode devolver alternativas)
@@ -24651,7 +24679,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "208"
+_VERSAO_APP = "209"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
