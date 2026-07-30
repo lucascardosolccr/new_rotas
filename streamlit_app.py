@@ -63,6 +63,23 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (208ª geração) → 🚦 DISJUNTOR DA MATRIZ: a Alocação nunca mais trava esperando o OSRM público [MATRIZ-DISJUNTOR]
+#     CAUSA RAIZ do travamento em "0 registros" (refinando o diagnóstico da 207ª): a fase de MATRIZ da Alocação
+#     roda SÍNCRONA na thread principal, dentro de um st.spinner, ANTES de qualquer registro ser contado — e
+#     consulta o servidor OSRM PÚBLICO para TODAS as origens (ex.: 2.439). Se esse servidor está lento/fora,
+#     mesmo com o fail-fast da 207ª (6s/chamada), 2.439 origens × timeout ÷ workers = a fase de matriz leva
+#     MINUTOS mostrando "0 registros" na tela (o contador só anda DEPOIS da matriz, na fase de chunks). Não era
+#     travamento de código — era a matriz esperando um servidor de terceiros indisponível.
+#     CORREÇÃO — disjuntor PRECOCE: a matriz monitora a amostra do 1º lote; se ~25 origens falharem com 0
+#     sucesso (servidor claramente fora), ABORTA imediatamente (não tenta as 2.439). A matriz é só REFINAMENTO:
+#     o ranking por LINHA RETA (topk_map, offline, instantâneo) já existe, e o roteamento final continua com
+#     Google (oficial) + GraphHopper. Assim a Alocação PROSSEGUE em segundos em vez de empacar.
+#     NÃO-REGRESSÃO (guarantees + prova dedicada do disjuntor): servidor SAUDÁVEL → matriz completa, não aborta
+#     (idêntico ao atual); servidor PARCIAL → usa o que conseguir, não aborta; só aborta quando está claramente
+#     fora. Fallback já existente ("matriz vazia → fluxo par-a-par + B&B") assume, agora COM Google/GraphHopper
+#     por chave. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     Combinado com a 207ª (fail-fast no OSRM público) e a solução definitiva (OSRM próprio), fecha o buraco:
+#     o servidor público deixa de ser capaz de TRAVAR o app — no máximo é ignorado quando falha.
 #   v3.8 (207ª geração) → 🚑 CORRIGE O TRAVAMENTO REAL: SERVIDOR PÚBLICO DO OSRM COM FAIL-FAST [HOTFIX-OSRM-HANG]
 #     DIAGNÓSTICO CORRETO (a 206ª tratou o suspeito errado): o app travava em 0 registros na FASE DE MATRIZ da
 #     Alocação — e essa fase chama API_OSRM_Table → servidor PÚBLICO router.project-osrm.org, um caminho que
@@ -17291,18 +17308,42 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
             _TAM_LOTE = 150
         else:
             _TAM_LOTE = 200
+        # [HOTFIX-OSRM-HANG - 207ª geração] DISJUNTOR DA MATRIZ: se o servidor público do OSRM estiver
+        # indisponível, NÃO adianta martelar as 2.439 origens (mesmo com fail-fast, seriam milhares de timeouts
+        # = fase de matriz de minutos, com 0 registros na tela). Monitora a taxa de sucesso do 1º lote: se
+        # praticamente TUDO falhar (servidor fora), ABORTA a matriz e devolve o que tiver. A matriz é só um
+        # REFINAMENTO — o ranking por LINHA RETA (topk_map) já existe offline, e o roteamento final ainda usa
+        # Google/GraphHopper (com chave). Assim a Alocação PROSSEGUE em vez de empacar num servidor de terceiros.
+        _matriz_abortada = False
+        _primeiro_lote = True
         try:
             for _ini in range(0, len(_itens), _TAM_LOTE):
                 _lote = _itens[_ini:_ini + _TAM_LOTE]
                 _futuros = {EXECUTOR_GLOBAL.submit(_processar_origem, _it): _it[0] for _it in _lote}
+                _ok_lote = 0
+                _tot_lote = 0
                 for _fut in as_completed(_futuros):
                     try:
                         _org_r, _dist_r = _fut.result()
+                        _tot_lote += 1
                         if _dist_r:
                             _mapa[_org_r] = _dist_r
+                            _ok_lote += 1
                     except Exception:
-                        continue
+                        _tot_lote += 1
+                    # disjuntor PRECOCE: assim que uma amostra do 1º lote falhar por completo (servidor OSRM
+                    # público fora), aborta JÁ — sem esperar as origens restantes nem os próximos lotes.
+                    if _primeiro_lote and _tot_lote >= 25 and _ok_lote == 0:
+                        _matriz_abortada = True
+                        break
                 _futuros = None  # libera o lote antes do próximo (controle de memória)
+                if _matriz_abortada:
+                    logger.warning("[MATRIZ-DISJUNTOR] Servidor OSRM público sem resposta na amostra do 1º "
+                                   "lote (%d origens, 0 sucesso) — matriz abortada. Ranking por linha reta "
+                                   "(offline) + roteamento por Google/GraphHopper assumem. Alocação segue.",
+                                   _tot_lote)
+                    break
+                _primeiro_lote = False
         except Exception:
             # Se o executor falhar por qualquer motivo, degrada para sequencial (mesmo resultado).
             logger.warning("[PERF-MATRIZ] Executor indisponível — matriz em modo sequencial.", exc_info=True)
@@ -24610,7 +24651,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "207"
+_VERSAO_APP = "208"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
