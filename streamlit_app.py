@@ -63,20 +63,23 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
-#   v3.8 (205ª geração) → ⚡ TODOS OS MOTORES EM PARALELO (agora que há chaves, isso importa muito) [PERF-MULTIMOTOR]
-#     GATILHO: com as chaves configuradas (Google oficial + GraphHopper), os motores COM CHAVE realmente
-#     EXECUTAM a cada rota. Até a 204ª, GraphHopper/ORS/FOSSGIS rodavam em SÉRIE, DEPOIS de coletar o OSRM —
-#     então cada um somava sua latência (~1-8s) a TODA rota. Um problema que só ficou visível AGORA que as
-#     chaves ativam esses motores. CORREÇÃO: OSRM primário + GraphHopper + ORS + FOSSGIS são todos disparados
-#     como futures CONCORRENTES no EXECUTOR_APIS ANTES da chamada do Google, e coletados depois. O custo total
-#     vira o do motor MAIS LENTO, não a SOMA. Todos são funções puras (lat/lon → tupla), sem estado
-#     compartilhado nem session_state → paralelização é ganho PURO.
-#     GANHO MEDIDO: ~3,5× mais rápido na fase de roteamento com 4 motores ativos (provado em simulação).
-#     NÃO-REGRESSÃO (18 provas cumulativas + prova dedicada): decisão IDÊNTICA serial vs paralelo (0
-#     divergências em 300 cenários); exceção/pool cheio em qualquer motor → None (mesmo efeito do try/except
-#     serial); SEM chave, o motor nem é submetido → idêntico ao comportamento anterior; o flag do FOSSGIS é
-#     lido 1× na thread (thread-safe via _ler_flag_runtime). Fallback serial do OSRM preservado. RotaPipeline:
-#     41 campos (intacto). Requirements: INALTERADO.
+#   v3.8 (206ª geração) → 🚑 REVERTE O FAN-OUT DA 205ª (que travou o app) + BLINDA O TIMEOUT DO GOOGLE OFICIAL [HOTFIX-205]
+#     A 205ª paralelizou TODOS os motores secundários (OSRM+GraphHopper+ORS+FOSSGIS) submetendo cada um ao
+#     EXECUTOR_APIS de dentro de CADA worker do pipeline. PROBLEMA em produção (Streamlit Cloud, 1 vCPU): o
+#     EXECUTOR_APIS tem só min(24, cpu*3)=3 workers ali, mas o EXECUTOR_GLOBAL tem max(8, cpu*4)=8 workers de
+#     pipeline. Com as chaves ativas, cada um dos 8 passou a exigir ~4 slots do pool de 3 (+ os 3 da
+#     geocodificação) → contenção severa no pool minúsculo, que na prática TRAVOU o processamento (0 registros).
+#     Um erro MEU: a paralelização foi validada em isolamento, mas não sob a realidade de 1 CPU + pool
+#     compartilhado geocodificação↔roteamento. REVERTIDO para o comportamento PROVADO da 204ª: só o OSRM
+#     primário roda em paralelo com o Google (198ª); GraphHopper/ORS rodam na própria thread do worker (sem
+#     multiplicar a carga do pool). Mais lento que o ideal, mas ROBUSTO — não trava.
+#     BLINDAGEM ADICIONAL: a API oficial do Google agora usa timeout (connect=4s, read=8s) — uma conexão presa
+#     ou chave com rate-limit não bloqueia mais o worker indefinidamente.
+#     NÃO-REGRESSÃO (18 provas cumulativas): idêntico à 204ª no roteamento (que já era estável) + timeout mais
+#     seguro. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     LIÇÃO REGISTRADA: paralelismo aninhado (pool dentro de pool) precisa ser dimensionado à MENOR máquina
+#     alvo (1 vCPU), não à máquina de teste. Reintroduzir o fan-out exige um executor DEDICADO ao roteamento
+#     (separado da geocodificação) e limite de concorrência — fica para quando houver CPU/host próprio.
 #   v3.8 (204ª geração) → 🔑 API OFICIAL DO GOOGLE (ROUTES API) COMO MOTOR PRINCIPAL — LÍCITA, SEM BLOQUEIO [GOOGLE-OFICIAL]
 #     O caminho DENTRO DOS TOS para restaurar o Google como motor principal a partir de qualquer IP (inclusive
 #     datacenter/Streamlit Cloud, onde o scraper é bloqueado). Nova função API_Google_Directions_Oficial usa a
@@ -17509,7 +17512,7 @@ def API_Google_Directions_Oficial(lat_o, lon_o, lat_d, lon_d, link_maps_pronto=N
             "languageCode": "pt-BR",
             "units": "METRIC",
         }
-        _r = session.post(_url, headers=_headers, json=_body, timeout=8)
+        _r = session.post(_url, headers=_headers, json=_body, timeout=(4, 8))
         if _r.status_code != 200:
             registrar_telemetria("GOOGLE_MAPS", False, time.time() - start_t)
             return None
@@ -19902,47 +19905,14 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     # API_OSRM_Routing NÃO lê st.session_state (seguro fora da thread principal). Qualquer exceção na thread
     # do OSRM é capturada e vira None (mesmo efeito do try/except serial anterior). O disjuntor do Google é
     # thread-safe (_LOCK_GOOGLE_CB). O caso cache-hit continua instantâneo (o future resolve na hora).
-    # [PERF-MULTIMOTOR - 205ª geração] TODOS os motores secundários (OSRM primário + GraphHopper + ORS +
-    # FOSSGIS) são disparados como futures CONCORRENTES ANTES do Google, e coletados depois — em vez de rodar
-    # em sequência. MOTIVO: com as chaves agora presentes, GraphHopper/ORS/FOSSGIS realmente EXECUTAM a cada
-    # rota; se rodassem em série (como antes), somavam a latência de cada um (~1-8s) a TODA rota. Concorrentes,
-    # o custo total vira o do MAIS LENTO, não a soma. Todos são funções puras (lat/lon → tupla), sem estado
-    # compartilhado nem session_state → paralelização é ganho PURO (mesmas chamadas HTTP, só concorrentes).
-    # NÃO-REGRESSÃO: os VALORES são idênticos ao serial (muda só o tempo); qualquer exceção/pool cheio vira
-    # None (mesmo efeito do try/except serial); sem chave, o motor nem é submetido (idêntico ao atual).
     _fut_osrm = None
-    _fut_gh = None
-    _fut_ors = None
-    _fut_osrm2 = None
-    _usar_osrm2_flag = False
-    try:
-        _usar_osrm2_flag = _ler_flag_runtime('usar_osrm2')  # lido 1× (thread-safe) para o submit do FOSSGIS
-    except Exception:
-        _usar_osrm2_flag = False
     if lat_o != 0.0 and lat_d != 0.0:
         try:
             _fut_osrm = EXECUTOR_APIS.submit(API_OSRM_Routing, lat_o, lon_o, lat_d, lon_d)
         except Exception:
             _fut_osrm = None  # se o pool recusar, cai no caminho serial abaixo
-        # motores COM CHAVE: só submete se a chave existir (sem chave → None, sem custo, idêntico ao atual)
-        if GRAPHHOPPER_API_KEY:
-            try:
-                _fut_gh = EXECUTOR_APIS.submit(API_GraphHopper_Routing, lat_o, lon_o, lat_d, lon_d)
-            except Exception:
-                _fut_gh = None
-        if ORS_API_KEY:
-            try:
-                _fut_ors = EXECUTOR_APIS.submit(API_ORS_Routing, lat_o, lon_o, lat_d, lon_d)
-            except Exception:
-                _fut_ors = None
-        # 2º OSRM FOSSGIS: opt-in (política de uso) — só submete se o usuário ligou
-        if _usar_osrm2_flag:
-            try:
-                _fut_osrm2 = EXECUTOR_APIS.submit(API_OSRM_FOSSGIS_Routing, lat_o, lon_o, lat_d, lon_d)
-            except Exception:
-                _fut_osrm2 = None
 
-    # Google roda AGORA (em paralelo com TODOS os motores secundários já submetidos). Fallback intacto.
+    # Google roda AGORA (em paralelo com o OSRM que já foi submetido). Mantém a lógica de fallback intacta.
     res_google = None
     # [GOOGLE-OFICIAL - 204ª geração] Se houver chave da API OFICIAL, ela é a fonte PRINCIPAL do Google (lícita,
     # sem bloqueio de IP). O resultado entra em res_google e segue a MESMA decisão que já prioriza o Google.
@@ -19984,25 +19954,23 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     fonte_contendor = "OSRM"
     _motores_resultados = {"OSRM": res_osrm}
     if lat_o != 0.0 and lat_d != 0.0:
-        # [PERF-MULTIMOTOR - 205ª] Coleta os futures dos motores secundários (já rodaram em paralelo com o Google)
-        _res_gh = None
-        if _fut_gh is not None:
-            try:
-                _res_gh = _fut_gh.result()
-            except Exception:
-                _res_gh = None
-        _res_ors = None
-        if _fut_ors is not None:
-            try:
-                _res_ors = _fut_ors.result()
-            except Exception:
-                _res_ors = None
+        # [AUDITORIA-199-B - revisão crítica] Só consulta motores COM CHAVE se a chave existir. O usuário
+        # decidiu NÃO usar chave; sem esta guarda, GraphHopper/ORS eram chamados a cada rota só para retornar
+        # None e apareciam como entradas vazias no consenso/SLA (peso morto e ruído). Mantemos as funções e os
+        # secrets como PONTO DE PLUGAGEM para um motor próprio/self-hosted (caminho robusto recomendado):
+        # basta configurar a chave que voltam a entrar na disputa, sem tocar no código.
+        _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d) if GRAPHHOPPER_API_KEY else None
+        _res_ors = API_ORS_Routing(lat_o, lon_o, lat_d, lon_d) if ORS_API_KEY else None
+        # [OSRM-CONSENSO - 192ª geração] 2º backend OSRM (FOSSGIS) — SEM chave — como fonte de consenso.
+        # OPT-IN (st.session_state['usar_osrm2']) porque a política do FOSSGIS proíbe uso pesado: no lote
+        # nacional, só deve rodar quando o usuário conscientemente liga. Self-gated: desligado → None → o
+        # contendor é exatamente o OSRM primário (não-regressão). Rate-limit ≤1 req/s é interno à função.
         _res_osrm2 = None
-        if _fut_osrm2 is not None:
-            try:
-                _res_osrm2 = _fut_osrm2.result()
-            except Exception:
-                _res_osrm2 = None
+        try:
+            if _ler_flag_runtime('usar_osrm2'):
+                _res_osrm2 = API_OSRM_FOSSGIS_Routing(lat_o, lon_o, lat_d, lon_d)
+        except Exception:
+            _res_osrm2 = None
         # só registra motores que REALMENTE foram consultados (evita entradas mortas no consenso/telemetria)
         if _res_gh is not None or GRAPHHOPPER_API_KEY:
             _motores_resultados["GRAPHHOPPER"] = _res_gh
@@ -24602,7 +24570,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "205"
+_VERSAO_APP = "206"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
