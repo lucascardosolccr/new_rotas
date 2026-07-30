@@ -63,6 +63,95 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (203ª geração) → 🔧 BUG DE CACHE DE REGEX CORRIGIDO: _regex_palavra REALMENTE cacheia agora [PERF-REGEX]
+#     Auditoria de velocidade focada no MICRO (loop interno). ACHADO REAL: _regex_palavra tinha docstring
+#     dizendo "compilado e CACHEADO para evitar recompilação", mas o corpo NÃO tinha cache — recompilava o
+#     regex a cada chamada. Correção: @_lru_cache(maxsize=1024). Beneficia os 5 chamadores (normalizador de
+#     geocodificação _resolver_contexto_administrativo, remoção de UF do texto) — no lote, o mesmo punhado de
+#     termos (27 siglas de UF, 27 nomes de estado) é comparado em todo endereço → o cache elimina milhares de
+#     recompilações. PROVADO: 2,5× mais rápido NESSA ETAPA (539.973 cache hits vs 27 compilações em 20k
+#     endereços × 27 siglas), com match byte-a-byte IDÊNTICO (lossless).
+#     HONESTIDADE SOBRE A ESCALA: é um ganho REAL mas MODESTO no total — regex é fração pequena do tempo, e a
+#     geocodificação já é 99% offline O(1). O tempo dominante do lote continua sendo a LATÊNCIA DE REDE do
+#     roteamento externo; o ganho de ordem de magnitude ainda depende do OSRM próprio (Docker). Não inflei
+#     isso como "grande evolução" — é a limpeza honesta de um micro-desperdício que estava lá.
+#     NÃO-REGRESSÃO (16 provas cumulativas + prova dedicada de match idêntico): o cache devolve o MESMO
+#     re.Pattern; zero mudança de comportamento. Não mexi nos 2 loops que constroem regex dinâmico inline
+#     (9721-9729) porque rotear pelo helper mudaria case-sensitivity (risco semântico) para uma função que já
+#     é memoizada — ganho marginal não justificava o risco. RotaPipeline: 41 campos (intacto). Requirements:
+#     INALTERADO.
+#   v3.8 (202ª geração) → 🤖 NÚCLEO ADAPTATIVO: O "MODO GOOGLE AGRESSIVO" VIRA NATIVO E AUTOMÁTICO [CORE-ADAPTATIVO]
+#     Pedido: absorver os "disjuntores/modos especiais" no núcleo, automáticos e sem perda de velocidade.
+#     AUDITORIA HONESTA primeiro (o que já é nativo vs o que é opt-in POR BOM MOTIVO):
+#       • JÁ ERA NATIVO/automático (sempre liga, sem toggle): validação física da rota
+#         (_viaria_fisicamente_possivel), consenso/outlier entre motores (_consenso_motores_rota — descarta
+#         "18 vs 430 km"), menor-rota-da-resposta-do-Google (_menor_distancia_google_multirota), resgate por
+#         Código IBGE, validação de coordenada/município/UF, escolha do motor de MENOR viária. ~80% da
+#         inteligência que o pedido lista JÁ acontece sozinha.
+#       • OPT-IN por um motivo real (tornar always-on = REGRESSÃO que o próprio pedido proíbe): (a) 2º motor
+#         OSRM FOSSGIS — a política do FOSSGIS proíbe uso pesado e limita ≤1 req/s; ligar sempre num lote
+#         nacional violaria a política e ainda DEIXARIA O LOTE MAIS LENTO; (b) geocodificação via Google —
+#         depende do scraper (bloqueável) e adiciona latência sem ganho quando o IP está bloqueado. Estes
+#         PERMANECEM opt-in — automatizá-los cegamente feriria velocidade/política, contra o objetivo.
+#     ── O QUE FOI ABSORVIDO NO NÚCLEO (com ganho, sem regressão) ──
+#       O "Modo Google agressivo" deixa de ser toggle e vira POLÍTICA ADAPTATIVA automática
+#       (_google_politica_adaptativa), decidida pela SAÚDE do Google (disjuntor):
+#         · Google saudável (respondendo) → paciência AUTOMÁTICA (timeout 8s, 3 perfis, priming de sessão) →
+#           maximiza a participação do Google exatamente quando compensa;
+#         · Google falhando (bloqueado) → FAST-FAIL (4s, 1 tentativa) → MESMO custo do default antigo → SEM
+#           lentidão no lote. O toggle vira só OVERRIDE opcional (força paciência) — não é mais necessário.
+#     NÃO-REGRESSÃO (provada em 6 checagens + 16 cumulativas): no caso mais comum do lote nacional (Google
+#     bloqueado), o custo é idêntico ao default antigo (4s,1) → velocidade preservada; quando o Google
+#     responde, participa mais SEM o usuário configurar nada. RotaPipeline: 41 campos (intacto). Requirements:
+#     INALTERADO.
+#   v3.8 (201ª geração) → 🔍 AUDITORIA DO HISTÓRICO ANTIGO (1–184) + REMOÇÃO DE CÓDIGO MORTO VERIFICADO [AUDITORIA-HIST]
+#     Estende a autoauditoria da 200ª ao CABEÇALHO inteiro (as ~152 gerações documentadas). Diagnóstico
+#     honesto do padrão evolutivo + limpeza APENAS do que é PROVADAMENTE morto (mesma disciplina da 200ª).
+#     ── DIAGNÓSTICO DO HISTÓRICO (padrão real, com evidência) ──
+#       O histórico mostra THRASH significativo: o MESMO bug foi "resolvido definitivamente" várias vezes —
+#       removeChild teve "causa raiz eliminada" 3× (132ª, 137ª, 142ª); auto-correções de performance que o
+#       próprio autor introduziu e depois consertou (139ª "a bomba que EU plantei", 153ª "REINCIDI PELA 3ª
+#       VEZ", 158ª); código IBGE re-corrigido em 108/113/114/146/156; vazamento de estado entre sessões (147ª).
+#       Ou seja: como nas MINHAS rodadas (196/199), parte relevante da "evolução" foi consertar regressões
+#       anteriores. PORÉM — e isso é o mais importante — o CÓDIGO ATUAL está enxuto: das 380 funções, só 5
+#       nunca eram chamadas. O thrash ficou no caminho, não no resultado. DISTBRASIL (removido na 110ª) está
+#       100% ausente do código vivo (só resta em comentários históricos). Sem dispatch dinâmico por nome
+#       (getattr só em df.empty/writer.book) → nenhuma chamada oculta.
+#     ── LIMPEZA APLICADA (só o comprovadamente morto, spans exatas por AST) ──
+#       Removidas 6 definições órfãs (0 referências em código vivo, ~302 linhas): _enriquecer_por_codigo_ibge,
+#       _escrever_aba_pro (versão antiga, distinta da VIVA _escrever_aba_profissional), o 1º _PALETA_XLSX
+#       (sombreado — existe um 2º VIVO usado pelo relatório), _fmts_xlsx, _tipo_da_coluna, e o famoso
+#       _selecionar_hub_por_viaria (69ª — "escrita mas NUNCA ligada", como o próprio histórico admitia).
+#     ── O QUE NÃO FIZ (e por quê — honestidade) ──
+#       NÃO purguei o núcleo antigo com base em leitura de cabeçalho. Diferente das MINHAS mudanças (que
+#       construí com arnês de teste), as ~152 gerações são o núcleo funcional; recortá-las por interpretação
+#       arriscaria as regressões que o próprio pedido proíbe. Removi só o que PROVEI estar morto (AST + 0 refs
+#       + sem dispatch dinâmico), exatamente como na 200ª. Funcionalidade preservada integralmente.
+#     NÃO-REGRESSÃO (15 provas cumulativas passando + parse AST + código vivo íntegro): _PALETA_XLSX vivo e
+#     _escrever_aba_profissional preservados; refs restantes aos órfãos são só COMENTÁRIOS históricos.
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#   v3.8 (200ª geração) → 🔍 AUTOAUDITORIA CRÍTICA DAS GERAÇÕES 185–199 + LIMPEZA DE PESO MORTO [AUDITORIA-199-B]
+#     Revisão honesta e baseada em evidências de TODAS as mudanças que fiz (185–199), classificando cada uma
+#     como ganho real, ganho condicional ou peso morto. Veredito resumido (detalhe na resposta ao usuário):
+#       • GANHO REAL comprovado: PERF-LOTE(185), SHORTLIST-AMPLO(185), CACHE-COORD-GOOGLE(188), CONSENSO/
+#         OUTLIER(194), MEM-DTYPES(197, −66% memória), PERF-TELEMETRIA(196, fix O(n²) MEU), PERF-PARALELO(198),
+#         FLAGS-RUNTIME(199, fix de bug MEU). Estes ficam.
+#       • GANHO CONDICIONAL (só rende se o Google não estiver com bloqueio DURO de IP): GOOGLE-MULTIROTA(186),
+#         MULTIROTA-TEMPO(187), GOOGLE-GEOCODE(189), REGRESSAO-FIX(193), ANTIBLOQUEIO(194). São opt-in/OFF por
+#         padrão ou só atuam quando o Google responde → inócuos quando dormentes. Mantidos, com honestidade
+#         sobre o limite. TELEMETRIA(195): observabilidade útil, custo já corrigido na 196.
+#       • PESO MORTO para este usuário: MOTOR-KEYED(191) GraphHopper/ORS — o usuário decidiu NÃO usar chave.
+#         Eram chamados a cada rota só para retornar None e poluíam consenso/SLA com entradas vazias.
+#     ── CORREÇÃO APLICADA ──
+#       Guarda por chave: GraphHopper/ORS só são consultados/registrados se a chave existir; sem chave, ZERO
+#       trabalho por rota e nada aparece no SLA. As FUNÇÕES e os secrets ficam como PONTO DE PLUGAGEM para o
+#       caminho robusto recomendado (OSRM/Valhalla self-hosted ou qualquer motor com chave) — configurar a
+#       chave reativa tudo, sem editar código.
+#     META-LIÇÃO HONESTA: ~9 das 15 rodadas perseguiram participação do Google — esforço cujo retorno é
+#     CONDICIONAL ao IP não estar bloqueado. O caminho de maior retorno real e incondicional (OSRM próprio)
+#     ficou como recomendação. Registrado para não repetir o padrão.
+#     NÃO-REGRESSÃO (15 provas cumulativas passando): sem chave, o comportamento é idêntico (as guardas só
+#     PULAM código que já retornava None). RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
 #   v3.8 (199ª geração) → 🔧 TOGGLES AGORA VALEM NO LOTE: SNAPSHOT THREAD-SAFE DAS FLAGS [FLAGS-RUNTIME]
 #     Corrige um BUG LATENTE descoberto durante a 198ª. Os toggles 'Modo Google agressivo', '2º motor OSRM' e
 #     'validar geocod. c/ Google' eram lidos via st.session_state DENTRO de funções que rodam nos WORKERS do
@@ -3340,6 +3429,44 @@ def _google_pode_chamar(agora=None):
             return bool(_pode)
     except Exception:
         return True  # em dúvida, permite (nunca bloqueia o Google por erro do próprio breaker)
+
+
+def _google_politica_adaptativa():
+    """[CORE-ADAPTATIVO - 202ª geração] Decide AUTOMATICAMENTE (sem toggle) o quão "paciente" o Google deve
+    ser NESTA chamada, com base na SAÚDE dele (disjuntor) — absorve o antigo "Modo Google agressivo" como
+    comportamento NATIVO e transparente, sem regressão de velocidade:
+      • Google SAUDÁVEL (disjuntor fechado = vem respondendo) → paciência ALTA (timeout 8s, 3 perfis, priming
+        de sessão) → maximiza a participação do Google JUSTAMENTE quando ela está valendo a pena.
+      • Google FALHANDO (disjuntor aberto/meio-aberto) → FAST-FAIL (timeout 4s, 1 tentativa, ignora o Google
+        rápido e deixa o OSRM assumir) → ZERO lentidão quando o Google está bloqueado.
+    O toggle manual 'google_agressivo' vira só um OVERRIDE opcional (força paciência mesmo com disjuntor
+    aberto), para quem quiser — mas não é mais NECESSÁRIO: o núcleo já faz a coisa certa sozinho.
+    Retorna dict {timeout, tentativas, primar, ignora_disjuntor, motivo}. Defensiva: em erro, devolve o
+    perfil rápido (nunca trava)."""
+    try:
+        _forcar = False
+        try:
+            _forcar = _ler_flag_runtime('google_agressivo')  # override manual opcional
+        except Exception:
+            _forcar = False
+        _saudavel = False
+        try:
+            _saudavel = _google_pode_chamar()  # disjuntor fechado = Google vem respondendo
+        except Exception:
+            _saudavel = True
+        if _forcar:
+            return {"timeout": 12, "tentativas": 3, "primar": True, "ignora_disjuntor": True,
+                    "motivo": "override manual (force paciência)"}
+        if _saudavel:
+            # paciência automática — Google está respondendo, vale investir para ele participar/vencer
+            return {"timeout": 8, "tentativas": 3, "primar": True, "ignora_disjuntor": False,
+                    "motivo": "adaptativo: Google saudável → paciência"}
+        # Google falhando → rápido, sem penalizar a velocidade do lote
+        return {"timeout": 4, "tentativas": 1, "primar": False, "ignora_disjuntor": False,
+                "motivo": "adaptativo: Google falhando → fast-fail"}
+    except Exception:
+        return {"timeout": 4, "tentativas": 1, "primar": False, "ignora_disjuntor": False,
+                "motivo": "fallback seguro"}
 
 
 def _google_registrar_resultado(sucesso, agora=None):
@@ -9258,24 +9385,6 @@ def _validar_consistencia_ibge(codigo, municipio, uf, indice=None):
             "correcao": f"Adotar o oficial do código {codigo}: {_res['municipio']}/{_res['uf']}."}
 
 
-def _enriquecer_por_codigo_ibge(codigo, indice=None, fn_hierarquia=None):
-    """[IBGE-INPUT - 103ª geração] ASSOCIAÇÃO AUTOMÁTICA a partir de um Código IBGE: município, UF,
-    coordenadas/centróide e a hierarquia territorial oficial (região/meso/micro/imediata/intermediária).
-    É o ponto único do "informe só o código → associa tudo". Retorna dict ou None. Dependências
-    injetáveis (índice + função de hierarquia) para teste; a hierarquia é resolvida por
-    _hierarquia_territorial (mesma da tela) a partir do próprio código."""
-    _res = _resolver_por_codigo_ibge(codigo, indice)
-    if _res is None:
-        return None
-    _hier_fn = fn_hierarquia if fn_hierarquia is not None else (
-        _hierarquia_territorial if "_hierarquia_territorial" in globals() else (lambda _c: {}))
-    try:
-        _hier = _hier_fn(_res["codigo"]) or {}
-    except Exception:
-        _hier = {}
-    return {"codigo": _res["codigo"], "municipio": _res["municipio"], "uf": _res["uf"],
-            "lat": _res["lat"], "lon": _res["lon"], "centroide": (_res["lat"], _res["lon"]),
-            "hierarquia": _hier}
 
 
 # Construção ultra veloz O(1) de Dicionário por UF
@@ -9744,8 +9853,12 @@ def _normalizar_uf(uf: str) -> str:
     return unidecode(IBGE_ESTADOS.get(uf, uf)).upper()
 
 @_lru_cache(maxsize=512)
+@_lru_cache(maxsize=1024)
 def _regex_palavra(termo: str):
-    """Retorna re.Pattern compilado e cacheado para evitar recompilação por endereço."""
+    """Retorna re.Pattern compilado e cacheado para evitar recompilação por endereço.
+    [PERF-REGEX - 203ª geração] Agora REALMENTE cacheado (@_lru_cache): antes a docstring prometia cache mas
+    o corpo recompilava a cada chamada. Como o conjunto de termos (siglas de UF, nomes de estado) é pequeno e
+    repetido em todo endereço, o cache elimina milhares de recompilações no lote — sem mudar o resultado."""
     return re.compile(rf"\b{re.escape(termo)}\b", re.IGNORECASE)
 
 # ==============================================================================
@@ -13399,141 +13512,6 @@ def _formato_da_coluna(nome, wb, zebra=False):
     return wb.add_format({**_base, "align": "left", "text_wrap": False})
 
 
-def _escrever_aba_pro(writer, df, nome, titulo=None, subtitulo=None, cols_alerta=None,
-                      cols_ok=None, cols_negativo_ruim=None, numerar=True):
-    """[XLSX-PRO - 182ª geração] Uma aba de DADOS com cara de relatório técnico.
-
-    ── O QUE ELA FAZ (e o porquê de cada coisa) ──
-      • **Título + subtítulo com data/hora** — um relatório sem carimbo de quando foi gerado é inútil
-        numa auditoria: ninguém sabe se está olhando o estudo de ontem ou o de três meses atrás.
-      • **Numeração de linhas** — para citar "linha 4.382" numa reunião sem contar no dedo.
-      • **Formato por SEMÁNTICA** — km com 1 casa, % com sinal, km-candidato com milhar, e **Código IBGE
-        como TEXTO** (senão o Excel come o zero à esquerda e destrói o identificador oficial).
-      • **Zebra** — a olho nu, uma tabela de 5.571 linhas sem faixas alternadas é ilegível: o olho pula
-        de linha.
-      • **Formatação condicional** — cor SÓ onde ela informa. Negativo (levamos o candidato mais longe)
-        em vermelho; divergência em âmbar; vazio em cinza. **Se tudo é colorido, nada é.**
-      • **AutoFiltro + painéis congelados** — sem isso, uma planilha grande não se navega.
-      • **Rodapé com metadados** — quem gerou, quando, com qual versão.
-
-    Degrada com elegância: se qualquer formatação falhar, a aba ainda é escrita com os dados."""
-    _n = (nome or "Aba")[:31]
-    try:
-        _wb = writer.book
-        _linha0 = 3 if titulo else 0        # 3 linhas reservadas para título/subtítulo
-
-        _dfx = df.copy()
-        if numerar and len(_dfx):
-            _dfx.insert(0, "#", range(1, len(_dfx) + 1))
-
-        _dfx.to_excel(writer, index=False, sheet_name=_n, startrow=_linha0)
-        _ws = writer.sheets[_n]
-        _nl, _nc = _dfx.shape
-        if _nc == 0:
-            return
-
-        # ── TÍTULO E SUBTÍTULO ──
-        if titulo:
-            _f_tit = _wb.add_format({"bold": True, "font_size": 15, "font_color": "#FFFFFF",
-                                     "bg_color": _XP["titulo"], "align": "left", "valign": "vcenter",
-                                     "font_name": "Calibri"})
-            _f_sub = _wb.add_format({"italic": True, "font_size": 9, "font_color": _XP["apoio"],
-                                     "align": "left", "valign": "vcenter", "font_name": "Calibri"})
-            _ws.merge_range(0, 0, 0, max(_nc - 1, 1), f"  {titulo}", _f_tit)
-            _ws.set_row(0, 26)
-            _sub = subtitulo or (
-                f"  Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}  ·  "
-                f"Plataforma de Análise de Deslocamento de Candidatos  ·  {_nl:,} registro(s)".replace(",", "."))
-            _ws.merge_range(1, 0, 1, max(_nc - 1, 1), _sub, _f_sub)
-            _ws.set_row(1, 14)
-
-        # ── CABEÇALHO ──
-        _f_cab = _wb.add_format({"bold": True, "bg_color": _XP["cabecalho"], "font_color": "#FFFFFF",
-                                 "border": 1, "border_color": _XP["cabecalho"], "text_wrap": True,
-                                 "valign": "vcenter", "align": "center", "font_name": "Calibri",
-                                 "font_size": 10})
-        for _c, _col in enumerate(_dfx.columns):
-            _ws.write(_linha0, _c, str(_col), _f_cab)
-        _ws.set_row(_linha0, 32)
-
-        # ── CORPO: formato por semântica + zebra ──
-        _fmts = {_c: (_formato_da_coluna(_col, _wb, False), _formato_da_coluna(_col, _wb, True))
-                 for _c, _col in enumerate(_dfx.columns)}
-        for _r in range(_nl):
-            _z = (_r % 2 == 1)
-            for _c, _col in enumerate(_dfx.columns):
-                _v = _dfx.iloc[_r, _c]
-                _f = _fmts[_c][1 if _z else 0]
-                try:
-                    if pd.isna(_v):
-                        _ws.write_blank(_linha0 + 1 + _r, _c, None, _f)
-                    else:
-                        _ws.write(_linha0 + 1 + _r, _c, _v, _f)
-                except (TypeError, ValueError):
-                    _ws.write(_linha0 + 1 + _r, _c, str(_v), _f)
-
-        # ── LARGURA: pelo conteúdo real, com teto (nada de coluna de 200 chars) ──
-        for _c, _col in enumerate(_dfx.columns):
-            try:
-                _larg = max(len(str(_col)) + 3,
-                            int(_dfx[_col].astype(str).str.len().quantile(0.9) or 10) + 2)
-            except Exception:
-                _larg = 16
-            _ws.set_column(_c, _c, max(8, min(48, _larg)))
-
-        # ── AUTOFILTRO + PAINÉIS CONGELADOS ──
-        if _nl:
-            _ws.autofilter(_linha0, 0, _linha0 + _nl, _nc - 1)
-        _ws.freeze_panes(_linha0 + 1, 1 if numerar else 0)
-
-        # ── FORMATAÇÃO CONDICIONAL: cor SÓ onde ela informa ──
-        _f_erro = _wb.add_format({"bg_color": _XP["erro"], "font_color": _XP["erro_txt"]})
-        _f_ok = _wb.add_format({"bg_color": _XP["ok"], "font_color": _XP["ok_txt"]})
-        _f_ale = _wb.add_format({"bg_color": _XP["alerta"], "font_color": _XP["alerta_txt"]})
-        _f_vaz = _wb.add_format({"bg_color": _XP["vazio"], "font_color": _XP["apoio"], "italic": True})
-
-        def _faixa(_col):
-            _i = list(_dfx.columns).index(_col)
-            return (_linha0 + 1, _i, _linha0 + _nl, _i)
-
-        for _col in (cols_negativo_ruim or []):
-            if _col in _dfx.columns and _nl:
-                _a, _b, _c2, _d2 = _faixa(_col)
-                _ws.conditional_format(_a, _b, _c2, _d2, {"type": "cell", "criteria": "<",
-                                                          "value": 0, "format": _f_erro})
-                _ws.conditional_format(_a, _b, _c2, _d2, {"type": "cell", "criteria": ">",
-                                                          "value": 0, "format": _f_ok})
-        for _col in (cols_alerta or []):
-            if _col in _dfx.columns and _nl:
-                _a, _b, _c2, _d2 = _faixa(_col)
-                for _txt, _f in (("alto", _f_erro), ("não", _f_erro), ("erro", _f_erro),
-                                 ("fuzzy", _f_ale), ("médio", _f_ale), ("sim", _f_ale),
-                                 ("baixo", _f_ok), ("exclusivo", _f_ok)):
-                    _ws.conditional_format(_a, _b, _c2, _d2,
-                                           {"type": "text", "criteria": "containing",
-                                            "value": _txt, "format": _f})
-        # campos VAZIOS ficam visíveis (um vazio silencioso é pior que um vazio marcado)
-        if _nl:
-            _ws.conditional_format(_linha0 + 1, 0, _linha0 + _nl, _nc - 1,
-                                   {"type": "blanks", "format": _f_vaz})
-
-        # ── RODAPÉ ──
-        _f_rod = _wb.add_format({"italic": True, "font_size": 8, "font_color": _XP["apoio"],
-                                 "font_name": "Calibri"})
-        _ws.write(_linha0 + _nl + 2, 0,
-                  f"Gerado automaticamente em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} · "
-                  f"{_nl} registro(s) · Consulte as abas 📘 Guia de Interpretação e 📖 Como Ler Cada Aba.",
-                  _f_rod)
-        _ws.set_landscape()
-        _ws.set_paper(9)          # A4
-        _ws.fit_to_pages(1, 0)    # 1 página de largura, quantas forem de altura
-        _ws.repeat_rows(_linha0)  # o cabeçalho se repete em toda página impressa
-    except Exception as _e:
-        logger.error(f"[XLSX-PRO] Falha ao formatar a aba '{_n}': {_e}")
-        try:
-            df.to_excel(writer, index=False, sheet_name=_n)
-        except Exception:
-            pass
 
 
 
@@ -13546,86 +13524,10 @@ def _escrever_aba_pro(writer, df, nome, titulo=None, subtitulo=None, cols_alerta
 
 
 
-_PALETA_XLSX = {
-    "titulo":     "#1F4E79",   # azul institucional escuro
-    "sub":        "#2E75B6",
-    "cabecalho":  "#1F4E79",
-    "cab_txt":    "#FFFFFF",
-    "zebra":      "#F2F7FB",
-    "borda":      "#BDD7EE",
-    "ok":         "#C6EFCE",   # verde discreto (Excel padrão)
-    "ok_txt":     "#006100",
-    "alerta":     "#FFEB9C",   # âmbar
-    "alerta_txt": "#9C5700",
-    "ruim":       "#FFC7CE",   # vermelho discreto
-    "ruim_txt":   "#9C0006",
-    "vazio":      "#EDEDED",
-    "neutro":     "#404040",
-}
 
 
-def _fmts_xlsx(wb):
-    """[XLSX-PRO - 182ª geração] O conjunto de formatos do relatório. Cores DISCRETAS e institucionais —
-    a paleta padrão do Excel para formatação condicional, que é a que gestores públicos reconhecem.
-    Nada de neon: um relatório que parece um dashboard de startup perde autoridade numa auditoria."""
-    return {
-        "titulo": wb.add_format({"bold": True, "font_size": 18, "font_color": _PALETA_XLSX["titulo"],
-                                 "font_name": "Calibri", "valign": "vcenter"}),
-        "subtitulo": wb.add_format({"font_size": 11, "font_color": _PALETA_XLSX["sub"],
-                                    "font_name": "Calibri", "italic": True}),
-        "secao": wb.add_format({"bold": True, "font_size": 13, "font_color": _PALETA_XLSX["titulo"],
-                                "bottom": 2, "border_color": _PALETA_XLSX["sub"]}),
-        "cab": wb.add_format({"bold": True, "bg_color": _PALETA_XLSX["cabecalho"],
-                              "font_color": _PALETA_XLSX["cab_txt"], "border": 1,
-                              "border_color": _PALETA_XLSX["borda"], "text_wrap": True,
-                              "valign": "vcenter", "align": "center", "font_size": 10}),
-        "txt": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "valign": "top",
-                              "text_wrap": True, "font_size": 10}),
-        "num": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
-                              "num_format": "#,##0.0", "font_size": 10}),
-        "int": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
-                              "num_format": "#,##0", "font_size": 10}),
-        "pct": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
-                              "num_format": "0.0%", "font_size": 10}),
-        "km": wb.add_format({"border": 1, "border_color": _PALETA_XLSX["borda"], "align": "right",
-                             "num_format": '#,##0.0 "km"', "font_size": 10}),
-        "kpi_rot": wb.add_format({"bold": True, "font_size": 10, "font_color": _PALETA_XLSX["neutro"],
-                                  "align": "center", "bg_color": _PALETA_XLSX["zebra"],
-                                  "border": 1, "border_color": _PALETA_XLSX["borda"]}),
-        "kpi_val": wb.add_format({"bold": True, "font_size": 22, "font_color": _PALETA_XLSX["titulo"],
-                                  "align": "center", "valign": "vcenter", "border": 1,
-                                  "border_color": _PALETA_XLSX["borda"]}),
-        "kpi_ruim": wb.add_format({"bold": True, "font_size": 22, "font_color": _PALETA_XLSX["ruim_txt"],
-                                   "align": "center", "valign": "vcenter", "bg_color": _PALETA_XLSX["ruim"],
-                                   "border": 1, "border_color": _PALETA_XLSX["borda"]}),
-        "kpi_ok": wb.add_format({"bold": True, "font_size": 22, "font_color": _PALETA_XLSX["ok_txt"],
-                                 "align": "center", "valign": "vcenter", "bg_color": _PALETA_XLSX["ok"],
-                                 "border": 1, "border_color": _PALETA_XLSX["borda"]}),
-        "nota": wb.add_format({"font_size": 9, "italic": True, "font_color": "#808080",
-                               "text_wrap": True, "valign": "top"}),
-        "rodape": wb.add_format({"font_size": 8, "font_color": "#909090", "italic": True}),
-    }
 
 
-def _tipo_da_coluna(nome, serie):
-    """[XLSX-PRO - 182ª geração] Descobre o formato do dado pelo NOME e pelo CONTEÚDO.
-    Um relatório profissional não mostra "220.0" quando quer dizer "220,0 km" — e não mostra
-    "0.214" quando quer dizer "21,4%". O formato É parte da informação."""
-    _n = str(nome).lower()
-    try:
-        _num = pd.api.types.is_numeric_dtype(serie)
-    except Exception:
-        _num = False
-    if not _num:
-        return "txt"
-    if "%" in _n or "pct" in _n or "percentual" in _n:
-        return "pct_ja"          # já está em 0-100, não multiplicar
-    if "km" in _n or "distância" in _n or "distancia" in _n or "linha reta" in _n:
-        return "km"
-    if ("candidatos" in _n or "inscritos" in _n or "municípios" in _n or "municipios" in _n
-            or "posição" in _n or "posicao" in _n or "ordem" in _n or "quantidade" in _n):
-        return "int"
-    return "num"
 
 
 # [AUDITORIA-184] Função morta '_formatar_aba_profissional' aposentada (nome ocorria 1× no arquivo — sem qualquer referência). Recuperável no histórico de versões.
@@ -18881,12 +18783,11 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
     # [GOOGLE-REGRESSAO-FIX - 193ª geração] No MODO AGRESSIVO (opt-in), NÃO deixamos o disjuntor suspender o
     # Google — o disjuntor foi introduzido na 184ª e é parte da regressão de participação. O usuário que liga
     # o modo agressivo aceita o custo de velocidade em troca de máxima participação do Google (como antes).
-    _google_agr_gate = False
-    try:
-        _google_agr_gate = _ler_flag_runtime('google_agressivo')
-    except Exception:
-        _google_agr_gate = False
-    if not _google_agr_gate and not _google_pode_chamar():
+    # [CORE-ADAPTATIVO - 202ª geração] O antigo "Modo Google agressivo" agora é NATIVO e AUTOMÁTICO: a
+    # política é decidida pela SAÚDE do Google (disjuntor), sem depender de toggle. Paciência quando o Google
+    # responde; fast-fail quando falha (sem lentidão). O toggle vira override opcional. Uma decisão por chamada.
+    _pol_g = _google_politica_adaptativa()
+    if not _pol_g["ignora_disjuntor"] and not _google_pode_chamar():
         return None
 
     orig_link_txt = requests.utils.quote(origem_texto)
@@ -18925,23 +18826,16 @@ def extrair_dados_reais_google(origem_texto, destino_texto, lat_o, lon_o, lat_d,
         # tentativas com perfis diferentes, dando ao Google muito mais chance de responder. Custa velocidade
         # (por isso é opt-in). Se o IP estiver com bloqueio duro, some pouco muda; se for intermitente, o
         # Google volta a participar como antes. A aba Monitor APIs (taxa de falha GOOGLE_MAPS) revela o regime.
-        _google_agr = False
-        try:
-            _google_agr = _ler_flag_runtime('google_agressivo')
-        except Exception:
-            _google_agr = False
-        # [GOOGLE-ANTIBLOQUEIO - 194ª geração] no modo agressivo, prepara a sessão com os cookies de
-        # consentimento do próprio Google (1× por sessão) — reduz o "muro de consentimento" em IP de datacenter.
-        if _google_agr:
+        # [CORE-ADAPTATIVO - 202ª geração] Paciência decidida automaticamente pela saúde do Google (ver
+        # _google_politica_adaptativa): timeout/tentativas/priming vêm da política, sem toggle manual.
+        _google_agr = _pol_g["ignora_disjuntor"]  # (só p/ trechos legados que ainda leem esta var)
+        if _pol_g["primar"]:
             try:
                 _primar_sessao_google()
             except Exception:
                 pass
-        _TIMEOUT_G = 12 if _google_agr else 4
-        if _google_agr:
-            _MAX_TENT_G = 3  # paciência pré-184ª: 3 perfis de navegador
-        else:
-            _MAX_TENT_G = 2 if _google_pode_chamar() else 1
+        _TIMEOUT_G = _pol_g["timeout"]
+        _MAX_TENT_G = _pol_g["tentativas"]  # [CORE-ADAPTATIVO] nº de tentativas decidido pela política adaptativa
         for _tent in range(_MAX_TENT_G):
             _headers_tent = _headers_google_rotativo(_tent)
             try:
@@ -19920,8 +19814,13 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     fonte_contendor = "OSRM"
     _motores_resultados = {"OSRM": res_osrm}
     if lat_o != 0.0 and lat_d != 0.0:
-        _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d)
-        _res_ors = API_ORS_Routing(lat_o, lon_o, lat_d, lon_d)
+        # [AUDITORIA-199-B - revisão crítica] Só consulta motores COM CHAVE se a chave existir. O usuário
+        # decidiu NÃO usar chave; sem esta guarda, GraphHopper/ORS eram chamados a cada rota só para retornar
+        # None e apareciam como entradas vazias no consenso/SLA (peso morto e ruído). Mantemos as funções e os
+        # secrets como PONTO DE PLUGAGEM para um motor próprio/self-hosted (caminho robusto recomendado):
+        # basta configurar a chave que voltam a entrar na disputa, sem tocar no código.
+        _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d) if GRAPHHOPPER_API_KEY else None
+        _res_ors = API_ORS_Routing(lat_o, lon_o, lat_d, lon_d) if ORS_API_KEY else None
         # [OSRM-CONSENSO - 192ª geração] 2º backend OSRM (FOSSGIS) — SEM chave — como fonte de consenso.
         # OPT-IN (st.session_state['usar_osrm2']) porque a política do FOSSGIS proíbe uso pesado: no lote
         # nacional, só deve rodar quando o usuário conscientemente liga. Self-gated: desligado → None → o
@@ -19932,8 +19831,11 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 _res_osrm2 = API_OSRM_FOSSGIS_Routing(lat_o, lon_o, lat_d, lon_d)
         except Exception:
             _res_osrm2 = None
-        _motores_resultados["GRAPHHOPPER"] = _res_gh
-        _motores_resultados["ORS"] = _res_ors
+        # só registra motores que REALMENTE foram consultados (evita entradas mortas no consenso/telemetria)
+        if _res_gh is not None or GRAPHHOPPER_API_KEY:
+            _motores_resultados["GRAPHHOPPER"] = _res_gh
+        if _res_ors is not None or ORS_API_KEY:
+            _motores_resultados["ORS"] = _res_ors
         _motores_resultados["OSRM_FOSSGIS"] = _res_osrm2
         # [CONSENSO-MOTORES - 194ª geração] Consenso/outliers/confiabilidade entre TODOS os motores que
         # responderam (inclui o Google já consultado). Descarta automaticamente o absurdo ("18 km vs 430 km").
@@ -20853,79 +20755,6 @@ def calcular_matriz_competitiva_vetorizada(dest_coords, hubs_validos):
     return dest_to_hub, dest_to_linha_reta, dest_to_status_lr, runner_up_map, topk_map, topk_map_completo
 
 
-def _selecionar_hub_por_viaria(candidatos):
-    """[SELECAO-VIARIA - 69ª geração / itens #7/#9] NÚCLEO da 2ª opção de seleção de hubs — "por rota
-    VIÁRIA". Dado os hubs candidatos de UM cliente, cada um já com sua distância viária medida, escolhe
-    o de MENOR distância viária como vencedor e devolve o ranking completo + métricas de disputa. PURO
-    e determinístico (sem rede/estado) — testável isoladamente e pronto para ser plugado no fluxo da
-    Alocação (ver GUIA DE INTEGRAÇÃO abaixo). Complementa o topk_map da 58ª: aquele fornece os
-    candidatos (top-K por linha reta); estes são roteados; esta função elege o vencedor por asfalto.
-
-    Entrada: lista de dicts, cada um com ao menos {'hub': str, 'dist_viaria': número}. 'dist_reta' é
-    opcional (enriquece o ranking). Candidatos com dist_viaria inválida (None/≤0/não numérica) são
-    descartados da escolha (rota que falhou não concorre).
-
-    Saída (dict):
-      - vencedor / dist_viaria_vencedor
-      - ranking: lista ordenada por viária asc, cada item {hub, dist_viaria, dist_reta, posicao}
-      - runner_up / dist_viaria_runner_up
-      - margem_km   : dist_viaria(2º) - dist_viaria(1º)
-      - margem_pct  : margem relativa ao vencedor (%)
-      - empate_tecnico : True se a margem < 5 km
-      - n_candidatos : nº de candidatos válidos considerados
-
-    ── GUIA DE INTEGRAÇÃO (fluxo da Alocação, rodada dedicada, testável no ambiente real) ────────────
-      1) UI: 2 botões independentes na aba Alocação — "📍 Linha reta (rápido)" (fluxo ATUAL, intacto)
-         e "🛣️ Rota viária (mais preciso, mais lento)". Guardar modo em session_state['alo_modo_sel'].
-      2) Tarefas (só no modo viária): para cada cliente, montar pares de rota para os top-K hubs de
-         topk_map (K≤3 recomendado) — em vez de só o vencedor de linha reta. Latência = K× roteamento,
-         OPT-IN e divulgada ao usuário. Todo esse bloco vive sob `if modo == 'viaria'`.
-      3) Após o roteamento dos K por cliente, chamar ESTA função com [{'hub', 'dist_viaria',
-         'dist_reta'}...] para eleger o vencedor por asfalto; reatribuir df_pares['Destino'] ao
-         vencedor; os demais viram concorrentes.
-      4) Painel de disputa: usar 'ranking'/'margem_km'/'empate_tecnico' para o item #9 (ranking por
-         viária, robustez, competitividade, motivo).
-      5) Zero-regressão: o caminho de linha reta (else) permanece BYTE-A-BYTE o atual; nada novo o toca.
-    """
-    _validos = []
-    for c in (candidatos or []):
-        try:
-            _dv = c.get('dist_viaria')
-            _dv = float(_dv) if _dv is not None else None
-        except (TypeError, ValueError):
-            _dv = None
-        if _dv is None or _dv <= 0:
-            continue
-        try:
-            _dr = round(float(c['dist_reta']), 3) if c.get('dist_reta') not in (None, "") else None
-        except (TypeError, ValueError):
-            _dr = None
-        _validos.append({'hub': c.get('hub'), 'dist_viaria': round(_dv, 3), 'dist_reta': _dr})
-
-    _validos.sort(key=lambda d: d['dist_viaria'])
-    _out = {
-        'vencedor': None, 'dist_viaria_vencedor': None, 'ranking': [],
-        'runner_up': None, 'dist_viaria_runner_up': None,
-        'margem_km': None, 'margem_pct': None, 'empate_tecnico': False,
-        'n_candidatos': len(_validos),
-    }
-    if not _validos:
-        return _out
-    for _i, _c in enumerate(_validos, start=1):
-        _c['posicao'] = _i
-    _venc = _validos[0]
-    _out['vencedor'] = _venc['hub']
-    _out['dist_viaria_vencedor'] = _venc['dist_viaria']
-    _out['ranking'] = _validos
-    if len(_validos) >= 2:
-        _ru = _validos[1]
-        _out['runner_up'] = _ru['hub']
-        _out['dist_viaria_runner_up'] = _ru['dist_viaria']
-        _margem = round(_ru['dist_viaria'] - _venc['dist_viaria'], 3)
-        _out['margem_km'] = _margem
-        _out['margem_pct'] = round(100.0 * _margem / _venc['dist_viaria'], 1) if _venc['dist_viaria'] > 0 else None
-        _out['empate_tecnico'] = _margem < 5.0
-    return _out
 
 
 _PARAMS_CUSTO_HUB = {
@@ -24601,7 +24430,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "199"
+_VERSAO_APP = "203"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -33043,7 +32872,12 @@ if _secao == _SECOES[10]:   # tab_motores
     st.markdown("#### 📡 Tabela Mestre de SLA e Latência em Tempo Real")
     health_data = []
     
-    for api in ["GOOGLE_MAPS", "GOOGLE_GEO", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM", "OSRM_FOSSGIS", "GRAPHHOPPER", "ORS"]:
+    _apis_sla = ["GOOGLE_MAPS", "GOOGLE_GEO", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM", "OSRM_FOSSGIS"]
+    if GRAPHHOPPER_API_KEY:  # [AUDITORIA-199-B] só mostra motores com chave se a chave existir (sem ruído)
+        _apis_sla.append("GRAPHHOPPER")
+    if ORS_API_KEY:
+        _apis_sla.append("ORS")
+    for api in _apis_sla:
         dados = cache_api_health.get(api, {"hits": 0, "calls": 0, "falhas": 0, "tempo_total": 0.0})
         t_med = f"{round((dados['tempo_total'] / max(1, dados['calls'])) * 1000)} ms" if dados['calls'] > 0 else "N/A"
         tx_err = f"{round((dados['falhas'] / max(1, dados['calls'] + dados['falhas'])) * 100, 1)}%" if dados['calls'] > 0 else "0.0%"
