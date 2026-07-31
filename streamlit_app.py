@@ -63,6 +63,134 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (216ª geração) → 🛡️ MELHORIAS DE ROBUSTEZ (auditoria dirigida a evidência) [ROBUSTEZ-REDE + ROBUSTEZ-DADOS]
+#     Auditoria focada em robustez (não em hipótese). Achei e corrigi 2 lacunas REAIS, cada uma provada:
+#     (1) OSRM /nearest em FAIL-FAST: era a ÚLTIMA chamada ao servidor OSRM público que ainda usava a sessão
+#         com retry-storm (5 tentativas + backoff). Num servidor rate-limitado, podia levar ~40s por chamada.
+#         Passa a usar session_osrm_publico (fail-fast, timeout curto) — como a matriz e o roteamento já usavam
+#         desde a 207ª. Se falhar, o chamador segue sem o "snap" viário (degradação graciosa). Fecha o último
+#         ponto em que o servidor público podia arrastar o processamento.
+#     (2) ESTATÍSTICA IGNORA NÃO-FINITOS: _estatisticas_descritivas_serie (214ª) agora filtra inf/-inf além de
+#         NaN. Um infinito (ex.: razão anômala a montante) contaminaria média/desvio/percentis e apareceria
+#         como "inf" no relatório/planilha. Agora só valores finitos entram — números sempre limpos.
+#     COMO FORAM ENCONTRADAS: varredura de TODAS as chamadas HTTP (nenhuma sem timeout; só o /nearest estava na
+#     sessão errada) + teste de estresse das funções novas com dados imperfeitos (NaN, lixo textual, 1 linha,
+#     divisão por zero, infinitos). O resto do caminho quente já se mostrou robusto: isolamento de erro por
+#     rota (embrulhar_task_paralela com fallback geodésico + fallback do fallback), chunk isolado, timeouts.
+#     NÃO-REGRESSÃO (14 provas cumulativas + prova dedicada de robustez + testes de HTML e Excel): caso normal
+#     idêntico; só o comportamento sob falha/dado-sujo melhora. RotaPipeline: 41 campos (intacto). Requirements:
+#     INALTERADO.
+#     HONESTIDADE: parei em 2 correções REAIS e verificadas em vez de empilhar mudanças por empilhar — a app já
+#     está bem endurecida no essencial, e churn sem evidência foi justamente o que gerou regressão nesta sessão.
+#   v3.8 (215ª geração) → 📈 PLANILHA EXCEL ANALÍTICA/CIENTÍFICA: 5 abas novas com gráficos e explicações [EXPORT-CIENTIFICO]
+#     Espelha no Excel as seções científicas que a 214ª trouxe ao HTML. A planilha de Locais de Aplicação já
+#     era rica (Capa, gráficos nativos, "Como Ler", Pareto, ranking de estados, mapa de calor, Resumo Executivo,
+#     Síntese UF, Competitividade dos Polos, Concorrentes, Distribuição, Municípios Críticos, dashboards). Esta
+#     rodada ADICIONA 5 abas analíticas novas, via _abas_cientificas_alocacao():
+#     (1) ESTATÍSTICAS DESCRITIVAS: tabela completa (média, mediana, moda, desvio, variância, CV, quartis,
+#         P90/P95/P99, min/máx) para distância e tempo + GRÁFICO NATIVO de percentis + explicação didática.
+#     (2) ÍNDICES DE QUALIDADE: cartões 0-100 (Qualidade da Distribuição, Acessibilidade, Eficiência,
+#         Confiabilidade, Integridade) + GRÁFICO DE BARRAS nativo com data labels + como ler.
+#     (3) INSIGHTS E RECOMENDAÇÕES: achados automáticos (concentração, outliers Tukey, balsa) e sugestões
+#         operacionais em texto.
+#     (4) QUALIDADE DOS DADOS: % rota viária real vs estimada, % coordenadas oficiais IBGE, cobertura.
+#     (5) GLOSSÁRIO: definições dos termos técnicos.
+#     As novas abas entram no ÍNDICE NAVEGÁVEL (sumário clicável). Gráficos são NATIVOS do Excel (add_chart do
+#     xlsxwriter), não imagens. Reusa os helpers puros da 214ª (_estatisticas_descritivas_serie) + versões TEXTO
+#     dos insights/recomendações para célula.
+#     PROVA REAL: gerei um .xlsx de teste e validei com openpyxl que as 5 abas existem, têm o conteúdo correto e
+#     os 2 gráficos nativos embutidos; e que DataFrame vazio não quebra o export (defensivo por aba).
+#     NÃO-REGRESSÃO (14 provas cumulativas + teste do HTML + teste do Excel): abas ADITIVAS; export existente
+#     intacto; cada aba isolada em try (erro numa não derruba as outras). Imports IDÊNTICOS ao baseline.
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#   v3.8 (214ª geração) → 📊 RELATÓRIO HTML NÍVEL EXECUTIVO/CIENTÍFICO: novas seções analíticas [RELATORIO-CIENTIFICO]
+#     Eleva o relatório HTML da aba Locais de Aplicação com 6 seções analíticas NOVAS, somadas às já existentes
+#     (storytelling, distribuição, boxplot, violin, sankey, sunburst, mapa, qualidade):
+#     (1) ÍNDICES DE QUALIDADE LOGÍSTICA (dashboard executivo): cartões 0-100 com barra de progresso e fórmula
+#         explícita — Qualidade da Distribuição, Acessibilidade (P90), Eficiência Logística (reta/viária),
+#         Confiabilidade (% rota viária real), Integridade Geográfica, + HHI de concentração por polo.
+#     (2) ESTATÍSTICAS DESCRITIVAS: tabela completa (média, mediana, moda, desvio, variância, CV, quartis,
+#         P90/P95/P99, min/máx) para distância e tempo, com box de interpretação.
+#     (3) DESCOBERTA AUTOMÁTICA DE INSIGHTS: detecção por regras estatísticas (concentração por UF, polos
+#         sobre/subutilizados, outliers por Tukey 1,5×IQR, dependência de balsa) em texto explicativo.
+#     (4) RECOMENDAÇÕES OPERACIONAIS: candidatos a novos polos, redistribuição de sobrecarga, consolidação de
+#         ociosos, contingência de balsa — geradas dos padrões dos dados.
+#     (5) COBERTURA E CONFIABILIDADE DOS DADOS: % rota viária real vs estimada, % coordenadas oficiais (IBGE),
+#         integridade média, cobertura de roteamento.
+#     (6) METODOLOGIA + GLOSSÁRIO: seções tipo artigo científico (geocodificação, roteamento, consenso,
+#         fallback, limitações; e definições dos termos técnicos).
+#     Todas as seções são funções PURAS e DEFENSIVAS (DataFrame vazio/sem colunas → None, nunca levantam; erro
+#     numa seção não derruba o relatório) + CSS próprio (cartões de índice, listas de insights/recomendações,
+#     tabelas). PROVADO por teste que gera HTML válido, é defensivo e produz índices coerentes (0-100).
+#     NÃO-REGRESSÃO (14 provas cumulativas + teste dedicado do relatório): as seções são ADITIVAS; o relatório
+#     e o processamento existentes seguem intactos. Imports IDÊNTICOS ao baseline (usa pd/np já importados).
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     ESCOPO HONESTO: entregue o subconjunto de MAIOR valor e testável do pedido (dezenas de itens). Itens mais
+#     exóticos (Sankey já existe; mas Moran's I, hotspot/kernel, PCA/K-Means/regressão, mapas estáticos
+#     embutidos, e a expansão multi-abas do Excel) ficam como incremento seguinte — cada um exige validação
+#     própria, e empilhar tudo de uma vez traria risco de regressão (a lição desta sessão).
+#   v3.8 (213ª geração) → ⏱️ PERFIL DE TEMPO POR ETAPA: medir onde o processamento gasta o tempo [PERFIL-EXECUCAO]
+#     Resposta ao pedido de "otimização baseada em EVIDÊNCIA, não hipótese". Em vez de arriscar mais uma
+#     re-arquitetura agressiva do caminho quente (que, comprovadamente nesta sessão, causou travamentos — ver
+#     205ª), esta rodada entrega a FERRAMENTA que faltava para otimizar com dados: um profiler leve que mede o
+#     tempo de RELÓGIO de cada ETAPA macro (matriz, montagem do DataFrame; extensível) e mostra no painel
+#     "Monitor APIs" (nova seção "Perfil de Tempo por Etapa"): tempo total, %, execuções, média e pior caso por
+#     etapa. Assim dá para ver o gargalo REAL antes de mexer — encerrando o "otimizar às cegas".
+#     SEGURANÇA (a lição da sessão): o context manager _perfil_fase é OBSERVACIONAL e DEFENSIVO — provado por
+#     teste que ele (1) mede corretamente, (2) NUNCA suprime exceções do bloco (não engole erros) e (3) NUNCA
+#     altera o resultado do bloco. Modelado na telemetria de APIs existente (buffer em RAM + flush em disco),
+#     thread-safe; qualquer falha do cronômetro só significa "não mediu", nunca quebra o processamento.
+#     NÃO-REGRESSÃO (14 provas cumulativas + prova dedicada): o processamento é idêntico — só passou a ser
+#     MEDIDO em 3 pontos de chamada (2 montagens de DataFrame + matriz), cada um envolto sem mudar a lógica.
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     HONESTIDADE: isto não "acelera" sozinho — é o instrumento para as PRÓXIMAS otimizações serem dirigidas a
+#     dados reais. O maior ganho de velocidade que resta continua sendo estrutural (OSRM próprio: roteamento
+#     local em ms, sem servidor público, sem cota) — o profiler vai, inclusive, quantificar isso quando você medir.
+#   v3.8 (212ª geração) → 🧯 CORRIGE O ERRO DE TELA "pyarrow ArrowInvalid" no st.dataframe [FIX-ARROW]
+#     SINTOMA (traceback do usuário): st.dataframe(df_processado) quebrava a tela inteira com
+#     pyarrow.lib.ArrowInvalid. CAUSA: o Streamlit converte o DataFrame para Arrow (pa.Table.from_pandas);
+#     uma coluna 'object' com tipos MISTOS (ex.: número e string na mesma coluna, ou células que são
+#     list/tuple/dict — como geometria/coordenadas) faz o pyarrow levantar ArrowInvalid e a página toda cai.
+#     CORREÇÃO: helper _tornar_arrow_safe(df) aplicado SÓ NA EXIBIÇÃO — coage as colunas problemáticas para
+#     string numa CÓPIA, deixando numéricas/booleanas intactas. Os dados ARMAZENADOS e os EXPORTS
+#     (Excel/Parquet/HTML) NÃO são tocados — só a renderização da tabela na tela fica segura.
+#     NÃO-REGRESSÃO (guarantees + prova dedicada que REPRODUZ o ArrowInvalid e mostra a correção): DataFrame
+#     já-limpo passa inalterado; colunas numéricas limpas continuam numéricas; nenhuma lógica/valor de negócio
+#     muda. Aplicado aos 2 pontos de st.dataframe(df_processado) (Lote e Alocação). Defensivo: se algo falhar,
+#     devolve o original (pior caso = comportamento anterior). RotaPipeline: 41 campos (intacto). Requirements:
+#     INALTERADO.
+#   v3.8 (211ª geração) → ⏱️ ORÇAMENTO DE TEMPO DA MATRIZ: a Alocação nunca mais fica presa em "0 registros" [MATRIZ-ORCAMENTO]
+#     O disjuntor da 208ª cobria "servidor OSRM público FORA" (falha total). NÃO cobria "servidor LENTO":
+#     quando o público responde mas devagar (2-3s/chamada), a fase de matriz de 4.946 origens levava ~25min
+#     PRESA, com 0 registros na tela (a matriz roda ANTES da contagem, síncrona). Este era o travamento que
+#     persistia. CORREÇÃO DEFINITIVA: ORÇAMENTO DE TEMPO (wall-clock) para a matriz — no máximo 60-120s
+#     (adaptativo ao volume). Ao estourar, a matriz PARA e usa o PARCIAL; as origens não cobertas caem no
+#     ranking por LINHA RETA (offline, já existe) — o downstream JÁ trata origem ausente da matriz (usa
+#     dest_to_hub por linha reta), então é degradação graciosa, não perda. O vencedor final segue roteado por
+#     Google/OSRM/GraphHopper. Cobre TODOS os casos: servidor rápido → matriz completa; lento OU fora →
+#     parcial + linha reta, e a Alocação PROSSEGUE.
+#     NÃO-REGRESSÃO (guarantees + prova dedicada): servidor rápido = matriz 100% (idêntico ao atual); só muda
+#     o comportamento sob lentidão/falha (travar → seguir com parcial). Toda origem continua coberta (matriz OU
+#     linha reta). RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     ISTO ENCERRA A SÉRIE DE TRAVAMENTOS: a matriz agora tem disjuntor por FALHA (208ª) + orçamento por TEMPO
+#     (211ª) + fail-fast na rede (207ª). O servidor público não pode mais prender a aplicação de nenhuma forma.
+#     A cura estrutural definitiva continua sendo o OSRM próprio (sem servidor público no caminho).
+#   v3.8 (210ª geração) → ⚡ VELOCIDADE COM CHAVE: sem scraper doomed + cache da API oficial [PERF-GOOGLE-OFICIAL]
+#     Dois ganhos REAIS de velocidade que só passaram a fazer sentido agora que há chave oficial do Google:
+#     (1) SKIP DO SCRAPER BLOQUEADO: quando HÁ GOOGLE_MAPS_API_KEY, o Google vem SÓ da API oficial. Antes, se a
+#         API oficial não retornasse (cota/transiente), o código caía para o SCRAPER — que em IP de datacenter
+#         (Streamlit Cloud) está BLOQUEADO, então eram 2 tentativas doomed (~10-24s por rota com retries/timeouts)
+#         sem chance de sucesso. Agora, com chave, não cai no scraper: se a API oficial não responde, OSRM/
+#         GraphHopper assumem (como já assumiriam). Elimina chamadas de rede inúteis no caminho quente. Sem
+#         chave, o scraper continua sendo o caminho (comportamento histórico preservado).
+#     (2) CACHE DA API OFICIAL POR COORDENADA: pares origem→destino idênticos (arredondados a ~11m) não
+#         re-chamam a API PAGA — cache hit = zero rede e zero cota. Economiza CUSTO (menos chamadas cobradas) e
+#         TEMPO em reruns/lotes com pares repetidos. Lossless (mesma tupla). Grava por 30 dias em cache_google.
+#     NÃO-REGRESSÃO (15 provas cumulativas + prova dedicada): sem chave, tudo idêntico ao histórico (scraper
+#     roda as 2 tentativas); com chave, decisão idêntica (a API oficial já era a fonte do Google) — só remove
+#     trabalho inútil e evita recomputar. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#     GANHO: nas rotas onde a API oficial não retorna, elimina ~10-24s de scraper doomed; nos pares repetidos,
+#     troca uma chamada de rede paga por um hit de cache instantâneo.
 #   v3.8 (209ª geração) → 🩺 CAUSA RAIZ DO "NÃO PROCESSA COM CHAVE": Retry-After congelava o worker [HOTFIX-CHAVES-TRAVAM]
 #     DIAGNÓSTICO CONFIRMADO POR TESTE DO USUÁRIO: com as chaves (Google oficial + GraphHopper) o app parava de
 #     processar TUDO — inclusive o Validador Rápido de rota única; SEM as chaves, voltava a funcionar. Isso
@@ -5389,6 +5517,400 @@ def _bi_dashboard_alocacao(df):
         return "", "", ""
 
 
+def _fmt_br(v, casas=1):
+    """Formata número no padrão simples (ponto milhar, vírgula decimal) de forma defensiva."""
+    try:
+        if v is None or (isinstance(v, float) and (v != v)):
+            return "—"
+        s = f"{float(v):,.{casas}f}"
+        return s.replace(",", "§").replace(".", ",").replace("§", ".")
+    except Exception:
+        return "—"
+
+
+def _estatisticas_descritivas_serie(_s):
+    """Dicionário de estatísticas descritivas completas de uma série numérica (defensivo)."""
+    try:
+        _v = pd.to_numeric(_s, errors="coerce")
+        # [ROBUSTEZ-DADOS - 216ª geração] descarta NaN E infinitos: um inf (ex.: divisão anômala a montante)
+        # contaminaria média/desvio/percentis e apareceria como "inf" no relatório/planilha. Só valores finitos.
+        _v = _v[np.isfinite(_v)].dropna()
+        if len(_v) == 0:
+            return None
+        _media = float(_v.mean())
+        _dp = float(_v.std(ddof=1)) if len(_v) > 1 else 0.0
+        _moda = None
+        try:
+            _md = _v.round(0).mode()
+            _moda = float(_md.iloc[0]) if len(_md) else None
+        except Exception:
+            _moda = None
+        return {
+            "n": int(len(_v)),
+            "media": _media,
+            "mediana": float(_v.median()),
+            "moda": _moda,
+            "variancia": float(_v.var(ddof=1)) if len(_v) > 1 else 0.0,
+            "desvio": _dp,
+            "cv": (100.0 * _dp / _media) if _media else 0.0,
+            "min": float(_v.min()),
+            "q1": float(_v.quantile(0.25)),
+            "q3": float(_v.quantile(0.75)),
+            "p90": float(_v.quantile(0.90)),
+            "p95": float(_v.quantile(0.95)),
+            "p99": float(_v.quantile(0.99)),
+            "max": float(_v.max()),
+        }
+    except Exception:
+        return None
+
+
+def _tabela_estatisticas_html(df):
+    """[RELATORIO-CIENTIFICO - 214ª] Seção de estatísticas descritivas completas (distância e tempo)."""
+    import html as _he
+    try:
+        _linhas_metric = [
+            ("N (rotas)", "n", 0), ("Média", "media", 1), ("Mediana", "mediana", 1),
+            ("Moda", "moda", 0), ("Desvio-padrão", "desvio", 1), ("Variância", "variancia", 1),
+            ("Coef. de variação (%)", "cv", 1), ("Mínimo", "min", 1), ("1º quartil (Q1)", "q1", 1),
+            ("3º quartil (Q3)", "q3", 1), ("Percentil 90", "p90", 1), ("Percentil 95", "p95", 1),
+            ("Percentil 99", "p99", 1), ("Máximo", "max", 1),
+        ]
+        _dist = _estatisticas_descritivas_serie(df["Distancia"]) if "Distancia" in df.columns else None
+        _tcol = None
+        for _c in ["Tempo (min)", "Tempo Estimado (min)", "Tempo", "Duração (min)"]:
+            if _c in df.columns:
+                _tcol = _c
+                break
+        _tempo = _estatisticas_descritivas_serie(df[_tcol]) if _tcol else None
+        if not _dist and not _tempo:
+            return None
+        _th = "<tr><th>Métrica</th>"
+        if _dist:
+            _th += "<th>Distância viária (km)</th>"
+        if _tempo:
+            _th += "<th>Tempo (min)</th>"
+        _th += "</tr>"
+        _rows = ""
+        for _lbl, _k, _casas in _linhas_metric:
+            _rows += f"<tr><td>{_he.escape(_lbl)}</td>"
+            if _dist:
+                _rows += f"<td>{_fmt_br(_dist.get(_k), _casas)}</td>"
+            if _tempo:
+                _rows += f"<td>{_fmt_br(_tempo.get(_k), _casas)}</td>"
+            _rows += "</tr>"
+        _tabela = f'<table class="tbl"><thead>{_th}</thead><tbody>{_rows}</tbody></table>'
+        _expl = _caixa_explicativa(
+            "Como ler esta tabela",
+            "A <b>média</b> é o valor típico; a <b>mediana</b> é o ponto central (metade das rotas está abaixo). "
+            "Quando média e mediana diferem muito, há rotas extremas puxando a média. O <b>desvio-padrão</b> e o "
+            "<b>coeficiente de variação</b> medem a dispersão: CV baixo (&lt;30%) indica distribuição homogênea; "
+            "CV alto indica grande desigualdade entre municípios. Os <b>percentis 90/95</b> revelam a cauda: o "
+            "P95 é a distância que 95% dos candidatos não ultrapassam — um indicador de pior caso operacional.",
+            "info")
+        return _tabela + _expl
+    except Exception:
+        return None
+
+
+def _indice_concentracao_hhi(_serie_contagem):
+    """HHI normalizado (0-1) da concentração de candidatos por polo. Defensivo."""
+    try:
+        _v = pd.to_numeric(_serie_contagem, errors="coerce").dropna()
+        _tot = _v.sum()
+        if _tot <= 0 or len(_v) <= 1:
+            return None
+        _shares = _v / _tot
+        _hhi = float((_shares ** 2).sum())
+        _n = len(_v)
+        _hhi_norm = (_hhi - 1.0 / _n) / (1.0 - 1.0 / _n) if _n > 1 else 0.0
+        return max(0.0, min(1.0, _hhi_norm))
+    except Exception:
+        return None
+
+
+def _indices_compostos_html(df):
+    """[RELATORIO-CIENTIFICO - 214ª] Índices compostos de qualidade logística, com fórmulas documentadas.
+    Todos normalizados 0-100 (maior = melhor), exceto concentração (contexto). Defensivo e transparente."""
+    import html as _he
+    try:
+        _cards = []
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce").dropna() if "Distancia" in df.columns else None
+        # Índice de Acessibilidade: quão perto os candidatos estão (referência: 100 km). 100 = todos ≤ ~0 km.
+        if _dist is not None and len(_dist):
+            _p90 = float(_dist.quantile(0.90))
+            _acess = max(0.0, min(100.0, 100.0 * (1.0 - min(_p90, 400.0) / 400.0)))
+            _cards.append(("Índice de Acessibilidade", _acess,
+                           "Baseado no percentil 90 da distância (P90). Quanto menor o P90, mais acessível a rede. "
+                           "Fórmula: 100 × (1 − min(P90, 400)/400)."))
+        # Índice de Eficiência Logística: razão média linha-reta / viária (quão diretas são as rotas). 100 = rota reta.
+        if _dist is not None and "Linha Reta" in df.columns:
+            _reta = pd.to_numeric(df["Linha Reta"], errors="coerce")
+            _pares = pd.DataFrame({"v": pd.to_numeric(df["Distancia"], errors="coerce"), "r": _reta}).dropna()
+            _pares = _pares[(_pares["v"] > 0)]
+            if len(_pares):
+                _efic = float((_pares["r"] / _pares["v"]).clip(0, 1).mean()) * 100.0
+                _cards.append(("Índice de Eficiência Logística", _efic,
+                               "Razão média entre a distância em linha reta e a distância viária. Próximo de 100 = "
+                               "rotas diretas (poucos desvios); valores baixos indicam barreiras (rios, relevo, contornos)."))
+        # Índice de Confiabilidade: % de rotas de fonte confiável (viária real, não estimada).
+        if "Fonte da Rota" in df.columns:
+            _f = df["Fonte da Rota"].astype(str).str.lower()
+            _confia = float((~_f.str.contains("estimad|reta|linha", na=False)).mean()) * 100.0
+            _cards.append(("Índice de Confiabilidade", _confia,
+                           "Percentual de rotas obtidas por roteamento viário real (Google/OSRM/GraphHopper), "
+                           "e não por estimativa/linha reta. Maior = resultados mais confiáveis."))
+        # Índice de Integridade Geográfica (se a coluna existir).
+        if "Integridade Geográfica" in df.columns:
+            _ig = pd.to_numeric(df["Integridade Geográfica"], errors="coerce").dropna()
+            if len(_ig):
+                _cards.append(("Índice de Integridade Geográfica", float(_ig.mean()),
+                               "Média do escore de integridade das coordenadas/rotas (0-100). Reflete a qualidade "
+                               "da geocodificação e a coerência espacial origem→destino."))
+        # Índice de Concentração (HHI) por polo — contexto, não "quanto maior melhor".
+        _hhi = None
+        if "Municipio Destino" in df.columns:
+            _hhi = _indice_concentracao_hhi(df["Municipio Destino"].value_counts())
+        # Índice de Qualidade da Distribuição: média dos índices "maior=melhor" disponíveis.
+        _bons = [c[1] for c in _cards]
+        if _bons:
+            _qual = sum(_bons) / len(_bons)
+            _cards.insert(0, ("Índice de Qualidade da Distribuição", _qual,
+                              "Síntese: média dos índices de acessibilidade, eficiência, confiabilidade e "
+                              "integridade. Visão única (0-100) da qualidade geral da alocação."))
+        if not _cards:
+            return None
+
+        def _cor(v):
+            return "#16a34a" if v >= 75 else ("#f59e0b" if v >= 50 else "#dc2626")
+        _html_cards = ""
+        for _nome, _val, _desc in _cards:
+            _html_cards += (f'<div class="idx-card"><div class="idx-top">'
+                            f'<span class="idx-nome">{_he.escape(_nome)}</span>'
+                            f'<span class="idx-val" style="color:{_cor(_val)}">{_fmt_br(_val, 1)}<small>/100</small></span></div>'
+                            f'<div class="idx-bar"><div class="idx-fill" style="width:{max(0, min(100, _val)):.0f}%;'
+                            f'background:{_cor(_val)}"></div></div>'
+                            f'<div class="idx-desc">{_he.escape(_desc)}</div></div>')
+        _extra = ""
+        if _hhi is not None:
+            _nivel = "alta" if _hhi >= 0.5 else ("moderada" if _hhi >= 0.2 else "baixa")
+            _extra = _caixa_explicativa(
+                "Índice de Concentração (HHI) por polo",
+                f"O índice Herfindahl-Hirschman normalizado da distribuição de candidatos por polo é "
+                f"<b>{_fmt_br(_hhi*100, 1)}/100</b> (concentração <b>{_nivel}</b>). Valores altos indicam que poucos "
+                f"polos absorvem a maioria dos candidatos — o que pode sinalizar sobrecarga e oportunidade de "
+                f"redistribuição; valores baixos indicam carga equilibrada entre os polos.", "info")
+        return f'<div class="idx-grid">{_html_cards}</div>' + _extra + _caixa_explicativa(
+            "Sobre os índices",
+            "Todos os índices são calculados diretamente dos dados deste estudo, com fórmulas explícitas em cada "
+            "cartão. São normalizados de 0 a 100 (verde ≥ 75, âmbar 50-74, vermelho &lt; 50) para leitura rápida "
+            "por gestores. Servem como termômetro executivo; os detalhes técnicos estão nas seções seguintes.",
+            "ok")
+    except Exception:
+        return None
+
+
+def _insights_automaticos_html(df):
+    """[RELATORIO-CIENTIFICO - 214ª] Descoberta automática de insights: concentração, outliers, gargalos,
+    polos sobre/subutilizados, dependência de balsa, regiões críticas — em texto explicativo. Defensivo."""
+    import html as _he
+    try:
+        _achados = []
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+        # UF com maior concentração de candidatos
+        if "UF Origem" in df.columns:
+            _vc = df["UF Origem"].astype(str).value_counts()
+            if len(_vc):
+                _uf_top = _vc.index[0]
+                _pct = 100.0 * _vc.iloc[0] / _vc.sum()
+                _achados.append(("📍", f"Maior concentração de origens no estado <b>{_he.escape(str(_uf_top))}</b> "
+                                 f"({_fmt_br(_pct,1)}% dos municípios de origem)."))
+        # Polo mais utilizado (potencial sobrecarga)
+        if "Municipio Destino" in df.columns:
+            _vp = df["Municipio Destino"].astype(str).value_counts()
+            if len(_vp):
+                _media_pol = _vp.mean()
+                _polo_top = _vp.index[0]
+                if _vp.iloc[0] > 2 * _media_pol and len(_vp) > 3:
+                    _achados.append(("⚠️", f"O polo <b>{_he.escape(str(_polo_top))}</b> concentra "
+                                     f"{int(_vp.iloc[0])} municípios — mais que o dobro da média por polo "
+                                     f"({_fmt_br(_media_pol,1)}). Possível <b>sobrecarga</b>; avaliar redistribuição."))
+                # polos subutilizados
+                _sub = int((_vp == 1).sum())
+                if _sub > 0 and len(_vp) > 3:
+                    _achados.append(("📉", f"{_sub} polo(s) atendem apenas 1 município cada — possível "
+                                     f"<b>subutilização</b> da capacidade instalada."))
+        # Rotas muito longas (outliers)
+        if _dist is not None and _dist.notna().any():
+            _v = _dist.dropna()
+            _lim = _v.quantile(0.75) + 1.5 * (_v.quantile(0.75) - _v.quantile(0.25))
+            _out = df[_dist > _lim] if _lim > 0 else df.iloc[0:0]
+            if len(_out) > 0:
+                _pior = _out.sort_values("Distancia", ascending=False).iloc[0] if "Distancia" in _out.columns else None
+                _nome_pior = ""
+                if _pior is not None:
+                    for _c in ["Municipio Origem", "Origem", "Cidade Origem"]:
+                        if _c in _out.columns:
+                            _nome_pior = str(_pior.get(_c, ""))
+                            break
+                _achados.append(("🚨", f"{len(_out)} rota(s) são <b>estatisticamente atípicas</b> pela distância "
+                                 f"(acima de {_fmt_br(_lim,0)} km)" +
+                                 (f", com destaque para <b>{_he.escape(_nome_pior)}</b> "
+                                  f"({_fmt_br(float(_pior.get('Distancia')),0)} km)" if _nome_pior else "") +
+                                 ". Recomenda-se auditoria manual (geocodificação, barreira física ou isolamento)."))
+        # Dependência de balsa
+        if "Modo/Acesso" in df.columns or "Balsas" in df.columns:
+            _col_b = "Modo/Acesso" if "Modo/Acesso" in df.columns else "Balsas"
+            _b = df[_col_b].astype(str).str.lower()
+            _n_balsa = int(_b.str.contains("balsa|fluvial|sim|true", na=False).sum())
+            if _n_balsa > 0:
+                _achados.append(("⛴️", f"{_n_balsa} rota(s) dependem de <b>travessia por balsa/fluvial</b> — "
+                                 f"sensíveis a horários e condições do rio; priorizar alternativas onde possível."))
+        if not _achados:
+            return None
+        _itens = "".join(f'<li><span class="ins-ic">{_ic}</span><span>{_txt}</span></li>' for _ic, _txt in _achados)
+        return f'<ul class="insights">{_itens}</ul>' + _caixa_explicativa(
+            "Como estes insights foram gerados",
+            "Todos os achados acima são detectados <b>automaticamente</b> por regras estatísticas aplicadas aos "
+            "dados deste estudo: concentração por contagem, outliers pelo critério de Tukey (1,5×IQR), e limiares "
+            "relativos à média. São indicações para investigação — não substituem a análise do especialista.", "info")
+    except Exception:
+        return None
+
+
+def _recomendacoes_html(df):
+    """[RELATORIO-CIENTIFICO - 214ª] Recomendações operacionais automáticas (o que melhorar). Defensivo."""
+    import html as _he
+    try:
+        _recs = []
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+        # Municípios candidatos a novo polo (origens muito distantes do polo atual)
+        if _dist is not None and _dist.notna().any():
+            _v = _dist.dropna()
+            _lim = float(_v.quantile(0.95))
+            _longe = df[_dist >= _lim] if _lim > 0 else df.iloc[0:0]
+            if len(_longe) > 0:
+                _recs.append(f"<b>Novos polos:</b> {len(_longe)} município(s) estão entre os 5% mais distantes "
+                             f"(≥ {_fmt_br(_lim,0)} km). Avaliar a abertura de locais de prova mais próximos reduziria "
+                             f"significativamente o deslocamento desses candidatos.")
+        # Polos sobrecarregados
+        if "Municipio Destino" in df.columns:
+            _vp = df["Municipio Destino"].astype(str).value_counts()
+            if len(_vp) > 3:
+                _media_pol = _vp.mean()
+                _sobre = _vp[_vp > 2 * _media_pol]
+                if len(_sobre):
+                    _recs.append(f"<b>Redistribuição:</b> {len(_sobre)} polo(s) operam acima do dobro da carga "
+                                 f"média. Redistribuir parte dos municípios para polos vizinhos ociosos equilibraria "
+                                 f"a rede e reduziria filas/tempo de atendimento.")
+                _ociosos = int((_vp == 1).sum())
+                if _ociosos > 2:
+                    _recs.append(f"<b>Consolidação:</b> {_ociosos} polo(s) atendem 1 município cada. Se a capacidade "
+                                 f"for subaproveitada, considerar consolidar ou realocar recursos.")
+        # Rotas com balsa
+        if "Modo/Acesso" in df.columns:
+            _n_balsa = int(df["Modo/Acesso"].astype(str).str.lower().str.contains("balsa|fluvial", na=False).sum())
+            if _n_balsa > 0:
+                _recs.append(f"<b>Contingência (balsa):</b> {_n_balsa} rota(s) dependem de travessia. Definir plano "
+                             f"de contingência (horários, rota alternativa terrestre) para dias de prova.")
+        if not _recs:
+            return None
+        _itens = "".join(f"<li>{_r}</li>" for _r in _recs)
+        return (f'<ol class="recs">{_itens}</ol>' + _caixa_explicativa(
+            "Sobre as recomendações",
+            "São sugestões geradas a partir de padrões nos dados (concentração, distância, modo de acesso). "
+            "Cada uma deve ser ponderada com restrições reais de orçamento, capacidade física dos locais e "
+            "disponibilidade logística antes da decisão final.", "ok"))
+    except Exception:
+        return None
+
+
+def _qualidade_dados_html(df):
+    """[RELATORIO-CIENTIFICO - 214ª] Seção de qualidade dos dados (cobertura, fontes, confiabilidade). Defensivo."""
+    import html as _he
+    try:
+        _n = len(df)
+        if _n == 0:
+            return None
+        _kpis = []
+        # % roteado (viária real) vs estimado
+        if "Fonte da Rota" in df.columns:
+            _f = df["Fonte da Rota"].astype(str).str.lower()
+            _roteado = 100.0 * (~_f.str.contains("estimad|reta|linha", na=False)).mean()
+            _kpis.append(("Rotas viárias reais", f"{_fmt_br(_roteado,1)}%"))
+            _kpis.append(("Rotas estimadas", f"{_fmt_br(100.0-_roteado,1)}%"))
+        # % coordenadas oficiais (fonte de geocodificação)
+        for _c in ["Fonte Geocoding Origem", "Fonte Origem", "Fonte da Coordenada Origem"]:
+            if _c in df.columns:
+                _fg = df[_c].astype(str).str.lower()
+                _ofic = 100.0 * _fg.str.contains("ibge|oficial", na=False).mean()
+                _kpis.append(("Coordenadas de fonte oficial (IBGE)", f"{_fmt_br(_ofic,1)}%"))
+                break
+        # integridade média
+        if "Integridade Geográfica" in df.columns:
+            _ig = pd.to_numeric(df["Integridade Geográfica"], errors="coerce").dropna()
+            if len(_ig):
+                _kpis.append(("Integridade geográfica média", f"{_fmt_br(float(_ig.mean()),0)}/100"))
+        # cobertura (rotas com distância válida)
+        if "Distancia" in df.columns:
+            _cob = 100.0 * pd.to_numeric(df["Distancia"], errors="coerce").notna().mean()
+            _kpis.append(("Cobertura de roteamento", f"{_fmt_br(_cob,1)}%"))
+        if not _kpis:
+            return None
+        _kh = "".join(f'<div class="kpi"><div class="kpi-v">{_he.escape(str(v))}</div>'
+                      f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in _kpis)
+        return f'<div class="kpis">{_kh}</div>' + _caixa_explicativa(
+            "Por que a qualidade dos dados importa",
+            "Estes indicadores mostram o quanto o estudo se apoia em <b>dados oficiais e roteamento real</b> versus "
+            "estimativas. Alta cobertura viária e alto uso de coordenadas oficiais (IBGE) aumentam a confiança nas "
+            "conclusões. Quando há muitas rotas estimadas, os números devem ser lidos com cautela e as rotas "
+            "sinalizadas, auditadas.", "info")
+    except Exception:
+        return None
+
+
+def _metodologia_html():
+    """[RELATORIO-CIENTIFICO - 214ª] Seção de metodologia (como o estudo foi produzido). Texto fixo, seguro."""
+    return (
+        '<div class="lead"><p>Este estudo determina, para cada município de origem, o local de aplicação (polo) '
+        'que minimiza o deslocamento dos candidatos, com base na <b>menor rota viária real</b>.</p></div>'
+        '<h3>Geocodificação</h3><p>As coordenadas de cada município provêm prioritariamente da base oficial do '
+        '<b>IBGE</b> (offline), com consenso entre múltiplos provedores (ArcGIS, Nominatim, Photon) e validação '
+        'espacial por UF quando necessário. Isso garante que ~95% das origens sejam resolvidas sem depender de '
+        'rede externa.</p>'
+        '<h3>Roteamento e escolha do vencedor</h3><p>Para cada par origem→polo candidato, a distância viária é '
+        'obtida por múltiplos motores de roteamento (Google, OSRM e, quando configurado, GraphHopper). O sistema '
+        'compara os resultados e escolhe sempre a <b>menor distância viária fisicamente válida</b>. O Google, '
+        'quando disponível, tem prioridade na decisão. Um mecanismo de matriz reduz os candidatos e submete os '
+        'melhores ao motor prioritário.</p>'
+        '<h3>Consenso, fallback e auditoria</h3><p>Quando os motores divergem de forma anômala, um mecanismo de '
+        '<b>consenso</b> descarta o resultado atípico. Se um motor falha, outro assume (fallback em camadas); a '
+        '<b>linha reta</b> (geodésica de Karney/WGS-84) é usada apenas quando não há rota viária disponível, e '
+        'isso é sinalizado. Rotas com razão viária/reta anômala são marcadas para auditoria.</p>'
+        '<h3>Limitações</h3><p>Distâncias viárias dependem da malha disponível nos provedores e podem variar com '
+        'atualizações de mapa. Rotas estimadas (quando presentes) são aproximações. Os índices compostos são '
+        'ferramentas de leitura executiva, não medidas absolutas.</p>')
+
+
+def _glossario_html():
+    """[RELATORIO-CIENTIFICO - 214ª] Glossário dos termos técnicos. Texto fixo, seguro."""
+    _termos = [
+        ("Rota viária", "Distância real percorrida por vias (estradas), calculada por motor de roteamento."),
+        ("Linha reta (geodésica)", "Menor distância sobre a superfície da Terra entre dois pontos, ignorando vias. Usada só quando não há rota."),
+        ("Polo / Local de aplicação", "Cidade/local onde a prova é aplicada e para onde os candidatos se deslocam."),
+        ("Percentil 90/95 (P90/P95)", "Valor que 90%/95% das observações não ultrapassam. Mede a cauda (pior caso)."),
+        ("Coeficiente de variação (CV)", "Desvio-padrão dividido pela média (%). Mede dispersão relativa: baixo = homogêneo."),
+        ("HHI (concentração)", "Índice Herfindahl-Hirschman: mede o quanto poucos polos concentram muitos candidatos."),
+        ("Outlier", "Observação atípica; aqui, rota fora do intervalo estatístico esperado (critério de Tukey, 1,5×IQR)."),
+        ("Motor de roteamento", "Serviço que calcula rotas: Google Routes, OSRM, GraphHopper."),
+        ("Fallback", "Mecanismo que aciona um motor alternativo quando o primeiro falha."),
+        ("Integridade geográfica", "Escore (0-100) da coerência espacial da coordenada e da rota."),
+    ]
+    import html as _he
+    _rows = "".join(f'<tr><td><b>{_he.escape(_t)}</b></td><td>{_he.escape(_d)}</td></tr>' for _t, _d in _termos)
+    return f'<table class="tbl"><thead><tr><th>Termo</th><th>Definição</th></tr></thead><tbody>{_rows}</tbody></table>'
+
+
 def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) de nível profissional/BI:
     capa, NAVEGAÇÃO LATERAL (sumário), cartões executivos e seções analíticas ricas — Resumo, Distribuição de
@@ -5690,6 +6212,26 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         if _qual:
             _sec.append(("qualidade", "Qualidade dos Dados", _qual))
 
+        # [RELATORIO-CIENTIFICO - 214ª geração] Novas seções analíticas de nível executivo/científico.
+        for _fn_sec, _id_sec, _tit_sec in [
+            (_indices_compostos_html, "indices", "Índices de Qualidade Logística (Dashboard Executivo)"),
+            (_tabela_estatisticas_html, "estatisticas", "Estatísticas Descritivas"),
+            (_insights_automaticos_html, "insights", "Descoberta Automática de Insights"),
+            (_recomendacoes_html, "recomendacoes", "Recomendações Operacionais"),
+            (_qualidade_dados_html, "qualidade_ext", "Cobertura e Confiabilidade dos Dados"),
+        ]:
+            try:
+                _html_sec = _fn_sec(df)
+                if _html_sec:
+                    _sec.append((_id_sec, _tit_sec, _html_sec))
+            except Exception:
+                pass
+        try:
+            _sec.append(("metodologia", "Metodologia", _metodologia_html()))
+            _sec.append(("glossario", "Glossário", _glossario_html()))
+        except Exception:
+            pass
+
         _dg = []
         if 'Classificação da Rota' in df.columns:
             _vc_cl = df['Classificação da Rota'].astype(str).value_counts()
@@ -5789,6 +6331,16 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
             "display:flex;flex-wrap:wrap;gap:6px}nav .lbl{display:none}nav a{margin:0}}"
             "@media print{nav{display:none}section{break-inside:avoid}.cover{-webkit-print-color-adjust:exact}}"
             ".story{display:grid;gap:12px;margin:8px 0}.story-b{background:#fff;border:1px solid var(--line);border-left:4px solid #1e3a8a;border-radius:10px;padding:14px 16px}.story-t{font-weight:700;font-size:15px;color:#1e3a8a;margin-bottom:6px}.story-b ul li{font-size:13.5px;color:#334155;line-height:1.55}.story-b>div{font-size:13.5px;color:#334155;line-height:1.6}.cxd{margin:14px 0;padding:12px 14px;border-radius:8px}.cxd-t{font-weight:700;font-size:13.5px;margin-bottom:4px}.cxd-c{font-size:13px;color:#334155;line-height:1.5}.glo{display:grid;grid-template-columns:1fr;gap:0;margin:12px 0}.glo-item{padding:10px 0;border-bottom:1px solid #eef2f7}.glo-item dt{font-weight:700;color:#1e3a8a;font-size:13.5px;margin-bottom:3px}.glo-item dd{margin:0;font-size:13px;color:#334155;line-height:1.5}"
+            ".idx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:6px 0 4px}"
+            ".idx-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 2px rgba(15,23,42,.04)}"
+            ".idx-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}"
+            ".idx-nome{font-size:13px;font-weight:700;color:#334155}.idx-val{font-size:26px;font-weight:800}.idx-val small{font-size:13px;font-weight:600;color:#94a3b8}"
+            ".idx-bar{height:8px;background:#eef2f7;border-radius:6px;margin:10px 0 8px;overflow:hidden}.idx-fill{height:100%;border-radius:6px;transition:width .4s}"
+            ".idx-desc{font-size:12px;color:#64748b;line-height:1.5}"
+            "ul.insights{list-style:none;padding:0;margin:6px 0;display:grid;gap:10px}ul.insights li{display:flex;gap:12px;align-items:flex-start;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:12px 14px}"
+            ".ins-ic{font-size:20px;line-height:1.2;flex:none}ul.insights li span:last-child{font-size:13.5px;color:#334155;line-height:1.55}"
+            "ol.recs{margin:6px 0;padding-left:20px;display:grid;gap:10px}ol.recs li{font-size:13.5px;color:#334155;line-height:1.6;padding-left:4px}"
+            "table.tbl{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}table.tbl th,table.tbl td{padding:9px 12px;border-bottom:1px solid #eef2f7;text-align:left}table.tbl thead th{background:#f1f5f9;color:#475569;font-size:12px;font-weight:700}table.tbl tbody tr:hover{background:#f8fafc}table.tbl td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}"
             + _bi_css
         )
         return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
@@ -7785,6 +8337,99 @@ def _flush_telemetria_forcado():
                 cache_api_health.set(fonte, m, expire=None)
         _TELEMETRIA_BUFFER.clear()
         _TELEMETRIA_CONTADORES.clear()
+
+
+# ==============================================================================
+# [PERFIL-EXECUCAO - 213ª geração] PERFIL DE TEMPO POR ETAPA (profiling leve, evidência p/ otimizar)
+# Mede o tempo de RELÓGIO de cada ETAPA macro do processamento (matriz, montagem do DataFrame, geração de
+# relatório/exportação, etc.) e acumula por nome de etapa. Objetivo: dar EVIDÊNCIA de onde o tempo realmente
+# vai — em vez de otimizar por hipótese. Aparece no painel "Monitor APIs". Modelado na mesma mecânica da
+# telemetria de APIs (buffer em memória + flush em cache de disco), thread-safe. É DEFENSIVO: o context
+# manager nunca altera o resultado do bloco medido nem levanta exceção — no pior caso, não mede.
+# ==============================================================================
+_PERFIL_FASES_BUFFER: dict = {}
+
+def _registrar_perfil_fase(nome, segundos):
+    """Acumula o tempo (s) de uma etapa macro. Thread-safe. Nunca levanta (perfil é observacional)."""
+    try:
+        with _LOCK_METRICAS:
+            b = _PERFIL_FASES_BUFFER.setdefault(nome, {"chamadas": 0, "tempo_total": 0.0, "maior": 0.0})
+            b["chamadas"] += 1
+            b["tempo_total"] += max(0.0, float(segundos))
+            if segundos > b["maior"]:
+                b["maior"] = float(segundos)
+            # flush leve para o cache de disco (sobrevive ao rerun do Streamlit; alimenta o painel)
+            try:
+                m = cache_api_health.get(f"_FASE::{nome}", {"chamadas": 0, "tempo_total": 0.0, "maior": 0.0})
+                m["chamadas"] += 1
+                m["tempo_total"] += max(0.0, float(segundos))
+                if segundos > m.get("maior", 0.0):
+                    m["maior"] = float(segundos)
+                cache_api_health.set(f"_FASE::{nome}", m, expire=None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+class _perfil_fase:
+    """Context manager para medir uma etapa: `with _perfil_fase('matriz'): ...`.
+    DEFENSIVO por design: mede o tempo de relógio do bloco e o registra; jamais suprime exceções do bloco
+    (não engole erros) nem altera o resultado. Se o cronômetro falhar, o bloco roda normalmente sem medição."""
+    __slots__ = ("nome", "_t0")
+    def __init__(self, nome):
+        self.nome = nome
+        self._t0 = None
+    def __enter__(self):
+        try:
+            self._t0 = time.time()
+        except Exception:
+            self._t0 = None
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._t0 is not None:
+                _registrar_perfil_fase(self.nome, time.time() - self._t0)
+        except Exception:
+            pass
+        return False  # NUNCA suprime exceções do bloco medido
+
+def _obter_perfil_fases():
+    """Lê o perfil acumulado (buffer em memória + cache de disco) para exibição. Nunca levanta."""
+    _agg = {}
+    try:
+        with _LOCK_METRICAS:
+            for nome, b in _PERFIL_FASES_BUFFER.items():
+                _agg[nome] = dict(b)
+    except Exception:
+        pass
+    try:
+        for _k in list(cache_api_health.iterkeys()):
+            if isinstance(_k, str) and _k.startswith("_FASE::"):
+                _nome = _k[len("_FASE::"):]
+                _m = cache_api_health.get(_k, None)
+                if _m:
+                    _cur = _agg.setdefault(_nome, {"chamadas": 0, "tempo_total": 0.0, "maior": 0.0})
+                    # o cache já é o acumulado persistido; usa o MAIOR entre memória e disco (evita dupla contagem)
+                    _cur["chamadas"] = max(_cur.get("chamadas", 0), _m.get("chamadas", 0))
+                    _cur["tempo_total"] = max(_cur.get("tempo_total", 0.0), _m.get("tempo_total", 0.0))
+                    _cur["maior"] = max(_cur.get("maior", 0.0), _m.get("maior", 0.0))
+    except Exception:
+        pass
+    return _agg
+
+def _resetar_perfil_fases():
+    """Zera o perfil de etapas (memória + disco). Nunca levanta."""
+    try:
+        with _LOCK_METRICAS:
+            _PERFIL_FASES_BUFFER.clear()
+    except Exception:
+        pass
+    try:
+        for _k in list(cache_api_health.iterkeys()):
+            if isinstance(_k, str) and _k.startswith("_FASE::"):
+                cache_api_health.delete(_k)
+    except Exception:
+        pass
 
 _CODIGO_UF_PARA_SIGLA_FB = {
     11: "RO", 12: "AC", 13: "AM", 14: "RR", 15: "PA", 16: "AP", 17: "TO", 21: "MA", 22: "PI",
@@ -16605,6 +17250,300 @@ def _escrever_aba_estilizada(writer, df, sheet_name, fmts=None):
         logger.error("[EXPORT-PADRAO] Falha ao escrever aba estilizada '%s'", str(sheet_name), exc_info=True)
 
 
+def _abas_cientificas_alocacao(writer, df):
+    """[EXPORT-CIENTIFICO - 215ª geração] Abas analíticas NOVAS na planilha de Locais de Prova, espelhando as
+    seções científicas do relatório HTML: Estatísticas Descritivas (com gráfico), Índices de Qualidade
+    Logística (com gráfico de barras), Insights & Recomendações (texto), Qualidade dos Dados e Glossário.
+    Cada aba tem explicação didática. Computa de df_final_alo (colunas internas). DEFENSIVO: cada aba isolada
+    em try; erro numa aba não derruba as outras nem o export. Só escreve se as colunas existirem."""
+    try:
+        if df is None or len(df) == 0:
+            return
+        _wb = getattr(writer, "book", None)
+        _is_xlsx = _wb is not None and hasattr(_wb, "add_format")
+        if not _is_xlsx:
+            return
+        # formatos reutilizáveis
+        _f_tit = _wb.add_format({"bold": True, "font_size": 16, "font_color": "#1e3a8a"})
+        _f_sub = _wb.add_format({"bold": True, "font_size": 11, "font_color": "#334155", "bottom": 1, "border_color": "#cbd5e1"})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#475569"})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_int = _wb.add_format({"font_size": 10, "num_format": "#,##0", "align": "right"})
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#ffffff", "bg_color": "#1e3a8a", "border": 1, "border_color": "#cbd5e1", "align": "center"})
+        _f_exp = _wb.add_format({"font_size": 10, "font_color": "#334155", "italic": True, "text_wrap": True, "valign": "top"})
+        _f_idx = _wb.add_format({"bold": True, "font_size": 12, "num_format": "0.0", "align": "center"})
+        _f_txt = _wb.add_format({"font_size": 10, "font_color": "#334155", "text_wrap": True, "valign": "top"})
+
+        # ---------------- ABA: ESTATÍSTICAS DESCRITIVAS ----------------
+        try:
+            _dist = _estatisticas_descritivas_serie(df["Distancia"]) if "Distancia" in df.columns else None
+            _tcol = None
+            for _c in ["Tempo (min)", "Tempo Estimado (min)", "Tempo", "Duração (min)"]:
+                if _c in df.columns:
+                    _tcol = _c
+                    break
+            _tempo = _estatisticas_descritivas_serie(df[_tcol]) if _tcol else None
+            if _dist or _tempo:
+                _ws = _wb.add_worksheet("Estatisticas Descritivas")
+                _ws.set_column("A:A", 30); _ws.set_column("B:C", 18)
+                _ws.write("A1", "Estatísticas Descritivas", _f_tit)
+                _ws.write("A2", "Resumo estatístico completo das distâncias e tempos deste estudo.", _f_lbl)
+                _metrs = [("N (rotas)", "n"), ("Média", "media"), ("Mediana", "mediana"), ("Moda", "moda"),
+                          ("Desvio-padrão", "desvio"), ("Variância", "variancia"), ("Coef. variação (%)", "cv"),
+                          ("Mínimo", "min"), ("1º quartil (Q1)", "q1"), ("3º quartil (Q3)", "q3"),
+                          ("Percentil 90", "p90"), ("Percentil 95", "p95"), ("Percentil 99", "p99"), ("Máximo", "max")]
+                _r0 = 4
+                _ws.write(_r0, 0, "Métrica", _f_hdr)
+                _col = 1
+                if _dist:
+                    _ws.write(_r0, _col, "Distância viária (km)", _f_hdr); _col += 1
+                if _tempo:
+                    _ws.write(_r0, _col, "Tempo (min)", _f_hdr); _col += 1
+                for _i, (_lbl, _k) in enumerate(_metrs):
+                    _rr = _r0 + 1 + _i
+                    _ws.write(_rr, 0, _lbl, _f_lbl)
+                    _col = 1
+                    if _dist:
+                        _v = _dist.get(_k)
+                        _ws.write(_rr, _col, _v if _v is not None else "—", _f_int if _k == "n" else _f_num); _col += 1
+                    if _tempo:
+                        _v = _tempo.get(_k)
+                        _ws.write(_rr, _col, _v if _v is not None else "—", _f_int if _k == "n" else _f_num); _col += 1
+                # explicação didática
+                _re = _r0 + len(_metrs) + 3
+                _ws.merge_range(_re, 0, _re, 3,
+                                "Como ler: a MÉDIA é o valor típico; a MEDIANA é o ponto central. Se diferem muito, "
+                                "há rotas extremas puxando a média. O COEFICIENTE DE VARIAÇÃO mede a dispersão relativa "
+                                "(CV<30% = distribuição homogênea). Os PERCENTIS 90/95 mostram o pior caso: o P95 é a "
+                                "distância que 95% dos candidatos não ultrapassam.", _f_exp)
+                _ws.set_row(_re, 78)
+                # gráfico nativo: percentis da distância (barras)
+                if _dist:
+                    _rp = _re + 2
+                    _ws.write(_rp, 0, "Percentil", _f_sub); _ws.write(_rp, 1, "Distância (km)", _f_sub)
+                    _percs = [("Mínimo", _dist["min"]), ("Q1", _dist["q1"]), ("Mediana", _dist["mediana"]),
+                              ("Q3", _dist["q3"]), ("P90", _dist["p90"]), ("P95", _dist["p95"]), ("Máximo", _dist["max"])]
+                    for _j, (_pn, _pv) in enumerate(_percs):
+                        _ws.write(_rp + 1 + _j, 0, _pn, _f_lbl); _ws.write(_rp + 1 + _j, 1, _pv, _f_num)
+                    _ch = _wb.add_chart({"type": "column"})
+                    _ch.add_series({"name": "Distância por percentil (km)",
+                                    "categories": ["Estatisticas Descritivas", _rp + 1, 0, _rp + len(_percs), 0],
+                                    "values": ["Estatisticas Descritivas", _rp + 1, 1, _rp + len(_percs), 1],
+                                    "fill": {"color": "#2563eb"}})
+                    _ch.set_title({"name": "Distribuição da distância (percentis)"})
+                    _ch.set_legend({"none": True})
+                    _ws.insert_chart(_rp, 3, _ch, {"x_scale": 1.3, "y_scale": 1.2})
+        except Exception:
+            logger.error("[EXPORT-CIENTIFICO] Falha na aba Estatísticas", exc_info=True)
+
+        # ---------------- ABA: ÍNDICES DE QUALIDADE LOGÍSTICA ----------------
+        try:
+            _indices = []
+            _distv = pd.to_numeric(df["Distancia"], errors="coerce").dropna() if "Distancia" in df.columns else None
+            if _distv is not None and len(_distv):
+                _p90 = float(_distv.quantile(0.90))
+                _indices.append(("Acessibilidade", max(0.0, min(100.0, 100.0 * (1.0 - min(_p90, 400.0) / 400.0)))))
+            if _distv is not None and "Linha Reta" in df.columns:
+                _pares = pd.DataFrame({"v": pd.to_numeric(df["Distancia"], errors="coerce"),
+                                       "r": pd.to_numeric(df["Linha Reta"], errors="coerce")}).dropna()
+                _pares = _pares[_pares["v"] > 0]
+                if len(_pares):
+                    _indices.append(("Eficiência Logística", float((_pares["r"] / _pares["v"]).clip(0, 1).mean()) * 100.0))
+            if "Fonte da Rota" in df.columns:
+                _f = df["Fonte da Rota"].astype(str).str.lower()
+                _indices.append(("Confiabilidade", float((~_f.str.contains("estimad|reta|linha", na=False)).mean()) * 100.0))
+            if "Integridade Geográfica" in df.columns:
+                _ig = pd.to_numeric(df["Integridade Geográfica"], errors="coerce").dropna()
+                if len(_ig):
+                    _indices.append(("Integridade Geográfica", float(_ig.mean())))
+            if _indices:
+                _qual_geral = sum(v for _, v in _indices) / len(_indices)
+                _indices.insert(0, ("Qualidade da Distribuição", _qual_geral))
+                _ws = _wb.add_worksheet("Indices de Qualidade")
+                _ws.set_column("A:A", 30); _ws.set_column("B:B", 16)
+                _ws.write("A1", "Índices de Qualidade Logística", _f_tit)
+                _ws.write("A2", "Indicadores sintéticos (0-100, maior = melhor) calculados dos dados deste estudo.", _f_lbl)
+                _ws.write(4, 0, "Índice", _f_hdr); _ws.write(4, 1, "Valor (0-100)", _f_hdr)
+                for _i, (_nome, _val) in enumerate(_indices):
+                    _ws.write(5 + _i, 0, _nome, _f_lbl); _ws.write(5 + _i, 1, round(_val, 1), _f_idx)
+                _ch = _wb.add_chart({"type": "bar"})
+                _ch.add_series({"name": "Índice (0-100)",
+                                "categories": ["Indices de Qualidade", 5, 0, 4 + len(_indices), 0],
+                                "values": ["Indices de Qualidade", 5, 1, 4 + len(_indices), 1],
+                                "fill": {"color": "#16a34a"}, "data_labels": {"value": True}})
+                _ch.set_title({"name": "Índices de Qualidade Logística"})
+                _ch.set_legend({"none": True}); _ch.set_x_axis({"min": 0, "max": 100})
+                _ws.insert_chart(5, 3, _ch, {"x_scale": 1.4, "y_scale": 1.3})
+                _re = 6 + len(_indices) + 1
+                _ws.merge_range(_re, 0, _re, 4,
+                                "Como ler: cada índice resume um aspecto da alocação numa nota de 0 a 100. "
+                                "ACESSIBILIDADE (baseada no P90 da distância) indica quão perto os candidatos estão; "
+                                "EFICIÊNCIA LOGÍSTICA (razão reta/viária) indica rotas diretas; CONFIABILIDADE é o % de "
+                                "rotas viárias reais; INTEGRIDADE reflete a qualidade da geocodificação. A QUALIDADE DA "
+                                "DISTRIBUIÇÃO é a média das demais — a nota executiva única do estudo.", _f_exp)
+                _ws.set_row(_re, 90)
+        except Exception:
+            logger.error("[EXPORT-CIENTIFICO] Falha na aba Índices", exc_info=True)
+
+        # ---------------- ABA: INSIGHTS & RECOMENDAÇÕES ----------------
+        try:
+            _achados = _coletar_insights_texto(df)
+            _recs = _coletar_recomendacoes_texto(df)
+            if _achados or _recs:
+                _ws = _wb.add_worksheet("Insights e Recomendacoes")
+                _ws.set_column("A:A", 110)
+                _ws.write("A1", "Descoberta Automática de Insights", _f_tit)
+                _rr = 3
+                if _achados:
+                    _ws.write(_rr, 0, "🔎 Insights detectados nos dados", _f_sub); _rr += 1
+                    for _a in _achados:
+                        _ws.write(_rr, 0, "• " + _a, _f_txt); _ws.set_row(_rr, max(18, 15 * (1 + len(_a) // 90))); _rr += 1
+                    _rr += 1
+                if _recs:
+                    _ws.write(_rr, 0, "✅ Recomendações operacionais", _f_sub); _rr += 1
+                    for _i, _rc in enumerate(_recs):
+                        _ws.write(_rr, 0, f"{_i+1}. " + _rc, _f_txt); _ws.set_row(_rr, max(18, 15 * (1 + len(_rc) // 90))); _rr += 1
+                    _rr += 1
+                _ws.write(_rr, 0, "Nota: achados gerados automaticamente por regras estatísticas (concentração, "
+                                  "outliers pelo critério de Tukey 1,5×IQR, limiares relativos à média). São indicações "
+                                  "para investigação — pondere com restrições reais antes de decidir.", _f_exp)
+                _ws.set_row(_rr, 46)
+        except Exception:
+            logger.error("[EXPORT-CIENTIFICO] Falha na aba Insights", exc_info=True)
+
+        # ---------------- ABA: QUALIDADE DOS DADOS ----------------
+        try:
+            _kpis_q = []
+            if "Fonte da Rota" in df.columns:
+                _f = df["Fonte da Rota"].astype(str).str.lower()
+                _rot = 100.0 * (~_f.str.contains("estimad|reta|linha", na=False)).mean()
+                _kpis_q.append(("Rotas viárias reais (%)", round(_rot, 1)))
+                _kpis_q.append(("Rotas estimadas (%)", round(100.0 - _rot, 1)))
+            for _c in ["Fonte Geocoding Origem", "Fonte Origem"]:
+                if _c in df.columns:
+                    _ofic = 100.0 * df[_c].astype(str).str.lower().str.contains("ibge|oficial", na=False).mean()
+                    _kpis_q.append(("Coordenadas oficiais IBGE (%)", round(_ofic, 1))); break
+            if "Integridade Geográfica" in df.columns:
+                _ig = pd.to_numeric(df["Integridade Geográfica"], errors="coerce").dropna()
+                if len(_ig):
+                    _kpis_q.append(("Integridade geográfica média (/100)", round(float(_ig.mean()), 1)))
+            if "Distancia" in df.columns:
+                _cob = 100.0 * pd.to_numeric(df["Distancia"], errors="coerce").notna().mean()
+                _kpis_q.append(("Cobertura de roteamento (%)", round(_cob, 1)))
+            if _kpis_q:
+                _ws = _wb.add_worksheet("Qualidade dos Dados")
+                _ws.set_column("A:A", 40); _ws.set_column("B:B", 16)
+                _ws.write("A1", "Qualidade dos Dados", _f_tit)
+                _ws.write("A2", "O quanto o estudo se apoia em dados oficiais e roteamento real.", _f_lbl)
+                _ws.write(4, 0, "Indicador", _f_hdr); _ws.write(4, 1, "Valor", _f_hdr)
+                for _i, (_lbl, _v) in enumerate(_kpis_q):
+                    _ws.write(5 + _i, 0, _lbl, _f_lbl); _ws.write(5 + _i, 1, _v, _f_num)
+                _re = 6 + len(_kpis_q) + 1
+                _ws.merge_range(_re, 0, _re, 3,
+                                "Por que importa: alta cobertura viária e alto uso de coordenadas oficiais (IBGE) "
+                                "aumentam a confiança nas conclusões. Muitas rotas estimadas → leia os números com "
+                                "cautela e audite as rotas sinalizadas.", _f_exp)
+                _ws.set_row(_re, 46)
+        except Exception:
+            logger.error("[EXPORT-CIENTIFICO] Falha na aba Qualidade", exc_info=True)
+
+        # ---------------- ABA: GLOSSÁRIO ----------------
+        try:
+            _termos = [
+                ("Rota viária", "Distância real percorrida por vias (estradas), calculada por motor de roteamento."),
+                ("Linha reta (geodésica)", "Menor distância sobre a Terra entre dois pontos, ignorando vias. Usada só quando não há rota."),
+                ("Polo / Local de aplicação", "Cidade/local onde a prova é aplicada e para onde os candidatos se deslocam."),
+                ("Percentil 90/95", "Valor que 90%/95% das observações não ultrapassam. Mede a cauda (pior caso)."),
+                ("Coeficiente de variação (CV)", "Desvio-padrão dividido pela média (%). Dispersão relativa: baixo = homogêneo."),
+                ("HHI (concentração)", "Índice Herfindahl-Hirschman: mede se poucos polos concentram muitos candidatos."),
+                ("Outlier", "Observação atípica; rota fora do intervalo esperado (critério de Tukey, 1,5×IQR)."),
+                ("Motor de roteamento", "Serviço que calcula rotas: Google Routes, OSRM, GraphHopper."),
+                ("Fallback", "Mecanismo que aciona um motor alternativo quando o primeiro falha."),
+                ("Integridade geográfica", "Escore (0-100) da coerência espacial da coordenada e da rota."),
+            ]
+            _ws = _wb.add_worksheet("Glossario")
+            _ws.set_column("A:A", 28); _ws.set_column("B:B", 95)
+            _ws.write("A1", "Glossário", _f_tit)
+            _ws.write(3, 0, "Termo", _f_hdr); _ws.write(3, 1, "Definição", _f_hdr)
+            for _i, (_t, _d) in enumerate(_termos):
+                _ws.write(4 + _i, 0, _t, _wb.add_format({"bold": True, "font_size": 10, "font_color": "#1e3a8a", "valign": "top"}))
+                _ws.write(4 + _i, 1, _d, _f_txt)
+        except Exception:
+            logger.error("[EXPORT-CIENTIFICO] Falha na aba Glossário", exc_info=True)
+    except Exception:
+        logger.error("[EXPORT-CIENTIFICO] Falha geral nas abas científicas", exc_info=True)
+
+
+def _coletar_insights_texto(df):
+    """Versão TEXTO (sem HTML) dos insights automáticos, para a planilha Excel. Defensivo."""
+    _achados = []
+    try:
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+        if "UF Origem" in df.columns:
+            _vc = df["UF Origem"].astype(str).value_counts()
+            if len(_vc):
+                _achados.append(f"Maior concentração de origens no estado {_vc.index[0]} "
+                                f"({100.0*_vc.iloc[0]/_vc.sum():.1f}% dos municípios).")
+        if "Municipio Destino" in df.columns:
+            _vp = df["Municipio Destino"].astype(str).value_counts()
+            if len(_vp) > 3:
+                _media_pol = _vp.mean()
+                if _vp.iloc[0] > 2 * _media_pol:
+                    _achados.append(f"O polo {_vp.index[0]} concentra {int(_vp.iloc[0])} municípios — mais que o "
+                                    f"dobro da média ({_media_pol:.1f}). Possível sobrecarga; avaliar redistribuição.")
+                _sub = int((_vp == 1).sum())
+                if _sub > 0:
+                    _achados.append(f"{_sub} polo(s) atendem apenas 1 município cada — possível subutilização.")
+        if _dist is not None and _dist.notna().any():
+            _v = _dist.dropna()
+            _lim = _v.quantile(0.75) + 1.5 * (_v.quantile(0.75) - _v.quantile(0.25))
+            _nout = int((_dist > _lim).sum()) if _lim > 0 else 0
+            if _nout > 0:
+                _achados.append(f"{_nout} rota(s) atípicas pela distância (acima de {_lim:.0f} km) — recomenda-se "
+                                f"auditoria (geocodificação, barreira física ou isolamento).")
+        if "Modo/Acesso" in df.columns or "Balsas" in df.columns:
+            _cb = "Modo/Acesso" if "Modo/Acesso" in df.columns else "Balsas"
+            _nb = int(df[_cb].astype(str).str.lower().str.contains("balsa|fluvial|sim|true", na=False).sum())
+            if _nb > 0:
+                _achados.append(f"{_nb} rota(s) dependem de travessia por balsa/fluvial — sensíveis a horários do rio.")
+    except Exception:
+        pass
+    return _achados
+
+
+def _coletar_recomendacoes_texto(df):
+    """Versão TEXTO (sem HTML) das recomendações, para a planilha Excel. Defensivo."""
+    _recs = []
+    try:
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+        if _dist is not None and _dist.notna().any():
+            _lim = float(_dist.dropna().quantile(0.95))
+            _nl = int((_dist >= _lim).sum()) if _lim > 0 else 0
+            if _nl > 0:
+                _recs.append(f"Novos polos: {_nl} município(s) estão entre os 5% mais distantes (≥ {_lim:.0f} km). "
+                             f"Avaliar locais de prova mais próximos reduziria muito o deslocamento desses candidatos.")
+        if "Municipio Destino" in df.columns:
+            _vp = df["Municipio Destino"].astype(str).value_counts()
+            if len(_vp) > 3:
+                _media_pol = _vp.mean()
+                _nsobre = int((_vp > 2 * _media_pol).sum())
+                if _nsobre:
+                    _recs.append(f"Redistribuição: {_nsobre} polo(s) operam acima do dobro da carga média. "
+                                 f"Redistribuir para polos vizinhos ociosos equilibraria a rede.")
+                _noc = int((_vp == 1).sum())
+                if _noc > 2:
+                    _recs.append(f"Consolidação: {_noc} polo(s) atendem 1 município cada. Se subaproveitados, "
+                                 f"considerar consolidar ou realocar recursos.")
+        if "Modo/Acesso" in df.columns:
+            _nb = int(df["Modo/Acesso"].astype(str).str.lower().str.contains("balsa|fluvial", na=False).sum())
+            if _nb > 0:
+                _recs.append(f"Contingência (balsa): {_nb} rota(s) dependem de travessia. Definir plano de "
+                             f"contingência (horários, rota alternativa) para dias de prova.")
+    except Exception:
+        pass
+    return _recs
+
+
 def _abas_ricas_alocacao(writer, df):
     """[EXPORT-RICO - 184ª geração] Eleva a planilha de Locais ao padrão VISUAL/analítico do Comparador:
     Capa (portada), Gráficos nativos do Excel, Como Ler Cada Aba, Pareto dos polos (80/20) e Ranking de
@@ -17337,10 +18276,30 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
         # praticamente TUDO falhar (servidor fora), ABORTA a matriz e devolve o que tiver. A matriz é só um
         # REFINAMENTO — o ranking por LINHA RETA (topk_map) já existe offline, e o roteamento final ainda usa
         # Google/GraphHopper (com chave). Assim a Alocação PROSSEGUE em vez de empacar num servidor de terceiros.
+        # [MATRIZ-ORCAMENTO - 211ª geração] ORÇAMENTO DE TEMPO (wall-clock) da matriz — a defesa DEFINITIVA
+        # contra o travamento em "0 registros". O disjuntor por falha (abaixo) só cobre "servidor FORA"; NÃO
+        # cobre "servidor LENTO" (responde, mas cada chamada leva 2-3s → 4.946 origens = 10+ min preso na
+        # matriz, com 0 registros na tela). O orçamento cobre AMBOS: a matriz tem no máximo _ORCAMENTO_MATRIZ_S
+        # segundos de relógio; ao estourar, PARA e usa o que já calculou. As origens não cobertas caem no
+        # ranking por LINHA RETA (offline, já existe) — a matriz é só refinamento, então isso é degradação
+        # graciosa, não perda de função. O roteamento FINAL do vencedor continua por Google/OSRM/GraphHopper.
+        # Orçamento adaptativo ao volume (mais origens → um pouco mais de tempo), com teto duro.
+        _t0_matriz = time.time()
+        if _n_orig_total > 3000:
+            _ORCAMENTO_MATRIZ_S = 120
+        elif _n_orig_total > 1000:
+            _ORCAMENTO_MATRIZ_S = 90
+        else:
+            _ORCAMENTO_MATRIZ_S = 60
         _matriz_abortada = False
+        _matriz_estourou_tempo = False
         _primeiro_lote = True
         try:
             for _ini in range(0, len(_itens), _TAM_LOTE):
+                # ORÇAMENTO: antes de cada lote, checa o relógio. Se estourou, para e usa o parcial.
+                if time.time() - _t0_matriz > _ORCAMENTO_MATRIZ_S:
+                    _matriz_estourou_tempo = True
+                    break
                 _lote = _itens[_ini:_ini + _TAM_LOTE]
                 _futuros = {EXECUTOR_GLOBAL.submit(_processar_origem, _it): _it[0] for _it in _lote}
                 _ok_lote = 0
@@ -17359,6 +18318,10 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
                     if _primeiro_lote and _tot_lote >= 25 and _ok_lote == 0:
                         _matriz_abortada = True
                         break
+                    # ORÇAMENTO dentro do lote: se estourar no meio de um lote grande, para de coletar.
+                    if time.time() - _t0_matriz > _ORCAMENTO_MATRIZ_S:
+                        _matriz_estourou_tempo = True
+                        break
                 _futuros = None  # libera o lote antes do próximo (controle de memória)
                 if _matriz_abortada:
                     logger.warning("[MATRIZ-DISJUNTOR] Servidor OSRM público sem resposta na amostra do 1º "
@@ -17366,11 +18329,20 @@ def _descobrir_vencedores_por_matriz(dest_coords, hubs_validos, topk_map_complet
                                    "(offline) + roteamento por Google/GraphHopper assumem. Alocação segue.",
                                    _tot_lote)
                     break
+                if _matriz_estourou_tempo:
+                    logger.warning("[MATRIZ-ORCAMENTO] Orçamento de tempo da matriz (%ds) estourado com %d/%d "
+                                   "origens resolvidas — usando o parcial; o restante cai no ranking por linha "
+                                   "reta (offline). Alocação PROSSEGUE em vez de travar.",
+                                   _ORCAMENTO_MATRIZ_S, len(_mapa), _n_orig_total)
+                    break
                 _primeiro_lote = False
         except Exception:
             # Se o executor falhar por qualquer motivo, degrada para sequencial (mesmo resultado).
             logger.warning("[PERF-MATRIZ] Executor indisponível — matriz em modo sequencial.", exc_info=True)
             for _it in _itens:
+                # respeita o orçamento também no modo sequencial de emergência
+                if time.time() - _t0_matriz > _ORCAMENTO_MATRIZ_S:
+                    break
                 try:
                     _org_r, _dist_r = _processar_origem(_it)
                     if _dist_r:
@@ -17599,6 +18571,19 @@ def API_Google_Directions_Oficial(lat_o, lon_o, lat_d, lon_d, link_maps_pronto=N
         return None  # sem chave oficial → usa o caminho antigo (scraper). Zero mudança.
     if lat_o == 0.0 or lat_d == 0.0:
         return None
+    # [PERF-GOOGLE-OFICIAL - 210ª geração] Cache por COORDENADA (arredondada a ~11m): pares origem→destino
+    # idênticos não re-chamam a API paga — economiza COTA e TEMPO (cache hit = zero rede). Lossless: devolve a
+    # mesma tupla calculada antes. Chave inclui os links prontos quando fornecidos (dependem só das coords).
+    _ck_goog = None
+    try:
+        _ck_goog = f"gapi:{round(float(lat_o),5)},{round(float(lon_o),5)}->{round(float(lat_d),5)},{round(float(lon_d),5)}"
+        if "cache_google" in globals() and _ck_goog in cache_google:
+            _cv = cache_google[_ck_goog]
+            if isinstance(_cv, (list, tuple)) and len(_cv) == 7 and _cv[0]:
+                # reaproveita o cálculo; usa links prontos se vierem (senão o cacheado)
+                return (_cv[0], _cv[1], link_maps_pronto or _cv[2], _cv[3], _cv[4], link_embed_pronto or _cv[5], _cv[6])
+    except Exception:
+        _ck_goog = None
     start_t = time.time()
     try:
         _url = "https://routes.googleapis.com/directions/v2:computeRoutes"
@@ -17658,7 +18643,15 @@ def API_Google_Directions_Oficial(lat_o, lon_o, lat_d, lon_d, link_maps_pronto=N
         _balsa = "Não"
         _score = 1  # nº de alternativas (pedimos 1); mantém o mesmo tipo do scraper
         registrar_telemetria("GOOGLE_MAPS", True, time.time() - start_t)
-        return (_dist_km, _tempo_str, _link_maps, _balsa, _score, _link_embed, _geo)
+        _tupla = (_dist_km, _tempo_str, _link_maps, _balsa, _score, _link_embed, _geo)
+        # [PERF-GOOGLE-OFICIAL - 210ª] grava no cache por coordenada (30 dias) — próximas rotas idênticas não
+        # gastam cota nem rede. Defensivo: falha de cache nunca afeta o retorno.
+        if _ck_goog and "cache_google" in globals():
+            try:
+                _cache_set_seguro(cache_google, _ck_goog, _tupla, expire=2592000)
+            except Exception:
+                pass
+        return _tupla
     except Exception:
         registrar_telemetria("GOOGLE_MAPS", False, time.time() - start_t)
         return None
@@ -17989,7 +18982,10 @@ def _osrm_nearest(lat, lon):
     SEM rotear. Usado para escolher a coordenada que melhor representa a via antes do /route."""
     try:
         url = f"http://router.project-osrm.org/nearest/v1/driving/{lon},{lat}?number=1"
-        r = session.get(url, timeout=5).json()
+        # [ROBUSTEZ-REDE - 216ª geração] sessão FAIL-FAST (como a matriz/roteamento OSRM): era a última chamada
+        # ao OSRM público que ainda usava a sessão com retry-storm; num servidor rate-limitado, retentava com
+        # backoff (~40s). Fail-fast → falha rápido e o chamador segue sem o snap (degradação graciosa).
+        r = session_osrm_publico.get(url, timeout=(3.05, 5)).json()
         if r.get("code") == "Ok" and r.get("waypoints"):
             wp = r["waypoints"][0]
             loc = wp.get("location", [None, None])
@@ -20025,18 +21021,23 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     res_google = None
     # [GOOGLE-OFICIAL - 204ª geração] Se houver chave da API OFICIAL, ela é a fonte PRINCIPAL do Google (lícita,
     # sem bloqueio de IP). O resultado entra em res_google e segue a MESMA decisão que já prioriza o Google.
-    # Sem chave, _api_google_oficial devolve None e o fluxo cai no scraper de sempre (zero mudança).
+    # [PERF-GOOGLE-OFICIAL - 210ª geração] Quando HÁ chave oficial, o Google vem SÓ da API oficial — NÃO cai
+    # no scraper. Motivo de VELOCIDADE: em IP de datacenter (Streamlit Cloud) o scraper está bloqueado, então
+    # a queda para ele era tempo jogado fora (duas tentativas doomed, ~10-24s por rota, com retries/timeouts)
+    # sem chance de sucesso. Com a chave, a API oficial JÁ é a fonte confiável do Google; se ela não retornar
+    # (cota/transiente), o OSRM/GraphHopper assumem — como já assumiriam. Sem chave, o scraper continua sendo
+    # o caminho (comportamento idêntico ao histórico). Elimina chamadas de rede inúteis no caminho quente.
     if GOOGLE_MAPS_API_KEY:
         try:
             res_google = API_Google_Directions_Oficial(lat_o, lon_o, lat_d, lon_d,
                                                         link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
         except Exception:
             res_google = None
-    if not res_google:
+    else:
+        # sem chave oficial: caminho histórico — scraper (coords e, se preciso, texto)
         res_google = extrair_dados_reais_google(end_oficial_o, end_oficial_d, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=True, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
-    
-    if not res_google:
-        res_google = extrair_dados_reais_google(origem_clean, destino_clean, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=False, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
+        if not res_google:
+            res_google = extrair_dados_reais_google(origem_clean, destino_clean, lat_o, lon_o, lat_d, lon_d, dist_linha_reta, usar_coordenadas=False, link_maps_pronto=link_fallback, link_embed_pronto=link_embed_fallback)
     
     # [ARQ-HIBRIDO - 26ª geração] Coleta o resultado do OSRM (que rodou em paralelo com o Google acima).
     res_osrm = None
@@ -22196,6 +23197,47 @@ def _otimizar_dtypes_memoria(df, limiar_cardinalidade=0.5, min_linhas=100):
                 continue  # coluna problemática → deixa como está
         return out
     except Exception:
+        return df
+
+
+def _tornar_arrow_safe(df):
+    """[FIX-ARROW - 212ª geração] Devolve uma CÓPIA do DataFrame segura para st.dataframe (conversão Arrow).
+    O st.dataframe converte o DF para Arrow via pa.Table.from_pandas; colunas 'object' com tipos MISTOS
+    (ex.: números e strings na mesma coluna, ou células que são list/tuple/dict) fazem o pyarrow levantar
+    ArrowInvalid e a tela inteira quebra. Aqui, SÓ PARA EXIBIÇÃO, coagimos essas colunas problemáticas para
+    string — os dados armazenados/exportados (Excel/Parquet/HTML) NÃO são afetados (isto opera numa cópia).
+    Estratégia conservadora: mexe apenas em colunas 'object'; deixa numéricas/booleanas intactas."""
+    try:
+        import pandas as _pd
+        if df is None or not hasattr(df, "columns") or len(df.columns) == 0:
+            return df
+        _out = df.copy()
+        for _col in _out.columns:
+            try:
+                _s = _out[_col]
+                # só colunas 'object' são candidatas a tipo misto/objetos não-escalares
+                if _s.dtype != object:
+                    continue
+                # célula que seja list/tuple/dict/set → string (Arrow não aceita objetos aninhados heterogêneos)
+                _tem_aninhado = _s.map(lambda v: isinstance(v, (list, tuple, dict, set))).any()
+                if _tem_aninhado:
+                    _out[_col] = _s.map(lambda v: "" if v is None else (str(v) if isinstance(v, (list, tuple, dict, set)) else v))
+                    _s = _out[_col]
+                # tipos escalares MISTOS na mesma coluna (ex.: {int, str}) → padroniza para string,
+                # preservando vazios como "" (não "nan"/"None") para a tela ficar limpa
+                _tipos = set(_s.map(lambda v: type(v).__name__ if v is not None and not (isinstance(v, float) and _pd.isna(v)) else "none").unique())
+                _tipos.discard("none")
+                if len(_tipos) > 1:
+                    _out[_col] = _s.map(lambda v: "" if (v is None or (isinstance(v, float) and _pd.isna(v))) else str(v))
+            except Exception:
+                # se qualquer coluna resistir, força string como último recurso (nunca deixa quebrar a tela)
+                try:
+                    _out[_col] = _out[_col].astype(str)
+                except Exception:
+                    pass
+        return _out
+    except Exception:
+        # se algo falhar, devolve o original — o pior caso é o comportamento anterior (não piora nada)
         return df
 
 
@@ -24679,7 +25721,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "209"
+_VERSAO_APP = "216"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -26163,8 +27205,10 @@ if _secao == _SECOES[1]:   # tab_processamento
                     _preaq = st.session_state.get('lote_preaquecido', False)
                     _start_clock = st.session_state['lote_start_clock']
                     
-                    df_final = _montar_dataframe_final(_df_base, _resultados, runner_up_map=_runner_map,
-                                                       hub_qual_map=st.session_state.get('alo_hub_qual_map'))
+                    df_final = None
+                    with _perfil_fase("Montagem do DataFrame (Lote)"):
+                        df_final = _montar_dataframe_final(_df_base, _resultados, runner_up_map=_runner_map,
+                                                           hub_qual_map=st.session_state.get('alo_hub_qual_map'))
                     # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos
                     # (contexto da planilha + validação espacial). Defensivo; nunca quebra o lote.
                     df_final = _enriquecer_desambiguacao_homonimos(df_final)
@@ -26366,7 +27410,7 @@ if _secao == _SECOES[1]:   # tab_processamento
                                    "revisão. Use o **link de auditoria** na planilha (coluna dedicada) para reproduzir a rota no Validador Rápido.")
             st.write("---")
             st.markdown("### 📋 Prévia Interativa da Planilha Final")
-            st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
+            st.dataframe(_tornar_arrow_safe(st.session_state['df_processado']), use_container_width=True, height=250)
             # [INTEL-TERRITORIAL - 113ª geração] Análise hídrica POR ESTADO (UF): distribuição das rotas com
             # balsa/ferry e dos municípios de acesso fluvial/isolado. Só aparece quando há esses casos.
             try:
@@ -27327,8 +28371,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     if st.session_state.get('alo_multicriterio') and st.session_state.get('alo_usar_matriz', True):
                         with st.spinner("🧭 Descoberta por matriz viária: medindo cada origem contra todos "
                                         "os polos candidatos numa só consulta..."):
-                            _dist_matriz = _descobrir_vencedores_por_matriz(
-                                dest_coords, _hubs_validos, topk_map_completo)
+                            with _perfil_fase("Matriz viária (Alocação)"):
+                                _dist_matriz = _descobrir_vencedores_por_matriz(
+                                    dest_coords, _hubs_validos, topk_map_completo)
                         if _dist_matriz:
                             st.session_state['alo_dist_matriz'] = _dist_matriz
                             # FASE 2: shortlist dos melhores por matriz (menor + dentro de 15%, até 3) para
@@ -27797,7 +28842,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                 logger.error(f"[DIVERGENCIA-MOTOR] {_e_dv}")
                     except Exception as _e_mcf:
                         logger.error(f"[HUB-MCDA] Falha na reatribuição multicritério: {_e_mcf}")
-                df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
+                df_final_alo = None
+                with _perfil_fase("Montagem do DataFrame (Alocação)"):
+                    df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
                 # [VIÁRIA-PADRÃO - 184ª geração] No modo VIÁRIA, alinha o CONCORRENTE ao 2º MENOR VIÁRIA
                 # (o runner_up_map traz o 2º em linha reta). Aditivo/defensivo; usa o pipeline já roteado do
                 # 2º colocado e recalcula os índices da disputa. No modo linha reta este passo não roda.
@@ -28054,6 +29101,11 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             ("Competitividade dos Polos", "Concentração de candidatos por local de prova."),
                             ("Concorrentes", "Segundo colocado de cada município (alternativa)."),
                             ("Municipios Criticos", "Municípios com maior deslocamento (atenção logística)."),
+                            ("Estatisticas Descritivas", "Resumo estatístico completo (média, percentis, dispersão)."),
+                            ("Indices de Qualidade", "Índices sintéticos 0-100 da qualidade da alocação."),
+                            ("Insights e Recomendacoes", "Achados automáticos e sugestões operacionais."),
+                            ("Qualidade dos Dados", "Cobertura e confiabilidade das rotas e coordenadas."),
+                            ("Glossario", "Definições dos termos técnicos usados no estudo."),
                             ("Metodologia", "Como os dados foram processados e as rotas calculadas."),
                         ]
                         _escrever_indice_navegavel(writer, _abas_indice)
@@ -28081,6 +29133,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     _abas_ricas_alocacao(writer, df_final_alo)
                     _aba_mapa_calor_alocacao(writer, df_final_alo)  # [MAPA-CALOR - 184ª geração]
                     _montar_abas_analiticas_alocacao(writer, df_final_alo)
+                    _abas_cientificas_alocacao(writer, df_final_alo)  # [EXPORT-CIENTIFICO - 215ª geração]
                     # [DASHBOARD - 177ª geração] AS ANÁLISES DO CANDIDATO vão para a planilha.
                     # Só quando há a coluna de INSCRITOS — sem ela, a planilha sai como sempre saiu.
                     try:
@@ -29305,7 +30358,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                                "confirme a distância viária roteando os cenários na aba de Alocação.")
             except Exception as _e_hubopt:
                 logger.error(f"[HUBOPT] Falha no otimizador de localização: {_e_hubopt}")
-            st.dataframe(st.session_state['df_processado'], use_container_width=True, height=250)
+            st.dataframe(_tornar_arrow_safe(st.session_state['df_processado']), use_container_width=True, height=250)
             # [FASE2-FLUXO - 184ª geração] Cabeçalho de fase: Exportação (aditivo, dentro do bloco de resultado).
             st.markdown("#### ⬇️ Exportação")
             # [RELATORIO-HTML - 184ª geração] Relatório autocontido (KPIs + distribuição + mapa + maiores
@@ -33078,7 +34131,36 @@ if _secao == _SECOES[10]:   # tab_motores
         cap3.metric("Workers de Geocoding API", f"{EXECUTOR_APIS._max_workers}", help="Threads simultâneas consultando APIs de geocodificação por rota.")
         st.caption(f"💡 **Limite de lote atual:** até 100.000 linhas por arquivo. O gargalo dominante é a latência das APIs externas, "
                    f"não CPU/RAM. Rotas repetidas são reaproveitadas do cache L1 (RAM, {CACHE_L1_ROTAS.maxsize:,} entradas) e L2 (disco, persistente).")
-    
+
+    # [PERFIL-EXECUCAO - 213ª geração] Perfil de tempo por ETAPA macro — evidência de onde o tempo vai.
+    with st.expander("⏱️ Perfil de Tempo por Etapa (onde o processamento gasta o tempo)", expanded=False):
+        _perfil = _obter_perfil_fases()
+        if _perfil:
+            _linhas = []
+            _total_geral = sum(v.get("tempo_total", 0.0) for v in _perfil.values()) or 1.0
+            for _nome, _v in sorted(_perfil.items(), key=lambda kv: kv[1].get("tempo_total", 0.0), reverse=True):
+                _tt = _v.get("tempo_total", 0.0)
+                _ch = _v.get("chamadas", 0) or 1
+                _linhas.append({
+                    "Etapa": _nome,
+                    "Tempo total (s)": round(_tt, 2),
+                    "% do tempo medido": round(100.0 * _tt / _total_geral, 1),
+                    "Execuções": int(_v.get("chamadas", 0)),
+                    "Média por execução (s)": round(_tt / _ch, 2),
+                    "Pior caso (s)": round(_v.get("maior", 0.0), 2),
+                })
+            st.dataframe(_tornar_arrow_safe(pd.DataFrame(_linhas)), use_container_width=True, hide_index=True)
+            st.caption("💡 Mede o tempo de relógio das etapas macro (matriz, montagem do DataFrame, etc.). "
+                       "É observacional — não afeta o processamento. Use para saber ONDE otimizar com evidência: "
+                       "a etapa no topo é o gargalo real. Nota: quando os motores rodam em paralelo, a soma pode "
+                       "não bater com o relógio (etapas se sobrepõem).")
+            if st.button("🧹 Zerar perfil de etapas", key="btn_reset_perfil"):
+                _resetar_perfil_fases()
+                st.rerun()
+        else:
+            st.info("Ainda não há medições de etapa. Rode um lote ou uma alocação e volte aqui — o perfil "
+                    "mostrará quais etapas consumiram mais tempo.")
+
     if 'df_processado' in st.session_state:
         df_kpi = st.session_state['df_processado']
         
