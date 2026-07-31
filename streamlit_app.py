@@ -63,6 +63,36 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (217ª geração) → 🔀 DUPLO CENÁRIO: Estudo Oficial × Estudo Puramente Viário + comparação auditável [DUPLO-CENARIO]
+#     Implementa o 2º cenário de decisão pedido, com máximo reuso e zero re-roteamento. INSIGHT-CHAVE: o motor
+#     oficial (_selecionar_hub_multicriterio, "VIÁRIA-PADRÃO 184ª") JÁ escolhe pela MENOR VIÁRIA; a diferença
+#     para o "puramente viário" está nas SALVAGUARDAS: rota com sinuosidade >4× (desvio fluvial fantasma) é
+#     rebaixada, rota real vence estimativa geodésica, e balsa/tempo desempatam. O ESTUDO 2 remove essas
+#     salvaguardas e escolhe SEMPRE a menor rota calculada.
+#     ARQUITETURA (baixo acoplamento, alta coesão, sem duplicar roteamento):
+#     - _reatribuir_hubs_puramente_viaria(topk_map, resultados): reusa os MESMOS pares já roteados e reelege por
+#       menor viária pura (desempate por tempo). Zero chamada de rede nova.
+#     - _comparar_estrategias_alocacao(): compara Oficial × Viário por município — vencedor de cada, se mudou,
+#       Δ km, e o CRITÉRIO que causou a mudança, com _motivo_mudanca_estrategia() gerando a explicação
+#       automática ("possuía a menor rota, mas era acesso fluvial/isolado — sinuosidade 5×", "rota estimada",
+#       "travessia por balsa", "desempate por qualidade"). Agrega: nº mudados, %, e contagem por critério.
+#     - A comparação é calculada UMA vez ao final da alocação e guardada em sessão (alo_comparacao_estrategias).
+#     ENTREGA (reusa toda a infra de export/relatório):
+#     - Planilha: nova aba "Comparação de Estratégias" (KPIs, mudanças por critério, tabela dos municípios
+#       alterados com Δ km e explicação) — total transparência, nada de caixa-preta.
+#     - Relatório HTML: nova seção "Comparação entre Estratégias de Escolha" (intro didática, KPIs, tabela,
+#       exemplos explicados, parecer automático — decisões robustas se 0 mudaram, ou revisão manual se houve).
+#     PROVA DEDICADA: cenário construído onde o candidato mais curto é fluvial (sinuosidade 5×) → oficial escolhe
+#     o plausível, puramente viário escolhe o mais curto, mudança detectada e explicada corretamente; aba Excel
+#     e seção HTML geradas e defensivas (vazio/None → não quebra). 16 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: tudo ADITIVO — o estudo oficial e todos os relatórios/exports existentes seguem idênticos;
+#     a comparação só aparece quando há dados. Imports IDÊNTICOS ao baseline. RotaPipeline: 41 campos (intacto).
+#     Requirements: INALTERADO.
+#     ESCOPO HONESTO: entregue o núcleo robusto e auditável (2º estudo derivado + comparação + colunas de
+#     motivo + estatísticas + aba Excel + seção HTML). Itens maiores do pedido (seletor de cenário na aba
+#     Comparador de Estudos, exportar o 2º estudo como planilha independente carregável, Sankey/mapas
+#     exclusivos da comparação) ficam como próximo incremento — cada um com validação própria, sem empilhar
+#     tudo de uma vez (a lição desta sessão).
 #   v3.8 (216ª geração) → 🛡️ MELHORIAS DE ROBUSTEZ (auditoria dirigida a evidência) [ROBUSTEZ-REDE + ROBUSTEZ-DADOS]
 #     Auditoria focada em robustez (não em hipótese). Achei e corrigi 2 lacunas REAIS, cada uma provada:
 #     (1) OSRM /nearest em FAIL-FAST: era a ÚLTIMA chamada ao servidor OSRM público que ainda usava a sessão
@@ -5911,6 +5941,83 @@ def _glossario_html():
     return f'<table class="tbl"><thead><tr><th>Termo</th><th>Definição</th></tr></thead><tbody>{_rows}</tbody></table>'
 
 
+def _secao_comparacao_estrategias_html(comparacao):
+    """[DUPLO-CENARIO - 217ª geração] Seção HTML 'Comparação entre Estratégias de Escolha' (Oficial ×
+    Puramente Viário): resumo, mudanças por critério e tabela dos municípios alterados com explicação
+    automática. Recebe o dict de _comparar_estrategias_alocacao. Defensivo: sem dados → None."""
+    import html as _he
+    try:
+        if not comparacao or not comparacao.get("por_cliente"):
+            return None
+        _resumo = comparacao.get("resumo", {})
+        _n = _resumo.get("n_municipios", 0)
+        _nm = _resumo.get("n_mudaram", 0)
+        _pct = _resumo.get("pct_mudaram", 0)
+        _kpis = (f'<div class="kpis">'
+                 f'<div class="kpi"><div class="kpi-v">{_n:,}</div><div class="kpi-l">Municípios analisados</div></div>'
+                 f'<div class="kpi"><div class="kpi-v">{_nm:,}</div><div class="kpi-l">Mudaram de vencedor</div></div>'
+                 f'<div class="kpi"><div class="kpi-v">{_fmt_br(_pct,1)}%</div><div class="kpi-l">Percentual alterado</div></div>'
+                 f'</div>').replace(",", ".")
+        # mudanças por critério
+        _por_crit = _resumo.get("por_criterio", {}) or {}
+        _crit_html = ""
+        if _por_crit:
+            _rows = "".join(f'<tr><td>{_he.escape(_c)}</td><td>{_q}</td></tr>'
+                            for _c, _q in sorted(_por_crit.items(), key=lambda kv: kv[1], reverse=True))
+            _crit_html = (f'<h3>Por que as decisões mudaram</h3>'
+                          f'<table class="tbl"><thead><tr><th>Critério que causou a mudança</th>'
+                          f'<th>Municípios</th></tr></thead><tbody>{_rows}</tbody></table>')
+        # tabela dos que mudaram
+        _mudaram = [pc for pc in comparacao["por_cliente"] if pc.get("mudou") == "Sim"]
+        _tab = ""
+        if _mudaram:
+            _linhas = ""
+            for pc in _mudaram[:200]:  # limita para não gerar HTML gigante
+                _dk = pc.get("diferenca_km")
+                _linhas += (f'<tr><td>{_he.escape(str(pc.get("municipio","")))}</td>'
+                            f'<td>{_he.escape(str(pc.get("vencedor_oficial","")))}</td>'
+                            f'<td>{_he.escape(str(pc.get("vencedor_viaria","")))}</td>'
+                            f'<td>{_fmt_br(_dk,1) if _dk is not None else "—"}</td>'
+                            f'<td>{_he.escape(str(pc.get("criterio_alteracao","")))}</td></tr>')
+            _tab = (f'<h3>Municípios com vencedor alterado</h3>'
+                    f'<table class="tbl"><thead><tr><th>Município</th><th>Vencedor Oficial</th>'
+                    f'<th>Vencedor Puramente Viário</th><th>Δ km</th><th>Critério</th></tr></thead>'
+                    f'<tbody>{_linhas}</tbody></table>')
+            if len(_mudaram) > 200:
+                _tab += f'<p class="lead">Exibindo os primeiros 200 de {len(_mudaram)} municípios alterados (a planilha traz todos).</p>'
+            # explicações textuais (amostra)
+            _exs = "".join(f'<li>{_he.escape(pc.get("explicacao",""))}</li>' for pc in _mudaram[:8] if pc.get("explicacao"))
+            if _exs:
+                _tab += f'<h3>Exemplos explicados automaticamente</h3><ul class="insights">{_exs}</ul>'
+        _intro = (
+            '<div class="lead"><p>Esta seção compara duas estratégias de escolha do local de prova sobre os '
+            '<b>mesmos dados roteados</b>:</p><ul>'
+            '<li><b>Estudo Oficial</b> — aplica todos os critérios (acesso isolado/fluvial, balsa, '
+            'acessibilidade, desempate por qualidade). É o resultado padrão da aplicação.</li>'
+            '<li><b>Estudo Puramente Viário</b> — escolhe <b>sempre a menor rota efetivamente calculada</b>, '
+            'ignorando qualquer penalização.</li></ul>'
+            '<p>Onde as duas divergem, mostramos exatamente qual critério mudou a decisão — para total '
+            'transparência e auditabilidade.</p></div>')
+        _analise = ""
+        if _nm == 0:
+            _analise = _caixa_explicativa(
+                "Leitura da comparação",
+                "As duas estratégias produziram <b>o mesmo resultado</b> em todos os municípios: nenhum vencedor "
+                "mudou. Isso indica que, neste estudo, os critérios multicritério (isolado/fluvial/balsa) não "
+                "alteraram a escolha em relação à menor rota viária — as decisões são <b>robustas</b>.", "ok")
+        else:
+            _analise = _caixa_explicativa(
+                "Leitura da comparação",
+                f"Em <b>{_nm}</b> município(s) ({_fmt_br(_pct,1)}%), o critério oficial escolheu um polo diferente "
+                f"do que a menor rota indicaria. Nesses casos, vale a revisão manual: o critério de isolamento/"
+                f"balsa pode ter <b>evitado um trajeto impraticável</b> (ex.: desvio fluvial), ou pode ter apenas "
+                f"<b>aumentado a distância</b> sem ganho operacional real. A tabela e a planilha detalham cada "
+                f"caso para essa decisão informada.", "info")
+        return _intro + _kpis + _analise + _crit_html + _tab
+    except Exception:
+        return None
+
+
 def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) de nível profissional/BI:
     capa, NAVEGAÇÃO LATERAL (sumário), cartões executivos e seções analíticas ricas — Resumo, Distribuição de
@@ -6229,6 +6336,16 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         try:
             _sec.append(("metodologia", "Metodologia", _metodologia_html()))
             _sec.append(("glossario", "Glossário", _glossario_html()))
+        except Exception:
+            pass
+
+        # [DUPLO-CENARIO - 217ª geração] Seção de comparação Oficial × Puramente Viário (se disponível).
+        try:
+            _cmp_estr = st.session_state.get('alo_comparacao_estrategias')
+            if _cmp_estr:
+                _html_cmp = _secao_comparacao_estrategias_html(_cmp_estr)
+                if _html_cmp:
+                    _sec.append(("comparacao_estrategias", "Comparação entre Estratégias de Escolha", _html_cmp))
         except Exception:
             pass
 
@@ -22837,6 +22954,219 @@ def _pares_retry_viaria(topk_map, resultados, fator=1.5, max_pares=40):
         return []
 
 
+def _aba_comparacao_estrategias(writer, comparacao):
+    """[DUPLO-CENARIO - 217ª geração] Aba Excel 'Comparação de Estratégias' (Oficial × Puramente Viário):
+    resumo, mudanças por critério e tabela dos municípios que mudaram de vencedor, com explicação automática.
+    Recebe o dict de _comparar_estrategias_alocacao. Defensivo: sem mudanças/erro → não escreve/não quebra."""
+    try:
+        if not comparacao or not comparacao.get("por_cliente"):
+            return
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        _resumo = comparacao.get("resumo", {})
+        _f_tit = _wb.add_format({"bold": True, "font_size": 16, "font_color": "#1e3a8a"})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#475569"})
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#ffffff", "bg_color": "#1e3a8a", "border": 1, "align": "center", "text_wrap": True})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_kpi = _wb.add_format({"bold": True, "font_size": 14, "font_color": "#1e3a8a", "align": "center"})
+        _f_txt = _wb.add_format({"font_size": 10, "font_color": "#334155", "text_wrap": True, "valign": "top"})
+        _f_exp = _wb.add_format({"font_size": 10, "font_color": "#334155", "italic": True, "text_wrap": True, "valign": "top"})
+        _f_sim = _wb.add_format({"font_size": 10, "bold": True, "font_color": "#b45309", "align": "center"})
+
+        _ws = _wb.add_worksheet("Comparacao de Estrategias")
+        _ws.set_column("A:A", 26); _ws.set_column("B:C", 22); _ws.set_column("D:D", 12)
+        _ws.set_column("E:E", 14); _ws.set_column("F:F", 26); _ws.set_column("G:G", 70)
+        _ws.write("A1", "Comparação de Estratégias de Escolha", _f_tit)
+        _ws.write("A2", "Estudo Oficial (multicritério) × Estudo Puramente Viário (menor rota, sem penalizações).", _f_lbl)
+
+        # KPIs de resumo
+        _ws.write(4, 0, "Municípios analisados", _f_lbl); _ws.write(4, 1, _resumo.get("n_municipios", 0), _f_kpi)
+        _ws.write(5, 0, "Municípios que MUDARAM de vencedor", _f_lbl); _ws.write(5, 1, _resumo.get("n_mudaram", 0), _f_kpi)
+        _ws.write(6, 0, "% que mudaram", _f_lbl); _ws.write(6, 1, _resumo.get("pct_mudaram", 0), _f_num)
+
+        # mudanças por critério
+        _r = 8
+        _por_crit = _resumo.get("por_criterio", {}) or {}
+        if _por_crit:
+            _ws.write(_r, 0, "Critério que causou a mudança", _f_hdr); _ws.write(_r, 1, "Qtd. municípios", _f_hdr)
+            for _i, (_crit, _q) in enumerate(sorted(_por_crit.items(), key=lambda kv: kv[1], reverse=True)):
+                _ws.write(_r + 1 + _i, 0, _crit, _f_lbl); _ws.write(_r + 1 + _i, 1, _q, _f_num)
+            _r = _r + len(_por_crit) + 3
+
+        # tabela detalhada — só os que mudaram (foco da análise)
+        _mudaram = [pc for pc in comparacao["por_cliente"] if pc.get("mudou") == "Sim"]
+        _ws.write(_r, 0, "Municípios com vencedor alterado", _f_tit); _r += 2
+        _cols = [("Município", "municipio"), ("Vencedor Oficial", "vencedor_oficial"),
+                 ("Vencedor Puramente Viário", "vencedor_viaria"), ("Mudou?", "mudou"),
+                 ("Δ km (oficial−viário)", "diferenca_km"), ("Critério da alteração", "criterio_alteracao"),
+                 ("Explicação automática", "explicacao")]
+        for _ci, (_h, _k) in enumerate(_cols):
+            _ws.write(_r, _ci, _h, _f_hdr)
+        for _ri, pc in enumerate(_mudaram):
+            _rr = _r + 1 + _ri
+            _ws.write(_rr, 0, str(pc.get("municipio", "")), _f_lbl)
+            _ws.write(_rr, 1, str(pc.get("vencedor_oficial", "")), _f_lbl)
+            _ws.write(_rr, 2, str(pc.get("vencedor_viaria", "")), _f_lbl)
+            _ws.write(_rr, 3, pc.get("mudou", ""), _f_sim)
+            _dk = pc.get("diferenca_km")
+            _ws.write(_rr, 4, _dk if _dk is not None else "—", _f_num)
+            _ws.write(_rr, 5, str(pc.get("criterio_alteracao", "")), _f_txt)
+            _ws.write(_rr, 6, str(pc.get("explicacao", "")), _f_txt)
+        _re = _r + len(_mudaram) + 2
+        _ws.merge_range(_re, 0, _re, 6,
+                        "Como ler: o Estudo Oficial aplica todos os critérios (isolado/fluvial, balsa, "
+                        "acessibilidade, desempate por qualidade). O Estudo Puramente Viário escolhe SEMPRE a "
+                        "menor rota calculada, ignorando penalizações. Quando os dois divergem, a coluna "
+                        "'Critério da alteração' mostra exatamente qual regra mudou a decisão — total transparência.",
+                        _f_exp)
+        _ws.set_row(_re, 62)
+    except Exception:
+        logger.error("[DUPLO-CENARIO] Falha na aba de comparação de estratégias", exc_info=True)
+
+
+def _reatribuir_hubs_puramente_viaria(topk_map, resultados, parse_tempo=None):
+    """[DUPLO-CENARIO - 217ª geração] ESTUDO 2 (Puramente Viário): reelege o hub de cada cliente pela MENOR
+    DISTÂNCIA VIÁRIA efetivamente calculada, IGNORANDO qualquer penalização (balsa, fluvial/isolado,
+    plausibilidade/sinuosidade, preferência por rota real). Reusa os MESMOS resultados JÁ roteados do estudo
+    oficial (zero re-roteamento, zero duplicação). Retorna (dest_to_hub_viaria, detalhe_por_cliente), onde o
+    detalhe traz a lista de candidatos com viária para auditoria. PURO e defensivo em cada par."""
+    parse_tempo = parse_tempo or _parse_tempo_min
+    novo_dest, detalhe = {}, {}
+    for _cli, _topk in (topk_map or {}).items():
+        _cands = []
+        for _tup in (_topk or []):
+            try:
+                _reta, _hub = _tup[0], _tup[1]
+            except (TypeError, IndexError):
+                continue
+            _res = (resultados or {}).get((_cli, _hub))
+            if not _res:
+                continue
+            try:
+                _dv = float(_res[0]) if _res[0] is not None else None
+            except (TypeError, ValueError, IndexError):
+                _dv = None
+            if not _dv or _dv <= 0:
+                continue
+            try:
+                _tm = parse_tempo(_res[1]) if len(_res) > 1 else None
+            except Exception:
+                _tm = None
+            _bal = (str(_res[3]).strip().lower() == "sim") if (len(_res) > 3 and _res[3] is not None) else False
+            _fonte = str(_res[5]).lower() if len(_res) > 5 else ""
+            _rota_real = ("geodés" not in _fonte) and ("falha" not in _fonte)
+            try:
+                _dr = float(_reta) if _reta not in (None, "") else None
+            except (TypeError, ValueError):
+                _dr = None
+            _cands.append({"hub": _hub, "dist_viaria": round(_dv, 3), "dist_reta": _dr, "tempo_min": _tm,
+                           "balsa": _bal, "rota_real": _rota_real,
+                           "sinuosidade": round(_dv / _dr, 4) if (_dr and _dr > 0) else None})
+        if not _cands:
+            if _topk:
+                novo_dest[_cli] = _topk[0][1]
+            continue
+        # ESTUDO 2: vence a MENOR viária, pura e simples (desempate só por menor tempo, determinístico).
+        _cands_ord = sorted(_cands, key=lambda c: (c["dist_viaria"],
+                                                   c["tempo_min"] if c["tempo_min"] is not None else 1e9))
+        novo_dest[_cli] = _cands_ord[0]["hub"]
+        detalhe[_cli] = {"vencedor": _cands_ord[0]["hub"], "candidatos": _cands_ord}
+    return novo_dest, detalhe
+
+
+def _motivo_mudanca_estrategia(cand_oficial, cand_viaria):
+    """[DUPLO-CENARIO - 217ª geração] Explica automaticamente POR QUE o vencedor puramente viário difere do
+    oficial, a partir dos atributos dos dois candidatos. Retorna (criterio_curto, explicacao_longa). PURO."""
+    try:
+        _dvo = cand_oficial.get("dist_viaria") if cand_oficial else None
+        _dvv = cand_viaria.get("dist_viaria") if cand_viaria else None
+        _dif = (float(_dvo) - float(_dvv)) if (_dvo is not None and _dvv is not None) else None
+        # o vencedor viário tem viária MENOR que o oficial → algum critério o rebaixou no oficial
+        _sinu = cand_viaria.get("sinuosidade") if cand_viaria else None
+        if _sinu is not None and _sinu > 4.0:
+            return ("Desvio fluvial/isolado (sinuosidade)",
+                    f"possuía a menor rota viária"
+                    + (f" (por {_dif:.1f} km)" if _dif and _dif > 0 else "")
+                    + f", mas foi classificado como acesso fluvial/isolado: a rota rodoviária tem sinuosidade "
+                    f"{_sinu:.1f}× (via ≫ linha reta), sinal de que o trajeto contorna uma barreira natural "
+                    f"(rio) por um caminho que, na prática, é fluvial. No estudo oficial ele é rebaixado; no "
+                    f"estudo puramente viário, vence por ter a menor distância calculada.")
+        if cand_viaria and not cand_viaria.get("rota_real", True):
+            return ("Rota estimada (geodésica)",
+                    "possuía a menor distância, mas essa distância veio de estimativa geodésica (não de rota "
+                    "viária real), que subestima o trajeto. No estudo oficial, uma rota real de maior distância "
+                    "tem prioridade sobre uma estimativa; no puramente viário, vence a menor distância calculada.")
+        if cand_viaria and cand_viaria.get("balsa"):
+            return ("Travessia por balsa",
+                    "possuía a menor rota viária, porém envolve travessia por balsa. No estudo oficial, em "
+                    "empate de distância a ausência de balsa é preferida; no puramente viário, a balsa é "
+                    "ignorada e ele vence pela menor distância.")
+        return ("Critério de desempate/qualidade",
+                "possuía a menor distância viária, mas perdeu no estudo oficial por um critério de "
+                "desempate/qualidade (tempo ou custo logístico composto). No puramente viário, vence pela "
+                "menor distância calculada.")
+    except Exception:
+        return ("Diferença de critério", "os dois estudos aplicaram critérios diferentes de seleção.")
+
+
+def _comparar_estrategias_alocacao(topk_map, resultados, params=None):
+    """[DUPLO-CENARIO - 217ª geração] Compara o ESTUDO OFICIAL (multicritério) com o ESTUDO PURAMENTE VIÁRIO,
+    ambos derivados dos MESMOS resultados já roteados. Para cada município: vencedor oficial, vencedor viário,
+    se mudou, o critério e a explicação. Retorna dict com 'por_cliente' (lista) e 'resumo' (agregados:
+    nº mudados, candidatos afetados, km-candidato economizados, etc.). PURO e defensivo."""
+    _out = {"por_cliente": [], "resumo": {}}
+    try:
+        _dest_of, _mcda_of = _reatribuir_hubs_multicriterio(topk_map, resultados, params)
+        _dest_vi, _det_vi = _reatribuir_hubs_puramente_viaria(topk_map, resultados)
+
+        def _cand_de(_cli, _hub):
+            for _c in (_det_vi.get(_cli, {}) or {}).get("candidatos", []):
+                if _c.get("hub") == _hub:
+                    return _c
+            return None
+
+        _n_mud = 0
+        _km_cand_econ = 0.0
+        _por_criterio = {}
+        for _cli in (topk_map or {}).keys():
+            _win_of = _dest_of.get(_cli)
+            _win_vi = _dest_vi.get(_cli)
+            if _win_of is None and _win_vi is None:
+                continue
+            _mudou = (_win_of != _win_vi) and _win_of is not None and _win_vi is not None
+            _c_of = _cand_de(_cli, _win_of)
+            _c_vi = _cand_de(_cli, _win_vi)
+            _crit, _expl = ("", "")
+            _dif_km = None
+            if _mudou:
+                _n_mud += 1
+                _crit, _expl = _motivo_mudanca_estrategia(_c_of, _c_vi)
+                _por_criterio[_crit] = _por_criterio.get(_crit, 0) + 1
+                if _c_of and _c_vi and _c_of.get("dist_viaria") is not None and _c_vi.get("dist_viaria") is not None:
+                    _dif_km = float(_c_of["dist_viaria"]) - float(_c_vi["dist_viaria"])
+            _out["por_cliente"].append({
+                "municipio": _cli,
+                "vencedor_oficial": _win_of,
+                "vencedor_viaria": _win_vi,
+                "mudou": "Sim" if _mudou else "Não",
+                "viaria_oficial_km": (_c_of or {}).get("dist_viaria"),
+                "viaria_pura_km": (_c_vi or {}).get("dist_viaria"),
+                "diferenca_km": round(_dif_km, 1) if _dif_km is not None else None,
+                "criterio_alteracao": _crit,
+                "explicacao": (f"O município {_cli} " + _expl) if _expl else "",
+            })
+        _out["resumo"] = {
+            "n_municipios": len(_out["por_cliente"]),
+            "n_mudaram": _n_mud,
+            "pct_mudaram": round(100.0 * _n_mud / max(1, len(_out["por_cliente"])), 1),
+            "por_criterio": _por_criterio,
+        }
+    except Exception:
+        logger.error("[DUPLO-CENARIO] Falha ao comparar estratégias", exc_info=True)
+    return _out
+
+
 def _reatribuir_hubs_multicriterio(topk_map, resultados, params=None, parse_tempo=None):
     """[HUB-MCDA - 130ª geração] Dado o topk_map (top-K hubs por cliente, por linha reta) e os resultados
     JÁ roteados de cada par (cliente, hub), reelege o hub de cada cliente por CUSTO LOGÍSTICO EFETIVO
@@ -25721,7 +26051,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "216"
+_VERSAO_APP = "217"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -29134,6 +29464,17 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     _aba_mapa_calor_alocacao(writer, df_final_alo)  # [MAPA-CALOR - 184ª geração]
                     _montar_abas_analiticas_alocacao(writer, df_final_alo)
                     _abas_cientificas_alocacao(writer, df_final_alo)  # [EXPORT-CIENTIFICO - 215ª geração]
+                    # [DUPLO-CENARIO - 217ª geração] Aba de comparação Oficial × Puramente Viário, derivada dos
+                    # MESMOS dados já roteados (topk_map + resultados) — zero re-roteamento. Defensivo.
+                    try:
+                        _topk_cmp = st.session_state.get('alo_topk_map', {}) or {}
+                        _res_cmp = st.session_state.get('alo_resultados', {}) or {}
+                        _params_cmp = st.session_state.get('alo_params_custo')
+                        if _topk_cmp and _res_cmp:
+                            _cmp_estr = _comparar_estrategias_alocacao(_topk_cmp, _res_cmp, _params_cmp)
+                            _aba_comparacao_estrategias(writer, _cmp_estr)
+                    except Exception:
+                        logger.error("[DUPLO-CENARIO] Falha ao gerar aba de comparação", exc_info=True)
                     # [DASHBOARD - 177ª geração] AS ANÁLISES DO CANDIDATO vão para a planilha.
                     # Só quando há a coluna de INSCRITOS — sem ela, a planilha sai como sempre saiu.
                     try:
@@ -29170,6 +29511,16 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     except Exception as _e_dx:
                         logger.error(f"[DASHBOARD] Falha ao exportar as análises do candidato: {_e_dx}")
                 st.session_state['df_processado'] = df_final_alo
+                # [DUPLO-CENARIO - 217ª geração] Calcula a comparação Oficial × Puramente Viário UMA vez, dos
+                # dados já roteados, e guarda em sessão para o relatório HTML e a planilha usarem. Defensivo.
+                try:
+                    _topk_fin = st.session_state.get('alo_topk_map', {}) or {}
+                    _res_fin = st.session_state.get('alo_resultados', {}) or {}
+                    if _topk_fin and _res_fin:
+                        st.session_state['alo_comparacao_estrategias'] = _comparar_estrategias_alocacao(
+                            _topk_fin, _res_fin, st.session_state.get('alo_params_custo'))
+                except Exception:
+                    logger.error("[DUPLO-CENARIO] Falha ao pré-computar a comparação de estratégias", exc_info=True)
                 st.session_state['alo_planilha_pronta'] = output_buffer.getvalue()
                 st.session_state['alo_tempo_total'] = tempo_alo_segundos
                 st.session_state['alo_linhas'] = len(df_final_alo)
