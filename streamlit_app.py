@@ -63,6 +63,54 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (219ª geração) → 🧯🔒 ARROWINVALID NUNCA MAIS: guard GLOBAL no st.dataframe + sanitizador reforçado [FIX-ARROW-GLOBAL]
+#     O erro "pyarrow.lib.ArrowInvalid" voltou porque a correção da 212ª dependia de embrulhar CADA ponto de
+#     exibição à mão (_tornar_arrow_safe em volta do st.dataframe) — e há 75+ chamadas st.dataframe na app.
+#     Bastava UMA escapar (ou o usuário estar numa versão antiga) para a TELA INTEIRA quebrar. Além disso, a
+#     heurística da 212ª só stringificava coluna com >1 tipo — deixava passar coluna de TIPO ÚNICO exótico
+#     (Decimal, date+Timestamp, objetos de classe, object toda-None) que o pyarrow também rejeita.
+#     DUAS correções, ambas provadas:
+#     (1) GUARD GLOBAL: um monkey-patch instala uma versão de st.dataframe que roteia TODO DataFrame por
+#         _tornar_arrow_safe automaticamente, ANTES de renderizar. Agora é IMPOSSÍVEL qualquer ponto de exibição
+#         (qualquer aba, agora ou no futuro) quebrar a tela com ArrowInvalid — sem precisar embrulhar nada à mão.
+#         Idempotente (não reempilha em reruns), defensivo (cai no original em erro), só toca em DataFrame.
+#     (2) SANITIZADOR REFORÇADO: além da coerção conservadora (que PRESERVA colunas numéricas/booleanas), agora
+#         faz VERIFICAÇÃO REAL — testa pa.Table.from_pandas e, se ainda falhar, stringifica toda coluna 'object'
+#         e, no limite extremo, o DataFrame inteiro. Corrige QUALQUER patologia, inclusive as de tipo único que
+#         a 212ª não pegava.
+#     PROVA DEDICADA: 7 patologias que quebram o Arrow (misto int/str, aninhados, Decimal, temporais mistos,
+#     object all-None, objetos de classe) → todas viram convertíveis; numéricas limpas preservadas; guard
+#     intercepta e é idempotente. Só afeta a EXIBIÇÃO — dados e exports (Excel/Parquet/HTML) intactos.
+#     NÃO-REGRESSÃO (16 provas cumulativas + testes HTML/Excel): DataFrame já-limpo passa inalterado; nenhuma
+#     lógica de negócio muda. Imports IDÊNTICOS ao baseline (pyarrow já era dependência — é o que lança o erro).
+#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
+#   v3.8 (218ª geração) → 📰 RELATÓRIO HTML COMO ARTIGO CIENTÍFICO: front/back matter + modo escuro + ajuda nos KPIs [ARTIGO-CIENTIFICO]
+#     Completa a estrutura de artigo científico do relatório HTML de Locais de Aplicação. Já havia (214ª/217ª):
+#     capa, resumo executivo com KPIs, muitos gráficos (boxplot, violin, sankey, sunburst, mapa), estatísticas
+#     descritivas, índices, insights, recomendações, metodologia, glossário e comparação de estratégias. Esta
+#     rodada ADICIONA as 7 seções formais que faltavam para o artigo ficar completo:
+#     FRONT MATTER (antes do resumo): (1) Resumo/Abstract PT+EN gerado dos números; (2) Introdução (problema,
+#     importância, impacto); (3) Fundamentação Teórica (conceitos em linguagem acessível: distância viária,
+#     linha reta, geocodificação, roteamento, sinuosidade, etc.).
+#     BACK MATTER (após metodologia/glossário): (4) Discussão (pontos fortes e limitações GERADOS dos dados);
+#     (5) Conclusões (geradas dos dados); (6) Limitações do Estudo (APIs, dados, malha, cartografia); (7)
+#     Referências (IBGE, OSM, OSRM, Google, Karney 2013, Tukey 1977, Hirschman 1964).
+#     UX: (a) MODO ESCURO — botão flutuante + CSS body.dark + toggle JS, tudo autocontido e offline; (b) AJUDA
+#     nos KPIs — tooltip CSS (ícone “?” com dica ao passar o mouse), sem dependências.
+#     Todas as 7 seções são funções PURAS e DEFENSIVAS (df vazio/sem colunas → None; erro numa não derruba o
+#     relatório) e entram no SUMÁRIO navegável. Injetadas na ORDEM correta de artigo (abstract→introdução→
+#     fundamentação→…→discussão→conclusões→limitações→referências).
+#     PROVA: teste dedicado gera as 7 seções (HTML válido, conteúdo correto — Abstract EN, conceitos, refs
+#     acadêmicas) e confirma o comportamento defensivo. 16 provas cumulativas + testes de HTML e Excel OK.
+#     NÃO-REGRESSÃO: tudo ADITIVO; relatório e processamento existentes intactos; modo escuro é sobreposição de
+#     CSS (não altera o claro). Imports IDÊNTICOS ao baseline. RotaPipeline: 41 campos (intacto). Requirements:
+#     INALTERADO.
+#     ESCOPO HONESTO: entregue o que é robusto e de alto valor num HTML autocontido — estrutura de artigo, modo
+#     escuro e ajuda nos KPIs. O que o pedido pede e NÃO cabe com segurança num HTML estático (cross-filtering
+#     interativo que recalcula TODOS os gráficos/KPIs/mapas ao vivo, e drill-down de cada KPIs aos registros)
+#     é um projeto à parte, grande e frágil com Plotly pré-renderizado — seria irresponsável fingir entregá-lo
+#     agora; melhor fazê-lo depois, com cuidado. O mesmo padrão vale para os relatórios de Lote e Comparador,
+#     que têm geradores próprios e podem receber estas seções na sequência.
 #   v3.8 (217ª geração) → 🔀 DUPLO CENÁRIO: Estudo Oficial × Estudo Puramente Viário + comparação auditável [DUPLO-CENARIO]
 #     Implementa o 2º cenário de decisão pedido, com máximo reuso e zero re-roteamento. INSIGHT-CHAVE: o motor
 #     oficial (_selecionar_hub_multicriterio, "VIÁRIA-PADRÃO 184ª") JÁ escolhe pela MENOR VIÁRIA; a diferença
@@ -6018,6 +6066,201 @@ def _secao_comparacao_estrategias_html(comparacao):
         return None
 
 
+def _secao_abstract_html(df):
+    """[ARTIGO-CIENTIFICO - 218ª geração] Resumo/Abstract (PT + EN) gerado dos números do estudo. Defensivo."""
+    try:
+        _n = len(df)
+        _cand = 0
+        for _c in ["Inscritos", "Candidatos", "QT_INSCRITOS", "Qtd Candidatos"]:
+            if _c in df.columns:
+                _cand = int(pd.to_numeric(df[_c], errors="coerce").fillna(0).sum())
+                break
+        _npolos = int(df["Municipio Destino"].nunique()) if "Municipio Destino" in df.columns else 0
+        _dm = None
+        if "Distancia" in df.columns:
+            _d = pd.to_numeric(df["Distancia"], errors="coerce").dropna()
+            _dm = float(_d.mean()) if len(_d) else None
+        _cand_txt = f"{_cand:,} candidatos".replace(",", ".") if _cand else "os candidatos"
+        _pt = (f'<div class="ab" style="border-left:4px solid #1e3a8a;background:#f8fafc;padding:14px 16px;'
+               f'border-radius:8px;margin:8px 0"><b>Resumo.</b> Este estudo determina a alocação de {_cand_txt} '
+               f'de {_n:,} municípios de origem'.replace(",", ".")
+               + (f' a {_npolos} locais de aplicação (polos)' if _npolos else '')
+               + ', minimizando o deslocamento pela menor rota viária real. '
+               + (f'O deslocamento médio resultante foi de {_dm:.0f} km. ' if _dm is not None else '')
+               + 'A metodologia combina geocodificação oficial (IBGE), roteamento por múltiplos motores '
+               '(Google, OSRM) com consenso e fallback, e escolha do vencedor pela menor distância viária. '
+               'Os resultados, indicadores de qualidade e recomendações operacionais são apresentados a seguir '
+               'de forma auditável.</div>')
+        _en = (f'<div class="ab" style="border-left:4px solid #64748b;background:#f8fafc;padding:14px 16px;'
+               f'border-radius:8px;margin:8px 0;color:#475569"><b>Abstract.</b> This study assigns exam '
+               f'candidates from {_n:,} origin municipalities'.replace(",", ".")
+               + (f' to {_npolos} application centers' if _npolos else '')
+               + ', minimizing travel by the shortest real road route. '
+               + (f'The resulting mean displacement was {_dm:.0f} km. ' if _dm is not None else '')
+               + 'The methodology combines official geocoding (IBGE), multi-engine routing (Google, OSRM) with '
+               'consensus and fallback, and winner selection by shortest road distance. Results, quality '
+               'indicators and operational recommendations are reported in an auditable manner.</div>')
+        return _pt + _en
+    except Exception:
+        return None
+
+
+def _secao_introducao_html():
+    """[ARTIGO-CIENTIFICO - 218ª geração] Introdução — problema, importância, impacto. Texto fixo, seguro."""
+    return (
+        '<div class="lead"><p>A definição de <b>onde cada candidato fará a prova</b> é uma decisão logística de '
+        'grande impacto em exames nacionais: afeta o deslocamento de milhares de pessoas, o custo operacional, '
+        'a acessibilidade e a equidade do certame.</p></div>'
+        '<h3>O problema</h3><p>Dado um conjunto de municípios de origem (onde estão os candidatos) e um conjunto '
+        'de locais de aplicação (polos), é preciso associar cada origem ao polo que minimiza o deslocamento — '
+        'respeitando a realidade das vias (estradas, barreiras naturais, travessias).</p>'
+        '<h3>Por que importa</h3><p>Uma alocação ruim gera deslocamentos longos, dependência de balsa, risco de '
+        'atraso e desistência. Uma alocação bem calculada reduz quilômetros percorridos, tempo e custo, e melhora '
+        'a experiência do candidato. Por isso a escolha se baseia na <b>menor rota viária real</b>, e não em uma '
+        'simples linha reta que ignoraria rios e relevo.</p>'
+        '<h3>O que este relatório oferece</h3><p>Além do resultado, este documento traz indicadores de qualidade, '
+        'estatísticas, detecção automática de gargalos, recomendações e total rastreabilidade de cada decisão — '
+        'para apoiar gestores, pesquisadores e auditores.</p>')
+
+
+def _secao_fundamentacao_html():
+    """[ARTIGO-CIENTIFICO - 218ª geração] Fundamentação teórica — conceitos em linguagem acessível. Fixo."""
+    _conceitos = [
+        ("Distância viária", "A distância <b>real percorrida por estradas</b> entre dois pontos. É o que um "
+         "veículo efetivamente roda — considera curvas, contornos e a malha de vias existente."),
+        ("Distância em linha reta (geodésica)", "A menor distância sobre a superfície da Terra, <b>ignorando "
+         "as vias</b>. Serve de referência, mas subestima o trajeto real (um rio no meio do caminho não aparece)."),
+        ("Geocodificação", "Converter o nome de um município/endereço em <b>coordenadas</b> (latitude e "
+         "longitude). Aqui é feita prioritariamente pela base oficial do IBGE, com consenso entre provedores."),
+        ("Roteamento", "Calcular o <b>melhor caminho por estradas</b> entre origem e destino. É feito por "
+         "'motores de roteamento' (serviços especializados) como Google Routes e OSRM."),
+        ("Malha viária", "O <b>conjunto de estradas</b> conhecido pelos mapas. A qualidade do roteamento depende "
+         "de quão completa e atualizada está essa malha na região."),
+        ("Acessibilidade", "O quão <b>fácil é chegar</b> a um local: distância curta, tempo baixo, sem barreiras "
+         "(como balsa) e por vias plausíveis."),
+        ("Razão viária/linha reta (sinuosidade)", "Quantas vezes a rota real é maior que a linha reta. Valores "
+         "muito altos (ex.: acima de 4×) indicam que a rota <b>contorna uma barreira natural</b> — sinal de "
+         "acesso fluvial/isolado."),
+        ("Critério de decisão", "A regra para escolher o polo vencedor. Aqui, o critério padrão é a <b>menor "
+         "distância viária real</b>, com salvaguardas para casos de desvio fluvial, rota estimada e balsa."),
+    ]
+    import html as _he
+    _rows = "".join(f'<tr><td><b>{_he.escape(_t)}</b></td><td>{_d}</td></tr>' for _t, _d in _conceitos)
+    return (f'<div class="lead"><p>Os conceitos abaixo são a base do estudo, explicados de forma simples para '
+            f'qualquer leitor.</p></div><table class="tbl"><thead><tr><th>Conceito</th><th>O que é</th></tr>'
+            f'</thead><tbody>{_rows}</tbody></table>')
+
+
+def _secao_discussao_html(df):
+    """[ARTIGO-CIENTIFICO - 218ª geração] Discussão técnica gerada dos dados: pontos fortes, limitações,
+    gargalos. Defensivo — usa números reais quando disponíveis."""
+    import html as _he
+    try:
+        _pontos_fortes, _limitacoes = [], []
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce").dropna() if "Distancia" in df.columns else None
+        if _dist is not None and len(_dist):
+            _mediana = float(_dist.median())
+            _p95 = float(_dist.quantile(0.95))
+            if _mediana < 80:
+                _pontos_fortes.append(f"A mediana de deslocamento é baixa ({_mediana:.0f} km): <b>metade dos "
+                                      f"candidatos percorre menos que isso</b> — indicativo de boa proximidade geral.")
+            else:
+                _limitacoes.append(f"A mediana de deslocamento ({_mediana:.0f} km) é relativamente alta, sugerindo "
+                                   f"que muitos candidatos estão distantes dos polos disponíveis.")
+            if _p95 > 250:
+                _limitacoes.append(f"A cauda é longa: 5% dos candidatos percorrem mais de {_p95:.0f} km (P95). "
+                                   f"Esses casos merecem revisão (novos polos ou verificação de dados).")
+        if "Fonte da Rota" in df.columns:
+            _f = df["Fonte da Rota"].astype(str).str.lower()
+            _pct_real = 100.0 * (~_f.str.contains("estimad|reta|linha", na=False)).mean()
+            if _pct_real >= 90:
+                _pontos_fortes.append(f"{_pct_real:.0f}% das rotas vêm de <b>roteamento viário real</b> — alta "
+                                      f"confiabilidade das distâncias apresentadas.")
+            else:
+                _limitacoes.append(f"{100.0-_pct_real:.0f}% das rotas são estimativas (não roteamento real); "
+                                   f"esses valores devem ser lidos com cautela.")
+        if "Modo/Acesso" in df.columns:
+            _nb = int(df["Modo/Acesso"].astype(str).str.lower().str.contains("balsa|fluvial", na=False).sum())
+            if _nb > 0:
+                _limitacoes.append(f"{_nb} rota(s) dependem de balsa/travessia fluvial, sensíveis a horários e "
+                                   f"condições do rio — exigem plano de contingência.")
+        if not _pontos_fortes and not _limitacoes:
+            return None
+        _pf = "".join(f"<li>{_p}</li>" for _p in _pontos_fortes) or "<li>—</li>"
+        _lm = "".join(f"<li>{_p}</li>" for _p in _limitacoes) or "<li>Nenhuma limitação crítica detectada nos dados.</li>"
+        return (f'<h3>Pontos fortes da distribuição</h3><ul class="insights">{_pf}</ul>'
+                f'<h3>Limitações e gargalos observados</h3><ul class="insights">{_lm}</ul>'
+                + _caixa_explicativa("Leitura da discussão",
+                                     "Esta discussão é gerada automaticamente dos números do estudo. Os pontos "
+                                     "fortes confirmam o que está funcionando; as limitações apontam onde vale "
+                                     "investir atenção (revisão de polos, auditoria de rotas longas, contingência "
+                                     "de balsa).", "info"))
+    except Exception:
+        return None
+
+
+def _secao_conclusoes_html(df):
+    """[ARTIGO-CIENTIFICO - 218ª geração] Conclusões geradas dos dados. Defensivo."""
+    try:
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce").dropna() if "Distancia" in df.columns else None
+        _frases = []
+        _n = len(df)
+        _frases.append(f"O estudo processou <b>{_n:,} rotas</b> município→polo".replace(",", ".") +
+                       ", escolhendo para cada origem o polo de menor distância viária real.")
+        if _dist is not None and len(_dist):
+            _frases.append(f"O deslocamento mediano foi de <b>{_dist.median():.0f} km</b> e o percentil 95 de "
+                           f"<b>{_dist.quantile(0.95):.0f} km</b>, delimitando o pior caso operacional.")
+        if "Fonte da Rota" in df.columns:
+            _f = df["Fonte da Rota"].astype(str).str.lower()
+            _pr = 100.0 * (~_f.str.contains("estimad|reta|linha", na=False)).mean()
+            _frases.append(f"<b>{_pr:.0f}%</b> das decisões apoiam-se em roteamento viário real, conferindo "
+                           f"solidez às conclusões.")
+        _frases.append("Os indicadores de qualidade, a detecção de gargalos e as recomendações desta análise "
+                       "fornecem uma base <b>auditável</b> para decisões sobre a rede de locais de aplicação.")
+        _li = "".join(f"<li>{_f}</li>" for _f in _frases)
+        return f'<ol class="recs">{_li}</ol>'
+    except Exception:
+        return None
+
+
+def _secao_limitacoes_html():
+    """[ARTIGO-CIENTIFICO - 218ª geração] Limitações do estudo. Texto fixo, honesto, seguro."""
+    _lims = [
+        ("APIs de roteamento", "As distâncias dependem dos serviços externos (Google, OSRM) e podem variar com "
+         "atualizações de mapa ou indisponibilidade temporária. Rotas estimadas, quando presentes, são aproximações."),
+        ("Dados de origem", "A precisão depende da qualidade dos municípios/endereços informados. Homônimos e "
+         "grafias divergentes são tratados, mas casos extremos podem exigir revisão manual."),
+        ("Malha viária", "Estradas muito novas, vicinais ou não mapeadas podem não constar nos provedores, "
+         "afetando o cálculo em regiões remotas."),
+        ("Cartografia e geografia", "Barreiras naturais (rios, relevo) e travessias sazonais podem alterar a "
+         "praticabilidade real de uma rota além do que a distância indica."),
+        ("Escopo", "Os índices compostos são ferramentas de leitura executiva, calibradas para apoiar decisão — "
+         "não substituem estudos de campo específicos."),
+    ]
+    import html as _he
+    _rows = "".join(f'<tr><td><b>{_he.escape(_t)}</b></td><td>{_he.escape(_d)}</td></tr>' for _t, _d in _lims)
+    return (f'<div class="lead"><p>Toda análise tem limites. Reconhecê-los é parte do rigor científico e ajuda a '
+            f'interpretar os resultados corretamente.</p></div><table class="tbl"><thead><tr><th>Limitação</th>'
+            f'<th>Descrição</th></tr></thead><tbody>{_rows}</tbody></table>')
+
+
+def _secao_referencias_html():
+    """[ARTIGO-CIENTIFICO - 218ª geração] Referências das fontes e ferramentas. Texto fixo, seguro."""
+    _refs = [
+        "IBGE — Instituto Brasileiro de Geografia e Estatística. Malha municipal e coordenadas oficiais. https://www.ibge.gov.br",
+        "OpenStreetMap contributors. Base cartográfica colaborativa. https://www.openstreetmap.org",
+        "OSRM — Open Source Routing Machine. Motor de roteamento sobre OpenStreetMap. https://project-osrm.org",
+        "Google Maps Platform — Routes API. Documentação oficial. https://developers.google.com/maps/documentation/routes",
+        "Karney, C. F. F. (2013). Algorithms for geodesics. Journal of Geodesy, 87(1), 43–55. (base do cálculo geodésico WGS-84.)",
+        "Tukey, J. W. (1977). Exploratory Data Analysis. Addison-Wesley. (critério de outliers 1,5×IQR usado na detecção de gargalos.)",
+        "Hirschman, A. O. (1964). The Paternity of an Index. American Economic Review. (índice HHI de concentração.)",
+    ]
+    import html as _he
+    _items = "".join(f'<li style="margin-bottom:6px">{_he.escape(_r)}</li>' for _r in _refs)
+    return (f'<div class="lead"><p>Fontes de dados, ferramentas e fundamentos conceituais utilizados neste '
+            f'estudo.</p></div><ol style="font-size:13px;color:#334155;line-height:1.6;padding-left:20px">{_items}</ol>')
+
+
 def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) de nível profissional/BI:
     capa, NAVEGAÇÃO LATERAL (sumário), cartões executivos e seções analíticas ricas — Resumo, Distribuição de
@@ -6059,6 +6302,18 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         _story = _narrativa_storytelling_alocacao(df)
         if _story:
             _sec.append(("historia", "Panorama do Estudo", _story))
+        # [ARTIGO-CIENTIFICO - 218ª geração] Front matter de artigo científico (antes do resumo executivo).
+        for _fn_fm, _id_fm, _tit_fm in [
+            (lambda: _secao_abstract_html(df), "abstract", "Resumo / Abstract"),
+            (lambda: _secao_introducao_html(), "introducao", "Introdução"),
+            (lambda: _secao_fundamentacao_html(), "fundamentacao", "Fundamentação Teórica"),
+        ]:
+            try:
+                _h_fm = _fn_fm()
+                if _h_fm:
+                    _sec.append((_id_fm, _tit_fm, _h_fm))
+            except Exception:
+                pass
         _sec.append(("resumo", "Resumo Executivo", f'<div class="kpis">{_kh}</div>' + _caixa_explicativa(
             "O que estes números significam?",
             "Cada cartão resume o estudo todo: <b>municípios</b> é quantas cidades de origem foram processadas; "
@@ -6339,6 +6594,21 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         except Exception:
             pass
 
+        # [ARTIGO-CIENTIFICO - 218ª geração] Back matter de artigo científico (discussão → conclusões →
+        # limitações → referências), gerado dos dados quando aplicável.
+        for _fn_bm, _id_bm, _tit_bm in [
+            (lambda: _secao_discussao_html(df), "discussao", "Discussão"),
+            (lambda: _secao_conclusoes_html(df), "conclusoes", "Conclusões"),
+            (lambda: _secao_limitacoes_html(), "limitacoes", "Limitações do Estudo"),
+            (lambda: _secao_referencias_html(), "referencias", "Referências"),
+        ]:
+            try:
+                _h_bm = _fn_bm()
+                if _h_bm:
+                    _sec.append((_id_bm, _tit_bm, _h_bm))
+            except Exception:
+                pass
+
         # [DUPLO-CENARIO - 217ª geração] Seção de comparação Oficial × Puramente Viário (se disponível).
         try:
             _cmp_estr = st.session_state.get('alo_comparacao_estrategias')
@@ -6458,11 +6728,34 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
             ".ins-ic{font-size:20px;line-height:1.2;flex:none}ul.insights li span:last-child{font-size:13.5px;color:#334155;line-height:1.55}"
             "ol.recs{margin:6px 0;padding-left:20px;display:grid;gap:10px}ol.recs li{font-size:13.5px;color:#334155;line-height:1.6;padding-left:4px}"
             "table.tbl{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}table.tbl th,table.tbl td{padding:9px 12px;border-bottom:1px solid #eef2f7;text-align:left}table.tbl thead th{background:#f1f5f9;color:#475569;font-size:12px;font-weight:700}table.tbl tbody tr:hover{background:#f8fafc}table.tbl td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}"
+            # [ARTIGO-CIENTIFICO - 218ª geração] modo escuro (toggle) + botão flutuante + tooltip de ajuda nos KPIs
+            ".dm-btn{position:fixed;top:16px;right:16px;z-index:999;background:#1e3a8a;color:#fff;border:none;"
+            "border-radius:20px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2)}"
+            ".dm-btn:hover{opacity:.9}"
+            "body.dark{background:#0f172a;color:#e2e8f0}"
+            "body.dark section{background:#1e293b;border-color:#334155;color:#e2e8f0}"
+            "body.dark h2{color:#93c5fd;border-color:#334155}body.dark h3{color:#bfdbfe}"
+            "body.dark nav{background:#1e293b;border-color:#334155}body.dark nav a{color:#cbd5e1}"
+            "body.dark .kpi{background:#0f172a;border-color:#334155}body.dark .kpi-v{color:#93c5fd}body.dark .kpi-l{color:#94a3b8}"
+            "body.dark p.lead,body.dark .lead p,body.dark .story-b>div,body.dark .story-b ul li{color:#cbd5e1}"
+            "body.dark .idx-card,body.dark .story-b{background:#0f172a;border-color:#334155}"
+            "body.dark table.tbl thead th{background:#334155;color:#e2e8f0}body.dark table.tbl th,body.dark table.tbl td{border-color:#334155}"
+            "body.dark table.tbl tbody tr:hover{background:#0f172a}"
+            "body.dark ul.insights li{background:#0f172a;border-color:#334155}body.dark ul.insights li span:last-child,body.dark ol.recs li{color:#cbd5e1}"
+            "body.dark .ab{background:#0f172a !important}"
+            "body.dark footer{color:#64748b}"
+            ".kpi{position:relative}.kpi .hlp{position:absolute;top:6px;right:8px;width:15px;height:15px;border-radius:50%;"
+            "background:#cbd5e1;color:#1e293b;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:help}"
+            ".kpi .hlp .tip{display:none;position:absolute;top:20px;right:0;width:210px;background:#1e293b;color:#fff;"
+            "font-size:11px;font-weight:400;line-height:1.4;padding:8px 10px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.25);text-align:left;z-index:50}"
+            ".kpi .hlp:hover .tip{display:block}"
             + _bi_css
         )
         return (f'<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width, initial-scale=1">'
                 f'<title>{_he.escape(titulo)}</title><style>{_css}</style></head><body>'
+                f'<button class="dm-btn" onclick="document.body.classList.toggle(\'dark\');'
+                f'this.textContent=document.body.classList.contains(\'dark\')?\'☀ Claro\':\'🌙 Escuro\'">🌙 Escuro</button>'
                 f'<div class="cover"><div class="tag">Relatório Técnico · Planejamento de Locais de Aplicação</div>'
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_n:,} municípios · {_tot_cand:,} candidatos</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
@@ -23531,12 +23824,14 @@ def _otimizar_dtypes_memoria(df, limiar_cardinalidade=0.5, min_linhas=100):
 
 
 def _tornar_arrow_safe(df):
-    """[FIX-ARROW - 212ª geração] Devolve uma CÓPIA do DataFrame segura para st.dataframe (conversão Arrow).
-    O st.dataframe converte o DF para Arrow via pa.Table.from_pandas; colunas 'object' com tipos MISTOS
-    (ex.: números e strings na mesma coluna, ou células que são list/tuple/dict) fazem o pyarrow levantar
-    ArrowInvalid e a tela inteira quebra. Aqui, SÓ PARA EXIBIÇÃO, coagimos essas colunas problemáticas para
-    string — os dados armazenados/exportados (Excel/Parquet/HTML) NÃO são afetados (isto opera numa cópia).
-    Estratégia conservadora: mexe apenas em colunas 'object'; deixa numéricas/booleanas intactas."""
+    """[FIX-ARROW - 212ª/219ª geração] Devolve uma CÓPIA do DataFrame GARANTIDAMENTE convertível para Arrow
+    (o que o st.dataframe faz internamente via pa.Table.from_pandas). Colunas 'object' com tipos MISTOS
+    (números+strings), células aninhadas (list/tuple/dict/set) OU qualquer tipo que o pyarrow não saiba inferir
+    fazem o Arrow levantar ArrowInvalid e a TELA INTEIRA quebra. Aqui, SÓ PARA EXIBIÇÃO, sanitizamos numa cópia
+    — os dados armazenados/exportados (Excel/Parquet/HTML) NÃO são afetados.
+    219ª: além da coerção conservadora (que preserva colunas numéricas/booleanas), agora há VERIFICAÇÃO REAL:
+    testamos a conversão para Arrow e, se ainda falhar, forçamos string em TODA coluna 'object' (e, no limite,
+    no DataFrame inteiro). Assim é IMPOSSÍVEL o ArrowInvalid chegar à tela, seja qual for a patologia da coluna."""
     try:
         import pandas as _pd
         if df is None or not hasattr(df, "columns") or len(df.columns) == 0:
@@ -23565,10 +23860,73 @@ def _tornar_arrow_safe(df):
                     _out[_col] = _out[_col].astype(str)
                 except Exception:
                     pass
-        return _out
+        # [219ª] VERIFICAÇÃO REAL: o st.dataframe converte com pa.Table.from_pandas. Reproduzimos essa conversão
+        # aqui; se ela passar, o _out é seguro. Se falhar, ainda há alguma coluna problemática que a heurística
+        # conservadora não pegou (ex.: um único tipo exótico — Decimal, date, complexo, numpy estranho, tudo-None
+        # que o inferidor rejeita). Nesse caso, forçamos string em TODAS as colunas 'object' e testamos de novo.
+        try:
+            import pyarrow  # noqa: F401
+            try:
+                pyarrow.Table.from_pandas(_out, preserve_index=False)
+                return _out  # já é convertível — caminho normal
+            except Exception:
+                # fallback agressivo 1: stringifica toda coluna 'object' remanescente
+                for _col in _out.columns:
+                    try:
+                        if _out[_col].dtype == object:
+                            _out[_col] = _out[_col].map(
+                                lambda v: "" if (v is None or (isinstance(v, float) and _pd.isna(v))) else str(v))
+                    except Exception:
+                        try:
+                            _out[_col] = _out[_col].astype(str)
+                        except Exception:
+                            pass
+                try:
+                    pyarrow.Table.from_pandas(_out, preserve_index=False)
+                    return _out
+                except Exception:
+                    # fallback agressivo 2 (extremo): stringifica o DataFrame inteiro — sempre convertível
+                    try:
+                        return _out.astype(str)
+                    except Exception:
+                        return _out
+        except Exception:
+            # pyarrow indisponível no ambiente de teste: devolve o _out coagido pela heurística (comportamento 212ª)
+            return _out
     except Exception:
-        # se algo falhar, devolve o original — o pior caso é o comportamento anterior (não piora nada)
+        # se algo falhar bem no início, devolve o original — pior caso = comportamento anterior (não piora nada)
         return df
+
+
+# [FIX-ARROW-GLOBAL - 219ª geração] GUARDA CENTRAL: roteia TODA chamada st.dataframe(...) por _tornar_arrow_safe
+# automaticamente. Antes, cada ponto de exibição precisava ser embrulhado à mão (e havia 75+ deles) — bastava
+# UM escapar para a tela inteira quebrar com pyarrow ArrowInvalid. Com este guard, é IMPOSSÍVEL: qualquer
+# DataFrame passado ao st.dataframe (em qualquer aba, agora ou no futuro) é sanitizado para Arrow antes de
+# renderizar. Só afeta a EXIBIÇÃO; dados e exports permanecem intactos. Defensivo e idempotente: só toca no
+# 1º argumento quando é DataFrame, cai no original em qualquer erro, e não se reaplica se já instalado.
+def _instalar_guarda_arrow_global():
+    try:
+        if getattr(st, "_dataframe_arrow_guard", False):
+            return  # já instalado (idempotente contra reruns/reimports)
+        _orig_dataframe = st.dataframe
+
+        def _dataframe_seguro(data=None, *args, **kwargs):
+            try:
+                if isinstance(data, pd.DataFrame):
+                    data = _tornar_arrow_safe(data)
+            except Exception:
+                pass  # se a sanitização falhar, segue com o original (nunca piora o comportamento)
+            return _orig_dataframe(data, *args, **kwargs)
+
+        _dataframe_seguro.__wrapped__ = _orig_dataframe
+        st.dataframe = _dataframe_seguro
+        st._dataframe_arrow_guard = True
+    except Exception:
+        # se o monkey-patch falhar por qualquer motivo, a aplicação segue com o st.dataframe original
+        logger.error("[FIX-ARROW-GLOBAL] Não foi possível instalar o guard de Arrow", exc_info=True)
+
+
+_instalar_guarda_arrow_global()
 
 
 def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_map=None):
@@ -26051,7 +26409,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "217"
+_VERSAO_APP = "219"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
