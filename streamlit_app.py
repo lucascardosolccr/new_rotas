@@ -63,6 +63,29 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (220ª geração) → 🚗 GRAPHHOPPER EM PARIDADE com Google/OSRM: dados + link + mapa no validador e na planilha [GRAPHHOPPER-PARIDADE]
+#     Antes o GraphHopper competia pela menor rota, mas seus dados PRÓPRIOS não apareciam separadamente — quando
+#     vencia, era rotulado como o contendor genérico; quando perdia, sumia. Agora ele tem tratamento de 1ª
+#     classe, igual a Google e OSRM, INDEPENDENTEMENTE de quem vence a disputa.
+#     ARQUITETURA (aditiva, baixo acoplamento):
+#     - Novo campo RotaPipeline 'dados_graphhopper' (índice 41, default "") — ADITIVO, preserva todos os índices
+#       0-40. Codifica 'km‖tempo‖balsa‖link‖geometria' (separador ‖ para a polyline sobreviver ao round-trip).
+#       Helpers _montar_/_parsear_dados_graphhopper (à prova de parsing). RotaPipeline: 41 → 42 campos.
+#     - Captura: logo após a consulta ao GraphHopper na disputa, guarda os dados dele (km, tempo, balsa,
+#       geometria) + monta um link de navegação Google Maps por coordenadas (sempre traça, igual ao OSRM).
+#       Preenchido nas DUAS construções (viária e geodésica). Defensivo: sem chave/sem resposta → vazio.
+#     ENTREGAS (paridade total com Google/OSRM):
+#     - VALIDADOR RÁPIDO: nova seção "Rota do GraphHopper" com métricas próprias (distância, tempo, balsa),
+#       MAPA da geometria exata (Leaflet autocontido, mesmo builder do OSRM) e LINK de navegação. Só aparece
+#       quando o GraphHopper respondeu.
+#     - PLANILHA EXPORTÁVEL: 4 colunas novas — 'Distancia GraphHopper (km)', 'Tempo GraphHopper (min)',
+#       'Balsa GraphHopper', 'Link Rota GraphHopper' — ao lado das de Google/OSRM.
+#     PROVA DEDICADA (verify_graphhopper_paridade): round-trip dos dados preserva link e polyline; campo
+#     presente e preenchido nas 2 construções; 4 colunas na planilha; seção no validador com mapa Leaflet;
+#     captura independente do vencedor. Tudo defensivo (sem chave → campo vazio → nada muda).
+#     NÃO-REGRESSÃO (16 provas cumulativas + testes HTML/Excel + prova dedicada): campo ADITIVO (índices 0-40
+#     intactos); sem GRAPHHOPPER_API_KEY o comportamento é idêntico ao anterior (campo vazio, seção/colunas não
+#     aparecem). Imports IDÊNTICOS ao baseline. Requirements: INALTERADO. RotaPipeline documentado: 42 campos.
 #   v3.8 (219ª geração) → 🧯🔒 ARROWINVALID NUNCA MAIS: guard GLOBAL no st.dataframe + sanitizador reforçado [FIX-ARROW-GLOBAL]
 #     O erro "pyarrow.lib.ArrowInvalid" voltou porque a correção da 212ª dependia de embrulhar CADA ponto de
 #     exibição à mão (_tornar_arrow_safe em volta do st.dataframe) — e há 75+ chamadas st.dataframe na app.
@@ -3414,6 +3437,12 @@ class RotaPipeline(NamedTuple):
     # nunca por índice fixo. Default None (compatível com construção por keyword + tuplas de falha).
     auditoria_concorrente: dict = None
 
+    # [GRAPHHOPPER-PARIDADE - 220ª geração] Dados PRÓPRIOS do GraphHopper (paridade com Google/OSRM), para
+    # exibir no Validador Rápido (valores + link + mapa) e na planilha. String compacta à prova de parsing:
+    # 'km|tempo_min|balsa|link_maps|geo_polyline'. Vazio quando o GraphHopper não respondeu / sem chave.
+    # ADITIVO no FIM do NamedTuple: não altera nenhum índice existente; lido sempre por NOME (getattr).
+    dados_graphhopper: str = ""
+
 def _montar_comparativo_provedores(km_g, tempo_g, km_o, tempo_o, fonte_vencedora):
     """[COMP-PROV - 21ª geração] Codifica os dados de comparação entre Google e OSRM
     num formato compacto e à prova de parsing (sem JSON, sem caracteres problemáticos):
@@ -3443,6 +3472,38 @@ def _parsear_comparativo_provedores(s):
             "km_osrm": km_o,
             "tempo_osrm": partes[3],
             "fonte_vencedora": partes[4],
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def _montar_dados_graphhopper(km, tempo_min, balsa, link_maps, geo_poly):
+    """[GRAPHHOPPER-PARIDADE - 220ª geração] Codifica os dados PRÓPRIOS do GraphHopper para exibição em
+    paridade com Google/OSRM. Separador '‖' (não aparece em polylines nem em texto comum) para o geo_poly
+    sobreviver ao round-trip. Formato: 'km‖tempo_min‖balsa‖link_maps‖geo_poly'. Campos ausentes viram ''."""
+    def _f(v):
+        return str(v) if v is not None and v != "" else ""
+    return f"{_f(km)}‖{_f(tempo_min)}‖{_f(balsa)}‖{_f(link_maps)}‖{_f(geo_poly)}"
+
+
+def _parsear_dados_graphhopper(s):
+    """[GRAPHHOPPER-PARIDADE - 220ª geração] Decodifica os dados do GraphHopper. Retorna dict ou None se
+    indisponível/malformado. Robusto a campos vazios."""
+    if not s or "‖" not in s:
+        return None
+    _p = s.split("‖")
+    if len(_p) < 4:
+        return None
+    try:
+        _km = float(_p[0]) if _p[0] else None
+        if _km is None or _km <= 0:
+            return None
+        return {
+            "km": _km,
+            "tempo_min": _p[1],
+            "balsa": _p[2] if len(_p) > 2 else "",
+            "link_maps": _p[3] if len(_p) > 3 else "",
+            "geo_poly": _p[4] if len(_p) > 4 else "",
         }
     except (ValueError, IndexError):
         return None
@@ -21473,6 +21534,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     # com cota própria (chave). Guarda os resultados de cada motor para a auditoria.
     fonte_contendor = "OSRM"
     _motores_resultados = {"OSRM": res_osrm}
+    _res_gh = None  # [GRAPHHOPPER-PARIDADE - 220ª] garante escopo mesmo quando o guard de coordenada não entra
+    _dados_gh_str = ""  # [GRAPHHOPPER-PARIDADE - 220ª] dados próprios do GraphHopper p/ paridade (default vazio)
     if lat_o != 0.0 and lat_d != 0.0:
         # [AUDITORIA-199-B - revisão crítica] Só consulta motores COM CHAVE se a chave existir. O usuário
         # decidiu NÃO usar chave; sem esta guarda, GraphHopper/ORS eram chamados a cada rota só para retornar
@@ -21480,6 +21543,20 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         # secrets como PONTO DE PLUGAGEM para um motor próprio/self-hosted (caminho robusto recomendado):
         # basta configurar a chave que voltam a entrar na disputa, sem tocar no código.
         _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d) if GRAPHHOPPER_API_KEY else None
+        # [GRAPHHOPPER-PARIDADE - 220ª geração] Captura os dados PRÓPRIOS do GraphHopper (km, tempo, balsa,
+        # link de navegação, geometria) para exibir em paridade com Google/OSRM — independentemente de quem
+        # vence a disputa. Link de navegação: Google Maps por coordenadas (sempre traça o trajeto), mesma
+        # abordagem já usada para o OSRM. Defensivo: qualquer falha → string vazia (motor apenas não aparece).
+        try:
+            if _res_gh and _res_gh[0] and float(_res_gh[0]) > 0:
+                _gh_km = float(_res_gh[0])
+                _gh_tmin = _res_gh[1] if len(_res_gh) > 1 else None
+                _gh_bal = _res_gh[2] if len(_res_gh) > 2 else "Não"
+                _gh_geo = _res_gh[4] if len(_res_gh) > 4 else ""
+                _gh_link = f"https://www.google.com/maps/dir/?api=1&origin={lat_o},{lon_o}&destination={lat_d},{lon_d}&travelmode=driving"
+                _dados_gh_str = _montar_dados_graphhopper(round(_gh_km, 2), _gh_tmin, _gh_bal, _gh_link, _gh_geo)
+        except Exception:
+            _dados_gh_str = ""
         _res_ors = API_ORS_Routing(lat_o, lon_o, lat_d, lon_d) if ORS_API_KEY else None
         # [OSRM-CONSENSO - 192ª geração] 2º backend OSRM (FOSSGIS) — SEM chave — como fonte de consenso.
         # OPT-IN (st.session_state['usar_osrm2']) porque a política do FOSSGIS proíbe uso pesado: no lote
@@ -21815,7 +21892,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             link_osrm_viewer=link_osrm_viewer,
             link_embed_comparativo=link_embed_comparativo,
             link_rota_comparativo=link_rota_comparativo,
-            auditoria_motores=auditoria_motores
+            auditoria_motores=auditoria_motores,
+            dados_graphhopper=_dados_gh_str
         )
         CACHE_L1_ROTAS[chave_rota_cache] = retorno
         _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
@@ -21855,7 +21933,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         tempo_geocoding=tempo_geocoding, tempo_roteamento=tempo_roteamento, tempo_total=tempo_total,
         xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_fallback,
         link_embed=link_embed_geodesico, status_linha_reta=status_linha_reta,
-        auditoria_motores=auditoria_motores
+        auditoria_motores=auditoria_motores,
+        dados_graphhopper=_dados_gh_str
     )
     CACHE_L1_ROTAS[chave_rota_cache] = retorno
     _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
@@ -24087,6 +24166,26 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
                         _d_id = _aud.get('destino', {}) or {}
                         linha_dict['Distancia Google (km)'] = _g.get('distancia_km') if _g.get('distancia_km') is not None else "N/A"
                         linha_dict['Distancia OSRM (km)'] = _os.get('distancia_km') if _os.get('distancia_km') is not None else "N/A"
+                        # [GRAPHHOPPER-PARIDADE - 220ª geração] Colunas PRÓPRIAS do GraphHopper na planilha, em
+                        # paridade com Google/OSRM (valores que o GraphHopper encontrou para esta rota).
+                        try:
+                            _gh_row = _parsear_dados_graphhopper(res[41]) if len(res) > 41 and res[41] else None
+                        except Exception:
+                            _gh_row = None
+                        if _gh_row:
+                            linha_dict['Distancia GraphHopper (km)'] = _gh_row.get('km', "N/A")
+                            _ghtm = _gh_row.get('tempo_min', "")
+                            try:
+                                linha_dict['Tempo GraphHopper (min)'] = int(float(_ghtm)) if _ghtm not in ("", None) else "N/A"
+                            except (ValueError, TypeError):
+                                linha_dict['Tempo GraphHopper (min)'] = "N/A"
+                            linha_dict['Balsa GraphHopper'] = _gh_row.get('balsa', "Não") or "Não"
+                            linha_dict['Link Rota GraphHopper'] = _gh_row.get('link_maps', "N/A") or "N/A"
+                        else:
+                            linha_dict['Distancia GraphHopper (km)'] = "N/A"
+                            linha_dict['Tempo GraphHopper (min)'] = "N/A"
+                            linha_dict['Balsa GraphHopper'] = "N/A"
+                            linha_dict['Link Rota GraphHopper'] = "N/A"
                         linha_dict['Diferença Absoluta (km)'] = _cons.get('divergencia_km') if _cons.get('divergencia_km') is not None else "N/A"
                         linha_dict['Diferença (%)'] = _cons.get('divergencia_pct') if _cons.get('divergencia_pct') is not None else "N/A"
                         linha_dict['Classificação da Divergência'] = _cons.get('divergencia_classificacao') if _cons.get('divergencia_classificacao') else "N/A"
@@ -26409,7 +26508,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "219"
+_VERSAO_APP = "220"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -27444,6 +27543,57 @@ if _secao == _SECOES[0]:   # tab_individual
                                 st.markdown(f"🧭 [Abrir rota comparativa no Google Maps]({_link_comp})")
                         st.caption(f"⚖️ Consulte o painel **Comparativo entre Provedores** (acima) para as métricas de "
                                    f"distância, tempo e divergência entre **{_win_prov}** (vencedor) e **{_comp_prov}** (comparativo).")
+
+                # [GRAPHHOPPER-PARIDADE - 220ª geração] Seção do GraphHopper em PARIDADE com Google/OSRM:
+                # valores próprios (km, tempo, balsa) + mapa da geometria + link de navegação. Só aparece quando
+                # o GraphHopper respondeu (chave configurada e rota retornada). Aditivo — não altera nada acima.
+                try:
+                    _gh_raw = res_ind[41] if len(res_ind) > 41 else ""
+                    _gh = _parsear_dados_graphhopper(_gh_raw) if _gh_raw else None
+                except Exception:
+                    _gh = None
+                if _gh:
+                    st.write("")
+                    with st.container(border=True):
+                        st.markdown("##### 🚗 Rota do **GraphHopper** _(motor com chave, em paridade)_")
+                        _ghc1, _ghc2, _ghc3 = st.columns(3)
+                        _gh_tmin_txt = _gh.get("tempo_min", "")
+                        try:
+                            _gh_tmin_i = int(float(_gh_tmin_txt)) if _gh_tmin_txt not in ("", None) else None
+                            _gh_tempo_fmt = ("—" if _gh_tmin_i is None else
+                                             (f"{_gh_tmin_i} min" if _gh_tmin_i < 60 else f"{_gh_tmin_i // 60} h {_gh_tmin_i % 60} min"))
+                        except (ValueError, TypeError):
+                            _gh_tempo_fmt = "—"
+                        _ghc1.metric("Distância (GraphHopper)", f"{_gh['km']:.1f} km",
+                                     help="Distância viária calculada pelo motor GraphHopper para esta mesma origem e destino.")
+                        _ghc2.metric("Tempo estimado", _gh_tempo_fmt,
+                                     help="Tempo de percurso estimado pelo GraphHopper.")
+                        _ghc3.metric("Travessia por balsa", _gh.get("balsa", "Não") or "Não",
+                                     help="Se a rota do GraphHopper envolve travessia fluvial/balsa.")
+                        # mapa da geometria do GraphHopper (Leaflet autocontido, mesma abordagem do OSRM)
+                        _gh_geo = _gh.get("geo_poly", "")
+                        _gh_mapa_ok = False
+                        if _gh_geo:
+                            try:
+                                _gh_html_mapa = _gerar_mapa_leaflet_rota(
+                                    _gh_geo, float(res_ind[19]), float(res_ind[20]),
+                                    float(res_ind[21]), float(res_ind[22]),
+                                    nome_origem=str(res_ind[10]) if len(res_ind) > 10 else "",
+                                    nome_destino=str(res_ind[16]) if len(res_ind) > 16 else "",
+                                    distancia_km=f"{_gh['km']:.1f}", tempo_str=_gh_tempo_fmt,
+                                    provedor="GraphHopper", cor="#7c3aed") if "_gerar_mapa_leaflet_rota" in globals() else ""
+                                if _gh_html_mapa:
+                                    components.html(_gh_html_mapa, height=420, scrolling=False)
+                                    _gh_mapa_ok = True
+                                    st.caption("🗺️ Mapa: **geometria exata** da rota calculada pelo GraphHopper.")
+                            except Exception:
+                                _gh_mapa_ok = False
+                        if not _gh_mapa_ok:
+                            st.caption("🗺️ O GraphHopper retornou distância e tempo; o traçado detalhado pode não estar disponível para esta rota.")
+                        if _gh.get("link_maps"):
+                            st.markdown(f"🧭 [Abrir esta rota no Google Maps para navegar]({_gh['link_maps']})")
+                        st.caption("ℹ️ O **GraphHopper** é um motor de roteamento com chave que participa da disputa pela menor rota "
+                                   "viária, em igualdade com Google e OSRM. Estes são os valores que **ele** encontrou para esta rota.")
             else:
                 st.error("Falha na validação de consistência geodésica unificada.")
         else:
