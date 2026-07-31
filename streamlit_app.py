@@ -63,6 +63,58 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (222ª geração) → 🩹 CORREÇÃO DA CONFLAÇÃO OSRM×GraphHopper + GraphHopper 1ª classe em TODA a app [GRAPHHOPPER-PARIDADE-FIX]
+#     O usuário reportou (corretamente) 4 bugs reais da 220ª/221ª:
+#       (a) valores do GraphHopper apareciam rotulados como OSRM no validador;
+#       (b) mapa do Google aparecia rotulado "Rota comparativa — OSRM";
+#       (c) a seção "Rota do GraphHopper" mostrava link do Google Maps;
+#       (d) Diagnóstico & Auditoria só comparava Google×OSRM, sem GraphHopper.
+#     CAUSA RAIZ (arquitetural, antiga): a app nasceu com modelo de 2 motores — "Google × contendor", onde a
+#     variável res_osrm é REATRIBUÍDA ao vencedor da vaga de contendor. Quando o GraphHopper vence, res_osrm
+#     passa a conter os dados DELE, mas continua rotulado "OSRM". E a detecção de vencedor da UI
+#     (_eh_osrm_ui = "OSRM" in fonte_rota) não reconhecia "GraphHopper (Menor Distância)" → caía em
+#     é_google=True → mostrava o mapa do Google como principal e rotulava errado o comparativo.
+#     CORREÇÕES (todas provadas, cirúrgicas):
+#     1) AUDITORIA distingue OSRM REAL × GraphHopper: _montar_auditoria_motores ganhou km_osrm_real (o OSRM
+#        original, preservado em _motores_resultados["OSRM"] ANTES da reatribuição) e um BLOCO PRÓPRIO do
+#        GraphHopper (km/tempo/balsa/link deles). As 2 chamadas passam esses dados. A divergência do consenso
+#        passa a usar o OSRM real, não o contendor. Fim da conflação na auditoria.
+#     2) DETECÇÃO DE VENCEDOR na UI reconhece QUALQUER contendor (OSRM/GraphHopper/ORS) via _eh_contendor_ui +
+#        _nome_vencedor_ui. GraphHopper deixa de ser tratado como Google; o mapa principal passa a ser a
+#        geometria do vencedor real, e todos os rótulos ("venceu", "comparativo", downloads, visualizador)
+#        usam o NOME REAL do motor.
+#     3) LINK do GraphHopper agora é o mapa do PRÓPRIO GraphHopper (graphhopper.com/maps), não Google — no
+#        validador e na auditoria.
+#     4) DIAGNÓSTICO & AUDITORIA ganhou bloco do GraphHopper (distância/tempo/balsa + divergência × Google +
+#        link), lido do bloco dedicado da auditoria. Agora os TRÊS motores aparecem, cada um com seus valores.
+#     PROVA DEDICADA (verify_graphhopper_paridade estendido): com GraphHopper vencendo, o bloco OSRM mostra o
+#     OSRM real e o bloco GraphHopper mostra os dados dele (link GH); a detecção classifica GraphHopper como
+#     contendor (≠ Google); rótulos/observação corretos. 18 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: sem GRAPHHOPPER_API_KEY, bloco graphhopper=None e a UI se comporta EXATAMENTE como antes
+#     (Google×OSRM); km_osrm_real ausente → usa km_osrm (compatibilidade). Imports IDÊNTICOS. RotaPipeline: 42
+#     campos (intacto). Requirements: INALTERADO.
+#   v3.8 (221ª geração) → 🔀 COMPARADOR: seletor Oficial×Viário + Estudo 2 recarregável + Sankey/mapa dos alterados [DUPLO-CENARIO-COMPARADOR]
+#     Fecha o pedido do duplo cenário (217ª) com as 3 peças que faltavam, todas testadas:
+#     (1) SELETOR DE CENÁRIO no Comparador de Estudos: entendido como o Comparador carrega o estudo — ele usa
+#         st.session_state['df_processado'] (o estudo OFICIAL da alocação) contra a base de referência. Agora,
+#         quando a alocação produziu a comparação de estratégias e há municípios que mudaram, aparece um radio
+#         "Comparar usando: Oficial / Puramente Viário". Ao escolher Viário, o estudo da app vira a versão
+#         puramente viária ANTES de toda a comparação — todas as análises passam a refletir esse cenário.
+#     (2) ESTUDO 2 RECARREGÁVEL: _df_estudo_puramente_viaria() constrói o DataFrame do Estudo 2 do df oficial +
+#         comparação (troca polo+distância SÓ dos municípios alterados; original intacto por cópia). Botão na
+#         aba Locais de Aplicação gera uma PLANILHA INDEPENDENTE (.xlsx com aba de dados + aba de comparação)
+#         que pode ser recarregada no Comparador como base de referência. Só aparece quando há alterados.
+#     (3) SANKEY + MAPA EXCLUSIVOS dos alterados: _graficos_comparacao_estrategias_html() gera (a) um Sankey do
+#         fluxo polo-oficial → polo-viário dos municípios que mudaram e (b) um mapa (Scattergeo, Brasil) das
+#         origens alteradas — plugados na seção "Comparação entre Estratégias" do relatório HTML. Plotly com
+#         include_plotlyjs=False (o relatório já carrega o Plotly antes).
+#     PROVA DEDICADA (verify_comparador_cenario): Estudo 2 troca só o alterado e não muta o original; Sankey e
+#     mapa gerados com Plotly quando há alterados e vazios quando não há; seletor/export/gráficos presentes e
+#     plugados. 18 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: tudo ADITIVO e condicionado a "houve mudança entre estratégias" — sem mudanças (ou sem a
+#     comparação calculada), o Comparador, a aba de alocação e o relatório ficam idênticos ao anterior; o
+#     seletor/botão/gráficos nem aparecem. Imports IDÊNTICOS ao baseline. RotaPipeline: 42 campos (intacto).
+#     Requirements: INALTERADO.
 #   v3.8 (220ª geração) → 🚗 GRAPHHOPPER EM PARIDADE com Google/OSRM: dados + link + mapa no validador e na planilha [GRAPHHOPPER-PARIDADE]
 #     Antes o GraphHopper competia pela menor rota, mas seus dados PRÓPRIOS não apareciam separadamente — quando
 #     vencia, era rotulado como o contendor genérico; quando perdia, sumia. Agora ele tem tratamento de 1ª
@@ -6050,10 +6102,93 @@ def _glossario_html():
     return f'<table class="tbl"><thead><tr><th>Termo</th><th>Definição</th></tr></thead><tbody>{_rows}</tbody></table>'
 
 
-def _secao_comparacao_estrategias_html(comparacao):
-    """[DUPLO-CENARIO - 217ª geração] Seção HTML 'Comparação entre Estratégias de Escolha' (Oficial ×
-    Puramente Viário): resumo, mudanças por critério e tabela dos municípios alterados com explicação
-    automática. Recebe o dict de _comparar_estrategias_alocacao. Defensivo: sem dados → None."""
+def _graficos_comparacao_estrategias_html(comparacao, df=None):
+    """[DUPLO-CENARIO-COMPARADOR - 221ª geração] Gráficos EXCLUSIVOS da comparação: (1) Sankey do fluxo de
+    mudança de polos (polo oficial → polo puramente viário) dos municípios alterados; (2) MAPA dos municípios
+    que mudaram (coordenadas de origem do df). Plotly com include_plotlyjs=False (o relatório já carrega o
+    Plotly antes). PURO e defensivo: sem dados/sem Plotly → ''. """
+    try:
+        _mud = [pc for pc in (comparacao or {}).get("por_cliente", []) if pc.get("mudou") == "Sim"]
+        if not _mud:
+            return ""
+        import plotly.graph_objects as _go
+        _partes = []
+        # ---- (1) SANKEY: polo oficial → polo puramente viário ----
+        try:
+            _labels, _idx = [], {}
+            def _li(nome):
+                _n = f"{nome}"
+                if _n not in _idx:
+                    _idx[_n] = len(_labels)
+                    _labels.append(_n)
+                return _idx[_n]
+            _src, _tgt, _val = [], [], []
+            _fluxo = {}
+            for _pc in _mud:
+                _o = f"Oficial: {_pc.get('vencedor_oficial','?')}"
+                _v = f"Viário: {_pc.get('vencedor_viaria','?')}"
+                _fluxo[(_o, _v)] = _fluxo.get((_o, _v), 0) + 1
+            for (_o, _v), _q in sorted(_fluxo.items(), key=lambda kv: kv[1], reverse=True)[:40]:
+                _src.append(_li(_o)); _tgt.append(_li(_v)); _val.append(_q)
+            if _src:
+                _fig_sk = _go.Figure(data=[_go.Sankey(
+                    node=dict(pad=14, thickness=16, line=dict(color="#cbd5e1", width=0.5),
+                              label=_labels, color="#2563eb"),
+                    link=dict(source=_src, target=_tgt, value=_val, color="rgba(37,99,235,0.28)"))])
+                _fig_sk.update_layout(title_text="Mudança de polo: Oficial → Puramente Viário (municípios alterados)",
+                                      font_size=11, height=max(300, min(680, 90 + 26 * len(_labels))),
+                                      margin=dict(l=10, r=10, t=44, b=10))
+                _partes.append(_fig_sk.to_html(full_html=False, include_plotlyjs=False,
+                                               config={"displayModeBar": False}))
+                _partes.append(_caixa_explicativa(
+                    "Como ler o Sankey",
+                    "Cada fluxo liga o polo que o <b>estudo oficial</b> escolheu (esquerda) ao polo que a "
+                    "<b>menor rota</b> indicaria (direita), para os municípios que mudaram. Fluxos mais grossos = "
+                    "mais municípios fazendo aquela troca. Ajuda a ver para quais polos a carga migraria num "
+                    "cenário puramente viário.", "info"))
+        except Exception:
+            pass
+        # ---- (2) MAPA dos municípios alterados ----
+        try:
+            if df is not None and len(df) > 0:
+                _col_org = "Municipio Origem" if "Municipio Origem" in df.columns else None
+                _lat_c = next((c for c in ["Lat Origem", "Latitude Origem", "lat_origem", "Latitude"] if c in df.columns), None)
+                _lon_c = next((c for c in ["Lon Origem", "Longitude Origem", "lon_origem", "Longitude"] if c in df.columns), None)
+                if _col_org and _lat_c and _lon_c:
+                    _muns_mud = {str(pc.get("municipio")) for pc in _mud}
+                    _dfx = df[df[_col_org].astype(str).isin(_muns_mud)].copy()
+                    _dfx["_lat"] = pd.to_numeric(_dfx[_lat_c], errors="coerce")
+                    _dfx["_lon"] = pd.to_numeric(_dfx[_lon_c], errors="coerce")
+                    _dfx = _dfx[(_dfx["_lat"].notna()) & (_dfx["_lon"].notna()) & (_dfx["_lat"] != 0)]
+                    if len(_dfx) > 0:
+                        _fig_mp = _go.Figure(_go.Scattergeo(
+                            lat=_dfx["_lat"], lon=_dfx["_lon"], mode="markers",
+                            marker=dict(size=7, color="#dc2626", opacity=0.75, line=dict(width=0.5, color="#7f1d1d")),
+                            text=_dfx[_col_org].astype(str), hoverinfo="text"))
+                        _fig_mp.update_layout(
+                            title_text="Municípios que mudaram de vencedor (localização das origens)",
+                            height=460, margin=dict(l=6, r=6, t=44, b=6),
+                            geo=dict(scope="south america", showland=True, landcolor="#f1f5f9",
+                                     countrycolor="#cbd5e1", showcountries=True,
+                                     lataxis=dict(range=[-34, 6]), lonaxis=dict(range=[-74, -34])))
+                        _partes.append(_fig_mp.to_html(full_html=False, include_plotlyjs=False,
+                                                       config={"displayModeBar": False}))
+                        _partes.append(_caixa_explicativa(
+                            "Como ler o mapa",
+                            "Cada ponto é um município cuja escolha de polo <b>muda</b> entre o estudo oficial e o "
+                            "puramente viário. Concentrações geográficas costumam indicar regiões com barreiras "
+                            "naturais (rios/relevo) — onde o critério de acesso fluvial/isolado mais atua.", "info"))
+        except Exception:
+            pass
+        return "".join(_partes)
+    except Exception:
+        return ""
+
+
+def _secao_comparacao_estrategias_html(comparacao, df=None):
+    """[DUPLO-CENARIO - 217ª/221ª geração] Seção HTML 'Comparação entre Estratégias de Escolha' (Oficial ×
+    Puramente Viário): resumo, mudanças por critério, tabela dos municípios alterados com explicação
+    automática, e (221ª) Sankey + mapa exclusivos dos alterados. Defensivo: sem dados → None."""
     import html as _he
     try:
         if not comparacao or not comparacao.get("por_cliente"):
@@ -6122,7 +6257,12 @@ def _secao_comparacao_estrategias_html(comparacao):
                 f"balsa pode ter <b>evitado um trajeto impraticável</b> (ex.: desvio fluvial), ou pode ter apenas "
                 f"<b>aumentado a distância</b> sem ganho operacional real. A tabela e a planilha detalham cada "
                 f"caso para essa decisão informada.", "info")
-        return _intro + _kpis + _analise + _crit_html + _tab
+        _graficos = ""
+        try:
+            _graficos = _graficos_comparacao_estrategias_html(comparacao, df)
+        except Exception:
+            _graficos = ""
+        return _intro + _kpis + _analise + _graficos + _crit_html + _tab
     except Exception:
         return None
 
@@ -6674,7 +6814,7 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         try:
             _cmp_estr = st.session_state.get('alo_comparacao_estrategias')
             if _cmp_estr:
-                _html_cmp = _secao_comparacao_estrategias_html(_cmp_estr)
+                _html_cmp = _secao_comparacao_estrategias_html(_cmp_estr, df)
                 if _html_cmp:
                     _sec.append(("comparacao_estrategias", "Comparação entre Estratégias de Escolha", _html_cmp))
         except Exception:
@@ -21183,14 +21323,15 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
                               fonte_geo_o, fonte_geo_d, score_o, score_d,
                               google_param_o, google_param_d, google_link,
                               km_google, km_osrm, vencedor,
-                              osrm_snap=None, validacao_espacial=None, mitigacao_snap=None):
+                              osrm_snap=None, validacao_espacial=None, mitigacao_snap=None,
+                              km_graphhopper=None, tempo_graphhopper=None, balsa_graphhopper=None,
+                              km_osrm_real=None):
     """[AUDIT-MOTORES] Monta o rastro completo das consultas enviadas a cada motor de rota.
     Torna auditável e transparente que TODOS os motores partem da MESMA geocodificação
-    validada: origem/destino são normalizados, validados na base nacional e convertidos numa
-    ÚNICA representação (nome oficial + coordenada). O Google recebe o nome oficial (para
-    desenhar a rota pelos nomes); o OSRM recebe a coordenada validada. Ambos derivam do mesmo
-    resultado — o que este rastro evidencia campo a campo. Inclui também o SNAP do OSRM
-    (coordenada projetada na via + distância do snap) e a VALIDAÇÃO ESPACIAL da rota."""
+    validada. [GRAPHHOPPER-PARIDADE-FIX - 221ª] Agora o GraphHopper é um bloco PRÓPRIO (km/tempo/balsa dele),
+    e o bloco OSRM usa o km REAL do OSRM (km_osrm_real) quando fornecido — antes, quando o GraphHopper vencia a
+    vaga de contendor, o valor DELE era gravado como se fosse do OSRM (conflação). km_osrm é mantido por
+    compatibilidade (é o contendor vencedor), mas o bloco 'osrm' prioriza km_osrm_real."""
     try:
         norm_o = semantica.normalizar(origem_txt)
         norm_d = semantica.normalizar(destino_txt)
@@ -21203,8 +21344,10 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
                         f"{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3")
     except Exception:
         osrm_url = ""
+    # [GRAPHHOPPER-PARIDADE-FIX - 221ª] o bloco OSRM deve refletir o OSRM REAL, não o contendor vencedor.
+    _km_osrm_bloco = km_osrm_real if km_osrm_real is not None else km_osrm
     div_abs = div_pct = div_classif = None
-    _m_div_aud = _metricas_divergencia(km_google, km_osrm)
+    _m_div_aud = _metricas_divergencia(km_google, _km_osrm_bloco)
     if _m_div_aud:
         div_abs = _m_div_aud["abs_km"]
         div_pct = _m_div_aud["pct"]
@@ -21212,7 +21355,7 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
     # Bloco de snap do OSRM: coordenada enviada → coordenada usada (após snap) → distância do snap
     osrm_bloco = {
         "origem_enviada": f"{lat_o}, {lon_o}", "destino_enviada": f"{lat_d}, {lon_d}",
-        "url": osrm_url, "distancia_km": km_osrm, "tipo_entrada": "Coordenada validada (mesmo geocode)",
+        "url": osrm_url, "distancia_km": _km_osrm_bloco, "tipo_entrada": "Coordenada validada (mesmo geocode)",
     }
     if osrm_snap:
         osrm_bloco["origem_usada_pos_snap"] = f"{osrm_snap.get('orig_snap_lat')}, {osrm_snap.get('orig_snap_lon')}"
@@ -21221,6 +21364,15 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
         osrm_bloco["destino_snap_dist_m"] = osrm_snap.get("dest_snap_dist_m")
         osrm_bloco["origem_snap_nivel"] = _classificar_snap(osrm_snap.get("orig_snap_dist_m"))
         osrm_bloco["destino_snap_nivel"] = _classificar_snap(osrm_snap.get("dest_snap_dist_m"))
+    # [GRAPHHOPPER-PARIDADE-FIX - 221ª] bloco PRÓPRIO do GraphHopper (só quando ele respondeu)
+    graphhopper_bloco = None
+    if km_graphhopper is not None:
+        graphhopper_bloco = {
+            "origem_enviada": f"{lat_o}, {lon_o}", "destino_enviada": f"{lat_d}, {lon_d}",
+            "url": f"https://graphhopper.com/maps/?point={lat_o}%2C{lon_o}&point={lat_d}%2C{lon_d}&profile=car",
+            "distancia_km": km_graphhopper, "tempo_min": tempo_graphhopper,
+            "balsa": balsa_graphhopper, "tipo_entrada": "Coordenada validada (mesmo geocode)",
+        }
     return {
         "origem": {
             "texto_original": origem_txt, "normalizado": norm_o, "validado_oficial": end_of_o,
@@ -21237,6 +21389,7 @@ def _montar_auditoria_motores(origem_txt, destino_txt, end_of_o, end_of_d,
             "url": google_link, "distancia_km": km_google, "tipo_entrada": "Nome oficial validado",
         },
         "osrm": osrm_bloco,
+        "graphhopper": graphhopper_bloco,
         "validacao_espacial": validacao_espacial,
         "mitigacao_snap": mitigacao_snap,
         "consenso": {"vencedor": vencedor, "divergencia_km": div_abs, "divergencia_pct": div_pct,
@@ -21553,7 +21706,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 _gh_tmin = _res_gh[1] if len(_res_gh) > 1 else None
                 _gh_bal = _res_gh[2] if len(_res_gh) > 2 else "Não"
                 _gh_geo = _res_gh[4] if len(_res_gh) > 4 else ""
-                _gh_link = f"https://www.google.com/maps/dir/?api=1&origin={lat_o},{lon_o}&destination={lat_d},{lon_d}&travelmode=driving"
+                # [GRAPHHOPPER-PARIDADE-FIX - 221ª] Link do PRÓPRIO GraphHopper (mapa oficial deles), não Google.
+                _gh_link = f"https://graphhopper.com/maps/?point={lat_o}%2C{lon_o}&point={lat_d}%2C{lon_d}&profile=car"
                 _dados_gh_str = _montar_dados_graphhopper(round(_gh_km, 2), _gh_tmin, _gh_bal, _gh_link, _gh_geo)
         except Exception:
             _dados_gh_str = ""
@@ -21871,11 +22025,29 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         except Exception:
             pass
         # [AUDIT-MOTORES] Rastro das consultas aos motores (mesma geocodificação validada p/ todos)
+        # [GRAPHHOPPER-PARIDADE-FIX - 221ª] extrai o OSRM REAL (não o contendor vencedor) e os dados próprios
+        # do GraphHopper, para o comparativo/auditoria distinguir OSRM de GraphHopper corretamente.
+        _osrm_real_aud = None
+        try:
+            _osrm_orig = (_motores_resultados or {}).get("OSRM") if '_motores_resultados' in dir() else None
+            _osrm_real_aud = float(_osrm_orig[0]) if _osrm_orig else None
+        except Exception:
+            _osrm_real_aud = None
+        _gh_km_aud = _gh_tmin_aud = _gh_bal_aud = None
+        try:
+            if ('_res_gh' in dir()) and _res_gh and _res_gh[0]:
+                _gh_km_aud = round(float(_res_gh[0]), 2)
+                _gh_tmin_aud = _res_gh[1] if len(_res_gh) > 1 else None
+                _gh_bal_aud = _res_gh[2] if len(_res_gh) > 2 else None
+        except Exception:
+            _gh_km_aud = _gh_tmin_aud = _gh_bal_aud = None
         auditoria_motores = _montar_auditoria_motores(
             origem_clean, destino_clean, end_oficial_o, end_oficial_d,
             lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
             orig_param_fb, dest_param_fb, link_rota, km_g, km_o, fonte_rota,
-            osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap)
+            osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap,
+            km_graphhopper=_gh_km_aud, tempo_graphhopper=_gh_tmin_aud, balsa_graphhopper=_gh_bal_aud,
+            km_osrm_real=_osrm_real_aud)
         # [M11] RotaPipeline NamedTuple — acesso por nome elimina bugs de índice
         retorno = RotaPipeline(
             distancia=km_rota, tempo=tempo_rota, link_rota=link_rota, balsas=balsa_rota,
@@ -21917,11 +22089,28 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     else:
         link_embed_geodesico = link_embed_fallback
     # [AUDIT-MOTORES] Rastro também no fallback geodésico (motores de rota indisponíveis nesta execução)
+    # [GRAPHHOPPER-PARIDADE-FIX - 221ª] passa dados do GraphHopper/OSRM real se por acaso existirem (defensivo).
+    _osrm_real_fb = None
+    try:
+        _osrm_orig_fb = (_motores_resultados or {}).get("OSRM") if '_motores_resultados' in dir() else None
+        _osrm_real_fb = float(_osrm_orig_fb[0]) if _osrm_orig_fb else None
+    except Exception:
+        _osrm_real_fb = None
+    _gh_km_fb = _gh_tmin_fb = _gh_bal_fb = None
+    try:
+        if ('_res_gh' in dir()) and _res_gh and _res_gh[0]:
+            _gh_km_fb = round(float(_res_gh[0]), 2)
+            _gh_tmin_fb = _res_gh[1] if len(_res_gh) > 1 else None
+            _gh_bal_fb = _res_gh[2] if len(_res_gh) > 2 else None
+    except Exception:
+        _gh_km_fb = _gh_tmin_fb = _gh_bal_fb = None
     auditoria_motores = _montar_auditoria_motores(
         origem_clean, destino_clean, end_oficial_o, end_oficial_d,
         lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
         orig_param_fb, dest_param_fb, link_fallback, None, None, "Geodésico Adaptativo",
-        osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap)
+        osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap,
+        km_graphhopper=_gh_km_fb, tempo_graphhopper=_gh_tmin_fb, balsa_graphhopper=_gh_bal_fb,
+        km_osrm_real=_osrm_real_fb)
     retorno = RotaPipeline(
         distancia=km_terrestre, tempo=tempo_geo_str, link_rota=link_fallback, balsas="Não",
         dist_linha_reta=dist_linha_reta, fonte_rota="Geodésico Adaptativo", score_rota=50,
@@ -23537,6 +23726,47 @@ def _comparar_estrategias_alocacao(topk_map, resultados, params=None):
     except Exception:
         logger.error("[DUPLO-CENARIO] Falha ao comparar estratégias", exc_info=True)
     return _out
+
+
+def _df_estudo_puramente_viaria(df_oficial, comparacao):
+    """[DUPLO-CENARIO-COMPARADOR - 221ª geração] Constrói o DataFrame do ESTUDO 2 (Puramente Viário) a partir
+    do df_processado OFICIAL e da comparação de estratégias. Para cada município que MUDOU de vencedor, troca o
+    polo de destino e a distância para a escolha PURAMENTE VIÁRIA (menor rota). Municípios que não mudaram
+    ficam idênticos. Assim o Comparador usa o Estudo 2 exatamente como usa o Oficial. PURO e defensivo:
+    qualquer problema → devolve o DataFrame oficial inalterado (nunca quebra)."""
+    try:
+        if df_oficial is None or len(df_oficial) == 0 or not comparacao or not comparacao.get("por_cliente"):
+            return df_oficial
+        _col_org = "Municipio Origem" if "Municipio Origem" in df_oficial.columns else (
+            "Origem" if "Origem" in df_oficial.columns else None)
+        _col_dst = "Municipio Destino" if "Municipio Destino" in df_oficial.columns else (
+            "Destino" if "Destino" in df_oficial.columns else None)
+        _col_dist = "Distancia" if "Distancia" in df_oficial.columns else None
+        if not _col_org or not _col_dst:
+            return df_oficial
+        _mudancas = {}
+        for _pc in comparacao["por_cliente"]:
+            if _pc.get("mudou") == "Sim" and _pc.get("vencedor_viaria"):
+                _mudancas[str(_pc.get("municipio"))] = (_pc.get("vencedor_viaria"), _pc.get("viaria_pura_km"))
+        if not _mudancas:
+            return df_oficial.copy()  # nenhum mudou → Estudo 2 == Oficial
+        _out = df_oficial.copy()
+        _org_series = _out[_col_org].astype(str)
+        for _idx in _out.index:
+            _mun = _org_series.loc[_idx]
+            if _mun in _mudancas:
+                _novo_dst, _nova_dist = _mudancas[_mun]
+                if _novo_dst is not None:
+                    _out.at[_idx, _col_dst] = _novo_dst
+                if _col_dist and _nova_dist is not None:
+                    try:
+                        _out.at[_idx, _col_dist] = float(_nova_dist)
+                    except (ValueError, TypeError):
+                        pass
+        return _out
+    except Exception:
+        logger.error("[DUPLO-CENARIO-COMPARADOR] Falha ao construir Estudo 2; usando o oficial", exc_info=True)
+        return df_oficial
 
 
 def _reatribuir_hubs_multicriterio(topk_map, resultados, params=None, parse_tempo=None):
@@ -26508,7 +26738,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "220"
+_VERSAO_APP = "222"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -27191,6 +27421,45 @@ if _secao == _SECOES[0]:   # tab_individual
                         st.caption("📊 A aplicação executa **ambos** os motores e adota sempre a **menor distância**. Este comparativo é a "
                                    "auditoria da escolha — mostra exatamente por que um provedor foi selecionado em vez do outro.")
 
+                # [GRAPHHOPPER-PARIDADE-FIX - 221ª geração] Bloco do GraphHopper no Diagnóstico & Auditoria, em
+                # paridade com Google/OSRM: lê os dados PRÓPRIOS do GraphHopper (bloco dedicado da auditoria),
+                # nunca mais confundidos com o OSRM. Só aparece quando o GraphHopper respondeu.
+                try:
+                    _aud_gh = res_ind[39] if len(res_ind) > 39 and isinstance(res_ind[39], dict) else None
+                    _gh_bloco = (_aud_gh or {}).get("graphhopper") if _aud_gh else None
+                except Exception:
+                    _gh_bloco = None
+                if _gh_bloco and _gh_bloco.get("distancia_km") is not None:
+                    with st.expander("🚗 Rota do GraphHopper (motor com chave, em paridade)", expanded=False):
+                        _ghd = _gh_bloco.get("distancia_km")
+                        _ght = _gh_bloco.get("tempo_min")
+                        _ghb = _gh_bloco.get("balsa")
+                        _gq1, _gq2, _gq3 = st.columns(3)
+                        try:
+                            _gq1.metric("Distância · GraphHopper", f"{float(_ghd):.2f} km")
+                        except (ValueError, TypeError):
+                            _gq1.metric("Distância · GraphHopper", f"{_ghd} km")
+                        try:
+                            _ght_i = int(float(_ght)) if _ght not in (None, "") else None
+                            _gq2.metric("Tempo", ("—" if _ght_i is None else
+                                                  (f"{_ght_i} min" if _ght_i < 60 else f"{_ght_i//60} h {_ght_i%60} min")))
+                        except (ValueError, TypeError):
+                            _gq2.metric("Tempo", "—")
+                        _gq3.metric("Balsa", _ghb or "Não")
+                        # comparação GraphHopper × Google (divergência), como se faz p/ OSRM
+                        try:
+                            if _comp and _comp.get("km_google") is not None:
+                                _mdg = _metricas_divergencia(_comp["km_google"], float(_ghd))
+                                if _mdg:
+                                    st.caption(f"↔️ Divergência GraphHopper × Google: **{_mdg['abs_km']:.1f} km** "
+                                               f"({_mdg['pct']:.1f}%).")
+                        except Exception:
+                            pass
+                        if _gh_bloco.get("url"):
+                            st.markdown(f"🧭 [Abrir esta rota no mapa do GraphHopper]({_gh_bloco['url']})")
+                        st.caption("O **GraphHopper** participa da disputa pela menor rota em igualdade com Google e "
+                                   "OSRM. Estes são os valores **dele** — medidos, não estimados.")
+
                 # nacional (rodoviária SEDE-a-SEDE) por par de Códigos IBGE. GATED pela flag + base
                 # disponível — não aparece enquanto o DistBrasil não estiver configurado (impacto zero).
 
@@ -27392,8 +27661,28 @@ if _secao == _SECOES[0]:   # tab_individual
                 _fonte_rota_ui = res_ind[5] if len(res_ind) > 5 else "N/A"
                 _link_osrm_viewer = res_ind[36] if len(res_ind) > 36 else ""
                 _eh_geodesico_ui = "GEOD" in str(_fonte_rota_ui).upper()
-                _eh_osrm_ui = "OSRM" in str(_fonte_rota_ui).upper()
-                _eh_google_ui = (not _eh_geodesico_ui) and (not _eh_osrm_ui)
+                # [GRAPHHOPPER-PARIDADE-FIX - 221ª] o vencedor pode ser QUALQUER motor contendor (OSRM,
+                # GraphHopper, ORS). Antes, só "OSRM" era reconhecido — quando o GraphHopper vencia, a fonte
+                # ("GraphHopper (Menor Distância)") não continha "OSRM" nem "GEOD", então o app tratava como se
+                # o GOOGLE tivesse vencido (mostrava o mapa do Google como principal e rotulava errado o
+                # comparativo). Agora reconhecemos os motores viários por geometria própria (Leaflet).
+                _fonte_up = str(_fonte_rota_ui).upper()
+                _eh_osrm_ui = "OSRM" in _fonte_up
+                _eh_contendor_ui = (not _eh_geodesico_ui) and any(
+                    _m in _fonte_up for _m in ("OSRM", "GRAPHHOPPER", "ORS"))
+                # nome do motor vencedor para rotular corretamente (Google, OSRM, GraphHopper, ...)
+                if _eh_geodesico_ui:
+                    _nome_vencedor_ui = "Projeção Geodésica"
+                elif "GRAPHHOPPER" in _fonte_up:
+                    _nome_vencedor_ui = "GraphHopper"
+                elif "OSRM" in _fonte_up:
+                    _nome_vencedor_ui = "OSRM"
+                elif "ORS" in _fonte_up or "OPENROUTE" in _fonte_up:
+                    _nome_vencedor_ui = "OpenRouteService"
+                else:
+                    _nome_vencedor_ui = "Google Maps"
+                # _eh_google_ui = Google venceu de fato (nenhum contendor viário nem geodésico)
+                _eh_google_ui = (not _eh_geodesico_ui) and (not _eh_contendor_ui)
                 _eh_mapa_leaflet = isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,")
                 # [VIS-DINAMICA - 30ª geração] APRESENTAÇÃO DINÂMICA POR PROVEDOR VENCEDOR:
                 #   • GOOGLE vence → mapa embarcado EXCLUSIVAMENTE do Google (iframe http) + 1 link (Google).
@@ -27434,31 +27723,31 @@ if _secao == _SECOES[0]:   # tab_individual
                         _prov_nome, _arq_nome = "Projeção Geodésica", "rota_estimada.html"
                         st.caption(f"🗺️ Mapa acima: **{_prov_nome}** — ligação direta origem→destino (estimativa), identificadas pelo nome.")
                     else:
-                        _prov_nome, _arq_nome = "OSRM", "rota_osrm_tracada.html"
-                        st.caption(f"🗺️ Mapa acima: **OSRM** com o **traçado da rota desenhado** — origem e destino pelo nome.")
-                    if _eh_osrm_ui:
-                        # DOIS links: (1) Google comparativo, (2) visualizador OSRM (reproduz este mapa).
+                        _prov_nome, _arq_nome = _nome_vencedor_ui, f"rota_{_nome_vencedor_ui.lower().replace(' ','_')}_tracada.html"
+                        st.caption(f"🗺️ Mapa acima: **{_prov_nome}** com o **traçado da rota desenhado** — origem e destino pelo nome.")
+                    if _eh_contendor_ui:
+                        # DOIS links: (1) Google comparativo, (2) visualizador do motor vencedor (reproduz este mapa).
                         cbtn1, cbtn2 = st.columns(2)
                         with cbtn1:
                             st.markdown(f"🧭 [Google Maps (comparação)]({res_ind[2]})")
                         with cbtn2:
                             if _link_osrm_viewer:
                                 st.markdown(f'<a href="{_link_osrm_viewer}" target="_blank" rel="noopener" '
-                                            f'style="text-decoration:none">🛰️ <b>Visualizador OSRM</b> (mesma rota)</a>',
+                                            f'style="text-decoration:none">🛰️ <b>Visualizador {_prov_nome}</b> (mesma rota)</a>',
                                             unsafe_allow_html=True)
                             else:
-                                st.caption("🛰️ Rota muito longa p/ link — use o **download** abaixo (traçado exato OSRM).")
+                                st.caption(f"🛰️ Rota muito longa p/ link — use o **download** abaixo (traçado exato {_prov_nome}).")
                         try:
                             import base64 as _b64dl
                             _html_dl = _b64dl.b64decode(url_iframe.split(",", 1)[1]).decode("utf-8")
-                            st.download_button(f"⬇️ Baixar mapa (OSRM) — HTML", data=_html_dl,
+                            st.download_button(f"⬇️ Baixar mapa ({_prov_nome}) — HTML", data=_html_dl,
                                                file_name=_arq_nome, mime="text/html",
-                                               help="Mapa autocontido com o traçado exato do OSRM. Abre offline em qualquer navegador.",
+                                               help=f"Mapa autocontido com o traçado exato do {_prov_nome}. Abre offline em qualquer navegador.",
                                                use_container_width=True)
                         except Exception:
                             pass
-                        st.caption("ℹ️ **OSRM venceu (menor distância).** Mapa embarcado **exclusivamente do OSRM** (geometria exata, nomes). "
-                                   "**Dois links:** o **Google Maps** (comparação) e o **Visualizador OSRM** — que abre num link próprio do app e "
+                        st.caption(f"ℹ️ **{_prov_nome} venceu (menor distância).** Mapa embarcado **exclusivamente do {_prov_nome}** (geometria exata, nomes). "
+                                   f"**Dois links:** o **Google Maps** (comparação) e o **Visualizador {_prov_nome}** — que abre num link próprio do app e "
                                    "reproduz **fielmente este mesmo mapa** (mesma geometria, mesmos nomes). Veja também o **comparativo** abaixo.")
                     else:
                         # Geodésico: 1 link + download + aviso.
@@ -27494,8 +27783,9 @@ if _secao == _SECOES[0]:   # tab_individual
                 _mapa_comp = res_ind[37] if len(res_ind) > 37 else ""
                 _link_comp = res_ind[38] if len(res_ind) > 38 else ""
                 if _mapa_comp and not _eh_geodesico_ui:
+                    # Google venceu → comparativo é o motor viário (OSRM, o 2º); contendor venceu → comparativo é Google.
+                    _win_prov = "Google Maps" if _eh_google_ui else _nome_vencedor_ui
                     _comp_prov = "OSRM" if _eh_google_ui else "Google Maps"
-                    _win_prov = "Google Maps" if _eh_google_ui else "OSRM"
                     st.write("")
                     with st.container(border=True):
                         st.markdown(f"##### 🔀 Rota comparativa — **{_comp_prov}** _(motor não vencedor)_")
@@ -27503,30 +27793,30 @@ if _secao == _SECOES[0]:   # tab_individual
                                    f"traçados pelo **{_comp_prov}**, para comparação lado a lado — assim você audita as **duas** rotas.")
                         _comp_eh_leaflet = isinstance(_mapa_comp, str) and _mapa_comp.startswith("data:text/html;base64,")
                         if _comp_eh_leaflet:
-                            # Comparativo = OSRM (Leaflet autocontido, geometria exata)
+                            # Comparativo com geometria própria (Leaflet autocontido) — motor viário (OSRM/contendor)
                             try:
                                 import base64 as _b64c
                                 components.html(_b64c.b64decode(_mapa_comp.split(",", 1)[1]).decode("utf-8"),
                                                 height=420, scrolling=False)
                             except Exception:
                                 st.warning("Renderização do mapa comparativo bloqueada pelo navegador.")
-                            st.caption("🗺️ Mapa comparativo: **OSRM** — geometria exata da rota, origem/destino pelo nome.")
+                            st.caption(f"🗺️ Mapa comparativo: **{_comp_prov}** — geometria exata da rota, origem/destino pelo nome.")
                             _cbc1, _cbc2 = st.columns(2)
                             with _cbc1:
                                 if _link_comp:
                                     st.markdown(f'<a href="{_link_comp}" target="_blank" rel="noopener" '
-                                                f'style="text-decoration:none">🛰️ <b>Visualizador OSRM</b> (rota comparativa)</a>',
+                                                f'style="text-decoration:none">🛰️ <b>Visualizador {_comp_prov}</b> (rota comparativa)</a>',
                                                 unsafe_allow_html=True)
                                 else:
                                     st.caption("🛰️ Rota longa p/ link — use o **download** ao lado.")
                             with _cbc2:
                                 try:
                                     import base64 as _b64cd
-                                    st.download_button("⬇️ Baixar mapa comparativo (OSRM) — HTML",
+                                    st.download_button(f"⬇️ Baixar mapa comparativo ({_comp_prov}) — HTML",
                                                        data=_b64cd.b64decode(_mapa_comp.split(",", 1)[1]).decode("utf-8"),
-                                                       file_name="rota_osrm_comparativa.html", mime="text/html",
+                                                       file_name="rota_comparativa.html", mime="text/html",
                                                        use_container_width=True,
-                                                       help="Mapa autocontido com o traçado exato do OSRM. Abre offline em qualquer navegador.")
+                                                       help=f"Mapa autocontido com o traçado exato do {_comp_prov}. Abre offline em qualquer navegador.")
                                 except Exception:
                                     pass
                         else:
@@ -27591,7 +27881,7 @@ if _secao == _SECOES[0]:   # tab_individual
                         if not _gh_mapa_ok:
                             st.caption("🗺️ O GraphHopper retornou distância e tempo; o traçado detalhado pode não estar disponível para esta rota.")
                         if _gh.get("link_maps"):
-                            st.markdown(f"🧭 [Abrir esta rota no Google Maps para navegar]({_gh['link_maps']})")
+                            st.markdown(f"🧭 [Abrir esta rota no mapa do GraphHopper]({_gh['link_maps']})")
                         st.caption("ℹ️ O **GraphHopper** é um motor de roteamento com chave que participa da disputa pela menor rota "
                                    "viária, em igualdade com Google e OSRM. Estes são os valores que **ele** encontrou para esta rota.")
             else:
@@ -31245,6 +31535,38 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
 
+            # [DUPLO-CENARIO-COMPARADOR - 221ª geração] Export do ESTUDO 2 (Puramente Viário) como planilha
+            # INDEPENDENTE — recarregável no Comparador de Estudos como base de referência. Só aparece quando
+            # há municípios que mudaram de vencedor (senão o Estudo 2 é idêntico ao Oficial). Gerado sob demanda.
+            try:
+                _cmp_e2 = st.session_state.get('alo_comparacao_estrategias')
+                _n_mud_e2 = (_cmp_e2 or {}).get("resumo", {}).get("n_mudaram", 0) if _cmp_e2 else 0
+                if _n_mud_e2 > 0:
+                    if st.button(f"📐 Gerar Planilha do Estudo Puramente Viário ({_n_mud_e2} município(s) alterado(s))",
+                                 key="btn_gerar_estudo2", use_container_width=True):
+                        with st.spinner("Gerando a planilha do Estudo Puramente Viário..."):
+                            _df_e2 = _df_estudo_puramente_viaria(st.session_state['df_processado'], _cmp_e2)
+                            _buf_e2 = io.BytesIO()
+                            with pd.ExcelWriter(_buf_e2, engine="xlsxwriter") as _wr_e2:
+                                _df_e2.to_excel(_wr_e2, index=False, sheet_name="Estudo Puramente Viario")
+                                try:
+                                    _aba_comparacao_estrategias(_wr_e2, _cmp_e2)
+                                except Exception:
+                                    pass
+                            st.session_state['alo_planilha_estudo2'] = _buf_e2.getvalue()
+                    if st.session_state.get('alo_planilha_estudo2'):
+                        st.download_button(
+                            label="📥 Baixar Planilha do Estudo Puramente Viário (.xlsx)",
+                            data=st.session_state['alo_planilha_estudo2'],
+                            file_name="estudo_puramente_viario.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True, key="dl_estudo2")
+                        st.caption("💡 Esta planilha reflete o cenário em que cada município alterado usa o polo de "
+                                   "**menor rota viária**. Você pode recarregá-la no **Comparador de Estudos** como "
+                                   "base de referência para confrontá-la com o resultado oficial.")
+            except Exception as _e_e2:
+                logger.error(f"[DUPLO-CENARIO-COMPARADOR] Falha no export do Estudo 2: {_e_e2}")
+
             # [PARQUET-LOTE - 67ª geração / item #6] Export Parquet da alocação (mesmo capability-check).
             _peng_alo = _parquet_engine_disponivel()
             if _peng_alo:
@@ -31299,6 +31621,26 @@ if _secao == _SECOES[3]:   # tab_comparador
     _df_alo_cmp = st.session_state.get('df_processado')
     _tem_alo = (_df_alo_cmp is not None and len(_df_alo_cmp) > 0
                 and {'Municipio Origem', 'Distancia'}.issubset(_df_alo_cmp.columns))
+    # [DUPLO-CENARIO-COMPARADOR - 221ª geração] SELETOR DE CENÁRIO. Quando a alocação produziu a comparação
+    # de estratégias (Oficial × Puramente Viário), o usuário escolhe COM QUAL cenário comparar. Ao escolher
+    # "Puramente Viário", o estudo da app passa a ser a versão em que cada município alterado usa o polo de
+    # menor rota. Sem comparação disponível (nenhum mudou / não calculada) → só o Oficial, sem seletor.
+    _cmp_estrategias = st.session_state.get('alo_comparacao_estrategias')
+    _n_mudaram_sel = (_cmp_estrategias or {}).get("resumo", {}).get("n_mudaram", 0) if _cmp_estrategias else 0
+    if _tem_alo and _n_mudaram_sel > 0:
+        _cenario_cmp = st.radio(
+            "🔀 Comparar usando qual estratégia do seu estudo?",
+            ["Resultado Oficial", "Resultado Puramente Viário"],
+            horizontal=True, key="cmp_cenario_escolhido",
+            help="Oficial = todos os critérios (isolado/fluvial, balsa, acessibilidade). Puramente Viário = "
+                 "sempre a menor rota calculada, ignorando penalizações. Os dois diferem em "
+                 f"{_n_mudaram_sel} município(s).")
+        if _cenario_cmp == "Resultado Puramente Viário":
+            _df_alo_cmp = _df_estudo_puramente_viaria(_df_alo_cmp, _cmp_estrategias)
+            st.info(f"📐 Comparando com o **Estudo Puramente Viário**: {_n_mudaram_sel} município(s) usam agora o "
+                    f"polo de **menor rota** (em vez da escolha oficial). Todas as análises abaixo refletem esse cenário.")
+        else:
+            st.caption("🏛️ Comparando com o **Resultado Oficial** (comportamento padrão, com todos os critérios).")
     with st.container():
         if not _tem_alo:
             st.warning("⚠️ Rode primeiro a aba **🎯 Locais de Aplicação**. É o resultado dela que será comparado "
