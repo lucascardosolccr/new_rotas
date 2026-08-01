@@ -63,6 +63,277 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (235ª geração) → 🛡️ PROTEÇÃO AO CANDIDATO: descarta "atalho fantasma" que faria o polo parecer perto por erro [PROTEGE-CANDIDATO]
+#     Pedido: menor rota ainda mais inteligente/robusta, SEM prejudicar o candidato que precisa do melhor
+#     deslocamento. O maior risco a esse objetivo é a app ADOTAR um valor curto ERRADO: como a escolha é
+#     "menor distância", uma medição curta e equivocada (snap que pula p/ outra via, ponto trocado, rota que
+#     "atravessa" um rio/serra) faz um polo DISTANTE parecer PERTO — e o candidato é alocado a um local cujo
+#     trajeto REAL é muito maior. É o oposto do que ele precisa.
+#     SOLUÇÃO — guarda PURO _rota_curta_suspeita + filtro na seleção do contendor. Descarta um candidato só
+#     quando TODOS os sinais de erro coincidem: (a) reta informativa (≥15 km); (b) IMPLAUSIVELMENTE DIRETO
+#     (sinuosidade km/reta < 1,12 — quase linha reta); (c) MUITO menor que os pares (< 0,75× a mediana deles);
+#     (d) CONTRADIÇÃO INDEPENDENTE: o Google (base própria, não-OSM) também mede bem mais (> 1,25× o curto).
+#     O PONTO CRÍTICO DE SEGURANÇA (aprendido na 234ª): OSRM/GraphHopper/ORS compartilham a base OSM e podem
+#     errar JUNTOS — um "atalho" que falta no OSM some nos três. Então NÃO se pode rejeitar um valor curto só
+#     porque os pares OSM discordam (o curto pode ser o CORRETO). Por isso o Google é obrigatório como juiz
+#     independente: SEM Google, o guarda NUNCA rejeita (retorna False) — preserva a rota curta possivelmente
+#     certa. E é FAIL-OPEN: se (hipoteticamente) todos virassem suspeitos, mantém os originais — nunca fica
+#     sem rota. AUDITÁVEL: quando dispara, o critério registra "descartado valor curto suspeito, contradito
+#     pelo Google".
+#     PROVA (verify_protege_candidato + teste de integração): caso-alvo (210 km vs pares 420/430 e Google 440
+#     → descarta 210, vence 420); SEM Google → mantém o menor (não rejeita); Google corrobora o curto → mantém
+#     (atalho real); curto porém sinuoso → mantém; só um pouco menor que pares → mantém; reta<15 km → mantém;
+#     contradição fraca (<25%) → mantém; defensivo (nulos/vazios → não rejeita); fail-open. 22 provas
+#     cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: só atua com Google presente E contradição forte E padrão físico de erro; caso contrário o
+#     comportamento é idêntico ao da 234ª. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
+#   v3.8 (234ª geração) → 🧭 CRITÉRIO DE MENOR ROTA MAIS INTELIGENTE: desempate por confiabilidade em empate técnico [CRITERIO-VENCEDOR]
+#     Melhoria nos CRITÉRIOS de escolha da menor rota viária, pedida pelo usuário. Diagnóstico: a escolha era
+#     `min(distância)` puro, com dois pontos fracos — (1) num EMPATE TÉCNICO (distâncias praticamente iguais) a
+#     decisão vira arbitrária (ruído de float) e podia cair numa rota com BALSA havendo opção rodoviária
+#     equivalente (pior p/ logística de prova); (2) o candidato marginalmente menor podia vir de geometria
+#     implausível.
+#     SOLUÇÃO — nova função PURA _selecionar_vencedor_rota(candidatos, dist_linha_reta, tol=0.04):
+#       • fora da tolerância de empate, vence SEMPRE a menor distância (princípio "menor rota viária"
+#         preservado — nunca troca por uma rota nitidamente mais longa);
+#       • DENTRO do empate técnico (≤4% acima do menor), desempata por: (1) SEM balsa antes de COM balsa
+#         (confiabilidade operacional — balsa tem horário/capacidade/clima); (2) sinuosidade ANÔMALA (desvio
+#         >25% da mediana dos empatados) é demovida; (3) entre os plausíveis, a MENOR distância decide.
+#     SEGURANÇA (independência dos motores): NÃO usa "consenso" para preferir valores mais ALTOS — OSRM/
+#     GraphHopper/ORS compartilham a base OSM e podem errar JUNTOS; preferir o corroborado poderia rejeitar
+#     uma rota curta CORRETA (ex.: Google acerta trecho que falta no OSM). Por isso o critério só reordena
+#     EMPATES. AUDITÁVEL: o rótulo da fonte passa a mostrar o motivo do desempate (ex.: "GRAPHHOPPER (empate
+#     técnico → evita balsa (+2.0 km vs. menor))"); no caso normal o rótulo é IDÊNTICO ao anterior
+#     ("OSRM (Menor Distância)").
+#     PROVA (verify_criterio_vencedor, 9+ casos): vencedor claro→menor; +5% fora→menor mesmo com balsa; empate
+#     +balsa→sem-balsa; +4% exato conta como empate; empate sem-balsa→menor; três plausíveis→menor; defensivo
+#     (vazio/único/tupla inválida). Detecção de vencedor (_eh_contendor_ui) segue reconhecendo o motor no
+#     rótulo. 21 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: o caminho puro-min é o fallback; rótulo normal idêntico; só muda a escolha em empate
+#     técnico real. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
+#   v3.8 (233ª geração) → 🗺️ PARTE 3/3: MAPA DE CONCENTRAÇÃO em canvas — cross-filtering dos gráficos COMPLETO [BI-CANVAS-MAPA]
+#     Fecha a trilogia (partes 1/3 sunburst, 2/3 Sankey, 3/3 mapa) de reconstruir os gráficos Plotly em canvas
+#     para o cross-filtering. Esta é a parte que eu havia sinalizado como a mais delicada.
+#     • As linhas do painel agora carregam COORDENADAS (la/lo), detectadas de Lat/Lon Origem e VALIDADAS
+#       (só coords plausíveis dentro do Brasil; 0,0 e lixo são descartados). Flag TEM_GEO controla a exibição.
+#     • desenharMapa(F): projeção EQUIRETANGULAR com bounds fixos do Brasil (lon -74..-34, lat -34..6),
+#       preservando proporção; um CONTORNO SIMPLIFICADO do Brasil (~57 pontos lon/lat embutidos) desenhado como
+#       referência geográfica; PONTOS das origens com tamanho ∝ candidatos e COR ∝ distância (escala
+#       verde→amarelo→vermelho, _corDist); LEGENDA de cor e contagem de origens. Recalculado do MESMO F —
+#       cross-filtra com todos. Resize redesenha.
+#     HONESTIDADE (como prometido): é um scatter geográfico com contorno SIMPLIFICADO do país e projeção
+#     equiretangular — NÃO uma projeção cartográfica precisa nem fronteira oficial. O objetivo é legibilidade
+#     geográfica robusta e offline (sem biblioteca de mapa), não fidelidade cartográfica milimétrica. O mapa
+#     Plotly (Scattergeo) do relatório, quando presente, segue como o mapa "de verdade"; este é o INTERATIVO.
+#     PROVA: node --check confirma JS SINTATICAMENTE VÁLIDO; teste dedicado confere o canvas, a função, o
+#     contorno BR, a projeção (PX/PY), a embutidura+validação das coords, a legenda, o balanceamento e o
+#     defensivo (sem coords → TEM_GEO=false + aviso; coords 0,0/fora do Brasil descartadas). 20 provas
+#     cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: contido na função do painel; classes .pbi-; sem coords o mapa some com aviso e o resto
+#     segue. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
+#     >>> Agora os 5 gráficos do painel (histograma, polos, UF, sunburst, Sankey, mapa) CROSS-FILTRAM juntos,
+#     ao vivo, com os KPIs e a tabela auditável. Cross-filtering do painel COMPLETO. <<<
+#   v3.8 (232ª geração) → 🌊 PARTE 2/3: SANKEY reconstruído em canvas, entra no cross-filtering [BI-CANVAS-SANKEY]
+#     Parte 2 de 3 da reconstrução dos gráficos Plotly em canvas. O SANKEY (fluxo UF → Polo) — o mais
+#     trabalhoso dos três, por exigir layout de nós em duas colunas + fitas curvas.
+#     • desenharSank(F): nós de ORIGEM (top 6 UFs) empilhados à esquerda e nós de DESTINO (top 8 polos) à
+#       direita, cada retângulo com altura ∝ ao seu total; FITAS (ribbons) curvas via bezier ligando cada UF a
+#       cada polo, largura ∝ ao fluxo de candidatos daquele par UF→Polo. Fitas semitransparentes na cor da UF
+#       (_rgba), empilhadas sem sobreposição (offsets por nó). Escala recomputada só com os nós exibidos, para
+#       coerência visual. Rótulos nos nós.
+#     • Entra no cross-filtering: no upd(), "…;desenharSun(F);desenharSank(F);renderTab(F);" — recalculado do
+#       MESMO F que todos os outros. Resize também redesenha.
+#     Sem Plotly, robusto e offline. O Sankey Plotly pré-renderizado (quando presente) segue como panorama;
+#     agora há a versão INTERATIVA no painel.
+#     PROVA: node --check confirma JS SINTATICAMENTE VÁLIDO; teste dedicado confere o canvas, a função, a
+#     agregação de fluxos (UF||Polo), o empilhamento de nós, as fitas bezier, o balanceamento e o defensivo
+#     (sem UF/Polo → aviso). verify_bi_interativo estendido (e generalizei a asserção da 231ª que casava a
+#     linha exata do upd() — teste desatualizado, não regressão). 20 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: contido na função do painel; classes .pbi-; sem colunas, mostra aviso. Imports IDÊNTICOS.
+#     RotaPipeline: 42 campos. Requirements: INALTERADO. FALTA a Parte 3/3: Mapa de concentração em canvas
+#     (a mais delicada — desenhar o Brasil sem lib exige contorno embutido; avaliarei a abordagem mais robusta).
+#   v3.8 (231ª geração) → 🌅 PARTE 1/3: SUNBURST reconstruído em canvas, entra no cross-filtering [BI-CANVAS-SUNBURST]
+#     Começa (por partes, como combinado) a reconstrução dos gráficos Plotly em canvas para que ENTREM no
+#     cross-filtering. Parte 1 de 3: o SUNBURST (composição da demanda UF → Polo).
+#     • desenharSun(F): sunburst de DOIS ANÉIS em <canvas> puro — anel interno = UF (fatia proporcional ao
+#       total de candidatos, ou contagem se não houver), anel externo = Polos DENTRO de cada UF (subfatias no
+#       arco do pai). Paleta de 12 cores por UF; polos herdam tons mais claros da cor da UF (_lighten). Buraco
+#       central mostra o total. Rótulos nas fatias grandes.
+#     • Entra no cross-filtering: no upd(), "…;desenharUF(F);desenharSun(F);renderTab(F);" — recalculado do
+#       MESMO conjunto filtrado F que os demais gráficos, KPIs e tabela. Resize também redesenha.
+#     Sem Plotly, portanto robusto e offline. O sunburst Plotly pré-renderizado segue existindo como panorama
+#     estático mais abaixo no relatório; agora há uma versão INTERATIVA no painel.
+#     PROVA: node --check confirma JS SINTATICAMENTE VÁLIDO; teste dedicado confere o canvas, a função, a
+#     agregação de 2 níveis (UF→Polo), o total central, o balanceamento e o defensivo (sem UF/Polo → aviso, não
+#     quebra). verify_bi_interativo estendido (e corrigi uma asserção velha da 230ª que casava a linha exata do
+#     upd() — era teste desatualizado, não regressão). 20 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: alterações contidas na função do painel; classes .pbi-; sem colunas, mostra aviso. Imports
+#     IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO. PRÓXIMAS PARTES: 2/3 Sankey (fluxo
+#     origem→polo) e 3/3 Mapa (concentração) em canvas.
+#   v3.8 (230ª geração) → 🔗 CROSS-FILTERING COMPLETO no painel: 3 gráficos em canvas recalculados por filtro [BI-INTERATIVO++]
+#     Fecha o pedido de reconstruir os gráficos do painel em canvas/JS para cross-filtering completo. Antes
+#     (229ª) só o histograma reagia aos filtros; agora são TRÊS gráficos, todos redesenhados a cada filtro a
+#     partir do MESMO conjunto filtrado F:
+#     • HISTOGRAMA das distâncias (já existia, 229ª);
+#     • POLOS MAIS DEMANDADOS — barras horizontais por candidatos (ou contagem), top 8, ordenado;
+#     • DISTÂNCIA MÉDIA POR UF — barras horizontais (soma/contagem por UF), top 8, ordenado.
+#     Uma função genérica _hbar(cv,pairs,unidade,cor1,cor2) desenha as barras horizontais (rótulo + barra com
+#     gradiente + valor). No upd(), a linha "desenharHist(kms);desenharPolos(F);desenharUF(F);renderTab(F);"
+#     recalcula os 3 gráficos + KPIs + tabela auditável do mesmo F — ou seja, TODOS os elementos do painel
+#     cross-filtram juntos, ao vivo, no navegador. Grid responsivo (.pbi-charts) que vira 1 coluna no celular.
+#     Tudo em canvas puro (SEM Plotly), portanto robusto e offline; resize redesenha os 3.
+#     PROVA: node --check confirma o JS SINTATICAMENTE VÁLIDO; teste dedicado confere os 3 canvas, as funções
+#     de desenho, as agregações (polos por candidatos; UF por distância média), o balanceamento de
+#     chaves/parênteses/colchetes, JSON válido e o comportamento defensivo. verify_bi_interativo estendido. 20
+#     provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: alterações contidas na função do painel; classes .pbi- (sem colisão); sem colunas, os
+#     gráficos mostram "sem dados" e o resto segue. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements:
+#     INALTERADO. Agora o cross-filtering dos GRÁFICOS do painel está completo (os Plotly pré-renderizados
+#     seguem como panorama estático abaixo — reconstruí-los seria refazer sunburst/sankey/mapa no cliente).
+#   v3.8 (229ª geração) → 🎛️ PAINEL BI EXPANDIDO: +filtros (Polo, mín. candidatos, busca) + HISTOGRAMA ao vivo [BI-INTERATIVO+]
+#     O pedido "reprojetar todos os relatórios em artigo+BI" já foi atendido em grande parte nas rodadas
+#     218-228 (7 seções científicas, painel interativo, gráficos avançados, modo escuro, KPI tooltips no
+#     relatório principal E no Comparador; abas analíticas nas 3 planilhas). INVENTÁRIO honesto do que ainda
+#     faltava do painel interativo: ele tinha só 4 filtros e recalculava KPIs+tabela, mas NÃO um gráfico. Esta
+#     rodada fecha exatamente esse gap:
+#     • +3 FILTROS (agora 7): Polo (destino), Mín. de candidatos (slider com máximo derivado dos dados) e BUSCA
+#       textual por município — além dos já existentes UF, Fonte/Motor, Balsa e Distância.
+#     • HISTOGRAMA AO VIVO: um gráfico de distribuição das distâncias desenhado em <canvas> que se RECALCULA a
+#       cada mudança de filtro (barras com gradiente, eixos km). É a peça "filtros atualizam GRÁFICO" — feita
+#       em canvas puro (sem Plotly), portanto robusta e offline.
+#     Agora os filtros governam KPIs + HISTOGRAMA + tabela auditável, tudo ao vivo no navegador.
+#     PROVA (verify_bi_interativo estendido): os 7 filtros presentes; canvas + função de desenho; filtrar()
+#     aplica Polo/candidatos/busca; slider com max derivado; JS balanceado (chaves/parênteses); JSON válido;
+#     defensivo (painel mínimo funciona; filtros sem coluna são omitidos). 20 provas cumulativas + testes
+#     HTML/Excel OK.
+#     NÃO-REGRESSÃO: alterações contidas na função do painel; classes .pbi- (sem colisão); se faltarem colunas,
+#     os filtros somem e o resto segue. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
+#     ESCOPO HONESTO: recalcular ao vivo os GRÁFICOS PLOTLY (sunburst/sankey/mapa) continua sendo outro
+#     projeto — reconstruí-los no cliente é frágil. O histograma em canvas entrega a interatividade de gráfico
+#     de forma robusta; os Plotly seguem como panorama estático abaixo.
+#   v3.8 (228ª geração) → 📊 PLANILHA DO COMPARADOR: aba Estatísticas Descritivas (Aplicação × Referência) [EXPORT-ESTATISTICAS-COMPARADOR]
+#     Pedido: dar à planilha do Comparador o mesmo tratamento analítico das outras. CONSTATAÇÃO HONESTA ao
+#     investigar: a planilha do Comparador JÁ ERA a mais completa das três — Capa que já é um DASHBOARD com 8
+#     KPIs (conciliação, vitórias app/ref, empates, km-a-menos, beneficiados) + explicação + alertas derivados
+#     dos dados; e já tinha Metodologia, Glossário, Dicionário de Dados, Relatório Executivo, Pareto,
+#     Distribuição, guias por aba e 20+ abas. Forçar _abas_cientificas_alocacao ali COLIDIRIA nos nomes
+#     'Metodologia'/'Glossario' (o xlsxwriter rejeita aba duplicada → quebraria o export) e DUPLICARIA
+#     Pareto/Distribuição/Dashboard. Ou seja: aplicar o pacote inteiro pioraria, não melhoraria.
+#     O QUE FALTAVA de verdade (gap real, sem colisão): uma aba de ESTATÍSTICAS DESCRITIVAS. Adicionei
+#     _aba_estatisticas_comparacao: média, mediana, moda, desvio, variância, CV, mín, Q1, Q3, P90, P95, P99 e
+#     máx — das distâncias, com o estudo da APLICAÇÃO e o de REFERÊNCIA LADO A LADO (o contraste é exatamente o
+#     propósito do Comparador). Reusa o helper _estatisticas_descritivas_serie. Com explicação didática.
+#     PROVA: gerei um XLSX de comparação (linhas com Distancia Aplicacao/Referencia) e reli com openpyxl — a aba
+#     traz as 2 colunas comparadas, 28 valores, métricas (mediana/P95/CV) e a explicação; defensiva (sem linhas
+#     ou sem colunas de distância → aba não é criada). 20 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: 100% ADITIVO e isolado em try (falha não afeta as outras abas); as 20+ abas do Comparador
+#     seguem idênticas. SEM colisão de nome ('Estatisticas Descritivas' é nova ali). Imports IDÊNTICOS.
+#     RotaPipeline: 42 campos. Requirements: INALTERADO.
+#   v3.8 (227ª geração) → 📗 PLANILHA DO LOTE ganha as abas analíticas (Dashboard + Metodologia + científicas) [EXPORT-DASHBOARD-LOTE]
+#     Fecha o item que ficou pendente na 226ª: levar as MESMAS abas analíticas da planilha de Locais também
+#     para a planilha do LOTE (aba Processamento). O Lote já tinha Capa, Rotas, Resumo Executivo, Distribuição
+#     de Distâncias, Síntese por UF e Status das Rotas — mas não as abas científicas.
+#     SOLUÇÃO (zero código novo, reuso total): _montar_planilha_lote_xlsx agora chama _abas_cientificas_alocacao
+#     (a mesma função já provada), anexando ao Lote: Painel Executivo (Dashboard), Metodologia, Estatísticas
+#     Descritivas, Índices de Qualidade, Insights & Recomendações, Qualidade dos Dados e Glossário — cada uma
+#     com sua explicação didática e gráficos nativos.
+#     SEM COLISÃO de nomes: o Lote usa 'Resumo Executivo'; a científica usa 'Painel Executivo' (abas distintas,
+#     coexistem). Chamada ISOLADA em try próprio: se falhar, as abas do Lote acima já estão escritas e o arquivo
+#     segue válido (a 'Rotas' bruta permanece idêntica p/ compatibilidade).
+#     PROVA: gerei um XLSX no formato do Lote e reli com openpyxl — as abas próprias do Lote (Rotas, Resumo
+#     Executivo) convivem com as analíticas (Painel Executivo, Metodologia, Glossário, Estatísticas...), sem
+#     colidir. 20 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: 100% ADITIVO; forward-reference válida (ambas são defs de módulo, resolvidas em runtime).
+#     Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO. Agora Lote e Locais têm o MESMO
+#     conjunto de abas analíticas.
+#   v3.8 (226ª geração) → 📗 PLANILHA: abas Painel Executivo (Dashboard) + Metodologia na planilha de Locais [EXPORT-DASHBOARD]
+#     Passo (c) do plano: enriquecer as planilhas Excel com abas analíticas + explicação didática. A planilha de
+#     Locais já tinha (215ª) 5 abas científicas — Estatísticas Descritivas, Índices de Qualidade, Insights &
+#     Recomendações, Qualidade dos Dados e Glossário. Esta rodada acrescenta as 2 que faltavam do pedido:
+#     • PAINEL EXECUTIVO (DASHBOARD): KPIs num relance, em cartões — municípios, candidatos, polos, deslocamento
+#       médio/mediano, P90/P95, maior/menor, rotas com balsa, rotas estimadas × roteadas, e KM-CANDIDATO
+#       (esforço logístico total = distância ponderada por candidatos). Com explicação didática de como ler.
+#     • METODOLOGIA: 10 etapas em linguagem simples — geocodificação, motores (Google/OSRM/GraphHopper),
+#       escolha do vencedor, consenso/divergência, fallback geodésico, linha reta × viária, balsa/isolados,
+#       tempo, auditoria e municípios sem rota — mais a lista de motores acionados.
+#     Cada nova aba tem EXPLICAÇÃO DIDÁTICA (como o pedido exige "sob cada tabela"). Reusa os formatos já
+#     existentes da função; entram DEPOIS do Glossário, sem tocar nas abas anteriores.
+#     PROVA: gerei um XLSX real e reli com openpyxl — as 8 abas presentes (5 científicas + Rotas + Painel
+#     Executivo + Metodologia); o Painel traz os KPIs (mediana, km-candidato) e a explicação; a Metodologia
+#     traz as etapas (geocodificação→vencedor→fallback→auditoria) e cita os motores. test_excel estendido com
+#     essa checagem. 20 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: 100% ADITIVO; cada aba isolada em try (erro numa não derruba as outras nem o arquivo); a
+#     aba 'Rotas' (dado bruto) permanece idêntica p/ compatibilidade. Imports IDÊNTICOS. RotaPipeline: 42
+#     campos. Requirements: INALTERADO. Concluídos os 3 passos do plano (a: Comparador; b: gráficos; c: Excel).
+#   v3.8 (225ª geração) → 📈 LOTE DE GRÁFICOS AVANÇADOS no relatório principal: Pareto + curva acumulada + mapa de concentração [GRAFICOS-AVANCADOS]
+#     Passo (b) do plano: um lote ESPECÍFICO e disciplinado de gráficos novos de alto valor no relatório de
+#     Locais de Aplicação (que também é o de Lote). Escolhi 3 que NÃO existiam e respondem perguntas executivas
+#     reais (o relatório já tinha box, violin, sankey, scatter, sunburst, treemap):
+#     • PARETO DOS POLOS: barras (volume por polo, ordenado) + linha de % acumulado + marca dos 80% — mostra a
+#       concentração 80/20 (quantos polos concentram a maior parte da operação).
+#     • CURVA ACUMULADA (ECDF) DE DISTÂNCIA: responde diretamente "que % de candidatos percorre até X km", com
+#       marcas na mediana e no P90.
+#     • MAPA DE CONCENTRAÇÃO DE CANDIDATOS: Scattergeo com tamanho ∝ candidatos na origem e cor = distância —
+#       destaca o ponto "grande e quente" (muita gente + muito longe) e aglomerados que pedem novo polo.
+#     Cada gráfico vem com CAIXA EXPLICATIVA didática (o que é, como ler, que decisão apoia). Nova seção
+#     "Análises Visuais Avançadas" no sumário.
+#     ROBUSTEZ: função _graficos_avancados_html PURA e DEFENSIVA — cada bloco só entra se as colunas existirem
+#     (Pareto exige destino; ECDF exige distância; mapa exige coords+candidatos); erro num bloco não derruba os
+#     outros; sem nada → ''. Plotly com include_plotlyjs=False (o relatório já carrega o Plotly antes) +
+#     amostragem da ECDF acima de 2.000 pontos (curva idêntica, arquivo enxuto).
+#     PROVA DEDICADA (verify_graficos_avancados): os 3 gráficos presentes, tipos corretos (Bar+linha, Scattergeo),
+#     ≥3 explicações, e defensivo (só distância → só ECDF; só destino → Pareto por municípios). 20 provas
+#     cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: 100% ADITIVO; os gráficos e seções anteriores seguem intactos; a seção só aparece se gerar
+#     algo. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO. Falta o passo (c): enriquecer
+#     as planilhas Excel com abas analíticas + explicação sob cada tabela.
+#   v3.8 (224ª geração) → 📊📰 PAINEL INTERATIVO + SEÇÕES CIENTÍFICAS levados ao Comparador (Lote já os tinha) [BI-INTERATIVO-COMPARADOR]
+#     Passo (a) do plano: levar o painel interativo (223ª) + as seções científicas (218ª) aos OUTROS relatórios.
+#     DESCOBERTA que enxugou o trabalho: o relatório de LOTE (aba Processamento) e o de Locais de Aplicação usam
+#     a MESMA função _gerar_relatorio_html — ou seja, o Lote JÁ recebeu, desde a 223ª, o painel interativo e as
+#     7 seções científicas. Restava só o COMPARADOR (função própria _gerar_relatorio_comparacao_html).
+#     ENTREGA no Comparador (tudo REUSANDO helpers já provados):
+#     • PAINEL EXECUTIVO INTERATIVO no topo: um adaptador converte as linhas da conciliação para o formato do
+#       painel (Origem→Município, Distancia Aplicacao→Distância, UF, Inscritos, Modo) usando o lado APLICAÇÃO
+#       como estudo primário, e chama a MESMA _painel_interativo_bi_html (filtros vivos + KPIs + tabela
+#       auditável). Defensivo: sem linhas → não aparece.
+#     • SEÇÕES CIENTÍFICAS universais (aplicam-se a qualquer estudo de roteamento): Fundamentação Teórica e
+#       Limitações do Estudo, complementando a Metodologia/Referências que o Comparador já tinha. (Não injetei
+#       as seções específicas de ALOCAÇÃO — Introdução/Abstract sobre distribuir candidatos — porque o
+#       Comparador é outro tipo de documento; seria semanticamente errado. Honestidade de escopo.)
+#     COLISÃO DE CSS evitada: o Comparador já possuía um BI próprio usando classes .bi-* ; renomeei TODAS as
+#     classes do meu painel para prefixo .pbi-* (só dentro da função), para os dois coexistirem sem conflito
+#     visual. IDs do painel já eram únicos.
+#     PROVA: verify_bi_interativo segue OK; checagem dedicada confirma o painel adaptado + Fundamentação +
+#     Limitações plugados no Comparador, o adapter mapeando as colunas certas, e ZERO classe .bi-* colidente no
+#     painel (só .pbi-*). 19 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: 100% ADITIVO; o Comparador original (Veredito, Placar, Conciliação, Economia, BI próprio)
+#     segue intacto; o painel/seções só entram quando há dados. Imports IDÊNTICOS. RotaPipeline: 42 campos.
+#     Requirements: INALTERADO. PRÓXIMO (b/c): lote de novos gráficos/mapas e enriquecimento das planilhas.
+#   v3.8 (223ª geração) → 📊 PAINEL EXECUTIVO INTERATIVO no relatório HTML: filtros vivos + KPIs + tabela auditável [BI-INTERATIVO]
+#     Avança o pedido de "Dashboard BI / sistema interativo" com a peça que faltava e que eu vinha adiando com
+#     honestidade: interatividade REAL no relatório autocontido. _painel_interativo_bi_html() injeta no TOPO do
+#     relatório de Locais de Aplicação um painel executivo onde:
+#       • FILTROS (UF de origem, motor/fonte da rota, depende de balsa, distância máxima via slider) recalculam
+#         AO VIVO, no navegador, sem recarregar nada;
+#       • KPIs se atualizam na hora (municípios no filtro, candidatos, distância mediana/média, P95, máxima,
+#         rotas com balsa, rotas estimadas);
+#       • TABELA AUDITÁVEL — botão "Ver registros" abre exatamente as linhas que compõem os números do filtro
+#         (a peça "KPI → registros", tornando cada indicador rastreável até a origem).
+#     Implementação ROBUSTA: dados embutidos como JSON + JavaScript baunilha (SEM dependência de Plotly), então
+#     é à prova de falha e 100% offline. Cap defensivo de 6.000 linhas p/ não inflar o arquivo. Design escuro
+#     de dashboard (cards, slider, tabela sticky) alinhado ao resto do relatório (inclusive modo escuro global).
+#     PROVA DEDICADA (verify_bi_interativo): JSON embutido válido (N linhas), todos os filtros/KPIs/tabela
+#     presentes, JS balanceado (chaves/parênteses), defensivo (sem colunas mínimas → nada; com origem+distância
+#     → funciona), cap de 6.000 aplicado, plugado como 1ª seção. 19 provas cumulativas + testes HTML/Excel OK.
+#     NÃO-REGRESSÃO: 100% ADITIVO e autocontido — se faltarem as colunas mínimas, retorna '' e o relatório fica
+#     idêntico ao anterior; os gráficos Plotly e todas as seções científicas (218ª) seguem intactos logo abaixo.
+#     Imports IDÊNTICOS. RotaPipeline: 42 campos (intacto). Requirements: INALTERADO.
+#     ESCOPO HONESTO (repito, sem enganar): recalcular AO VIVO os GRÁFICOS Plotly pré-renderizados exigiria
+#     reconstruí-los no navegador a partir do JSON — grande e frágil; não o fiz nesta rodada e não finjo que
+#     fiz. Os filtros governam KPIs + tabela auditável (o coração de BI); os gráficos Plotly permanecem como
+#     panorama geral. Aplicar este painel também aos relatórios de Lote e Comparador é o próximo passo natural
+#     (têm geradores próprios) — faço na sequência, com o mesmo cuidado e prova.
 #   v3.8 (222ª geração) → 🩹 CORREÇÃO DA CONFLAÇÃO OSRM×GraphHopper + GraphHopper 1ª classe em TODA a app [GRAPHHOPPER-PARIDADE-FIX]
 #     O usuário reportou (corretamente) 4 bugs reais da 220ª/221ª:
 #       (a) valores do GraphHopper apareciam rotulados como OSRM no validador;
@@ -6462,6 +6733,589 @@ def _secao_referencias_html():
             f'estudo.</p></div><ol style="font-size:13px;color:#334155;line-height:1.6;padding-left:20px">{_items}</ol>')
 
 
+def _graficos_avancados_html(df):
+    """[GRAFICOS-AVANCADOS - 225ª geração] Lote de gráficos novos de alto valor para o relatório principal,
+    cada um com explicação didática: (1) PARETO dos polos por demanda (concentração 80/20); (2) CURVA
+    ACUMULADA de distância (ECDF — "X% dos candidatos percorrem até Y km"); (3) MAPA DE CONCENTRAÇÃO de
+    candidatos (tamanho ∝ candidatos na origem, cor = distância). Plotly com include_plotlyjs=False (o
+    relatório já carrega o Plotly antes). PURO e DEFENSIVO: cada bloco só entra se as colunas existirem; erro
+    num bloco não derruba os demais; sem nada → ''. Retorna HTML (string)."""
+    import html as _he
+    try:
+        import plotly.graph_objects as _go
+        _partes = []
+
+        def _emb2(fig):
+            try:
+                return fig.to_html(full_html=False, include_plotlyjs=False,
+                                   config={"displayModeBar": False, "responsive": True})
+            except Exception:
+                return ""
+
+        _col_dst = next((c for c in ["Municipio Destino", "Destino"] if c in df.columns), None)
+        _col_cand = next((c for c in ["Inscritos", "Candidatos", "QT_INSCRITOS", "Qtd Candidatos"] if c in df.columns), None)
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce").dropna() if "Distancia" in df.columns else None
+        _insc = pd.to_numeric(df[_col_cand], errors="coerce") if _col_cand else None
+
+        # ---- (1) PARETO dos polos por demanda ----
+        try:
+            if _col_dst:
+                if _insc is not None:
+                    _dem = df.assign(_w=_insc.fillna(0)).groupby(_col_dst)["_w"].sum()
+                    _un = "candidatos"
+                else:
+                    _dem = df.groupby(_col_dst).size()
+                    _un = "municípios"
+                _dem = _dem[_dem > 0].sort_values(ascending=False)
+                if len(_dem) >= 2:
+                    _top = _dem.head(25)
+                    _tot = float(_dem.sum())
+                    _cum = (_top.cumsum() / _tot * 100.0) if _tot > 0 else _top * 0
+                    _nomes = [str(x)[:28] for x in _top.index]
+                    _fig = _go.Figure()
+                    _fig.add_trace(_go.Bar(x=_nomes, y=_top.values, name=_un.capitalize(),
+                                           marker_color="#2563eb"))
+                    _fig.add_trace(_go.Scatter(x=_nomes, y=_cum.values, name="% acumulado", yaxis="y2",
+                                               mode="lines+markers", line=dict(color="#dc2626", width=2)))
+                    _fig.add_hline(y=80, line_dash="dash", line_color="#94a3b8", yref="y2")
+                    _fig.update_layout(height=420, margin=dict(l=52, r=52, t=16, b=90), template="plotly_white",
+                                       yaxis=dict(title=_un.capitalize()),
+                                       yaxis2=dict(title="% acumulado", overlaying="y", side="right",
+                                                   range=[0, 105], showgrid=False),
+                                       xaxis=dict(tickangle=-40),
+                                       legend=dict(orientation="h", y=1.12, x=0))
+                    _n80 = int((_cum <= 80).sum()) + 1
+                    _partes.append('<h3>Concentração da demanda nos polos (Pareto)</h3>'
+                                   f'<p class="lead">Os <b>{min(_n80, len(_dem))}</b> polos mais demandados já '
+                                   f'concentram cerca de <b>80%</b> de todo o volume. A barra é o volume de cada '
+                                   f'polo; a linha vermelha é o acumulado.</p>' + _emb2(_fig)
+                                   + _caixa_explicativa(
+                        "Como ler o Pareto",
+                        "As barras mostram os polos ordenados do mais para o menos demandado. A linha vermelha soma "
+                        "esse volume da esquerda para a direita (acumulado). Onde a linha cruza os <b>80%</b> "
+                        "(tracejado), você vê quantos polos respondem pela maior parte da operação — o clássico "
+                        "princípio 80/20. Poucos polos concentrando quase tudo indica onde focar recursos, reforço "
+                        "logístico e contingência.", "info"))
+        except Exception:
+            pass
+
+        # ---- (2) CURVA ACUMULADA (ECDF) da distância ----
+        try:
+            if _dist is not None and len(_dist) >= 5:
+                _sd = _dist.sort_values().values
+                import numpy as _np2
+                _yac = _np2.arange(1, len(_sd) + 1) / len(_sd) * 100.0
+                # amostra p/ não inflar (curva fica idêntica visualmente)
+                if len(_sd) > 2000:
+                    _step = len(_sd) // 2000
+                    _sd = _sd[::_step]
+                    _yac = _yac[::_step]
+                _fig2 = _go.Figure(_go.Scatter(x=_sd, y=_yac, mode="lines",
+                                               line=dict(color="#0891b2", width=2.5), fill="tozeroy",
+                                               fillcolor="rgba(8,145,178,0.12)"))
+                _med = float(pd.Series(_dist).median())
+                _p90 = float(pd.Series(_dist).quantile(0.90))
+                _fig2.add_vline(x=_med, line_dash="dash", line_color="#16a34a")
+                _fig2.add_vline(x=_p90, line_dash="dash", line_color="#dc2626")
+                _fig2.update_layout(height=380, margin=dict(l=56, r=20, t=16, b=44), template="plotly_white",
+                                    xaxis_title="Distância (km)", yaxis_title="% de candidatos até esta distância",
+                                    yaxis=dict(range=[0, 101]), showlegend=False)
+                _partes.append('<h3>Curva acumulada de deslocamento</h3>'
+                               f'<p class="lead">Metade dos candidatos percorre até <b>{_med:.0f} km</b> (linha '
+                               f'verde) e 90% até <b>{_p90:.0f} km</b> (linha vermelha).</p>' + _emb2(_fig2)
+                               + _caixa_explicativa(
+                    "Como ler a curva acumulada",
+                    "Escolha uma distância no eixo horizontal e suba até a curva: o eixo vertical diz <b>qual "
+                    "percentual de candidatos percorre até aquela distância</b>. Uma curva que sobe rápido = "
+                    "quase todos perto; uma curva que se arrasta à direita = uma minoria com deslocamentos "
+                    "longos. É a forma mais direta de responder 'quantos candidatos estão a até X km do local "
+                    "de prova?'.", "info"))
+        except Exception:
+            pass
+
+        # ---- (3) MAPA DE CONCENTRAÇÃO de candidatos ----
+        try:
+            if {"Lat Origem", "Lon Origem"}.issubset(df.columns) and _insc is not None:
+                _dm = df.copy()
+                _dm["_la"] = pd.to_numeric(_dm["Lat Origem"], errors="coerce")
+                _dm["_lo"] = pd.to_numeric(_dm["Lon Origem"], errors="coerce")
+                _dm["_c"] = _insc.fillna(0).values
+                _dm = _dm[_dm["_la"].notna() & _dm["_lo"].notna() & (_dm["_la"] != 0) & (_dm["_c"] > 0)]
+                if len(_dm) >= 3:
+                    _cor = pd.to_numeric(_dm["Distancia"], errors="coerce") if "Distancia" in _dm.columns else None
+                    _cmax = float(_dm["_c"].max()) or 1.0
+                    _sizes = (_dm["_c"] / _cmax * 34 + 4).clip(4, 40)
+                    _mk = dict(size=_sizes, sizemode="diameter", opacity=0.7,
+                               line=dict(width=0.4, color="#334155"))
+                    if _cor is not None and _cor.notna().any():
+                        _mk["color"] = _cor
+                        _mk["colorscale"] = "Turbo"
+                        _mk["showscale"] = True
+                        _mk["colorbar"] = dict(title="km")
+                    else:
+                        _mk["color"] = "#2563eb"
+                    _txt = (_dm[next(c for c in ["Municipio Origem", "Origem"] if c in _dm.columns)].astype(str)
+                            + " — " + _dm["_c"].astype(int).astype(str) + " cand.") if any(
+                        c in _dm.columns for c in ["Municipio Origem", "Origem"]) else None
+                    _fig3 = _go.Figure(_go.Scattergeo(lat=_dm["_la"], lon=_dm["_lo"], mode="markers",
+                                                      marker=_mk, text=_txt, hoverinfo="text" if _txt is not None else None))
+                    _fig3.update_layout(height=480, margin=dict(l=0, r=0, t=0, b=0),
+                                        geo=dict(scope="south america", showcountries=True,
+                                                 countrycolor="#94a3b8", showland=True, landcolor="#f1f5f9"))
+                    _fig3.update_geos(fitbounds="locations")
+                    _partes.append('<h3>Mapa de concentração de candidatos</h3>'
+                                   '<p class="lead">O <b>tamanho</b> de cada ponto é a quantidade de candidatos '
+                                   'naquela origem; a <b>cor</b> é a distância até o polo.</p>' + _emb2(_fig3)
+                                   + _caixa_explicativa(
+                        "Como ler o mapa de concentração",
+                        "Pontos <b>grandes</b> concentram muitos candidatos; pontos <b>quentes/escuros</b> estão "
+                        "longe do local de prova. O caso que mais pede atenção é o ponto <b>grande e quente</b> "
+                        "ao mesmo tempo — muita gente e muito longe. Aglomerados grandes numa região sugerem "
+                        "demanda para um novo polo ali perto.", "info"))
+        except Exception:
+            pass
+
+        return "".join(_partes)
+    except Exception:
+        return ""
+
+
+def _painel_interativo_bi_html(df):
+    """[BI-INTERATIVO - 223ª geração] Painel executivo INTERATIVO e autocontido no topo do relatório: filtros
+    (UF, faixa de distância, balsa, motor/fonte) que RECALCULAM AO VIVO os KPIs e uma TABELA AUDITÁVEL dos
+    registros que casam com o filtro — ou seja, cada número é rastreável até as linhas exatas que o compõem.
+    Vanilla JS + dados embutidos como JSON (sem dependência de Plotly, à prova de falhas). PURO e DEFENSIVO:
+    sem colunas mínimas → retorna ''; erro → ''. Só afeta EXIBIÇÃO; nada dos dados/exports muda.
+    Nota de escopo honesta: recalcular AO VIVO os gráficos Plotly pré-renderizados exigiria reconstruí-los no
+    navegador — grande e frágil. Aqui os filtros governam KPIs + tabela auditável (o coração de BI e a peça de
+    'KPI → registros'); os gráficos Plotly seguem como panorama geral logo abaixo."""
+    import html as _he
+    import json as _json
+    try:
+        if df is None or len(df) == 0:
+            return ""
+        _col_org = next((c for c in ["Municipio Origem", "Origem"] if c in df.columns), None)
+        _col_dst = next((c for c in ["Municipio Destino", "Destino"] if c in df.columns), None)
+        _col_uf = next((c for c in ["UF Origem", "UF", "Uf Origem"] if c in df.columns), None)
+        _col_dist = "Distancia" if "Distancia" in df.columns else None
+        _col_cand = next((c for c in ["Inscritos", "Candidatos", "QT_INSCRITOS", "Qtd Candidatos"] if c in df.columns), None)
+        _col_fonte = next((c for c in ["Fonte da Rota", "Fonte", "Motor"] if c in df.columns), None)
+        _col_modo = next((c for c in ["Modo/Acesso", "Modo", "Acesso"] if c in df.columns), None)
+        _col_lat = next((c for c in ["Lat Origem", "Latitude Origem", "Lat", "Latitude"] if c in df.columns), None)
+        _col_lon = next((c for c in ["Lon Origem", "Longitude Origem", "Lon", "Longitude", "Lng"] if c in df.columns), None)
+        if not _col_org or not _col_dist:
+            return ""  # sem o mínimo (município + distância) não há painel
+
+        # ---- monta linhas compactas (cap defensivo p/ não inflar o arquivo) ----
+        _MAX = 6000
+        _rows = []
+        _dnum = pd.to_numeric(df[_col_dist], errors="coerce")
+        for _i, (_idx, _r) in enumerate(df.iterrows()):
+            if _i >= _MAX:
+                break
+            try:
+                _d = float(_dnum.iloc[_i]) if pd.notna(_dnum.iloc[_i]) else None
+            except Exception:
+                _d = None
+            _row = {
+                "o": str(_r.get(_col_org, ""))[:60],
+                "d": (str(_r.get(_col_dst, ""))[:60] if _col_dst else ""),
+                "u": (str(_r.get(_col_uf, ""))[:6] if _col_uf else ""),
+                "km": (round(_d, 1) if _d is not None else None),
+            }
+            if _col_cand:
+                try:
+                    _row["c"] = int(pd.to_numeric(pd.Series([_r.get(_col_cand)]), errors="coerce").fillna(0).iloc[0])
+                except Exception:
+                    _row["c"] = 0
+            if _col_fonte:
+                _fv = str(_r.get(_col_fonte, ""))
+                _row["f"] = ("Estimada" if any(t in _fv.lower() for t in ("estimad", "reta", "geod"))
+                             else ("GraphHopper" if "graphhopper" in _fv.lower()
+                                   else ("OSRM" if "osrm" in _fv.lower()
+                                         else ("Google" if "google" in _fv.lower() else (_fv[:18] or "—")))))
+            if _col_modo:
+                _mv = str(_r.get(_col_modo, "")).lower()
+                _row["b"] = ("Sim" if any(t in _mv for t in ("balsa", "fluvial", "barco")) else "Não")
+            if _col_lat and _col_lon:
+                try:
+                    _la = float(pd.to_numeric(pd.Series([_r.get(_col_lat)]), errors="coerce").iloc[0])
+                    _lo = float(pd.to_numeric(pd.Series([_r.get(_col_lon)]), errors="coerce").iloc[0])
+                    # só guarda coordenadas plausíveis dentro do Brasil (evita 0,0 e lixo)
+                    if -34.0 <= _la <= 6.0 and -74.0 <= _lo <= -34.0:
+                        _row["la"] = round(_la, 4)
+                        _row["lo"] = round(_lo, 4)
+                except Exception:
+                    pass
+            _rows.append(_row)
+
+        _tem_c = bool(_col_cand)
+        _tem_f = bool(_col_fonte)
+        _tem_b = bool(_col_modo)
+        _tem_u = bool(_col_uf)
+        _tem_d = bool(_col_dst)
+        _tem_geo = any(("la" in r and "lo" in r) for r in _rows)
+        _data_json = _json.dumps(_rows, ensure_ascii=False)
+
+        # ---- controles (opções derivadas dos dados) ----
+        _ufs = sorted({r["u"] for r in _rows if r.get("u")}) if _tem_u else []
+        _fontes = sorted({r["f"] for r in _rows if r.get("f")}) if _tem_f else []
+        _polos = sorted({r["d"] for r in _rows if r.get("d")}) if _tem_d else []
+        _opt_uf = "".join(f'<option value="{_he.escape(u)}">{_he.escape(u)}</option>' for u in _ufs)
+        _opt_fonte = "".join(f'<option value="{_he.escape(f)}">{_he.escape(f)}</option>' for f in _fontes)
+        # limita o dropdown de polos p/ não estourar (os 60 mais frequentes); busca textual cobre o resto
+        _polos_top = _polos[:60]
+        _opt_polo = "".join(f'<option value="{_he.escape(p)}">{_he.escape(p)}</option>' for p in _polos_top)
+
+        _sel_uf = (f'<label class="pbi-f"><span>UF de origem</span><select id="biUF"><option value="">Todas</option>'
+                   f'{_opt_uf}</select></label>') if _tem_u else ""
+        _sel_fonte = (f'<label class="pbi-f"><span>Motor / fonte da rota</span><select id="biFonte">'
+                      f'<option value="">Todos</option>{_opt_fonte}</select></label>') if _tem_f else ""
+        _sel_polo = (f'<label class="pbi-f"><span>Polo (destino)</span><select id="biPolo">'
+                     f'<option value="">Todos</option>{_opt_polo}</select></label>') if (_tem_d and _polos_top) else ""
+        _sel_balsa = ('<label class="pbi-f"><span>Depende de balsa?</span><select id="biBalsa">'
+                      '<option value="">Tanto faz</option><option value="Sim">Só com balsa</option>'
+                      '<option value="Não">Sem balsa</option></select></label>') if _tem_b else ""
+        _cand_max = 0
+        if _tem_c:
+            try:
+                _cand_max = int(max((r.get("c", 0) or 0) for r in _rows))
+            except Exception:
+                _cand_max = 100
+        _cand_max = max(1, min(_cand_max, 100000))
+        _sel_cand = (f'<label class="pbi-f"><span>Mín. de candidatos: <b id="biCandLbl">0</b></span>'
+                     f'<input type="range" id="biCand" min="0" max="{_cand_max}" step="1" value="0"></label>') if _tem_c else ""
+        _sel_busca = ('<label class="pbi-f"><span>Buscar município</span>'
+                      '<input type="text" id="biBusca" placeholder="digite parte do nome…" '
+                      'style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:7px 9px;font-size:12px"></label>')
+        _sel_dist = ('<label class="pbi-f"><span>Distância máxima (km): <b id="biKmLbl">todas</b></span>'
+                     '<input type="range" id="biKm" min="0" max="1000" step="10" value="1000"></label>')
+
+        # ---- cabeçalhos da tabela ----
+        _ths = ['<th>Município de origem</th>']
+        if _tem_d:
+            _ths.append('<th>Polo (destino)</th>')
+        if _tem_u:
+            _ths.append('<th>UF</th>')
+        _ths.append('<th class="num">Distância (km)</th>')
+        if _tem_c:
+            _ths.append('<th class="num">Candidatos</th>')
+        if _tem_f:
+            _ths.append('<th>Fonte</th>')
+        if _tem_b:
+            _ths.append('<th>Balsa</th>')
+        _thead = "".join(_ths)
+
+        # ---- KPI cards (recalculados no JS) ----
+        _kpis_html = (
+            '<div class="pbi-kpi"><div class="pbi-kv" id="kMun">—</div><div class="pbi-kl">Municípios no filtro</div></div>'
+            + ('<div class="pbi-kpi"><div class="pbi-kv" id="kCand">—</div><div class="pbi-kl">Candidatos</div></div>' if _tem_c else '')
+            + '<div class="pbi-kpi"><div class="pbi-kv" id="kMed">—</div><div class="pbi-kl">Distância mediana</div></div>'
+            + '<div class="pbi-kpi"><div class="pbi-kv" id="kMedia">—</div><div class="pbi-kl">Distância média</div></div>'
+            + '<div class="pbi-kpi"><div class="pbi-kv" id="kP95">—</div><div class="pbi-kl">P95 (pior caso típico)</div></div>'
+            + '<div class="pbi-kpi"><div class="pbi-kv" id="kMax">—</div><div class="pbi-kl">Maior distância</div></div>'
+            + ('<div class="pbi-kpi"><div class="pbi-kv" id="kBalsa">—</div><div class="pbi-kl">Rotas com balsa</div></div>' if _tem_b else '')
+            + ('<div class="pbi-kpi"><div class="pbi-kv" id="kEst">—</div><div class="pbi-kl">Rotas estimadas</div></div>' if _tem_f else '')
+        )
+
+        _css = (
+            "<style>"
+            ".pbi-wrap{background:linear-gradient(135deg,#0f172a,#1e293b);border-radius:16px;padding:20px;margin:0 0 22px;color:#e2e8f0;box-shadow:0 8px 30px rgba(0,0,0,.18)}"
+            ".pbi-wrap h3{margin:0 0 4px;color:#fff;font-size:19px}.pbi-wrap .pbi-sub{color:#94a3b8;font-size:12.5px;margin-bottom:16px}"
+            ".pbi-filtros{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}"
+            ".pbi-f{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#cbd5e1;min-width:150px;flex:1}"
+            ".pbi-f span{font-weight:600;letter-spacing:.02em}"
+            ".pbi-f select,.pbi-f input[type=range]{background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:7px 9px;font-size:12px}"
+            ".pbi-f input[type=range]{padding:0;accent-color:#3b82f6}"
+            ".pbi-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:8px}"
+            ".pbi-kpi{background:rgba(255,255,255,.04);border:1px solid #334155;border-radius:12px;padding:12px}"
+            ".pbi-kv{font-size:22px;font-weight:800;color:#93c5fd;font-variant-numeric:tabular-nums}"
+            ".pbi-kl{font-size:10.5px;color:#94a3b8;margin-top:2px;line-height:1.25}"
+            ".pbi-actions{display:flex;gap:10px;align-items:center;margin:6px 0 2px;flex-wrap:wrap}"
+            ".pbi-btn{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:7px 13px;font-size:12px;font-weight:600;cursor:pointer}"
+            ".pbi-btn.sec{background:#334155}.pbi-btn:hover{opacity:.9}"
+            ".pbi-count{font-size:11.5px;color:#94a3b8}"
+            ".pbi-tab-wrap{max-height:0;overflow:hidden;transition:max-height .3s ease;margin-top:8px}"
+            ".pbi-tab-wrap.open{max-height:600px;overflow:auto}"
+            ".pbi-tab{width:100%;border-collapse:collapse;font-size:11.5px}"
+            ".pbi-tab th,.pbi-tab td{padding:6px 9px;border-bottom:1px solid #1e293b;text-align:left;white-space:nowrap}"
+            ".pbi-tab thead th{position:sticky;top:0;background:#0f172a;color:#93c5fd;font-size:10.5px;z-index:1}"
+            ".pbi-tab td.num,.pbi-tab th.num{text-align:right;font-variant-numeric:tabular-nums}"
+            ".pbi-tab tbody tr:hover{background:rgba(255,255,255,.03)}"
+            ".pbi-clab{font-size:11px;color:#94a3b8;margin-bottom:4px}"
+            ".pbi-cv{width:100%;background:rgba(255,255,255,.03);border:1px solid #334155;border-radius:10px}"
+            "@media(max-width:640px){.pbi-charts{grid-template-columns:1fr !important}}"
+            "body.dark .pbi-wrap{box-shadow:0 8px 30px rgba(0,0,0,.4)}"
+            "</style>"
+        )
+
+        _html = (
+            f'{_css}<div class="pbi-wrap"><h3>📊 Painel Executivo Interativo</h3>'
+            f'<div class="pbi-sub">Filtre e os indicadores abaixo se recalculam na hora. Clique em '
+            f'<b>“Ver registros”</b> para auditar exatamente quais municípios compõem cada número.</div>'
+            f'<div class="pbi-filtros">{_sel_uf}{_sel_polo}{_sel_fonte}{_sel_balsa}{_sel_cand}{_sel_dist}{_sel_busca}</div>'
+            f'<div class="pbi-kpis">{_kpis_html}</div>'
+            f'<div class="pbi-charts" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0 2px">'
+            f'<div style="grid-column:1 / -1"><div class="pbi-clab">Distribuição das distâncias no filtro (histograma ao vivo)</div>'
+            f'<canvas id="biHist" height="140" class="pbi-cv"></canvas></div>'
+            f'<div><div class="pbi-clab">Polos mais demandados no filtro</div>'
+            f'<canvas id="biPolos" height="200" class="pbi-cv"></canvas></div>'
+            f'<div><div class="pbi-clab">Distância média por UF no filtro</div>'
+            f'<canvas id="biUF" height="200" class="pbi-cv"></canvas></div>'
+            f'<div style="grid-column:1 / -1"><div class="pbi-clab">Composição da demanda: UF → Polo (sunburst ao vivo)</div>'
+            f'<canvas id="biSun" height="300" class="pbi-cv"></canvas></div>'
+            f'<div style="grid-column:1 / -1"><div class="pbi-clab">Fluxo de candidatos: UF → Polo (Sankey ao vivo)</div>'
+            f'<canvas id="biSank" height="340" class="pbi-cv"></canvas></div>'
+            f'<div style="grid-column:1 / -1"><div class="pbi-clab">Mapa de concentração: origens no filtro (tamanho = candidatos, cor = distância)</div>'
+            f'<canvas id="biMapa" height="420" class="pbi-cv"></canvas></div></div>'
+            f'<div class="pbi-actions"><button class="pbi-btn" id="biVer">📋 Ver registros do filtro</button>'
+            f'<button class="pbi-btn sec" id="biLimpar">↺ Limpar filtros</button>'
+            f'<span class="pbi-count" id="biCount"></span></div>'
+            f'<div class="pbi-tab-wrap" id="biTabWrap"><table class="pbi-tab"><thead><tr>{_thead}</tr></thead>'
+            f'<tbody id="biTbody"></tbody></table></div></div>'
+            f'<script>(function(){{'
+            f'var DADOS={_data_json};var TEM_C={str(_tem_c).lower()},TEM_F={str(_tem_f).lower()},'
+            f'TEM_B={str(_tem_b).lower()},TEM_U={str(_tem_u).lower()},TEM_D={str(_tem_d).lower()},'
+            f'TEM_GEO={str(_tem_geo).lower()};'
+            f'function fmt(x,d){{if(x==null||isNaN(x))return "—";return Number(x).toLocaleString("pt-BR",'
+            f'{{minimumFractionDigits:d,maximumFractionDigits:d}});}}'
+            f'function pct(x){{return (x==null||isNaN(x))?"—":fmt(x,0)+"%";}}'
+            f'var elUF=document.getElementById("biUF"),elF=document.getElementById("biFonte"),'
+            f'elB=document.getElementById("biBalsa"),elKm=document.getElementById("biKm"),'
+            f'elKmL=document.getElementById("biKmLbl"),elPolo=document.getElementById("biPolo"),'
+            f'elCand=document.getElementById("biCand"),elCandL=document.getElementById("biCandLbl"),'
+            f'elBusca=document.getElementById("biBusca"),elHist=document.getElementById("biHist"),'
+            f'elPolosC=document.getElementById("biPolos"),elUFc=document.getElementById("biUF"),'
+            f'elSun=document.getElementById("biSun"),elSank=document.getElementById("biSank"),'
+            f'elMapa=document.getElementById("biMapa");'
+            f'function filtrar(){{var u=elUF?elUF.value:"",f=elF?elF.value:"",b=elB?elB.value:"",'
+            f'km=elKm?parseFloat(elKm.value):1e9,pl=elPolo?elPolo.value:"",'
+            f'cmin=elCand?parseFloat(elCand.value):0,q=elBusca?elBusca.value.trim().toLowerCase():"";'
+            f'return DADOS.filter(function(r){{'
+            f'if(u&&r.u!==u)return false;if(f&&r.f!==f)return false;if(b&&r.b!==b)return false;'
+            f'if(pl&&r.d!==pl)return false;if(cmin>0&&(r.c==null||r.c<cmin))return false;'
+            f'if(q&&(!r.o||r.o.toLowerCase().indexOf(q)<0))return false;'
+            f'if(km<1000&&(r.km==null||r.km>km))return false;return true;}});}}'
+            f'function pctl(arr,p){{if(!arr.length)return null;var s=arr.slice().sort(function(a,b){{return a-b;}});'
+            f'var i=Math.min(s.length-1,Math.floor(p/100*s.length));return s[i];}}'
+            f'function upd(){{var F=filtrar();'
+            f'if(elKmL)elKmL.textContent=(elKm.value>=1000?"todas":elKm.value+" km");'
+            f'var kms=F.map(function(r){{return r.km;}}).filter(function(x){{return x!=null&&!isNaN(x);}});'
+            f'var soma=kms.reduce(function(a,b){{return a+b;}},0);'
+            f'document.getElementById("kMun").textContent=fmt(F.length,0);'
+            f'if(TEM_C){{var c=F.reduce(function(a,r){{return a+(r.c||0);}},0);'
+            f'document.getElementById("kCand").textContent=fmt(c,0);}}'
+            f'var med=pctl(kms,50);document.getElementById("kMed").textContent=med==null?"—":fmt(med,0)+" km";'
+            f'document.getElementById("kMedia").textContent=kms.length?fmt(soma/kms.length,0)+" km":"—";'
+            f'document.getElementById("kP95").textContent=(function(){{var p=pctl(kms,95);return p==null?"—":fmt(p,0)+" km";}})();'
+            f'document.getElementById("kMax").textContent=kms.length?fmt(Math.max.apply(null,kms),0)+" km":"—";'
+            f'if(TEM_B){{var nb=F.filter(function(r){{return r.b==="Sim";}}).length;'
+            f'document.getElementById("kBalsa").textContent=fmt(nb,0);}}'
+            f'if(TEM_F){{var ne=F.filter(function(r){{return r.f==="Estimada";}}).length;'
+            f'document.getElementById("kEst").textContent=fmt(ne,0);}}'
+            f'var cnt=document.getElementById("biCount");if(cnt)cnt.textContent=F.length+" de "+DADOS.length+" registros";'
+            f'if(elCandL&&elCand)elCandL.textContent=elCand.value;'
+            f'desenharHist(kms);desenharPolos(F);desenharUF(F);desenharSun(F);desenharSank(F);desenharMapa(F);renderTab(F);}}'
+            f'function _hbar(cv,pairs,unidade,cor1,cor2){{if(!cv)return;var ctx=cv.getContext("2d");if(!ctx)return;'
+            f'var W=cv.clientWidth||300,H=cv.height;cv.width=W;ctx.clearRect(0,0,W,H);'
+            f'if(!pairs.length){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Sem dados no filtro atual.",10,H/2);return;}}'
+            f'pairs=pairs.slice(0,8);var vmax=Math.max.apply(null,pairs.map(function(p){{return p[1];}}))||1;'
+            f'var rowH=Math.min(24,(H-8)/pairs.length),lblW=Math.min(120,W*0.42),bx=lblW+6,bw=W-bx-52;'
+            f'for(var i=0;i<pairs.length;i++){{var y=6+i*rowH;var val=pairs[i][1];var w=Math.max(1,(val/vmax)*bw);'
+            f'ctx.fillStyle="#cbd5e1";ctx.font="11px sans-serif";ctx.textAlign="left";'
+            f'var nm=(""+pairs[i][0]);if(nm.length>18)nm=nm.slice(0,17)+"…";ctx.fillText(nm,4,y+rowH*0.7);'
+            f'var g=ctx.createLinearGradient(bx,0,bx+w,0);g.addColorStop(0,cor1);g.addColorStop(1,cor2);'
+            f'ctx.fillStyle=g;ctx.fillRect(bx,y+2,w,rowH-6);'
+            f'ctx.fillStyle="#e2e8f0";ctx.textAlign="left";'
+            f'ctx.fillText(unidade==="km"?(Math.round(val)+""):fmt(val,0),bx+w+4,y+rowH*0.7);}}ctx.textAlign="left";}}'
+            f'function desenharPolos(F){{if(!elPolosC)return;var agg={{}};F.forEach(function(r){{if(!r.d)return;'
+            f'agg[r.d]=(agg[r.d]||0)+(TEM_C?(r.c||0):1);}});'
+            f'var pairs=Object.keys(agg).map(function(k){{return [k,agg[k]];}}).sort(function(a,b){{return b[1]-a[1];}});'
+            f'_hbar(elPolosC,pairs,TEM_C?"cand":"n","#818cf8","#4f46e5");}}'
+            f'function desenharUF(F){{if(!elUFc)return;var s={{}},c={{}};F.forEach(function(r){{if(!r.u||r.km==null)return;'
+            f's[r.u]=(s[r.u]||0)+r.km;c[r.u]=(c[r.u]||0)+1;}});'
+            f'var pairs=Object.keys(s).map(function(k){{return [k,s[k]/c[k]];}}).sort(function(a,b){{return b[1]-a[1];}});'
+            f'_hbar(elUFc,pairs,"km","#34d399","#059669");}}'
+            f'var SUNPAL=["#2563eb","#16a34a","#dc2626","#d97706","#7c3aed","#0891b2","#db2777","#65a30d",'
+            f'"#ea580c","#4f46e5","#0d9488","#be123c"];'
+            f'function _lighten(hex,f){{var n=parseInt(hex.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;'
+            f'r=Math.round(r+(255-r)*f);g=Math.round(g+(255-g)*f);b=Math.round(b+(255-b)*f);'
+            f'return "rgb("+r+","+g+","+b+")";}}'
+            f'function desenharSun(F){{if(!elSun)return;var ctx=elSun.getContext("2d");if(!ctx)return;'
+            f'var W=elSun.clientWidth||600,H=elSun.height;elSun.width=W;ctx.clearRect(0,0,W,H);'
+            f'if(!TEM_U||!TEM_D){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Sunburst requer UF e Polo nos dados.",10,H/2);return;}}'
+            f'var wt=function(r){{return TEM_C?(r.c||0):1;}};'
+            f'var byUF={{}},tot=0;F.forEach(function(r){{if(!r.u||!r.d)return;var w=wt(r);if(w<=0)w=1;'
+            f'if(!byUF[r.u])byUF[r.u]={{t:0,pol:{{}}}};byUF[r.u].t+=w;byUF[r.u].pol[r.d]=(byUF[r.u].pol[r.d]||0)+w;tot+=w;}});'
+            f'var ufs=Object.keys(byUF).sort(function(a,b){{return byUF[b].t-byUF[a].t;}});'
+            f'if(!tot||!ufs.length){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Sem dados no filtro atual.",10,H/2);return;}}'
+            f'var cx=W/2,cy=H/2,rIn=Math.min(W,H)*0.16,rMid=Math.min(W,H)*0.30,rOut=Math.min(W,H)*0.46;'
+            f'var a0=-Math.PI/2;'  # começa no topo
+            f'for(var i=0;i<ufs.length;i++){{var uf=ufs[i],frac=byUF[uf].t/tot,a1=a0+frac*2*Math.PI;'
+            f'var col=SUNPAL[i%SUNPAL.length];'
+            f'ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,rMid,a0,a1);ctx.closePath();'
+            f'ctx.fillStyle=col;ctx.fill();ctx.strokeStyle="#0f172a";ctx.lineWidth=1;ctx.stroke();'
+            # rótulo da UF se a fatia for grande o suficiente
+            f'if(frac>0.05){{var am=(a0+a1)/2,lr=(rIn+rMid)/2;ctx.fillStyle="#fff";ctx.font="bold 11px sans-serif";'
+            f'ctx.textAlign="center";ctx.textBaseline="middle";'
+            f'ctx.fillText(uf,cx+Math.cos(am)*lr,cy+Math.sin(am)*lr);}}'
+            # anel externo: polos dentro da UF
+            f'var pol=byUF[uf].pol,pk=Object.keys(pol).sort(function(x,y){{return pol[y]-pol[x];}});'
+            f'var pa0=a0;for(var j=0;j<pk.length;j++){{var pf=pol[pk[j]]/byUF[uf].t,pa1=pa0+pf*(a1-a0);'
+            f'ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,rOut,pa0,pa1);ctx.closePath();'
+            f'ctx.fillStyle=_lighten(col,0.35+0.5*(j/(pk.length||1)));ctx.fill();'
+            f'ctx.strokeStyle="#0f172a";ctx.lineWidth=0.6;ctx.stroke();'
+            f'if((pa1-pa0)>0.18){{var pam=(pa0+pa1)/2,plr=(rMid+rOut)/2;ctx.fillStyle="#0f172a";'
+            f'ctx.font="9px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";'
+            f'var pn=(""+pk[j]);if(pn.length>10)pn=pn.slice(0,9)+"…";'
+            f'ctx.fillText(pn,cx+Math.cos(pam)*plr,cy+Math.sin(pam)*plr);}}pa0=pa1;}}'
+            f'a0=a1;}}'
+            # buraco central com o total
+            f'ctx.beginPath();ctx.arc(cx,cy,rIn,0,2*Math.PI);ctx.fillStyle="#0f172a";ctx.fill();'
+            f'ctx.fillStyle="#93c5fd";ctx.font="bold 14px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";'
+            f'ctx.fillText(fmt(tot,0),cx,cy-6);ctx.fillStyle="#94a3b8";ctx.font="9px sans-serif";'
+            f'ctx.fillText(TEM_C?"candidatos":"rotas",cx,cy+9);ctx.textAlign="left";ctx.textBaseline="alphabetic";}}'
+            f'function desenharSank(F){{if(!elSank)return;var ctx=elSank.getContext("2d");if(!ctx)return;'
+            f'var W=elSank.clientWidth||600,H=elSank.height;elSank.width=W;ctx.clearRect(0,0,W,H);'
+            f'if(!TEM_U||!TEM_D){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Sankey requer UF e Polo nos dados.",10,H/2);return;}}'
+            f'var wt=function(r){{return TEM_C?(r.c||0):1;}};'
+            # agrega fluxos UF->Polo e totais por nó
+            f'var flow={{}},uT={{}},pT={{}};F.forEach(function(r){{if(!r.u||!r.d)return;var w=wt(r);if(w<=0)w=1;'
+            f'var k=r.u+"||"+r.d;flow[k]=(flow[k]||0)+w;uT[r.u]=(uT[r.u]||0)+w;pT[r.d]=(pT[r.d]||0)+w;}});'
+            f'var ufs=Object.keys(uT).sort(function(a,b){{return uT[b]-uT[a];}}).slice(0,6);'
+            f'var pol=Object.keys(pT).sort(function(a,b){{return pT[b]-pT[a];}}).slice(0,8);'
+            f'if(!ufs.length||!pol.length){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Sem dados no filtro atual.",10,H/2);return;}}'
+            f'var uSet={{}},pSet={{}};ufs.forEach(function(u){{uSet[u]=1;}});pol.forEach(function(p){{pSet[p]=1;}});'
+            # recomputa totais só com os nós exibidos, p/ escala coerente
+            f'var uShow={{}},pShow={{}},grand=0;Object.keys(flow).forEach(function(k){{var ab=k.split("||");'
+            f'if(uSet[ab[0]]&&pSet[ab[1]]){{uShow[ab[0]]=(uShow[ab[0]]||0)+flow[k];'
+            f'pShow[ab[1]]=(pShow[ab[1]]||0)+flow[k];grand+=flow[k];}}}});'
+            f'if(!grand){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Sem fluxos entre os nós exibidos.",10,H/2);return;}}'
+            f'var padY=14,gap=8,nodeW=12,lx=4,rx=W-4-nodeW,lblL=54,lblR=54;'
+            f'var availH=H-padY*2,nU=ufs.length,nP=pol.length;'
+            f'var usableU=availH-gap*(nU-1),usableP=availH-gap*(nP-1);'
+            # posições Y dos nós (empilhados, altura ∝ total)
+            f'var uPos={{}},y=padY;for(var i=0;i<nU;i++){{var h=Math.max(3,(uShow[ufs[i]]||0)/grand*usableU);'
+            f'uPos[ufs[i]]={{y:y,h:h,off:0,col:SUNPAL[i%SUNPAL.length]}};y+=h+gap;}}'
+            f'var pPos={{}};y=padY;for(var i=0;i<nP;i++){{var h=Math.max(3,(pShow[pol[i]]||0)/grand*usableP);'
+            f'pPos[pol[i]]={{y:y,h:h,off:0}};y+=h+gap;}}'
+            # desenha as fitas (ribbons) UF->Polo, ordenadas por UF depois por Polo
+            f'var links=[];Object.keys(flow).forEach(function(k){{var ab=k.split("||");'
+            f'if(uSet[ab[0]]&&pSet[ab[1]])links.push([ab[0],ab[1],flow[k]]);}});'
+            f'links.sort(function(a,b){{if(a[0]!==b[0])return ufs.indexOf(a[0])-ufs.indexOf(b[0]);'
+            f'return pol.indexOf(a[1])-pol.indexOf(b[1]);}});'
+            f'links.forEach(function(L){{var up=uPos[L[0]],pp=pPos[L[1]];if(!up||!pp)return;'
+            f'var th=L[2]/grand*((usableU+usableP)/2);th=Math.max(1,th);'
+            f'var y0=up.y+up.off,y1=pp.y+pp.off;up.off+=th;pp.off+=th;'
+            f'var x0=lx+nodeW,x1=rx,xm=(x0+x1)/2;'
+            f'ctx.beginPath();ctx.moveTo(x0,y0);ctx.bezierCurveTo(xm,y0,xm,y1,x1,y1);'
+            f'ctx.lineTo(x1,y1+th);ctx.bezierCurveTo(xm,y1+th,xm,y0+th,x0,y0+th);ctx.closePath();'
+            f'ctx.fillStyle=_rgba(up.col,0.32);ctx.fill();}});'
+            # desenha os nós (retângulos) + rótulos
+            f'ctx.textBaseline="middle";'
+            f'ufs.forEach(function(u){{var p=uPos[u];ctx.fillStyle=p.col;ctx.fillRect(lx,p.y,nodeW,p.h);'
+            f'ctx.fillStyle="#cbd5e1";ctx.font="10px sans-serif";ctx.textAlign="left";'
+            f'ctx.fillText(u,lx+nodeW+3,p.y+p.h/2);}});'
+            f'pol.forEach(function(pn){{var p=pPos[pn];ctx.fillStyle="#64748b";ctx.fillRect(rx,p.y,nodeW,p.h);'
+            f'ctx.fillStyle="#cbd5e1";ctx.font="10px sans-serif";ctx.textAlign="right";'
+            f'var nm=(""+pn);if(nm.length>12)nm=nm.slice(0,11)+"…";ctx.fillText(nm,rx-3,p.y+p.h/2);}});'
+            f'ctx.textAlign="left";ctx.textBaseline="alphabetic";}}'
+            f'function _rgba(hex,a){{var n=parseInt(hex.slice(1),16);'
+            f'return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")";}}'
+            # contorno simplificado do Brasil (lon,lat) — referência geográfica leve, não fronteira precisa
+            f'var BR=[[-50.0,0.0],[-48.5,-1.5],[-44.3,-2.5],[-41.8,-2.9],[-38.5,-3.7],[-37.2,-5.1],[-35.2,-5.8],'
+            f'[-34.8,-7.2],[-35.4,-8.6],[-35.7,-9.6],[-36.4,-10.5],[-37.0,-11.0],[-38.5,-13.0],[-39.0,-15.0],'
+            f'[-39.7,-18.5],[-40.3,-20.3],[-41.0,-22.0],[-43.2,-22.9],[-44.5,-23.1],[-46.6,-24.0],[-48.5,-25.9],'
+            f'[-48.6,-28.5],[-49.7,-29.4],[-50.7,-30.9],[-52.2,-32.0],[-53.4,-33.7],[-55.6,-30.9],[-57.6,-30.2],'
+            f'[-56.5,-27.5],[-54.5,-25.6],[-54.3,-24.0],[-55.0,-22.0],[-57.9,-22.1],[-58.2,-20.0],[-57.8,-17.5],'
+            f'[-60.0,-16.3],[-58.4,-13.5],[-60.5,-10.5],[-64.0,-10.5],[-65.3,-9.8],[-70.6,-11.0],[-72.9,-9.4],'
+            f'[-73.0,-7.3],[-70.0,-4.0],[-69.4,-1.4],[-67.3,1.9],[-64.0,4.0],[-60.7,5.2],[-60.0,3.0],[-59.8,1.3],'
+            f'[-56.5,1.9],[-54.6,2.3],[-51.6,4.1],[-50.9,0.9],[-50.0,0.0]];'
+            f'function _corDist(v,vmin,vmax){{if(v==null||isNaN(v))return "#94a3b8";'
+            f'var t=(vmax>vmin)?(v-vmin)/(vmax-vmin):0;t=Math.max(0,Math.min(1,t));'
+            f'var r,g,b;if(t<0.5){{var u=t/0.5;r=Math.round(22+(234-22)*u);g=Math.round(163+(179-163)*u);b=Math.round(74+(8-74)*u);}}'
+            f'else{{var u=(t-0.5)/0.5;r=Math.round(234+(220-234)*u);g=Math.round(179+(38-179)*u);b=Math.round(8+(38-8)*u);}}'
+            f'return "rgb("+r+","+g+","+b+")";}}'
+            f'function desenharMapa(F){{if(!elMapa)return;var ctx=elMapa.getContext("2d");if(!ctx)return;'
+            f'var W=elMapa.clientWidth||600,H=elMapa.height;elMapa.width=W;ctx.clearRect(0,0,W,H);'
+            f'if(!TEM_GEO){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Mapa requer coordenadas (lat/lon) nos dados.",10,H/2);return;}}'
+            # projeção equiretangular com bounds fixos do Brasil, preservando proporção
+            f'var loMin=-74,loMax=-34,laMin=-34,laMax=6,pad=8;'
+            f'var kx=(W-pad*2)/(loMax-loMin),ky=(H-pad*2)/(laMax-laMin),k=Math.min(kx,ky);'
+            f'var offX=pad+((W-pad*2)-k*(loMax-loMin))/2,offY=pad+((H-pad*2)-k*(laMax-laMin))/2;'
+            f'function PX(lo){{return offX+(lo-loMin)*k;}}function PY(la){{return offY+(laMax-la)*k;}}'
+            # desenha o contorno do Brasil (referência)
+            f'ctx.beginPath();for(var i=0;i<BR.length;i++){{var x=PX(BR[i][0]),y=PY(BR[i][1]);'
+            f'if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}}ctx.closePath();'
+            f'ctx.fillStyle="rgba(148,163,184,0.08)";ctx.fill();'
+            f'ctx.strokeStyle="rgba(148,163,184,0.55)";ctx.lineWidth=1;ctx.stroke();'
+            # pontos com coordenada
+            f'var pts=F.filter(function(r){{return r.la!=null&&r.lo!=null;}});'
+            f'if(!pts.length){{ctx.fillStyle="#94a3b8";ctx.font="11px sans-serif";'
+            f'ctx.fillText("Sem origens com coordenada no filtro atual.",offX+6,offY+16);return;}}'
+            f'var cmax=0;pts.forEach(function(r){{if((r.c||0)>cmax)cmax=r.c||0;}});if(!cmax)cmax=1;'
+            f'var kms=pts.map(function(r){{return r.km;}}).filter(function(x){{return x!=null&&!isNaN(x);}});'
+            f'var vmin=kms.length?Math.min.apply(null,kms):0,vmax=kms.length?Math.max.apply(null,kms):1;'
+            # ordena por candidatos desc p/ os grandes ficarem por baixo
+            f'pts.sort(function(a,b){{return (b.c||0)-(a.c||0);}});'
+            f'pts.forEach(function(r){{var x=PX(r.lo),y=PY(r.la);'
+            f'var rad=TEM_C?Math.max(2,Math.sqrt((r.c||1)/cmax)*16):3;'
+            f'ctx.beginPath();ctx.arc(x,y,rad,0,2*Math.PI);ctx.fillStyle=_rgba2(_corDist(r.km,vmin,vmax),0.72);'
+            f'ctx.fill();ctx.strokeStyle="rgba(15,23,42,0.5)";ctx.lineWidth=0.5;ctx.stroke();}});'
+            # legenda de cor (distância)
+            f'var lgW=110,lgH=8,lgX=W-lgW-12,lgY=H-24;'
+            f'for(var i=0;i<lgW;i++){{ctx.fillStyle=_corDist(vmin+(vmax-vmin)*(i/lgW),vmin,vmax);'
+            f'ctx.fillRect(lgX+i,lgY,1,lgH);}}'
+            f'ctx.fillStyle="#94a3b8";ctx.font="9px sans-serif";ctx.textAlign="left";'
+            f'ctx.fillText(Math.round(vmin)+" km",lgX,lgY-3);ctx.textAlign="right";'
+            f'ctx.fillText(Math.round(vmax)+" km",lgX+lgW,lgY-3);ctx.textAlign="left";'
+            f'ctx.fillStyle="#94a3b8";ctx.fillText(pts.length+" origens",offX+4,offY+12);}}'
+            f'function _rgba2(rgb,a){{return rgb.replace("rgb(","rgba(").replace(")",","+a+")");}}'
+            f'function desenharHist(kms){{if(!elHist)return;var ctx=elHist.getContext("2d");if(!ctx)return;'
+            f'var W=elHist.clientWidth||600,H=elHist.height;elHist.width=W;ctx.clearRect(0,0,W,H);'
+            f'if(!kms.length){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
+            f'ctx.fillText("Sem dados no filtro atual.",10,H/2);return;}}'
+            f'var mx=Math.max.apply(null,kms),NB=24,bw=mx/NB||1,bins=new Array(NB).fill(0);'
+            f'kms.forEach(function(v){{var i=Math.min(NB-1,Math.floor(v/bw));bins[i]++;}});'
+            f'var bmax=Math.max.apply(null,bins)||1,pad=6,gap=2,cw=(W-pad*2)/NB;'
+            f'for(var i=0;i<NB;i++){{var bh=(bins[i]/bmax)*(H-24);var x=pad+i*cw;var y=H-18-bh;'
+            f'var g=ctx.createLinearGradient(0,y,0,y+bh);g.addColorStop(0,"#60a5fa");g.addColorStop(1,"#2563eb");'
+            f'ctx.fillStyle=g;ctx.fillRect(x,y,cw-gap,bh);}}'
+            f'ctx.fillStyle="#94a3b8";ctx.font="10px sans-serif";ctx.fillText("0 km",pad,H-4);'
+            f'ctx.textAlign="right";ctx.fillText(Math.round(mx)+" km",W-pad,H-4);ctx.textAlign="left";}}'
+            f'function renderTab(F){{var tb=document.getElementById("biTbody");if(!tb)return;'
+            f'var lim=F.slice(0,500),h="";for(var i=0;i<lim.length;i++){{var r=lim[i];h+="<tr><td>"+(r.o||"")+"</td>";'
+            f'if(TEM_D)h+="<td>"+(r.d||"")+"</td>";if(TEM_U)h+="<td>"+(r.u||"")+"</td>";'
+            f'h+="<td class=num>"+(r.km==null?"—":fmt(r.km,1))+"</td>";'
+            f'if(TEM_C)h+="<td class=num>"+fmt(r.c||0,0)+"</td>";'
+            f'if(TEM_F)h+="<td>"+(r.f||"—")+"</td>";if(TEM_B)h+="<td>"+(r.b||"—")+"</td>";h+="</tr>";}}'
+            f'if(F.length>500)h+="<tr><td colspan=8 style=\\"text-align:center;color:#94a3b8\\">… e mais "+'
+            f'(F.length-500)+" registros (refine o filtro para ver todos)</td></tr>";tb.innerHTML=h;}}'
+            f'[elUF,elF,elB,elKm,elPolo,elCand,elBusca].forEach(function(e){{if(e)e.addEventListener("input",upd);}});'
+            f'var vb=document.getElementById("biVer"),tw=document.getElementById("biTabWrap");'
+            f'if(vb)vb.addEventListener("click",function(){{tw.classList.toggle("open");'
+            f'vb.textContent=tw.classList.contains("open")?"📋 Ocultar registros":"📋 Ver registros do filtro";}});'
+            f'var lb=document.getElementById("biLimpar");if(lb)lb.addEventListener("click",function(){{'
+            f'if(elUF)elUF.value="";if(elF)elF.value="";if(elB)elB.value="";if(elKm)elKm.value=1000;'
+            f'if(elPolo)elPolo.value="";if(elCand)elCand.value=0;if(elBusca)elBusca.value="";upd();}});'
+            f'window.addEventListener("resize",function(){{var F=filtrar();'
+            f'desenharHist(F.map(function(r){{return r.km;}}).filter(function(x){{return x!=null&&!isNaN(x);}}));'
+            f'desenharPolos(F);desenharUF(F);desenharSun(F);desenharSank(F);desenharMapa(F);}});'
+            f'upd();}})();</script>'
+        )
+        return _html
+    except Exception:
+        logger.error("[BI-INTERATIVO] Falha ao montar painel interativo", exc_info=True)
+        return ""
+
+
 def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) de nível profissional/BI:
     capa, NAVEGAÇÃO LATERAL (sumário), cartões executivos e seções analíticas ricas — Resumo, Distribuição de
@@ -6488,6 +7342,14 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
             _st["first"] = False
             return _h
         _sec = []   # (id, título, html)
+        # [BI-INTERATIVO - 223ª geração] Painel executivo interativo no TOPO (filtros vivos + KPIs + tabela
+        # auditável). Aditivo e autocontido; se as colunas mínimas faltarem, retorna '' e nada é adicionado.
+        try:
+            _painel_bi = _painel_interativo_bi_html(df)
+            if _painel_bi:
+                _sec.append(("painel", "Painel Executivo Interativo", _painel_bi))
+        except Exception:
+            pass
 
         _kpis = [("Candidatos", f"{_tot_cand:,}"), ("Municípios de origem", f"{_n:,}")]
         if _n_polos is not None:
@@ -6714,6 +7576,15 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 except Exception:
                     _sun = ""
             _sec.append(("polos", "Competitividade dos Polos", f'<p class="lead">Quantos municípios e candidatos cada polo concentra — os do topo são os mais demandados.</p>' + _sun + f'<table><thead><tr>{_cab}</tr></thead><tbody>{_rows}</tbody></table>'))
+
+        # [GRAFICOS-AVANCADOS - 225ª geração] Lote de gráficos novos (Pareto, curva acumulada, mapa de
+        # concentração). Aditivo e defensivo: só entra se gerar algum gráfico; nunca derruba o relatório.
+        try:
+            _graf_av = _graficos_avancados_html(df)
+            if _graf_av:
+                _sec.append(("graf_avancados", "Análises Visuais Avançadas", _graf_av))
+        except Exception:
+            pass
 
         if 'Municipio Concorrente' in df.columns:
             _cc = df['Municipio Concorrente'].astype(str).str.strip()
@@ -7173,6 +8044,30 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                 f'<div class="kpi-l">{_he.escape(l)}</div></div>' for l, v in pares) + '</div>'
         _sec = []
         _sec.append(("veredito", "Veredito", f'<div class="verdict">🔎 <strong>{_he.escape(_ver)}</strong></div>'))
+        # [BI-INTERATIVO-COMPARADOR - 224ª geração] Painel interativo (filtros vivos + KPIs + tabela auditável)
+        # sobre os registros da comparação. Adapta as linhas da conciliação para o formato do painel, reusando a
+        # MESMA função já testada. Usa o lado APLICAÇÃO como estudo primário. Defensivo: sem linhas → nada.
+        try:
+            if linhas:
+                _rows_cmp = []
+                for _ln in linhas:
+                    if not isinstance(_ln, dict):
+                        continue
+                    _rows_cmp.append({
+                        "Municipio Origem": _ln.get("Origem") or _ln.get("municipio") or "",
+                        "Municipio Destino": _ln.get("Destino Aplicacao") or "",
+                        "UF Origem": _ln.get("UF", ""),
+                        "Distancia": _ln.get("Distancia Aplicacao"),
+                        "Inscritos": _ln.get("Inscritos", 0),
+                        "Modo/Acesso": _ln.get("Modo Aplicacao", ""),
+                    })
+                if _rows_cmp:
+                    _df_cmp_painel = pd.DataFrame(_rows_cmp)
+                    _painel_cmp = _painel_interativo_bi_html(_df_cmp_painel)
+                    if _painel_cmp:
+                        _sec.append(("painel", "Painel Executivo Interativo", _painel_cmp))
+        except Exception:
+            pass
         _placar = [("Conciliação", f"{_pct_conc:.0f}%"), ("Vitórias da aplicação", f"{_p_app:.0f}%"),
                    ("Vitórias da referência", f"{_p_ref:.0f}%"), ("Empate técnico", f"{_p_emp:.0f}%")]
         if _econ:
@@ -7429,6 +8324,18 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
         _sec.append(("diagnostico", "Diagnóstico Técnico Final",
                      "".join(f'<p>{_d}</p>' for _d in _dg)))
         _sec.extend(_secoes_metodologia_referencias_html())  # [ARTIGO - 184ª geração]
+        # [ARTIGO-CIENTIFICO-COMPARADOR - 224ª geração] Seções científicas universais no Comparador (aplicam-se
+        # a qualquer estudo de roteamento): Fundamentação Teórica e Limitações. Reusa os helpers já provados.
+        for _fn_sc, _id_sc, _tit_sc in [
+            (lambda: _secao_fundamentacao_html(), "fundamentacao", "Fundamentação Teórica"),
+            (lambda: _secao_limitacoes_html(), "limitacoes", "Limitações do Estudo"),
+        ]:
+            try:
+                _h_sc = _fn_sc()
+                if _h_sc:
+                    _sec.append((_id_sc, _tit_sc, _h_sc))
+            except Exception:
+                pass
         _sec.append(("glossario", "Glossário", _bloco_glossario_html()))  # [GLOSSARIO - 184ª geração]
         _nav = "".join(f'<a href="#{i}">{_he.escape(t)}</a>' for i, t, _ in _sec)
         _corpo = "".join(f'<section id="{i}"><h2>{_he.escape(t)}</h2>{h}</section>' for i, t, h in _sec)
@@ -12441,6 +13348,15 @@ def _montar_planilha_lote_xlsx(df_final):
                 _s.to_excel(_w, index=False, sheet_name="Status das Rotas")
         except Exception:
             logger.error("[XLSX-RICO] Falha nas abas extras do Lote (aba 'Rotas' preservada)", exc_info=True)
+        # [EXPORT-DASHBOARD-LOTE - 227ª geração] Leva ao LOTE as MESMAS abas analíticas da planilha de Locais —
+        # incluindo Painel Executivo (Dashboard), Metodologia, Estatísticas, Índices, Insights, Qualidade e
+        # Glossário — reusando a função já testada. Isolado em try próprio: se falhar, as abas do Lote acima já
+        # estão escritas e o arquivo segue válido. Sem colisão de nomes (o Lote usa 'Resumo Executivo'; a
+        # científica usa 'Painel Executivo'). Só roda para xlsxwriter.
+        try:
+            _abas_cientificas_alocacao(_w, df_final)
+        except Exception:
+            logger.error("[EXPORT-DASHBOARD-LOTE] Falha ao anexar abas analíticas ao Lote", exc_info=True)
     return _buf.getvalue()
 
 
@@ -15297,6 +16213,64 @@ def _aba_graficos(writer, stats, linhas):
         logger.error(f"[XLSX-PRO] Falha nos gráficos: {_e}")
 
 
+def _aba_estatisticas_comparacao(writer, linhas):
+    """[EXPORT-ESTATISTICAS-COMPARADOR - 228ª geração] Aba de ESTATÍSTICAS DESCRITIVAS do Comparador,
+    comparando lado a lado as distâncias do estudo da APLICAÇÃO e do estudo de REFERÊNCIA (média, mediana,
+    desvio, CV, quartis, percentis 90/95/99). O Comparador já tem KPIs na capa, mas não tinha este
+    detalhamento estatístico — que aqui é especialmente útil por contrastar os dois estudos. Reusa o helper
+    _estatisticas_descritivas_serie. DEFENSIVO: sem dados/sem xlsxwriter → não faz nada; isolado em try."""
+    try:
+        if not linhas:
+            return
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        _df = pd.DataFrame(linhas)
+        _da = _estatisticas_descritivas_serie(_df["Distancia Aplicacao"]) if "Distancia Aplicacao" in _df.columns else None
+        _dr = _estatisticas_descritivas_serie(_df["Distancia Referencia"]) if "Distancia Referencia" in _df.columns else None
+        if not _da and not _dr:
+            return
+        _f_tit = _wb.add_format({"bold": True, "font_size": 16, "font_color": "#1F3864"})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#44546A"})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_int = _wb.add_format({"font_size": 10, "num_format": "#,##0", "align": "right"})
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#FFFFFF", "bg_color": "#1F3864",
+                                 "border": 1, "border_color": "#D9D9D9", "align": "center"})
+        _f_exp = _wb.add_format({"font_size": 10, "font_color": "#334155", "italic": True, "text_wrap": True, "valign": "top"})
+        _ws = _wb.add_worksheet("Estatisticas Descritivas")
+        _ws.set_column("A:A", 30); _ws.set_column("B:C", 22)
+        _ws.hide_gridlines(2)
+        _ws.write("A1", "Estatísticas Descritivas — Aplicação × Referência", _f_tit)
+        _ws.write("A2", "Resumo estatístico das distâncias de cada estudo, lado a lado.", _f_lbl)
+        _metrs = [("N (rotas comparadas)", "n"), ("Média (km)", "media"), ("Mediana (km)", "mediana"),
+                  ("Moda (km)", "moda"), ("Desvio-padrão", "desvio"), ("Variância", "variancia"),
+                  ("Coef. variação (%)", "cv"), ("Mínimo (km)", "min"), ("1º quartil Q1 (km)", "q1"),
+                  ("3º quartil Q3 (km)", "q3"), ("Percentil 90 (km)", "p90"), ("Percentil 95 (km)", "p95"),
+                  ("Percentil 99 (km)", "p99"), ("Máximo (km)", "max")]
+        _r0 = 4
+        _ws.write(_r0, 0, "Métrica", _f_hdr)
+        _ws.write(_r0, 1, "Estudo da Aplicação", _f_hdr)
+        _ws.write(_r0, 2, "Estudo de Referência", _f_hdr)
+        for _i, (_lbl, _k) in enumerate(_metrs):
+            _rr = _r0 + 1 + _i
+            _ws.write(_rr, 0, _lbl, _f_lbl)
+            _va = (_da or {}).get(_k)
+            _vr = (_dr or {}).get(_k)
+            _fmt = _f_int if _k == "n" else _f_num
+            _ws.write(_rr, 1, _va if _va is not None else "—", _fmt)
+            _ws.write(_rr, 2, _vr if _vr is not None else "—", _fmt)
+        _re = _r0 + len(_metrs) + 3
+        _ws.merge_range(_re, 0, _re, 2,
+                        "Como ler: compare as duas colunas. Se a MÉDIA/MEDIANA da aplicação é menor, ela encurta o "
+                        "deslocamento típico. A MEDIANA resiste a casos extremos; se média e mediana divergem muito, "
+                        "há rotas atípicas puxando a média. O COEFICIENTE DE VARIAÇÃO (CV) mede a dispersão relativa "
+                        "(CV<30% = distribuição homogênea). Os PERCENTIS 90/95 mostram o pior caso: o P95 é a "
+                        "distância que 95% dos candidatos não ultrapassam — quanto menor, melhor a cobertura.", _f_exp)
+        _ws.set_row(_re, 92)
+    except Exception:
+        logger.error("[EXPORT-ESTATISTICAS-COMPARADOR] Falha na aba de estatísticas do Comparador", exc_info=True)
+
+
 def _aba_metadados(writer, meta):
     """[XLSX-PRO - 182ª geração] METADADOS DO PROCESSAMENTO — a rastreabilidade que um relatório técnico
     exige. Quem gerou, quando, com que versão, de que arquivos, com quantas linhas. Sem isso, o relatório
@@ -17071,6 +18045,11 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
                 _linhas_guia.extend(_texto_guia_da_aba(_ab))
             _escrever_aba_com_guia(_w, pd.DataFrame(_linhas_guia), "📖 Como Ler Cada Aba")
             _aba_metadados(_w, _meta_x)   # [XLSX-PRO] rastreabilidade: sem ela, não é auditável
+            # [EXPORT-ESTATISTICAS-COMPARADOR - 228ª geração] Estatísticas descritivas (App × Referência).
+            try:
+                _aba_estatisticas_comparacao(_w, linhas)
+            except Exception:
+                logger.error("[EXPORT-ESTATISTICAS-COMPARADOR] Falha ao anexar aba de estatísticas", exc_info=True)
 
             _escrever_aba_com_guia(
                 _w, pd.DataFrame(_guia_interpretacao_completo(stats, aud, linhas)),
@@ -18081,6 +19060,113 @@ def _abas_cientificas_alocacao(writer, df):
                 _ws.write(4 + _i, 1, _d, _f_txt)
         except Exception:
             logger.error("[EXPORT-CIENTIFICO] Falha na aba Glossário", exc_info=True)
+
+        # ---------------- ABA: PAINEL EXECUTIVO (DASHBOARD) ----------------
+        # [EXPORT-DASHBOARD - 226ª geração] KPIs num relance, no topo da planilha, como um painel executivo.
+        try:
+            _dist_k = pd.to_numeric(df["Distancia"], errors="coerce").dropna() if "Distancia" in df.columns else None
+            _col_cand_k = next((c for c in ["Inscritos", "Candidatos", "QT_INSCRITOS", "Qtd Candidatos"] if c in df.columns), None)
+            _insc_k = pd.to_numeric(df[_col_cand_k], errors="coerce") if _col_cand_k else None
+            _kpis = [("Municípios de origem", len(df), "int")]
+            if _insc_k is not None:
+                _kpis.append(("Candidatos (total)", int(_insc_k.fillna(0).sum()), "int"))
+            if "Municipio Destino" in df.columns:
+                _kpis.append(("Polos (locais de prova)", int(df["Municipio Destino"].nunique()), "int"))
+            if _dist_k is not None and len(_dist_k):
+                _kpis += [("Deslocamento médio (km)", float(_dist_k.mean()), "num"),
+                          ("Deslocamento mediano (km)", float(_dist_k.median()), "num"),
+                          ("Percentil 90 (km)", float(_dist_k.quantile(0.90)), "num"),
+                          ("Percentil 95 (km)", float(_dist_k.quantile(0.95)), "num"),
+                          ("Maior deslocamento (km)", float(_dist_k.max()), "num"),
+                          ("Menor deslocamento (km)", float(_dist_k.min()), "num")]
+            if "Balsas" in df.columns:
+                _nb_k = int(df["Balsas"].astype(str).str.strip().str.lower().isin(["sim", "yes", "true", "1"]).sum())
+                _kpis.append(("Rotas que cruzam balsa", _nb_k, "int"))
+            if "Fonte da Rota" in df.columns:
+                _f_k = df["Fonte da Rota"].astype(str).str.lower()
+                _est_k = int(_f_k.str.contains("estimad|reta|geod", na=False).sum())
+                _kpis.append(("Rotas estimadas (não roteadas)", _est_k, "int"))
+                _kpis.append(("Rotas por roteamento real", len(df) - _est_k, "int"))
+            if _insc_k is not None and _dist_k is not None and len(_dist_k):
+                # km-candidato: soma de distância ponderada por candidatos (esforço logístico total)
+                try:
+                    _dd = pd.to_numeric(df["Distancia"], errors="coerce")
+                    _kmc = float((_dd.fillna(0) * _insc_k.fillna(0)).sum())
+                    _kpis.append(("Km-candidato (esforço total)", _kmc, "num"))
+                except Exception:
+                    pass
+            _ws = _wb.add_worksheet("Painel Executivo")
+            _ws.set_column("A:A", 4); _ws.set_column("B:B", 34); _ws.set_column("C:C", 20); _ws.set_column("D:H", 14)
+            _ws.hide_gridlines(2)
+            _ws.merge_range("B2:E2", "Painel Executivo — Indicadores-Chave", _f_tit)
+            _ws.merge_range("B3:E3", "Visão de relance do estudo. Os detalhes e o passo a passo estão nas demais abas.", _f_lbl)
+            _f_kpi_v = _wb.add_format({"bold": True, "font_size": 20, "font_color": "#1e3a8a", "align": "left", "num_format": "#,##0.0"})
+            _f_kpi_vi = _wb.add_format({"bold": True, "font_size": 20, "font_color": "#1e3a8a", "align": "left", "num_format": "#,##0"})
+            _f_kpi_l = _wb.add_format({"font_size": 10, "font_color": "#64748b"})
+            _f_card = _wb.add_format({"bg_color": "#f1f5f9", "border": 1, "border_color": "#e2e8f0"})
+            _r = 4
+            _cols_grid = [1, 4]  # duas colunas de cards (B.. e E..)
+            for _i, (_lbl, _val, _tp) in enumerate(_kpis):
+                _cbase = _cols_grid[_i % 2]
+                _rr = _r + (_i // 2) * 3
+                _ws.write(_rr, _cbase, _val, _f_kpi_vi if _tp == "int" else _f_kpi_v)
+                _ws.write(_rr + 1, _cbase, _lbl, _f_kpi_l)
+            _rexp = _r + ((len(_kpis) + 1) // 2) * 3 + 1
+            _ws.merge_range(_rexp, 1, _rexp, 5,
+                            "Como ler: estes indicadores resumem todo o estudo. 'Deslocamento mediano' é a distância "
+                            "típica (metade dos candidatos percorre menos que isso); 'Percentil 95' é o pior caso "
+                            "típico; 'Km-candidato' é o esforço logístico total (distância somada, ponderada por "
+                            "candidatos). Use a aba 'Estatisticas Descritivas' para o detalhamento e 'Indices de "
+                            "Qualidade' para as notas compostas.", _f_exp)
+            _ws.set_row(_rexp, 90)
+        except Exception:
+            logger.error("[EXPORT-DASHBOARD] Falha na aba Painel Executivo", exc_info=True)
+
+        # ---------------- ABA: METODOLOGIA ----------------
+        # [EXPORT-METODOLOGIA - 226ª geração] Como a aplicação trabalhou, em linguagem simples.
+        try:
+            _passos = [
+                ("1. Geocodificação", "Cada município de origem e cada polo vira uma coordenada (latitude/longitude). "
+                 "A base oficial do IBGE é a referência; provedores externos (ArcGIS, Nominatim, Photon) entram por "
+                 "consenso, e há um resgate offline pela base do IBGE quando preciso. Um escore de confiança (0-100) "
+                 "acompanha cada ponto."),
+                ("2. Roteamento (motores)", "A distância real por estradas é calculada por motores de roteamento que "
+                 "disputam a menor rota: Google Routes (oficial), OSRM e GraphHopper. Todos partem da MESMA coordenada "
+                 "validada — o que torna a comparação justa e auditável."),
+                ("3. Escolha do vencedor", "Para cada município adota-se a MENOR distância viária real entre os motores. "
+                 "O 2º colocado fica registrado como alternativa (concorrente), para transparência."),
+                ("4. Consenso e divergência", "Quando mais de um motor responde, mede-se a divergência entre eles. "
+                 "Alta convergência = resultado robusto; divergência alta é sinalizada para conferência."),
+                ("5. Fallback", "Se os motores de rota falham (ex.: localidade sem malha viária mapeada), usa-se a "
+                 "distância em linha reta (geodésica, fórmula de Karney/WGS-84), SEMPRE sinalizada como estimativa."),
+                ("6. Linha reta × viária", "A razão entre a rota real e a linha reta (sinuosidade) revela desvios: "
+                 "valores muito altos indicam contorno de barreira natural (rio/serra) — possível acesso fluvial."),
+                ("7. Balsa e locais isolados", "Rotas que dependem de travessia fluvial são marcadas (sensíveis a "
+                 "horário/condições do rio). Locais isolados aparecem com sinuosidade alta e recebem atenção especial."),
+                ("8. Tempo", "O tempo de percurso é estimado pelo próprio motor de roteamento, quando disponível."),
+                ("9. Auditoria", "Cada rota guarda o rastro completo: coordenadas enviadas, motor vencedor, divergência "
+                 "entre motores, snap à via e validação espacial — tudo reproduzível."),
+                ("10. Municípios sem rota", "Quando nem a rota nem a estimativa são possíveis, o caso é marcado como "
+                 "não-comparável (nunca é 'inventado' um valor)."),
+            ]
+            _ws = _wb.add_worksheet("Metodologia")
+            _ws.set_column("A:A", 26); _ws.set_column("B:B", 100)
+            _ws.write("A1", "Metodologia", _f_tit)
+            _ws.write("A2", "Como a aplicação calculou cada rota, em linguagem simples.", _f_lbl)
+            _ws.write(3, 0, "Etapa", _f_hdr); _ws.write(3, 1, "O que aconteceu", _f_hdr)
+            _f_etapa = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#1e3a8a", "valign": "top"})
+            for _i, (_et, _de) in enumerate(_passos):
+                _ws.write(4 + _i, 0, _et, _f_etapa)
+                _ws.write(4 + _i, 1, _de, _f_txt)
+                _ws.set_row(4 + _i, 46)
+            _rmot = 4 + len(_passos) + 1
+            _ws.merge_range(_rmot, 0, _rmot, 1,
+                            "Motores acionados nesta aplicação: Google Routes (API oficial), OSRM (open source sobre "
+                            "OpenStreetMap) e GraphHopper. A linha reta usa a fórmula geodésica de Karney (WGS-84). "
+                            "Todos os motores partem da mesma geocodificação validada.", _f_exp)
+            _ws.set_row(_rmot, 60)
+        except Exception:
+            logger.error("[EXPORT-METODOLOGIA] Falha na aba Metodologia", exc_info=True)
     except Exception:
         logger.error("[EXPORT-CIENTIFICO] Falha geral nas abas científicas", exc_info=True)
 
@@ -19518,6 +20604,153 @@ def _registrar_telemetria_motores(vencedor, motores_dict, consenso, dist_linha_r
             _flush_telemetria_motores()  # flush fora do lock de append (o próprio flush tem seu lock)
     except Exception:
         pass  # observacional: nunca propaga
+
+
+def _rota_curta_suspeita(km_cand, dist_reta, km_google, peers_kms):
+    """[PROTEGE-CANDIDATO - 235ª geração] Detecta um valor de distância SUSPEITAMENTE BAIXO que, se adotado,
+    PREJUDICARIA o candidato: uma medição curta e errada (snap que "pulou" para outra via, ponto trocado, ou
+    rota que "atravessou" um rio/serra) faz um polo DISTANTE parecer PERTO — e o candidato acaba alocado a um
+    local cujo deslocamento REAL é muito maior. Como a escolha é "menor distância", um valor curto e errado
+    SEMPRE venceria. Este guarda protege contra isso.
+
+    SEGURANÇA (independência dos motores) — o ponto central: OSRM/GraphHopper/ORS compartilham a base OSM e
+    podem errar JUNTOS (ex.: falta uma estrada no OSM → todos desviam igual e um "atalho" correto some). Logo,
+    NÃO se pode rejeitar um valor baixo só porque os pares OSM discordam — o baixo pode ser o CORRETO. O único
+    juiz independente é o GOOGLE (base de mapa própria, não-OSM). Por isso só marcamos suspeita quando há
+    CONTRADIÇÃO INDEPENDENTE: o Google também diz que a viagem é bem mais longa. Sem Google, NÃO rejeitamos
+    (retorna False) — preserva a rota curta possivelmente correta.
+
+    Marca suspeita (True) só quando TUDO abaixo é verdadeiro:
+      • a reta é informativa (>= 15 km) — em distâncias curtas a sinuosidade oscila muito e não é diagnóstica;
+      • o candidato é IMPLAUSIVELMENTE DIRETO: sinuosidade (km/reta) < 1.12 (quase uma linha reta);
+      • é MUITO menor que os pares: km_cand < 0.75 * mediana(pares) [pares = demais motores válidos];
+      • CONTRADIÇÃO INDEPENDENTE do Google: km_google existe e km_google > km_cand * 1.25.
+    Qualquer erro/dados faltando → False (fail-safe: na dúvida, NÃO rejeita — nunca descarta uma rota curta
+    que possa ser a melhor para o candidato). PURA."""
+    try:
+        if km_cand is None or dist_reta is None or dist_reta < 15.0:
+            return False
+        _sin = float(km_cand) / float(dist_reta)
+        if _sin >= 1.12:              # não é "direto demais" → não é o padrão de erro que buscamos
+            return False
+        _peers = sorted(float(k) for k in (peers_kms or []) if k is not None and float(k) > 0)
+        if not _peers:
+            return False
+        _n = len(_peers)
+        _med = _peers[_n // 2] if _n % 2 == 1 else (_peers[_n // 2 - 1] + _peers[_n // 2]) / 2.0
+        if not (float(km_cand) < 0.75 * _med):   # não é muito menor que os pares → não suspeito
+            return False
+        # contradição INDEPENDENTE do Google é obrigatória (sem ela, respeita-se a não-independência do OSM)
+        if km_google is None:
+            return False
+        return float(km_google) > float(km_cand) * 1.25
+    except Exception:
+        return False
+
+
+def _selecionar_vencedor_rota(candidatos, dist_linha_reta, tol=0.04):
+    """[CRITERIO-VENCEDOR - 234ª geração] Escolhe o vencedor entre os candidatos viários com um critério MAIS
+    INTELIGENTE que o mínimo puro — sem nunca escolher uma rota substancialmente mais longa.
+
+    PROBLEMA que resolve: `min(distância)` puro tem dois defeitos:
+      (1) num EMPATE TÉCNICO (distâncias praticamente iguais), a escolha vira arbitrária (o menor ruído de
+          ponto flutuante decide) e pode cair numa rota com BALSA quando havia uma opção 100%% rodoviária de
+          distância equivalente — pior para logística de prova (balsa tem horário, capacidade, clima);
+      (2) o candidato marginalmente menor pode vir de uma geometria implausível (sinuosidade destoante).
+
+    CRITÉRIO (só atua dentro de uma TOLERÂNCIA de empate técnico — por padrão 4%% acima do menor; fora disso,
+    vence sempre a menor distância, preservando o princípio "menor rota viária"):
+      • entre os candidatos EMPATADOS (km <= menor*(1+tol)), preferir, em ordem:
+          1. SEM balsa antes de COM balsa (confiabilidade operacional para exames);
+          2. sinuosidade (viária/reta) mais PLAUSÍVEL — mais próxima da mediana das sinuosidades dos empatados
+             (protege contra geometria anômala);
+          3. menor distância (desempate final), e por fim ordem estável do nome.
+    IMPORTANTE (segurança/independência): NÃO usa "consenso" entre motores para preferir um valor mais ALTO —
+    OSRM/GraphHopper/ORS compartilham a base OSM e podem errar juntos; preferir o valor corroborado poderia
+    rejeitar uma rota curta CORRETA (ex.: Google acerta um trecho que falta no OSM). Por isso o critério só
+    reordena EMPATES; nunca troca uma rota nitidamente mais curta por outra mais longa.
+
+    Entrada: candidatos = [(nome, res_tupla), ...] com res[0]=km, res[2]=balsa ("Sim"/"Não"/bool).
+    Retorna: (nome_vencedor, res_vencedor, criterio_str) — criterio_str explica o desempate (auditoria).
+    PURA e DEFENSIVA: lista vazia → (None, None, ''); qualquer erro → cai no min puro."""
+    try:
+        if not candidatos:
+            return (None, None, "")
+        _val = [(n, r) for (n, r) in candidatos if r and len(r) > 0 and r[0] is not None]
+        if not _val:
+            return (None, None, "")
+        _min_km = min(float(r[0]) for _, r in _val)
+        if _min_km <= 0:
+            n0, r0 = min(_val, key=lambda kv: float(kv[1][0]))
+            return (n0, r0, "menor distância")
+        # empatados tecnicamente: dentro da tolerância acima do menor
+        _teto = _min_km * (1.0 + tol)
+        _emp = [(n, r) for (n, r) in _val if float(r[0]) <= _teto]
+        if len(_emp) <= 1:
+            n0, r0 = min(_val, key=lambda kv: float(kv[1][0]))
+            return (n0, r0, "menor distância")
+
+        # sinuosidade mediana dos empatados (para medir plausibilidade relativa)
+        def _sin(r):
+            try:
+                if dist_linha_reta and dist_linha_reta > 0:
+                    return float(r[0]) / float(dist_linha_reta)
+            except Exception:
+                pass
+            return None
+        _sins = sorted(s for s in (_sin(r) for _, r in _emp) if s is not None)
+        _sin_med = None
+        if _sins:
+            _m = len(_sins)
+            _sin_med = _sins[_m // 2] if _m % 2 == 1 else (_sins[_m // 2 - 1] + _sins[_m // 2]) / 2.0
+
+        def _tem_balsa(r):
+            try:
+                _b = r[2] if len(r) > 2 else None
+            except Exception:
+                _b = None
+            if isinstance(_b, str):
+                return _b.strip().lower() in ("sim", "yes", "true", "1")
+            return bool(_b)
+
+        _PRIOR = {"GOOGLE": 0, "OSRM": 1, "GRAPHHOPPER": 2, "ORS": 3, "OSRM_FOSSGIS": 4}
+
+        # sinuosidade ANÔMALA = desvio relativo da mediana acima de 25% (só demove geometria destoante;
+        # entre candidatos plausíveis, quem decide é a MENOR distância — preserva o princípio do app).
+        def _sin_anom(r):
+            if _sin_med is None or _sin_med <= 0:
+                return 0
+            _s = _sin(r)
+            if _s is None:
+                return 0
+            return 1 if abs(_s - _sin_med) / _sin_med > 0.25 else 0
+
+        def _chave(item):
+            _n, _r = item
+            _balsa = 1 if _tem_balsa(_r) else 0   # sem balsa (0) vem antes
+            _anom = _sin_anom(_r)                  # geometria plausível (0) vem antes
+            return (_balsa, _anom, float(_r[0]), _PRIOR.get(_n, 9))
+
+        _venc = min(_emp, key=_chave)
+        _n_abs, _r_abs = min(_val, key=lambda kv: float(kv[1][0]))
+        # monta a explicação do critério (só quando o vencedor difere do mínimo absoluto)
+        if _venc[0] == _n_abs and abs(float(_venc[1][0]) - float(_r_abs[0])) < 1e-9:
+            return (_venc[0], _venc[1], "menor distância")
+        _motivos = []
+        if _tem_balsa(_r_abs) and not _tem_balsa(_venc[1]):
+            _motivos.append("evita balsa")
+        if _sin_anom(_r_abs) and not _sin_anom(_venc[1]):
+            _motivos.append("sinuosidade mais plausível")
+        _delta = (float(_venc[1][0]) - float(_r_abs[0]))
+        _crit = ("empate técnico → " + ", ".join(_motivos) + f" (+{_delta:.1f} km vs. menor)") if _motivos \
+            else "menor distância"
+        return (_venc[0], _venc[1], _crit)
+    except Exception:
+        try:
+            n0, r0 = min(candidatos, key=lambda kv: float(kv[1][0]))
+            return (n0, r0, "menor distância")
+        except Exception:
+            return (None, None, "")
 
 
 def _consenso_motores_rota(motores_dict, dist_linha_reta):
@@ -21738,6 +22971,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         # candidatos não-Google válidos, EXCLUINDO outliers (só exclui quando há consenso real; motor único
         # nunca é outlier → não-regressão). Se por acaso todos virarem outlier, fail-open para os válidos.
         _cands_contendor = []
+        _criterio_venc = "menor distância"  # [CRITERIO-VENCEDOR - 234ª] default; atualizado se houver desempate
         for _nome, _res in (("OSRM", res_osrm), ("GRAPHHOPPER", _res_gh), ("ORS", _res_ors),
                             ("OSRM_FOSSGIS", _res_osrm2)):
             if _res and _viaria_fisicamente_possivel(_res[0], dist_linha_reta) and _nome not in _outliers_rota:
@@ -21748,9 +22982,45 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                                 ("OSRM_FOSSGIS", _res_osrm2)):
                 if _res and _viaria_fisicamente_possivel(_res[0], dist_linha_reta):
                     _cands_contendor.append((_nome, _res))
+        # [PROTEGE-CANDIDATO - 235ª geração] Remove candidatos com distância SUSPEITAMENTE BAIXA (quase reta,
+        # muito menor que os pares) SOMENTE quando o Google (fonte independente, não-OSM) TAMBÉM contradiz —
+        # evita alocar o candidato a um polo que parece perto por erro de medição, mas cujo trajeto real é bem
+        # maior. FAIL-OPEN: se todos virarem suspeitos, mantém os originais (nunca perde rota). Sem Google, não
+        # rejeita (respeita a não-independência dos motores OSM).
+        _km_google_ind = None
+        try:
+            _km_google_ind = float(res_google[0]) if (res_google and res_google[0]) else None
+        except Exception:
+            _km_google_ind = None
+        _protegeu_candidato = False
+        if _cands_contendor and _km_google_ind is not None and len(_cands_contendor) >= 1:
+            _kms_todos = [float(_r[0]) for _, _r in _cands_contendor]
+            _filtrados = []
+            for _nome, _res in _cands_contendor:
+                _peers = [k for k in _kms_todos if k != float(_res[0])]
+                if _rota_curta_suspeita(float(_res[0]), dist_linha_reta, _km_google_ind, _peers):
+                    _protegeu_candidato = True  # descartado: curto+direto demais e contradito pelo Google
+                else:
+                    _filtrados.append((_nome, _res))
+            if _filtrados:  # fail-open: só aplica se sobrar candidato
+                _cands_contendor = _filtrados
+            else:
+                _protegeu_candidato = False
         if _cands_contendor:
-            # menor distância viária vence a vaga de contendor; o vencedor traz TODOS os seus dados
-            fonte_contendor, res_osrm = min(_cands_contendor, key=lambda kv: kv[1][0])
+            # [CRITERIO-VENCEDOR - 234ª geração] menor distância vence; em EMPATE TÉCNICO (≤4% acima do menor),
+            # desempata por confiabilidade operacional (sem balsa) e sinuosidade plausível. Nunca escolhe rota
+            # nitidamente mais longa. O vencedor traz TODOS os seus dados.
+            _fc, _rc, _criterio_venc = _selecionar_vencedor_rota(_cands_contendor, dist_linha_reta)
+            if _fc is not None:
+                fonte_contendor, res_osrm = _fc, _rc
+            else:
+                fonte_contendor, res_osrm = min(_cands_contendor, key=lambda kv: kv[1][0])
+                _criterio_venc = "menor distância"
+            # [PROTEGE-CANDIDATO - 235ª] registra no critério quando um valor curto suspeito foi descartado
+            if _protegeu_candidato:
+                _criterio_venc = (("menor distância confiável (descartado valor curto suspeito, "
+                                   "contradito pelo Google)") if (not _criterio_venc or _criterio_venc == "menor distância")
+                                  else _criterio_venc + " · descartado valor curto suspeito")
 
     # [OSRM-SNAP + VALID-ESPACIAL - 40ª geração] Extrai o snap do OSRM (coordenada projetada na
     # via + distância do snap) e faz a VALIDAÇÃO ESPACIAL: confere se os pontos snapados continuam
@@ -21945,7 +23215,11 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                                                         f"{km_rota} km", tempo_rota)
             # [VIS-DINAMICA] LINK 1 (Google): referência comparativa — sempre traça a rota.
             link_rota = _montar_link_google_navegavel(lat_o, lon_o, lat_d, lon_d, end_oficial_o, end_oficial_d, origem_clean, destino_clean)
-            fonte_rota = f"{fonte_contendor} (Menor Distância)" if fonte_contendor != "OSRM" else "OSRM (Menor Distância)"
+            # [CRITERIO-VENCEDOR - 234ª] o rótulo reflete o critério: "Menor Distância" no caso normal, ou o
+            # motivo do desempate quando houve empate técnico (ex.: evitou balsa). Mantém auditabilidade.
+            _rotulo_crit = "Menor Distância" if (not _criterio_venc or _criterio_venc == "menor distância") \
+                else _criterio_venc
+            fonte_rota = f"{fonte_contendor} ({_rotulo_crit})"
             # [VIS-DUAL - 37ª geração] Mapa + link do GOOGLE como COMPARATIVO (o Google já foi
             # medido nesta execução). Usa os MESMOS parâmetros por NOME do link de navegação →
             # o mapa comparativo e o link comparativo representam a mesma rota do Google.
@@ -26738,7 +28012,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "222"
+_VERSAO_APP = "235"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
