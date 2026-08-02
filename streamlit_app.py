@@ -63,6 +63,40 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (236ª geração) → 🔬 MOTOR DE ANÁLISE INTELIGENTE DAS DIVERGÊNCIAS (XAI) NO COMPARADOR [DIVERGENCIA-XAI]
+#     Pedido: o Comparador deixava de só dizer "quem venceu" e passa a EXPLICAR tecnicamente CADA divergência
+#     de destino entre a aplicação e o estudo de referência — como plataforma de auditoria/explicabilidade.
+#     SOLUÇÃO — arquitetura "inteligência PURA, rede só na borda". Novo bloco 100% testável: normalização de
+#     FATOS de rota (_fatos_rota_divergencia); Índice de Qualidade da Escolha 0-100 reaproveitando o
+#     framework multicritério já validado (_indices_compostos_hub → 0.42·acess+0.33·efic+0.25·robu);
+#     classificação automática da natureza da divergência; hipóteses técnicas; parecer didático por caso;
+#     diagnóstico do gargalo interno quando a REFERÊNCIA vence; recomendações acionáveis; e agregação
+#     data-driven (insights, ranking de causas, distribuições UF/região/vencedor/acesso/balsa/motor,
+#     maiores perdas/ganhos, oportunidades). A ÚNICA operação de rede vive no orquestrador
+#     _reprocessar_rotas_divergentes: para cada município divergente, ROTEIA origem→destino_ref pelos MESMOS
+#     motores (calcular_pipeline_logistico, cache L1/L2) para caracterizar a escolha da referência com os
+#     mesmos sinais ricos que a app já tem; o lado da app usa os valores JÁ armazenados (decisão real).
+#     Após comparar surge o botão "Processar rotas divergentes" → painéis interativos na aba + nova seção
+#     "Diagnóstico Inteligente das Divergências" no relatório HTML + 8 novas abas "Diag - …" na planilha
+#     (com explicações didáticas e gráficos nativos). Threading aditivo: _montar_xlsx_comparacao e
+#     _gerar_relatorio_comparacao_html ganham diagnostico_div=None (default None → export idêntico ao da
+#     235ª quando não processado).
+#     HONESTIDADE: quando o estudo de referência não informa a UF do polo, herda-se a UF da origem (exames
+#     tendem a ser intraestaduais), SINALIZADO na UI/relatório; homônimos entre UFs seguem como risco a
+#     auditar. Se o roteamento fresco falhar, usa-se a distância que já constava do estudo (sem sinais ricos),
+#     também sinalizado. Descoberta colateral registrada: _caixa_explicativa referencia um _he global que NÃO
+#     existe em escopo de módulo (provado por AST + execução) — a nova seção HTML NÃO depende dela (caixa
+#     inline autossuficiente). Correção mínima sugerida (não aplicada p/ respeitar não-regressão dos 24 pontos
+#     de uso): tornar `import html as _he` a 1ª linha de _caixa_explicativa.
+#     PROVA (4 suítes novas, funções puras isoladas por AST): núcleo (extração/índice/classificação/parecer/
+#     hipóteses/agregação/defensivo) + saída HTML (validade estrutural, tags balanceadas, conteúdo do spec,
+#     defensivo) + saída Excel (8 abas, gráficos nativos, integridade openpyxl, abas pré-existentes
+#     preservadas, defensivo) + orquestrador com roteador MOCK (filtragem de divergentes, mapeamento
+#     RotaPipeline→fatos, lado app dos valores armazenados, agregação, progresso, fallback) + smoke do painel
+#     com st mockado. Rede real não é testável no sandbox (isolada na borda, documentada).
+#     NÃO-REGRESSÃO: recurso 100% ADITIVO. Sem diagnóstico processado, o comportamento é idêntico ao da 235ª.
+#     Nada removido/alterado nos fluxos existentes. RotaPipeline: 42 campos. Imports IDÊNTICOS. Requirements:
+#     INALTERADO. _SECOES: 13. balloons únicos: 1. bare-except: 0.
 #   v3.8 (235ª geração) → 🛡️ PROTEÇÃO AO CANDIDATO: descarta "atalho fantasma" que faria o polo parecer perto por erro [PROTEGE-CANDIDATO]
 #     Pedido: menor rota ainda mais inteligente/robusta, SEM prejudicar o candidato que precisa do melhor
 #     deslocamento. O maior risco a esse objetivo é a app ADOTAR um valor curto ERRADO: como a escolha é
@@ -8008,7 +8042,8 @@ def _bi_dashboard_comparacao(linhas):
         return "", "", ""
 
 
-def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str="", linhas=None):
+def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str="", linhas=None,
+                                     diagnostico_div=None):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) da COMPARAÇÃO entre estudos,
     nível profissional/BI: navegação lateral + Veredito, Placar, Distribuição de Vitórias, Conciliação dos
     Municípios (detalhada), Economia de Deslocamento (detalhada + faixas) e Convergência de Destinos. Reusa
@@ -8362,6 +8397,15 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
             if _diag_c:
                 _sci_nav += '<a href="#diagnostico">Diagnóstico Inteligente</a>'
                 _sci_corpo += _diag_c
+            # [DIVERGENCIA-XAI - 236ª] Seção "Diagnóstico Inteligente das Divergências" — só aparece quando o
+            # usuário processou as rotas divergentes (diagnostico_div preenchido). Default None → no-op.
+            try:
+                _divxai_c = _diagnostico_divergencias_html(diagnostico_div)
+            except Exception:
+                _divxai_c = ""
+            if _divxai_c:
+                _sci_nav += '<a href="#diag-divergencias">Diagnóstico das Divergências</a>'
+                _sci_corpo += _divxai_c
             if _sci_corpo:
                 _nav = _sci_nav + _nav
                 _corpo = _sci_corpo + _corpo
@@ -18000,8 +18044,1510 @@ def _aba_mapa_calor_alocacao(writer, df):
         logger.error("[MAPA-CALOR] Falha no mapa de calor da alocação", exc_info=True)
 
 
-def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
+
+
+# <<< [DIVERGENCIA-XAI 236ª] INÍCIO — bloco inserido (núcleo puro + saídas + orquestrador + painel) >>>
+# ==============================================================================
+# [DIVERGENCIA-XAI - 236ª geração] MOTOR DE ANÁLISE INTELIGENTE DE DIVERGÊNCIAS
+# ------------------------------------------------------------------------------
+# Núcleo 100% PURO e testável (sem Streamlit, sem rede). A rede vive só no
+# orquestrador _reprocessar_rotas_divergentes (rota origem→destino_ref pelos
+# MESMOS motores). Reaproveita o framework multicritério já validado da app
+# (_indices_compostos_hub) e os classificadores existentes.
+# ==============================================================================
+
+def _num_seguro(v, padrao=None):
+    """Converte para float com segurança. PURO."""
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return padrao
+        return float(v)
+    except (TypeError, ValueError):
+        return padrao
+
+
+def _bool_balsa(v):
+    """Interpreta o campo balsa em bool. PURO."""
+    return str(v or "").strip().lower() in ("sim", "yes", "true", "1", "com balsa")
+
+
+def _motor_curto(fonte_rota):
+    """Nome curto e legível do motor de rota a partir da 'Fonte da Rota'. PURO."""
+    _f = str(fonte_rota or "").upper()
+    if "GOOGLE" in _f:
+        return "Google"
+    if "GRAPHHOPPER" in _f:
+        return "GraphHopper"
+    if "ORS" in _f or "OPENROUTE" in _f:
+        return "ORS"
+    if "FOSSGIS" in _f:
+        return "OSRM (FOSSGIS)"
+    if "OSRM" in _f:
+        return "OSRM"
+    if "KARNEY" in _f or "GEODÉS" in _f or "GEODES" in _f or "RETA" in _f:
+        return "Geodésico"
+    return (str(fonte_rota).strip() or "—")
+
+
+def _parse_coord_par(v):
+    """Extrai (lat, lon) de 'lat, lon' ou tupla/lista. Retorna (None, None) se inválido. PURO."""
+    if v is None:
+        return (None, None)
+    if isinstance(v, (list, tuple)) and len(v) >= 2:
+        return (_num_seguro(v[0]), _num_seguro(v[1]))
+    _s = str(v).replace(";", ",")
+    _p = [x.strip() for x in _s.split(",") if x.strip()]
+    if len(_p) >= 2:
+        return (_num_seguro(_p[0]), _num_seguro(_p[1]))
+    return (None, None)
+
+
+def _fatos_rota_divergencia(campos):
+    """[DIVERGENCIA-XAI - 236ª] Normaliza os SINAIS de UMA rota (aplicação OU referência — ambas medidas
+    pelos MESMOS motores) num dicionário de FATOS uniforme para a análise de divergência. PURO e testável.
+
+    Espera um dict `campos` com chaves flexíveis (aceita o formato do RotaPipeline convertido e o formato da
+    linha de conciliação). Reusa _classificar_modo_acesso e _classificar_razao_vr (helpers já validados).
+    """
+    _dist = _num_seguro(campos.get("distancia_km"))
+    _reta = _num_seguro(campos.get("linha_reta_km"))
+    _tem_balsa = _bool_balsa(campos.get("balsa"))
+    _fonte = str(campos.get("fonte_rota") or "")
+    _lat_o, _lon_o = _parse_coord_par(campos.get("coord_origem"))
+    _lat_d, _lon_d = _parse_coord_par(campos.get("coord_destino"))
+    if _lat_d is None:
+        _lat_d = _num_seguro(campos.get("lat_destino"))
+        _lon_d = _num_seguro(campos.get("lon_destino"))
+    if _lat_o is None:
+        _lat_o = _num_seguro(campos.get("lat_origem"))
+        _lon_o = _num_seguro(campos.get("lon_origem"))
+
+    # razão viária/reta (circuity/detour factor)
+    _razao = None
+    if _dist and _reta and _reta > 0:
+        _razao = round(_dist / _reta, 3)
+    # fallback: sinuosidade explícita informada (coluna do estudo)
+    if _razao is None:
+        _razao = _num_seguro(campos.get("razao_vr"))
+
+    _modo = _classificar_modo_acesso(_fonte, "Sim" if _tem_balsa else "Não",
+                                     _lat_o, _lon_o, _lat_d, _lon_d)
+    # se a linha já traz um modo textual do estudo, respeita quando o derivado for genérico
+    _modo_estudo = str(campos.get("modo_acesso") or "").strip()
+    if _modo_estudo and _modo == "Rodoviário":
+        _mm = _modo_estudo.lower()
+        if "fluvial" in _mm or "isolado" in _mm or "balsa" in _mm or "aquav" in _mm:
+            _modo = _modo_estudo
+
+    _mlow = (str(_modo) + " " + _modo_estudo).lower()
+    _fluvial = ("fluvial" in _mlow) or ("isolado" in _mlow) or ("aquav" in _mlow) or ("hidrov" in _mlow)
+    _flu_lista = bool(campos.get("fluvial_lista"))  # município consta na lista IBGE REGIC
+    _fluvial = _fluvial or _flu_lista
+
+    _fonte_up = _fonte.upper()
+    _geodesica = ("GEOD" in _fonte_up) or ("KARNEY" in _fonte_up) or ("RETA" in _fonte_up)
+    _roteada = bool(_dist and not _geodesica)
+
+    _tempo_min = campos.get("tempo_min")
+    if _tempo_min is None and campos.get("tempo") is not None:
+        _t = parse_tempo_minutos(campos.get("tempo"))
+        _tempo_min = None if _t is None or _t >= 999999 else _t
+    _tempo_min = _num_seguro(_tempo_min)
+    _vel = None
+    if _dist and _tempo_min and _tempo_min > 0:
+        _vel = round(_dist / (_tempo_min / 60.0), 1)
+
+    _score = _num_seguro(campos.get("score"))
+    if _score is None:
+        _score = _num_seguro(campos.get("score_num"))
+
+    return {
+        "destino": str(campos.get("destino") or "—"),
+        "uf_destino": str(campos.get("uf_destino") or ""),
+        "cod_ibge_destino": str(campos.get("cod_ibge_destino") or ""),
+        "distancia_km": _dist,
+        "linha_reta_km": _reta,
+        "razao_vr": _razao,
+        "razao_vr_classe": _classificar_razao_vr(_razao) if _razao else "—",
+        "tem_balsa": _tem_balsa,
+        "modo_acesso": _modo,
+        "fluvial_isolado": _fluvial,
+        "fonte_rota": _fonte,
+        "motor": _motor_curto(_fonte),
+        "tempo_min": _tempo_min,
+        "velocidade_kmh": _vel,
+        "score": _score,
+        "coord_destino": (_lat_d, _lon_d) if (_lat_d is not None and _lon_d is not None) else None,
+        "geodesica": _geodesica,
+        "roteada": _roteada,
+    }
+
+
+def _indice_qualidade_escolha(fatos, dif_km_vs_alt=0.0, dif_pct_vs_alt=0.0, divergencia_pct=0.0):
+    """[DIVERGENCIA-XAI - 236ª] ÍNDICE DE QUALIDADE DA ESCOLHA (0-100) de UMA solução, reaproveitando o
+    framework multicritério JÁ VALIDADO da aplicação (_indices_compostos_hub) e sintetizando um composto.
+    `dif_*_vs_alt` = vantagem desta escolha sobre a ALTERNATIVA (a escolha do outro estudo): positivo se esta
+    é mais curta. PURO e determinístico. Nada é inventado — todos os sinais já foram medidos.
+
+    Composto = 0.42·Acessibilidade + 0.33·Eficiência + 0.25·Robustez (acessibilidade pesa mais porque, na
+    logística de prova, chegar de forma confiável importa mais que o quilômetro isolado — princípio que a
+    própria app já adota no motor de alocação por custo efetivo).
+    """
+    _idx = _indices_compostos_hub(
+        fatos.get("razao_vr") or 0.0,
+        bool(fatos.get("tem_balsa")),
+        fatos.get("modo_acesso") or "",
+        fatos.get("score") if fatos.get("score") is not None else 75.0,
+        _num_seguro(divergencia_pct, 0.0),
+        _num_seguro(dif_km_vs_alt, 0.0),
+        _num_seguro(dif_pct_vs_alt, 0.0),
+    )
+    _acess = _idx["acessibilidade"]
+    _efic = _idx["eficiencia"]
+    _robu = _idx["robustez"]
+    _composto = round(max(0.0, min(100.0, 0.42 * _acess + 0.33 * _efic + 0.25 * _robu)), 1)
+
+    def _lbl(v):
+        if v >= 85:
+            return "Excelente"
+        if v >= 70:
+            return "Muito Bom"
+        if v >= 55:
+            return "Bom"
+        if v >= 40:
+            return "Regular"
+        if v >= 25:
+            return "Ruim"
+        return "Crítico"
+
+    return {
+        "composto": _composto, "composto_lbl": _lbl(_composto),
+        "acessibilidade": _acess, "eficiencia": _efic, "robustez": _robu,
+        "componentes": _idx.get("componentes", {}),
+    }
+
+
+def _classificar_divergencia(fatos_app, fatos_ref, dif_km, limiar_empate_km=1.0, tol_sinuosidade=0.25):
+    """[DIVERGENCIA-XAI - 236ª] Classifica automaticamente a natureza da divergência entre a escolha da
+    aplicação e a da referência. PURO. Retorna dict {categoria, subcategorias:[...], vantagem_de, cor}.
+    Prioridade das causas (da mais decisiva à menos): empate → balsa → fluvial/isolado → sem-rota →
+    sinuosidade → motor → geocodificação → puramente viária, com sobreposição de vantagem operacional.
+    """
+    _da = fatos_app.get("distancia_km")
+    _dr = fatos_ref.get("distancia_km")
+    _dif = _num_seguro(dif_km)  # + = aplicação mais curta (dist_ref - dist_app)
+    _subs = []
+
+    # quem tem a menor distância bruta
+    _vant_dist = "—"
+    if _da is not None and _dr is not None:
+        if abs(_da - _dr) < float(limiar_empate_km):
+            _vant_dist = "Empate"
+        elif _da < _dr:
+            _vant_dist = "Aplicação"
+        else:
+            _vant_dist = "Referência"
+
+    _balsa_app, _balsa_ref = bool(fatos_app.get("tem_balsa")), bool(fatos_ref.get("tem_balsa"))
+    _flu_app, _flu_ref = bool(fatos_app.get("fluvial_isolado")), bool(fatos_ref.get("fluvial_isolado"))
+    _rot_app, _rot_ref = bool(fatos_app.get("roteada")), bool(fatos_ref.get("roteada"))
+    _mot_app, _mot_ref = fatos_app.get("motor"), fatos_ref.get("motor")
+    _rvr_app = fatos_app.get("razao_vr") or 0.0
+    _rvr_ref = fatos_ref.get("razao_vr") or 0.0
+    _sc_app = fatos_app.get("score")
+    _sc_ref = fatos_ref.get("score")
+
+    # fatores contribuintes (acumulados)
+    if _balsa_app != _balsa_ref:
+        _subs.append("Diferença por balsa")
+    if _flu_app != _flu_ref:
+        _subs.append("Diferença por acesso fluvial/isolado")
+    if _rot_app != _rot_ref:
+        _subs.append("Diferença por ausência de rota rodoviária (distância geodésica de um lado)")
+    if _rvr_app > 0 and _rvr_ref > 0 and abs(_rvr_app - _rvr_ref) / max(_rvr_app, _rvr_ref) >= tol_sinuosidade:
+        _subs.append("Diferença por sinuosidade da rota")
+    if _mot_app and _mot_ref and _mot_app != _mot_ref:
+        _subs.append("Diferença por motor de roteamento")
+    if _sc_app is not None and _sc_ref is not None and abs(_sc_app - _sc_ref) >= 15:
+        _subs.append("Diferença por confiabilidade da geocodificação")
+
+    # categoria PRINCIPAL (a de maior peso operacional)
+    if _vant_dist == "Empate" and not _subs:
+        _cat = "Empate técnico (diferença estatisticamente irrelevante)"
+        _vant = "Empate"
+        _cor = "#64748b"
+    elif _balsa_app != _balsa_ref:
+        # a solução SEM balsa tem vantagem operacional
+        _vant = "Referência" if _balsa_app else "Aplicação"
+        _cat = "Diferença por balsa (dependência de travessia hidroviária)"
+        _cor = "#0891b2"
+    elif _flu_app != _flu_ref or _rot_app != _rot_ref:
+        _vant = "Referência" if (_flu_app or not _rot_app) else "Aplicação"
+        _cat = "Diferença por acesso (fluvial/isolado × rodoviário)"
+        _cor = "#2563eb"
+    elif "Diferença por sinuosidade da rota" in _subs:
+        _vant = "Aplicação" if _rvr_app < _rvr_ref else "Referência"
+        _cat = "Diferença por sinuosidade (trajeto menos direto de um lado)"
+        _cor = "#7c3aed"
+    elif "Diferença por confiabilidade da geocodificação" in _subs:
+        _vant = "Aplicação" if (_sc_app or 0) > (_sc_ref or 0) else "Referência"
+        _cat = "Diferença por geocodificação/confiabilidade"
+        _cor = "#db2777"
+    elif "Diferença por motor de roteamento" in _subs:
+        _vant = _vant_dist
+        _cat = "Diferença por motor (malhas cartográficas distintas)"
+        _cor = "#ca8a04"
+    elif _vant_dist in ("Aplicação", "Referência"):
+        _vant = _vant_dist
+        _cat = f"Vantagem puramente viária ({'aplicação' if _vant_dist == 'Aplicação' else 'referência'} mais curta)"
+        _cor = "#16a34a" if _vant_dist == "Aplicação" else "#dc2626"
+    else:
+        _vant = "Empate"
+        _cat = "Empate técnico (diferença estatisticamente irrelevante)"
+        _cor = "#64748b"
+
+    # sobreposição: a mais longa evita balsa/fluvial → vantagem OPERACIONAL da mais longa
+    _oper = None
+    if _vant_dist in ("Aplicação", "Referência"):
+        _mais_longa = "Referência" if _vant_dist == "Aplicação" else "Aplicação"
+        _longa_evita = (
+            (_mais_longa == "Aplicação" and (not _balsa_app) and (not _flu_app) and (_balsa_ref or _flu_ref)) or
+            (_mais_longa == "Referência" and (not _balsa_ref) and (not _flu_ref) and (_balsa_app or _flu_app))
+        )
+        if _longa_evita:
+            _oper = _mais_longa
+            if "Vantagem operacional (rota mais longa, porém sem barreira)" not in _subs:
+                _subs.insert(0, "Vantagem operacional (rota mais longa, porém sem barreira)")
+
+    return {
+        "categoria": _cat,
+        "subcategorias": _subs,
+        "vantagem_de": _vant,
+        "vantagem_distancia": _vant_dist,
+        "vantagem_operacional": _oper,
+        "cor": _cor,
+    }
+
+
+def _hipoteses_divergencia(fatos_app, fatos_ref, dif_km, limiar_empate_km=1.0):
+    """[DIVERGENCIA-XAI - 236ª] Levanta HIPÓTESES TÉCNICAS para a divergência, a partir dos sinais medidos.
+    PURO. Retorna lista de strings (didáticas). Só inclui a hipótese quando o sinal a sustenta."""
+    _h = []
+    _mot_app, _mot_ref = fatos_app.get("motor"), fatos_ref.get("motor")
+    _rvr_app = fatos_app.get("razao_vr") or 0.0
+    _rvr_ref = fatos_ref.get("razao_vr") or 0.0
+    _dif = abs(_num_seguro(dif_km, 0.0))
+
+    if _mot_app and _mot_ref and _mot_app != _mot_ref:
+        _h.append(f"Malhas cartográficas distintas: as rotas venceram por motores diferentes "
+                  f"({_mot_app} × {_mot_ref}) — bases de mapa (OSM × Google) e datas de atualização não "
+                  f"coincidem, o que explica traçados e quilometragens diferentes.")
+    if fatos_app.get("tem_balsa") != fatos_ref.get("tem_balsa"):
+        _lado = "aplicação" if fatos_app.get("tem_balsa") else "referência"
+        _h.append(f"Travessia por balsa em um dos trajetos (lado da {_lado}): a malha viária pode estar "
+                  f"interrompida por corpo d'água, forçando a balsa — dependência de horário, capacidade e "
+                  f"condições hidrológicas.")
+    if fatos_app.get("fluvial_isolado") != fatos_ref.get("fluvial_isolado"):
+        _h.append("Município de acesso fluvial/isolado em um dos lados: não há rota puramente rodoviária "
+                  "(lista oficial IBGE REGIC), então a distância é geodésica — comparar com uma viária é "
+                  "comparar naturezas diferentes.")
+    if _rvr_app > 0 and _rvr_ref > 0 and abs(_rvr_app - _rvr_ref) / max(_rvr_app, _rvr_ref) >= 0.25:
+        _mais = "aplicação" if _rvr_app > _rvr_ref else "referência"
+        _h.append(f"Rota mais sinuosa na {_mais} (razão viária/reta {max(_rvr_app, _rvr_ref):.2f}× vs "
+                  f"{min(_rvr_app, _rvr_ref):.2f}×): contorno de barreira natural (rio, serra) ou via "
+                  f"secundária alongando o trajeto.")
+    _sc_app, _sc_ref = fatos_app.get("score"), fatos_ref.get("score")
+    if _sc_app is not None and _sc_ref is not None and abs(_sc_app - _sc_ref) >= 15:
+        _h.append("Geocodificação divergente: a confiabilidade da identificação territorial difere entre os "
+                  "destinos (score desigual) — um endereço pode ter caído num ponto diferente do esperado, "
+                  "deslocando a origem/destino da medição.")
+    if _dif < max(5.0, float(limiar_empate_km) * 3):
+        _h.append("Diferença pequena e possivelmente dentro do ruído de medição (matriz pré-computada × "
+                  "roteamento ao vivo). Também pode refletir a PENALIZAÇÃO MULTICRITÉRIO da aplicação, que "
+                  "aceita alguns km a mais para evitar balsa/isolamento — decisão deliberada, não erro.")
+    if not _h:
+        _h.append("Sem sinal técnico dominante: a diferença decorre da escolha de polos distintos com "
+                  "trajetos rodoviários comparáveis; a decisão recai sobre a menor distância viária.")
+    return _h
+
+
+def _parecer_divergencia(ctx, fatos_app, fatos_ref, classif, iq_app, iq_ref, dif_km, dif_tempo, insc):
+    """[DIVERGENCIA-XAI - 236ª] PARECER TÉCNICO DIDÁTICO da divergência, em linguagem natural. PURO.
+    Explica o que cada solução escolheu, POR QUE diverge, o trade-off, e o veredito para o candidato e para
+    a operação — reconhecendo com transparência quando a referência é superior e diagnosticando o porquê.
+    Retorna str."""
+    _mun = ctx.get("municipio", "o município")
+    _dapp = fatos_app.get("destino", "—")
+    _dref = fatos_ref.get("destino", "—")
+    _da = fatos_app.get("distancia_km")
+    _dr = fatos_ref.get("distancia_km")
+    _dif = _num_seguro(dif_km, 0.0)  # + = app mais curta
+    _absdif = abs(_dif)
+    _vant = classif.get("vantagem_de")
+    _insc = int(_num_seguro(insc, 0) or 0)
+
+    _p = []
+    # 1) abertura factual
+    if _da is not None and _dr is not None:
+        _p.append(f"Para {_mun}, a aplicação indicou **{_dapp}** ({_da:.0f} km) e o estudo de referência "
+                  f"indicou **{_dref}** ({_dr:.0f} km) — uma diferença de {_absdif:.0f} km.")
+    else:
+        _p.append(f"Para {_mun}, a aplicação indicou **{_dapp}** e o estudo de referência indicou **{_dref}**.")
+
+    # 2) causa principal
+    _p.append(f"A natureza da divergência é: _{classif.get('categoria')}_.")
+
+    # 3) trade-off operacional
+    _tr = []
+    if fatos_app.get("tem_balsa") and not fatos_ref.get("tem_balsa"):
+        _tr.append("o trajeto da **aplicação depende de balsa** (sujeito a horário, capacidade e clima), "
+                   "enquanto o da referência é rodoviário")
+    elif fatos_ref.get("tem_balsa") and not fatos_app.get("tem_balsa"):
+        _tr.append("o trajeto da **referência depende de balsa** (sujeito a horário, capacidade e clima), "
+                   "enquanto o da aplicação é exclusivamente rodoviário")
+    if fatos_app.get("fluvial_isolado") and not fatos_ref.get("fluvial_isolado"):
+        _tr.append("o destino da **aplicação é de acesso fluvial/isolado** (sem rota rodoviária plena)")
+    elif fatos_ref.get("fluvial_isolado") and not fatos_app.get("fluvial_isolado"):
+        _tr.append("o destino da **referência é de acesso fluvial/isolado** (sem rota rodoviária plena)")
+    _rvr_app = fatos_app.get("razao_vr") or 0.0
+    _rvr_ref = fatos_ref.get("razao_vr") or 0.0
+    if _rvr_app > 0 and _rvr_ref > 0 and abs(_rvr_app - _rvr_ref) / max(_rvr_app, _rvr_ref) >= 0.25:
+        _mais = "da aplicação" if _rvr_app > _rvr_ref else "da referência"
+        _tr.append(f"a rota {_mais} é sensivelmente mais sinuosa (razão viária/reta "
+                   f"{max(_rvr_app, _rvr_ref):.2f}× vs {min(_rvr_app, _rvr_ref):.2f}×)")
+    _dt = _num_seguro(dif_tempo)
+    if _dt is not None and abs(_dt) >= 5:
+        _lado = "a aplicação" if _dt > 0 else "a referência"
+        _tr.append(f"{_lado} economiza cerca de {abs(_dt):.0f} min de deslocamento")
+    if _tr:
+        _p.append("No trade-off, " + "; ".join(_tr) + ".")
+
+    # 4) veredito por qualidade
+    _cq_app = iq_app.get("composto", 0.0)
+    _cq_ref = iq_ref.get("composto", 0.0)
+    if _vant == "Aplicação":
+        _porque = []
+        if fatos_ref.get("tem_balsa") and not fatos_app.get("tem_balsa"):
+            _porque.append("evita a balsa")
+        if fatos_ref.get("fluvial_isolado") and not fatos_app.get("fluvial_isolado"):
+            _porque.append("evita um destino isolado")
+        if _da is not None and _dr is not None and _da < _dr:
+            _porque.append(f"reduz o deslocamento em {_absdif:.0f} km")
+        if _dt is not None and _dt > 5:
+            _porque.append(f"corta ~{abs(_dt):.0f} min")
+        _txt = ", ".join(_porque) if _porque else "oferece melhor equilíbrio logístico"
+        _p.append(f"**Veredito: a escolha da APLICAÇÃO é superior** para o candidato e para a operação — ela "
+                  f"{_txt} (Índice de Qualidade {_cq_app:.0f} vs {_cq_ref:.0f}).")
+    elif _vant == "Referência":
+        # reconhecimento transparente + diagnóstico do porquê a app perdeu
+        _porque_ref = []
+        if _dr is not None and _da is not None and _dr < _da:
+            _porque_ref.append(f"leva o candidato {_absdif:.0f} km mais perto")
+        if fatos_app.get("tem_balsa") and not fatos_ref.get("tem_balsa"):
+            _porque_ref.append("sem depender de balsa")
+        if _dt is not None and _dt < -5:
+            _porque_ref.append(f"economizando ~{abs(_dt):.0f} min")
+        _txt = ", ".join(_porque_ref) if _porque_ref else "com melhor índice logístico"
+        _p.append(f"**Veredito: a escolha da REFERÊNCIA é superior** neste caso — ela {_txt} "
+                  f"(Índice de Qualidade {_cq_ref:.0f} vs {_cq_app:.0f}).")
+        # diagnóstico honesto do gargalo interno
+        _diag = _diagnostico_derrota_app(fatos_app, fatos_ref, dif_km, classif)
+        if _diag:
+            _p.append("Por que a aplicação não venceu aqui: " + _diag)
+    else:
+        _p.append(f"**Veredito: empate técnico** — as duas soluções são operacionalmente equivalentes "
+                  f"(Índice de Qualidade {_cq_app:.0f} × {_cq_ref:.0f}); a diferença está dentro do ruído de "
+                  f"medição e não justifica trocar de polo.")
+
+    if _insc:
+        _p.append(f"Impacto: **{_insc} candidato(s)**.")
+    return " ".join(_p)
+
+
+def _diagnostico_derrota_app(fatos_app, fatos_ref, dif_km, classif):
+    """[DIVERGENCIA-XAI - 236ª] Quando a REFERÊNCIA vence, diagnostica o gargalo INTERNO da aplicação
+    (excesso de penalização, escolha conservadora, critério secundário, geocodificação, oportunidade
+    perdida). PURO. Retorna str (pode ser vazia)."""
+    _absdif = abs(_num_seguro(dif_km, 0.0))
+    _app_balsa = bool(fatos_app.get("tem_balsa"))
+    _ref_balsa = bool(fatos_ref.get("tem_balsa"))
+    _app_flu = bool(fatos_app.get("fluvial_isolado"))
+    _ref_flu = bool(fatos_ref.get("fluvial_isolado"))
+
+    # a app escolheu a mais longa SEM ganho operacional aparente (a de referência também é limpa)
+    if (not _ref_balsa) and (not _ref_flu) and (not _app_balsa) and (not _app_flu):
+        if _absdif >= 20:
+            return ("a aplicação preferiu um polo rodoviário mais distante sem barreira que o justificasse "
+                    "— possível **oportunidade perdida**: revisar se o polo de referência estava no universo "
+                    "de destinos avaliado e se a matriz de distâncias o considerou.")
+        return ("diferença pequena; provavelmente a matriz pré-computada e o roteamento ao vivo divergiram "
+                "por poucos km, ou houve **penalização multicritério** marginal — vale conferir se o critério "
+                "de desempate está calibrado.")
+    # a app aceitou balsa/isolamento e ainda ficou mais longe
+    if (_app_balsa or _app_flu) and (not _ref_balsa) and (not _ref_flu):
+        return ("a aplicação escolheu um destino com balsa/isolamento **e** mais distante — a referência "
+                "achou uma alternativa rodoviária melhor em ambos os aspectos; **auditar a geocodificação do "
+                "polo** e verificar se a opção rodoviária constava na lista de candidatos.")
+    # a app foi conservadora (evitou balsa/isolamento) e por isso ficou mais longa — não é erro
+    if (_ref_balsa or _ref_flu) and (not _app_balsa) and (not _app_flu):
+        return ("na verdade **não é um gargalo**: a aplicação ficou mais longa porque **evitou balsa/"
+                "isolamento** — uma escolha conservadora deliberada. Só reveja se, no seu contexto, a menor "
+                "distância da referência compensa a dependência hidroviária.")
+    if "motor" in str(classif.get("categoria", "")).lower():
+        return ("a diferença vem do **motor de roteamento** (malha cartográfica): o polo da referência pode "
+                "ser realmente mais próximo por uma via que falta na base usada pela aplicação — caso para "
+                "**auditoria de rota** com um segundo motor.")
+    return ""
+
+
+def _recomendacao_divergencia(ctx, classif, iq_app, iq_ref, dif_km, insc, fatos_app, fatos_ref):
+    """[DIVERGENCIA-XAI - 236ª] Recomendação PRÁTICA por caso. PURO. Retorna str curta e acionável."""
+    _vant = classif.get("vantagem_de")
+    _insc = int(_num_seguro(insc, 0) or 0)
+    _absdif = abs(_num_seguro(dif_km, 0.0))
+    if _vant == "Referência" and _absdif >= 20 and _insc >= 50:
+        return ("🔴 Oportunidade ALTA: revisar manualmente — a referência leva vantagem relevante com muitos "
+                "candidatos. Conferir se o polo dela estava no universo de destinos e recalibrar a alocação.")
+    if _vant == "Referência" and (_absdif >= 20 or _insc >= 50):
+        return ("🟠 Revisar: a referência é superior aqui. Auditar a rota e a geocodificação do polo escolhido "
+                "pela aplicação.")
+    if _vant == "Referência":
+        return ("🟡 Conferir: pequena vantagem da referência. Verificar se compensa trocar de polo dado o "
+                "eventual trade-off operacional.")
+    if _vant == "Aplicação" and (fatos_ref.get("tem_balsa") or fatos_ref.get("fluvial_isolado")):
+        return ("🟢 Manter a aplicação: ela evita balsa/isolamento. Divergência favorável e bem fundamentada.")
+    if _vant == "Aplicação":
+        return "🟢 Manter a aplicação: escolha mais curta e/ou mais robusta."
+    return "⚪ Empate técnico: qualquer das duas serve; manter a atual evita retrabalho."
+
+
+def _analisar_divergencia_par(linha, fatos_app, fatos_ref, limiar_empate_km=1.0):
+    """[DIVERGENCIA-XAI - 236ª] Analisa UMA divergência município a município. PURO. Junta classificação,
+    índices de qualidade das DUAS escolhas, parecer, hipóteses e recomendação, e define o vencedor por
+    QUALIDADE. Retorna um dict rico (uma linha do diagnóstico)."""
+    _mun = linha.get("Origem") or linha.get("municipio") or "—"
+    _uf = str(linha.get("UF") or "").upper()
+    _insc = _num_seguro(linha.get("Inscritos"), 0.0) or 0.0
+    _da = fatos_app.get("distancia_km")
+    _dr = fatos_ref.get("distancia_km")
+
+    _dif_km = None
+    if _da is not None and _dr is not None:
+        _dif_km = round(_dr - _da, 2)  # + = aplicação mais curta
+    _dif_pct = None
+    if _dif_km is not None and _dr and _dr > 0:
+        _dif_pct = round(100.0 * _dif_km / _dr, 2)
+
+    _ta, _tr = fatos_app.get("tempo_min"), fatos_ref.get("tempo_min")
+    _dif_tempo = round(_tr - _ta, 1) if (_ta is not None and _tr is not None) else None
+
+    # divergência de motores (se ambos roteados) — alimenta o índice de robustez
+    _diverg = _metricas_divergencia(_da, _dr) if (_da and _dr) else None
+    _div_pct = _diverg["pct"] if _diverg else 0.0
+
+    _classif = _classificar_divergencia(fatos_app, fatos_ref, _dif_km, limiar_empate_km=limiar_empate_km)
+
+    # índice de qualidade de cada escolha (vantagem de cada uma sobre a outra)
+    _difkm_app = _dif_km if _dif_km is not None else 0.0
+    _difpct_app = _dif_pct if _dif_pct is not None else 0.0
+    _iq_app = _indice_qualidade_escolha(fatos_app, _difkm_app, _difpct_app, _div_pct)
+    _difkm_ref = (-_dif_km) if _dif_km is not None else 0.0
+    _difpct_ref = round(100.0 * _difkm_ref / _da, 2) if (_da and _da > 0 and _dif_km is not None) else 0.0
+    _iq_ref = _indice_qualidade_escolha(fatos_ref, _difkm_ref, _difpct_ref, _div_pct)
+
+    _ctx = {"municipio": _mun, "uf": _uf}
+    _parecer = _parecer_divergencia(_ctx, fatos_app, fatos_ref, _classif, _iq_app, _iq_ref,
+                                    _dif_km, _dif_tempo, _insc)
+    _hip = _hipoteses_divergencia(fatos_app, fatos_ref, _dif_km, limiar_empate_km=limiar_empate_km)
+    _rec = _recomendacao_divergencia(_ctx, _classif, _iq_app, _iq_ref, _dif_km, _insc, fatos_app, fatos_ref)
+
+    # vencedor por QUALIDADE (empate se |Δíndice| < 3 pontos)
+    _cq_app, _cq_ref = _iq_app["composto"], _iq_ref["composto"]
+    if abs(_cq_app - _cq_ref) < 3.0:
+        _venc_q = "Empate"
+    else:
+        _venc_q = "Aplicação" if _cq_app > _cq_ref else "Referência"
+
+    return {
+        "Município": _mun, "UF": _uf, "Inscritos": int(_insc),
+        "Destino Aplicação": fatos_app.get("destino"), "Destino Referência": fatos_ref.get("destino"),
+        "Distância Aplicação (km)": _da, "Distância Referência (km)": _dr,
+        "Diferença (km)": _dif_km, "Diferença (%)": _dif_pct,
+        "Diferença Tempo (min)": _dif_tempo,
+        "Balsa Aplicação": "Sim" if fatos_app.get("tem_balsa") else "Não",
+        "Balsa Referência": "Sim" if fatos_ref.get("tem_balsa") else "Não",
+        "Acesso Aplicação": fatos_app.get("modo_acesso"),
+        "Acesso Referência": fatos_ref.get("modo_acesso"),
+        "Sinuosidade Aplicação (V/R)": fatos_app.get("razao_vr"),
+        "Sinuosidade Referência (V/R)": fatos_ref.get("razao_vr"),
+        "Motor Aplicação": fatos_app.get("motor"), "Motor Referência": fatos_ref.get("motor"),
+        "Divergência Motores (%)": _div_pct,
+        "Categoria": _classif["categoria"],
+        "Subcategorias": "; ".join(_classif["subcategorias"]) if _classif["subcategorias"] else "—",
+        "Vantagem de": _classif["vantagem_de"],
+        "Índice Qualidade Aplicação": _cq_app,
+        "Índice Qualidade Referência": _cq_ref,
+        "Vencedor (Qualidade)": _venc_q,
+        "Parecer Técnico": _parecer,
+        "Hipóteses": _hip,
+        "Recomendação": _rec,
+        "Impacto (km × inscritos)": round((_dif_km or 0.0) * _insc, 1),
+        "_cor": _classif["cor"],
+        "_iq_app": _iq_app, "_iq_ref": _iq_ref, "_classif": _classif,
+    }
+
+
+def _agregar_diagnostico_divergencias(analises, uf_para_regiao=None):
+    """[DIVERGENCIA-XAI - 236ª] Agrega as análises por município em INTELIGÊNCIA: resumo executivo, insights
+    automáticos DATA-DRIVEN, ranking das causas, distribuições, maiores perdas/ganhos, oportunidades e
+    recomendações agregadas. PURO. `uf_para_regiao` injetável (default _UF_PARA_REGIAO)."""
+    _ufr = uf_para_regiao if uf_para_regiao is not None else _UF_PARA_REGIAO
+    _n = len(analises)
+    if _n == 0:
+        return {"n_divergencias": 0, "resumo": {}, "insights": [], "ranking_causas": [],
+                "distribuicoes": {}, "maiores_perdas": [], "maiores_ganhos": [],
+                "oportunidades": [], "recomendacoes": []}
+
+    _insc_tot = sum(int(a.get("Inscritos") or 0) for a in analises)
+    _venc = [a.get("Vencedor (Qualidade)") for a in analises]
+    _v_app = _venc.count("Aplicação")
+    _v_ref = _venc.count("Referência")
+    _v_emp = _venc.count("Empate")
+    _insc_app = sum(int(a.get("Inscritos") or 0) for a in analises if a.get("Vencedor (Qualidade)") == "Aplicação")
+    _insc_ref = sum(int(a.get("Inscritos") or 0) for a in analises if a.get("Vencedor (Qualidade)") == "Referência")
+
+    # perdas = casos em que a referência é superior por qualidade
+    _perdas = [a for a in analises if a.get("Vencedor (Qualidade)") == "Referência"]
+    _ganhos = [a for a in analises if a.get("Vencedor (Qualidade)") == "Aplicação"]
+
+    _resumo = {
+        "divergencias": _n, "inscritos_impactados": _insc_tot,
+        "app_superior": _v_app, "ref_superior": _v_ref, "empates": _v_emp,
+        "pct_app_superior": round(100.0 * _v_app / _n, 1),
+        "pct_ref_superior": round(100.0 * _v_ref / _n, 1),
+        "pct_empate": round(100.0 * _v_emp / _n, 1),
+        "inscritos_beneficiados_app": _insc_app, "inscritos_em_perda": _insc_ref,
+    }
+
+    # ------- INSIGHTS AUTOMÁTICOS (fundamentados nos dados) -------
+    _ins = []
+    if _perdas:
+        _dif_perdas = [abs(a.get("Diferença (km)") or 0.0) for a in _perdas]
+        _lt5 = sum(1 for d in _dif_perdas if d < 5)
+        if _dif_perdas:
+            _ins.append(f"{round(100.0 * _lt5 / len(_perdas))}% das perdas ocorreram por diferenças inferiores "
+                        f"a 5 km — margens estreitas, sensíveis a ruído de medição e a critério de desempate.")
+        _flu_perdas = sum(1 for a in _perdas if "fluvial" in str(a.get("Categoria", "")).lower()
+                          or a.get("Balsa Aplicação") == "Sim")
+        if _flu_perdas:
+            _ins.append(f"{round(100.0 * _flu_perdas / len(_perdas))}% das perdas envolvem balsa ou acesso "
+                        f"fluvial/isolado no lado da aplicação — a menor distância da referência frequentemente "
+                        f"vem de assumir uma travessia que a aplicação evitou.")
+    if _ganhos:
+        _g_evita = sum(1 for a in _ganhos if a.get("Balsa Referência") == "Sim"
+                       or "fluvial" in str(a.get("Acesso Referência", "")).lower())
+        if _g_evita:
+            _ins.append(f"A aplicação vence com mais frequência quando prioriza **acessibilidade rodoviária**: "
+                        f"{round(100.0 * _g_evita / len(_ganhos))}% dos seus ganhos evitam balsa/isolamento da "
+                        f"referência.")
+    # concentração regional das perdas
+    _perda_reg = {}
+    for a in _perdas:
+        _r = _ufr.get(str(a.get("UF") or "").upper(), "Indefinido")
+        _perda_reg[_r] = _perda_reg.get(_r, 0) + int(a.get("Inscritos") or 0)
+    if _perda_reg:
+        _reg_top = max(_perda_reg, key=_perda_reg.get)
+        if _perda_reg[_reg_top] > 0:
+            _ins.append(f"Os maiores ganhos da referência concentram-se na região **{_reg_top}** "
+                        f"({_perda_reg[_reg_top]} candidatos em perda) — foco prioritário de revisão.")
+    # padrão da referência
+    _ref_puro_dist = sum(1 for a in _perdas if "puramente viária" in str(a.get("Categoria", "")).lower())
+    if _perdas and _ref_puro_dist:
+        _ins.append(f"A referência vence principalmente em cenários de **menor distância absoluta** "
+                    f"({round(100.0 * _ref_puro_dist / len(_perdas))}% das perdas são vantagem puramente "
+                    f"viária), sem ganho operacional adicional.")
+    if not _ins:
+        _ins.append("As divergências não formam um padrão dominante — são casos pontuais de polos distintos "
+                    "com trajetos comparáveis.")
+
+    # ------- RANKING DAS CAUSAS -------
+    _causas = {}
+    for a in analises:
+        _c = a.get("Categoria", "—")
+        if _c not in _causas:
+            _causas[_c] = {"Causa": _c, "Casos": 0, "Inscritos": 0}
+        _causas[_c]["Casos"] += 1
+        _causas[_c]["Inscritos"] += int(a.get("Inscritos") or 0)
+    _ranking_causas = sorted(_causas.values(), key=lambda x: (-x["Inscritos"], -x["Casos"]))
+
+    # ------- DISTRIBUIÇÕES -------
+    def _distrib(keyfn):
+        _d = {}
+        for a in analises:
+            _k = keyfn(a) or "—"
+            if _k not in _d:
+                _d[_k] = {"Categoria": _k, "Casos": 0, "Inscritos": 0}
+            _d[_k]["Casos"] += 1
+            _d[_k]["Inscritos"] += int(a.get("Inscritos") or 0)
+        return sorted(_d.values(), key=lambda x: -x["Inscritos"])
+
+    _distribuicoes = {
+        "por_uf": _distrib(lambda a: str(a.get("UF") or "—").upper()),
+        "por_regiao": _distrib(lambda a: _ufr.get(str(a.get("UF") or "").upper(), "Indefinido")),
+        "por_categoria": _distrib(lambda a: a.get("Categoria")),
+        "por_vencedor": _distrib(lambda a: a.get("Vencedor (Qualidade)")),
+        "por_motor_ref": _distrib(lambda a: a.get("Motor Referência")),
+        "por_acesso_app": _distrib(lambda a: a.get("Acesso Aplicação")),
+        "por_balsa": _distrib(lambda a: "Aplicação com balsa" if a.get("Balsa Aplicação") == "Sim"
+                              else ("Referência com balsa" if a.get("Balsa Referência") == "Sim" else "Sem balsa")),
+    }
+
+    # ------- MAIORES PERDAS / GANHOS (ponderado por inscritos) -------
+    def _slim(a):
+        return {k: a.get(k) for k in ("Município", "UF", "Inscritos", "Destino Aplicação",
+                                      "Destino Referência", "Diferença (km)", "Categoria",
+                                      "Índice Qualidade Aplicação", "Índice Qualidade Referência",
+                                      "Recomendação")}
+    _maiores_perdas = [_slim(a) for a in sorted(
+        _perdas, key=lambda a: (abs(a.get("Diferença (km)") or 0.0) * (int(a.get("Inscritos") or 0) or 1)),
+        reverse=True)[:50]]
+    _maiores_ganhos = [_slim(a) for a in sorted(
+        _ganhos, key=lambda a: (abs(a.get("Diferença (km)") or 0.0) * (int(a.get("Inscritos") or 0) or 1)),
+        reverse=True)[:50]]
+
+    # ------- OPORTUNIDADES (perdas relevantes = onde a app pode melhorar) -------
+    _opp = []
+    for a in _perdas:
+        _score_opp = abs(a.get("Diferença (km)") or 0.0) * (int(a.get("Inscritos") or 0) or 1)
+        _opp.append({"Município": a.get("Município"), "UF": a.get("UF"), "Inscritos": a.get("Inscritos"),
+                     "Ganho potencial (km)": abs(a.get("Diferença (km)") or 0.0),
+                     "Impacto (km × inscritos)": round(_score_opp, 1),
+                     "Causa": a.get("Categoria"), "Ação": a.get("Recomendação")})
+    _opp = sorted(_opp, key=lambda x: -x["Impacto (km × inscritos)"])[:50]
+
+    # ------- RECOMENDAÇÕES AGREGADAS -------
+    _recs = []
+    if _maiores_perdas:
+        _topn = _maiores_perdas[:10]
+        _recs.append(f"Revisar manualmente os **{len(_topn)} municípios de maior perda** (lista de "
+                     f"Oportunidades) — concentram o maior ganho potencial ponderado por candidatos.")
+    # polos recorrentes onde a app perde
+    _polo_perda = {}
+    for a in _perdas:
+        _pp = a.get("Destino Aplicação") or "—"
+        _polo_perda[_pp] = _polo_perda.get(_pp, 0) + 1
+    _polo_rec = [p for p, c in sorted(_polo_perda.items(), key=lambda x: -x[1]) if c >= 3][:5]
+    if _polo_rec:
+        _recs.append(f"Reavaliar os polos onde a aplicação mais perde: {', '.join(_polo_rec)} "
+                     f"(recorrentes em ≥3 divergências desfavoráveis).")
+    _perda_empate = sum(1 for a in _perdas if abs(a.get("Diferença (km)") or 0.0) < 5)
+    if _perdas and _perda_empate / max(1, len(_perdas)) >= 0.4:
+        _recs.append("Recalibrar o **critério de desempate/penalização multicritério**: boa parte das perdas "
+                     "está em margens < 5 km, onde o ajuste fino da penalização pode inverter o resultado a "
+                     "favor da aplicação sem prejuízo operacional.")
+    _alta_div = [a for a in analises if (a.get("Divergência Motores (%)") or 0) >= 30]
+    if _alta_div:
+        _recs.append(f"Auditar as rotas com **alta divergência entre motores** ({len(_alta_div)} casos ≥30%): "
+                     f"conferir com um segundo motor qual malha reflete a via real.")
+    if _v_app >= _v_ref and _v_ref > 0:
+        _recs.append("Manter a política atual da aplicação (ela é superior na maioria), tratando as perdas como "
+                     "exceções pontuais a revisar caso a caso.")
+    if not _recs:
+        _recs.append("Nenhuma ação sistemática necessária — as divergências são pontuais e bem explicadas.")
+
+    return {
+        "n_divergencias": _n, "resumo": _resumo, "insights": _ins,
+        "ranking_causas": _ranking_causas, "distribuicoes": _distribuicoes,
+        "maiores_perdas": _maiores_perdas, "maiores_ganhos": _maiores_ganhos,
+        "oportunidades": _opp, "recomendacoes": _recs,
+    }
+
+
+# ==============================================================================
+# [DIVERGENCIA-XAI - 236ª] SAÍDA 1/2 — SEÇÃO HTML "Diagnóstico Inteligente das Divergências"
+# ==============================================================================
+def _div_tabela_html(titulo, colunas, linhas, _he):
+    """Renderiza uma tabela HTML simples e responsiva. PURO."""
+    if not linhas:
+        return ""
+    _th = "".join(f"<th>{_he.escape(str(c))}</th>" for c in colunas)
+    _tr = ""
+    for _l in linhas:
+        _tds = "".join(f"<td>{_he.escape(str(_l.get(c, '—')))}</td>" for c in colunas)
+        _tr += f"<tr>{_tds}</tr>"
+    return (f'<h3>{_he.escape(titulo)}</h3>'
+            f'<div class="tbl-wrap"><table class="dvt"><thead><tr>{_th}</tr></thead>'
+            f'<tbody>{_tr}</tbody></table></div>')
+
+
+def _div_barras_html(titulo, pares, unidade="", _he=None):
+    """Barras horizontais em HTML puro (sem Plotly) para distribuições. `pares` = lista de (rótulo, valor).
+    PURO e offline."""
+    import html as _hh
+    _he = _he or _hh
+    _pares = [(str(k), float(v)) for k, v in pares if v is not None]
+    if not _pares:
+        return ""
+    _max = max(v for _, v in _pares) or 1.0
+    _rows = ""
+    for _k, _v in _pares:
+        _pct = max(2.0, 100.0 * _v / _max)
+        _rows += (f'<div class="dvb-row"><div class="dvb-lbl">{_he.escape(_k)}</div>'
+                  f'<div class="dvb-bar"><div class="dvb-fill" style="width:{_pct:.1f}%"></div></div>'
+                  f'<div class="dvb-val">{_v:,.0f}{_he.escape(unidade)}</div></div>')
+    return f'<h3>{_he.escape(titulo)}</h3><div class="dvb">{_rows}</div>'
+
+
+def _diagnostico_divergencias_html(diag):
+    """[DIVERGENCIA-XAI - 236ª] Seção HTML autocontida do "Diagnóstico Inteligente das Divergências".
+    PURA e defensiva: diag vazio → ''. Retorna um <section> completo (com <h2>) pronto para o relatório."""
+    import html as _he
+    try:
+        if not diag or not diag.get("n_divergencias"):
+            return ""
+        _r = diag.get("resumo", {})
+        _analises = diag.get("analises") or []
+        _ag = diag.get("agregado") or diag  # aceita tanto o dict completo quanto o agregado direto
+        if "resumo" not in _ag and "resumo" in diag:
+            _ag = diag
+        _res = _ag.get("resumo", _r)
+        _ins = _ag.get("insights", [])
+        _rank = _ag.get("ranking_causas", [])
+        _dist = _ag.get("distribuicoes", {})
+        _perdas = _ag.get("maiores_perdas", [])
+        _ganhos = _ag.get("maiores_ganhos", [])
+        _opp = _ag.get("oportunidades", [])
+        _recs = _ag.get("recomendacoes", [])
+        _n = _ag.get("n_divergencias", len(_analises))
+
+        # ---- KPIs ----
+        def _kpi(v, r):
+            return (f'<div class="dv-kpi"><div class="dv-kpi-v">{v}</div>'
+                    f'<div class="dv-kpi-r">{_he.escape(r)}</div></div>')
+        _kpis = ('<div class="dv-kpis">'
+                 + _kpi(f'{_n:,}', "municípios com destino diferente")
+                 + _kpi(f'{int(_res.get("inscritos_impactados", 0)):,}', "candidatos impactados")
+                 + _kpi(f'{_res.get("app_superior", 0)}', "vitórias da aplicação (por qualidade)")
+                 + _kpi(f'{_res.get("ref_superior", 0)}', "vitórias da referência (por qualidade)")
+                 + _kpi(f'{_res.get("empates", 0)}', "empates técnicos")
+                 + '</div>')
+
+        # ---- resumo executivo ----
+        _pa = _res.get("pct_app_superior", 0.0)
+        _pr = _res.get("pct_ref_superior", 0.0)
+        _resumo_txt = (f"Foram investigadas <b>{_n}</b> divergências (municípios em que a aplicação e o estudo "
+                       f"de referência escolheram locais de prova diferentes), impactando "
+                       f"<b>{int(_res.get('inscritos_impactados', 0)):,}</b> candidatos. Avaliando cada escolha "
+                       f"por um <b>Índice de Qualidade multicritério</b> (distância, tempo, acessibilidade, "
+                       f"robustez, confiabilidade e risco operacional), a aplicação foi superior em "
+                       f"<b>{_pa:.0f}%</b> dos casos e a referência em <b>{_pr:.0f}%</b>. "
+                       f"Abaixo, o porquê de cada resultado — com pareceres técnicos, hipóteses e recomendações "
+                       f"acionáveis.")
+        # Caixa inline autossuficiente (NÃO usa _caixa_explicativa, que depende de um _he global
+        # inexistente no módulo — ver auditoria). _resumo_txt é HTML que nós mesmos geramos.
+        _box_resumo = (f'<div class="dv-box"><div class="dv-box-t">💡 Resumo executivo</div>'
+                       f'<div class="dv-box-c">{_resumo_txt}</div></div>')
+
+        # ---- causas das vitórias (app × ref) ----
+        _causas_app, _causas_ref = {}, {}
+        for a in _analises:
+            _c = a.get("Categoria", "—")
+            if a.get("Vencedor (Qualidade)") == "Aplicação":
+                _causas_app[_c] = _causas_app.get(_c, 0) + 1
+            elif a.get("Vencedor (Qualidade)") == "Referência":
+                _causas_ref[_c] = _causas_ref.get(_c, 0) + 1
+        _bar_app = _div_barras_html("Principais causas das vitórias da APLICAÇÃO",
+                                    sorted(_causas_app.items(), key=lambda x: -x[1]), " casos", _he)
+        _bar_ref = _div_barras_html("Principais causas das vitórias da REFERÊNCIA",
+                                    sorted(_causas_ref.items(), key=lambda x: -x[1]), " casos", _he)
+
+        # ---- ranking dos fatores determinantes ----
+        _tab_rank = _div_tabela_html("Ranking dos fatores determinantes (por candidatos impactados)",
+                                     ["Causa", "Casos", "Inscritos"], _rank[:15], _he)
+
+        # ---- distribuições ----
+        _dist_html = ""
+        _mapa_dist = [("por_uf", "Distribuição por UF (candidatos)"),
+                      ("por_regiao", "Distribuição por região (candidatos)"),
+                      ("por_vencedor", "Distribuição por vencedor (candidatos)"),
+                      ("por_acesso_app", "Distribuição por tipo de acesso da aplicação (candidatos)"),
+                      ("por_balsa", "Distribuição por presença de balsa (candidatos)")]
+        for _k, _t in _mapa_dist:
+            _d = _dist.get(_k, [])
+            if _d:
+                _pares = [(x.get("Categoria", "—"), x.get("Inscritos", 0)) for x in _d[:8]]
+                _dist_html += _div_barras_html(_t, _pares, "", _he)
+
+        # ---- insights ----
+        _ins_html = ""
+        if _ins:
+            _lis = "".join(f"<li>{_he.escape(x)}</li>" for x in _ins)
+            _ins_html = f'<h3>🔎 Insights automáticos</h3><ul class="dv-ins">{_lis}</ul>'
+
+        # ---- oportunidades ----
+        _tab_opp = _div_tabela_html("🎯 Oportunidades de melhoria (maior ganho potencial ponderado)",
+                                    ["Município", "UF", "Inscritos", "Ganho potencial (km)",
+                                     "Impacto (km × inscritos)", "Causa"], _opp[:15], _he)
+
+        # ---- recomendações ----
+        _rec_html = ""
+        if _recs:
+            _lis = "".join(f"<li>{_he.escape(x)}</li>" for x in _recs)
+            _rec_html = f'<h3>✅ Recomendações automáticas</h3><ul class="dv-rec">{_lis}</ul>'
+
+        # ---- pareceres técnicos (top casos por impacto) ----
+        _ordenadas = sorted(_analises, key=lambda a: abs((a.get("Diferença (km)") or 0.0)
+                            * (int(a.get("Inscritos") or 0) or 1)), reverse=True)[:20]
+        _pareceres = ""
+        for a in _ordenadas:
+            _cor = a.get("_cor", "#64748b")
+            _venc = a.get("Vencedor (Qualidade)", "—")
+            _hip = a.get("Hipóteses") or []
+            _hip_html = "".join(f"<li>{_he.escape(h)}</li>" for h in _hip)
+            _pareceres += (
+                f'<div class="dv-caso" style="border-left:4px solid {_cor}">'
+                f'<div class="dv-caso-h"><b>{_he.escape(str(a.get("Município")))}/{_he.escape(str(a.get("UF")))}</b>'
+                f' · {_he.escape(str(a.get("Categoria")))} · <span class="dv-tag">Vantagem: {_he.escape(_venc)}</span></div>'
+                f'<div class="dv-caso-p">{_he.escape(a.get("Parecer Técnico", ""))}</div>'
+                f'<div class="dv-caso-hip"><b>Hipóteses técnicas:</b><ul>{_hip_html}</ul></div>'
+                f'<div class="dv-caso-rec">{_he.escape(a.get("Recomendação", ""))}</div>'
+                f'</div>')
+        _pareceres_html = (f'<h3>📝 Pareceres técnicos — os {len(_ordenadas)} casos de maior impacto</h3>'
+                           f'<div class="dv-casos">{_pareceres}</div>') if _pareceres else ""
+
+        _css = (
+            '<style>'
+            '.dv-kpis{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}'
+            '.dv-kpi{flex:1;min-width:150px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px}'
+            '.dv-kpi-v{font-size:26px;font-weight:800;color:#0f172a}'
+            '.dv-kpi-r{font-size:12px;color:#64748b;margin-top:4px}'
+            '.dv-box{border-left:4px solid #2563eb;background:#eff6ff;border-radius:8px;padding:12px 14px;margin:14px 0}'
+            '.dv-box-t{font-weight:700;color:#1e3a8a;margin-bottom:6px}'
+            '.dv-box-c{font-size:14px;line-height:1.6;color:#1f2937}'
+            '.dvt{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0 18px}'
+            '.dvt th{background:#1e3a8a;color:#fff;padding:8px;text-align:left}'
+            '.dvt td{padding:7px 8px;border-bottom:1px solid #eef2f7}'
+            '.dvt tr:nth-child(even){background:#f8fafc}'
+            '.tbl-wrap{overflow-x:auto}'
+            '.dvb{margin:6px 0 18px}.dvb-row{display:flex;align-items:center;gap:10px;margin:4px 0}'
+            '.dvb-lbl{width:230px;font-size:12px;color:#334155;text-align:right;flex-shrink:0}'
+            '.dvb-bar{flex:1;background:#eef2f7;border-radius:5px;height:16px;overflow:hidden}'
+            '.dvb-fill{height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa)}'
+            '.dvb-val{width:90px;font-size:12px;color:#0f172a;font-weight:600}'
+            '.dv-ins li,.dv-rec li{margin:6px 0;line-height:1.5}'
+            '.dv-casos{display:flex;flex-direction:column;gap:12px}'
+            '.dv-caso{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px}'
+            '.dv-caso-h{font-size:13px;color:#334155;margin-bottom:6px}'
+            '.dv-tag{background:#eef2ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:11px}'
+            '.dv-caso-p{font-size:14px;line-height:1.6;color:#1f2937;margin:6px 0}'
+            '.dv-caso-hip{font-size:12px;color:#475569;margin:6px 0}.dv-caso-hip ul{margin:4px 0 0 18px}'
+            '.dv-caso-rec{font-size:13px;font-weight:600;color:#0f172a;margin-top:6px}'
+            '</style>')
+
+        return (f'<section id="diag-divergencias">{_css}'
+                f'<h2>🔬 Diagnóstico Inteligente das Divergências</h2>'
+                f'{_kpis}{_box_resumo}'
+                f'{_ins_html}'
+                f'{_bar_app}{_bar_ref}{_tab_rank}'
+                f'{_dist_html}'
+                f'{_tab_opp}{_rec_html}'
+                f'{_pareceres_html}'
+                f'</section>')
+    except Exception:
+        return ""
+
+
+# ==============================================================================
+# [DIVERGENCIA-XAI - 236ª] SAÍDA 2/2 — ABAS EXCEL do "Diagnóstico das Divergências"
+# ==============================================================================
+def _abas_diagnostico_divergencias(writer, diag):
+    """[DIVERGENCIA-XAI - 236ª] Escreve as abas analíticas do diagnóstico de divergências na planilha do
+    Comparador, espelhando a seção HTML: Resumo, Divergências (tabela rica), Pareceres & Hipóteses, Ranking
+    das Causas (c/ gráfico), Oportunidades, Análise dos Motores, Análise Territorial (c/ gráfico) e Análise
+    Operacional. Cada aba tem explicação didática abaixo das tabelas. DEFENSIVO: diag vazio → no-op; cada aba
+    isolada em try (erro numa aba não derruba as demais nem o export). Só grava se houver dados. PURO quanto
+    a I/O de rede — usa apenas o dict `diag` já calculado."""
+    try:
+        if not diag or not diag.get("n_divergencias"):
+            return
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        _analises = diag.get("analises") or []
+        _res = diag.get("resumo", {}) or {}
+        _ins = diag.get("insights", []) or []
+        _rank = diag.get("ranking_causas", []) or []
+        _dist = diag.get("distribuicoes", {}) or {}
+        _opp = diag.get("oportunidades", []) or []
+        _recs = diag.get("recomendacoes", []) or []
+
+        # ---- formatos reutilizáveis (mesmo padrão de _abas_cientificas_alocacao) ----
+        _f_tit = _wb.add_format({"bold": True, "font_size": 16, "font_color": "#1e3a8a"})
+        _f_sub = _wb.add_format({"bold": True, "font_size": 11, "font_color": "#334155"})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#475569"})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_int = _wb.add_format({"font_size": 10, "num_format": "#,##0", "align": "right"})
+        _f_pct = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#ffffff",
+                                 "bg_color": "#1e3a8a", "border": 1, "border_color": "#cbd5e1", "align": "center",
+                                 "text_wrap": True, "valign": "vcenter"})
+        _f_exp = _wb.add_format({"font_size": 10, "font_color": "#334155", "italic": True,
+                                 "text_wrap": True, "valign": "top"})
+        _f_txt = _wb.add_format({"font_size": 10, "font_color": "#334155", "text_wrap": True, "valign": "top"})
+        _f_kpi = _wb.add_format({"bold": True, "font_size": 20, "font_color": "#0f172a", "align": "left"})
+        _f_kpr = _wb.add_format({"font_size": 9, "font_color": "#64748b"})
+
+        def _escrever_tabela(_ws, _r0, colunas, linhas, larguras=None):
+            """Escreve cabeçalho + linhas de dicts. Retorna a última linha usada."""
+            for _c, _nome in enumerate(colunas):
+                _ws.write(_r0, _c, _nome, _f_hdr)
+                if larguras and _c < len(larguras):
+                    _ws.set_column(_c, _c, larguras[_c])
+            _rr = _r0
+            for _l in linhas:
+                _rr += 1
+                for _c, _nome in enumerate(colunas):
+                    _v = _l.get(_nome, "—")
+                    if isinstance(_v, bool):
+                        _ws.write(_rr, _c, "Sim" if _v else "Não", _f_lbl)
+                    elif isinstance(_v, (int,)) and not isinstance(_v, bool):
+                        _ws.write_number(_rr, _c, _v, _f_int)
+                    elif isinstance(_v, float):
+                        _ws.write_number(_rr, _c, _v, _f_num)
+                    elif _v is None:
+                        _ws.write(_rr, _c, "—", _f_lbl)
+                    else:
+                        _ws.write(_rr, _c, str(_v), _f_lbl)
+            return _rr
+
+        def _explicacao(_ws, _r, _ncols, _texto, _altura=64):
+            _ws.merge_range(_r, 0, _r, max(1, _ncols - 1), _texto, _f_exp)
+            _ws.set_row(_r, _altura)
+
+        # ============ ABA 1: RESUMO ============
+        try:
+            _ws = _wb.add_worksheet("Diag - Resumo")
+            _ws.set_column("A:A", 34); _ws.set_column("B:F", 16)
+            _ws.write("A1", "Diagnóstico Inteligente das Divergências", _f_tit)
+            _ws.write("A2", "Por que a aplicação e o estudo de referência divergiram — e o que fazer a respeito.", _f_lbl)
+            _kpis = [("Municípios com destino diferente", diag.get("n_divergencias", 0), _f_int),
+                     ("Candidatos impactados", int(_res.get("inscritos_impactados", 0)), _f_int),
+                     ("Vitórias da aplicação (qualidade)", int(_res.get("app_superior", 0)), _f_int),
+                     ("Vitórias da referência (qualidade)", int(_res.get("ref_superior", 0)), _f_int),
+                     ("Empates técnicos", int(_res.get("empates", 0)), _f_int),
+                     ("% de casos favoráveis à aplicação", float(_res.get("pct_app_superior", 0.0)), _f_pct),
+                     ("% de casos favoráveis à referência", float(_res.get("pct_ref_superior", 0.0)), _f_pct)]
+            _r = 4
+            for _lbl, _v, _fmt in _kpis:
+                _ws.write(_r, 0, _lbl, _f_lbl)
+                _ws.write_number(_r, 1, _v, _fmt)
+                _r += 1
+            _r += 1
+            _ws.write(_r, 0, "Insights automáticos (baseados nos dados)", _f_sub); _r += 1
+            for _x in (_ins or ["—"]):
+                _ws.merge_range(_r, 0, _r, 5, "• " + str(_x).replace("**", ""), _f_txt)
+                _ws.set_row(_r, 30); _r += 1
+            _r += 1
+            _ws.write(_r, 0, "Recomendações automáticas", _f_sub); _r += 1
+            for _x in (_recs or ["—"]):
+                _ws.merge_range(_r, 0, _r, 5, "• " + str(_x).replace("**", ""), _f_txt)
+                _ws.set_row(_r, 30); _r += 1
+        except Exception:
+            pass
+
+        # ============ ABA 2: DIVERGÊNCIAS (tabela rica) ============
+        try:
+            if _analises:
+                _ws = _wb.add_worksheet("Diag - Divergencias")
+                _cols = ["Município", "UF", "Inscritos", "Destino Aplicação", "Destino Referência",
+                         "Distância Aplicação (km)", "Distância Referência (km)", "Diferença (km)", "Diferença (%)",
+                         "Diferença Tempo (min)", "Balsa Aplicação", "Balsa Referência", "Acesso Aplicação",
+                         "Acesso Referência", "Sinuosidade Aplicação (V/R)", "Sinuosidade Referência (V/R)",
+                         "Motor Aplicação", "Motor Referência", "Divergência Motores (%)", "Categoria",
+                         "Índice Qualidade Aplicação", "Índice Qualidade Referência", "Vencedor (Qualidade)"]
+                _larg = [22, 5, 9, 20, 20, 14, 14, 11, 11, 12, 10, 10, 16, 16, 14, 14, 12, 12, 14, 24, 12, 12, 16]
+                _ordi = sorted(_analises, key=lambda a: abs((a.get("Diferença (km)") or 0.0)
+                               * (int(a.get("Inscritos") or 0) or 1)), reverse=True)
+                _last = _escrever_tabela(_ws, 0, _cols, _ordi, _larg)
+                _ws.freeze_panes(1, 1)
+                _ws.autofilter(0, 0, _last, len(_cols) - 1)
+                _explicacao(_ws, _last + 2, len(_cols),
+                            "Como ler: cada linha é um município onde os dois estudos escolheram locais de prova "
+                            "diferentes, ordenado por IMPACTO (diferença de km × candidatos). 'Diferença (km)' > 0 "
+                            "significa que a aplicação ficou mais distante; < 0, que ficou mais curta. 'Índice de "
+                            "Qualidade' (0–100) pondera distância, tempo, acessibilidade, robustez, confiabilidade e "
+                            "risco operacional — por isso o 'Vencedor (Qualidade)' pode diferir de quem tem a menor "
+                            "distância pura (ex.: uma rota 5 km maior, mas sem balsa, pode ser preferível). 'V/R' é a "
+                            "razão viário/linha-reta (quanto maior, mais sinuoso/indireto). 'Divergência Motores (%)' "
+                            "alta sugere malhas cartográficas distintas entre os motores — candidata a auditoria.", 150)
+        except Exception:
+            pass
+
+        # ============ ABA 3: PARECERES & HIPÓTESES ============
+        try:
+            if _analises:
+                _ws = _wb.add_worksheet("Diag - Pareceres")
+                _ws.set_column("A:A", 22); _ws.set_column("B:B", 6); _ws.set_column("C:C", 26)
+                _ws.set_column("D:D", 16); _ws.set_column("E:E", 70); _ws.set_column("F:F", 60); _ws.set_column("G:G", 55)
+                _cols = ["Município", "UF", "Categoria", "Vencedor (Qualidade)", "Parecer Técnico",
+                         "Hipóteses", "Recomendação"]
+                for _c, _nome in enumerate(_cols):
+                    _ws.write(0, _c, _nome, _f_hdr)
+                _ordi = sorted(_analises, key=lambda a: abs((a.get("Diferença (km)") or 0.0)
+                               * (int(a.get("Inscritos") or 0) or 1)), reverse=True)
+                _rr = 0
+                for a in _ordi:
+                    _rr += 1
+                    _ws.write(_rr, 0, str(a.get("Município", "—")), _f_lbl)
+                    _ws.write(_rr, 1, str(a.get("UF", "—")), _f_lbl)
+                    _ws.write(_rr, 2, str(a.get("Categoria", "—")), _f_lbl)
+                    _ws.write(_rr, 3, str(a.get("Vencedor (Qualidade)", "—")), _f_lbl)
+                    _ws.write(_rr, 4, str(a.get("Parecer Técnico", "—")).replace("**", ""), _f_txt)
+                    _hip = a.get("Hipóteses") or []
+                    _ws.write(_rr, 5, ("• " + "\n• ".join(_hip)) if _hip else "—", _f_txt)
+                    _ws.write(_rr, 6, str(a.get("Recomendação", "—")).replace("**", ""), _f_txt)
+                    _ws.set_row(_rr, 90)
+                _ws.freeze_panes(1, 1)
+                _explicacao(_ws, _rr + 2, len(_cols),
+                            "Esta aba é a AUDITORIA das decisões: para cada divergência, um parecer técnico explica em "
+                            "linguagem clara por que aquela escolha é melhor ou pior para o candidato e para a operação; "
+                            "as 'Hipóteses' listam as causas técnicas prováveis (malha viária, cartografia, balsa, "
+                            "penalização multicritério, geocodificação); e a 'Recomendação' indica a ação concreta "
+                            "(manter, revisar manualmente, auditar a rota, recalibrar critério).", 90)
+        except Exception:
+            pass
+
+        # ============ ABA 4: RANKING DAS CAUSAS (com gráfico) ============
+        try:
+            if _rank:
+                _ws = _wb.add_worksheet("Diag - Ranking Causas")
+                _ws.set_column("A:A", 40); _ws.set_column("B:C", 14)
+                _ws.write("A1", "Ranking dos fatores determinantes", _f_tit)
+                _r0 = 3
+                _last = _escrever_tabela(_ws, _r0, ["Causa", "Casos", "Inscritos"], _rank, [40, 12, 14])
+                _n_itens = len(_rank)
+                _ch = _wb.add_chart({"type": "bar"})
+                _ch.add_series({"name": "Candidatos impactados",
+                                "categories": ["Diag - Ranking Causas", _r0 + 1, 0, _last, 0],
+                                "values": ["Diag - Ranking Causas", _r0 + 1, 2, _last, 2],
+                                "fill": {"color": "#2563eb"}})
+                _ch.set_title({"name": "Causas das divergências (por candidatos impactados)"})
+                _ch.set_legend({"none": True})
+                _ch.set_size({"width": 720, "height": max(240, 40 + 26 * _n_itens)})
+                _ws.insert_chart(_last + 3, 0, _ch)
+                _explicacao(_ws, _last + 3 + max(14, _n_itens + 2), 3,
+                            "Como ler: o ranking mostra QUAIS naturezas de divergência concentram mais candidatos. "
+                            "Priorize as causas do topo — são onde a revisão rende mais. 'Casos' é a contagem de "
+                            "municípios; 'Inscritos' pondera pelo tamanho da demanda afetada.", 60)
+        except Exception:
+            pass
+
+        # ============ ABA 5: OPORTUNIDADES ============
+        try:
+            if _opp:
+                _ws = _wb.add_worksheet("Diag - Oportunidades")
+                _cols = ["Município", "UF", "Inscritos", "Ganho potencial (km)",
+                         "Impacto (km × inscritos)", "Causa", "Ação"]
+                _larg = [24, 6, 10, 16, 18, 26, 60]
+                for _c, _nome in enumerate(_cols):
+                    _ws.write(0, _c, _nome, _f_hdr); _ws.set_column(_c, _c, _larg[_c])
+                _rr = 0
+                for _l in _opp:
+                    _rr += 1
+                    _ws.write(_rr, 0, str(_l.get("Município", "—")), _f_lbl)
+                    _ws.write(_rr, 1, str(_l.get("UF", "—")), _f_lbl)
+                    _ws.write_number(_rr, 2, int(_l.get("Inscritos") or 0), _f_int)
+                    _ws.write_number(_rr, 3, float(_l.get("Ganho potencial (km)") or 0.0), _f_num)
+                    _ws.write_number(_rr, 4, float(_l.get("Impacto (km × inscritos)") or 0.0), _f_num)
+                    _ws.write(_rr, 5, str(_l.get("Causa", "—")), _f_lbl)
+                    _ws.write(_rr, 6, str(_l.get("Ação", "—")).replace("**", ""), _f_txt)
+                    _ws.set_row(_rr, 44)
+                _ws.freeze_panes(1, 1)
+                _ws.autofilter(0, 0, _rr, len(_cols) - 1)
+                _explicacao(_ws, _rr + 2, len(_cols),
+                            "Oportunidades de melhoria = divergências desfavoráveis à aplicação, ordenadas pelo GANHO "
+                            "POTENCIAL ponderado (km economizáveis × candidatos). São os casos onde revisar o polo ou "
+                            "recalibrar critérios traz o maior retorno. 'Ação' sugere o próximo passo concreto para "
+                            "cada município.", 64)
+        except Exception:
+            pass
+
+        # ============ ABA 6: ANÁLISE DOS MOTORES ============
+        try:
+            _dm = _dist.get("por_motor_ref", [])
+            if _dm:
+                _ws = _wb.add_worksheet("Diag - Motores")
+                _ws.set_column("A:A", 28); _ws.set_column("B:C", 14)
+                _ws.write("A1", "Análise dos motores de roteamento", _f_tit)
+                _last = _escrever_tabela(_ws, 3, ["Categoria", "Casos", "Inscritos"], _dm, [28, 12, 14])
+                _explicacao(_ws, _last + 2, 3,
+                            "Distribuição das divergências pelo MOTOR que produziu a rota do estudo de referência "
+                            "(Google, OSRM, Valhalla, GraphHopper, linha reta). Concentração num motor pode indicar "
+                            "diferença sistemática de malha/cartografia frente ao motor da aplicação — nesses casos, "
+                            "conferir qual malha reflete a via real é a auditoria recomendada.", 64)
+        except Exception:
+            pass
+
+        # ============ ABA 7: ANÁLISE TERRITORIAL (UF + Região, com gráfico) ============
+        try:
+            _du = _dist.get("por_uf", [])
+            _dr = _dist.get("por_regiao", [])
+            if _du or _dr:
+                _ws = _wb.add_worksheet("Diag - Territorial")
+                _ws.set_column("A:A", 22); _ws.set_column("B:C", 14)
+                _ws.write("A1", "Análise territorial das divergências", _f_tit)
+                _r0 = 3
+                _last_u = _r0
+                if _du:
+                    _ws.write(_r0 - 1, 0, "Por UF", _f_sub)
+                    _last_u = _escrever_tabela(_ws, _r0, ["Categoria", "Casos", "Inscritos"], _du, [22, 12, 14])
+                    _ch = _wb.add_chart({"type": "bar"})
+                    _ch.add_series({"name": "Candidatos por UF",
+                                    "categories": ["Diag - Territorial", _r0 + 1, 0, _last_u, 0],
+                                    "values": ["Diag - Territorial", _r0 + 1, 2, _last_u, 2],
+                                    "fill": {"color": "#16a34a"}})
+                    _ch.set_title({"name": "Divergências por UF (candidatos)"})
+                    _ch.set_legend({"none": True})
+                    _ch.set_size({"width": 640, "height": max(240, 40 + 24 * len(_du))})
+                    _ws.insert_chart(_r0, 5, _ch)
+                if _dr:
+                    _r1 = _last_u + 3
+                    _ws.write(_r1 - 1, 0, "Por região", _f_sub)
+                    _last_r = _escrever_tabela(_ws, _r1, ["Categoria", "Casos", "Inscritos"], _dr, [22, 12, 14])
+                    _explicacao(_ws, _last_r + 2, 3,
+                                "Onde as divergências se concentram no território. Concentração regional costuma "
+                                "revelar padrões físicos (ex.: acesso fluvial e balsas na região Norte, malha densa no "
+                                "Sudeste). Cruze com as abas Operacional e Motores para entender a causa dominante em "
+                                "cada recorte.", 56)
+        except Exception:
+            pass
+
+        # ============ ABA 8: ANÁLISE OPERACIONAL (acesso + balsa + vencedor) ============
+        try:
+            _da = _dist.get("por_acesso_app", [])
+            _db = _dist.get("por_balsa", [])
+            _dv = _dist.get("por_vencedor", [])
+            if _da or _db or _dv:
+                _ws = _wb.add_worksheet("Diag - Operacional")
+                _ws.set_column("A:A", 30); _ws.set_column("B:C", 14)
+                _ws.write("A1", "Análise operacional das divergências", _f_tit)
+                _r = 3
+                for _titulo, _bloco in [("Por tipo de acesso da aplicação", _da),
+                                        ("Por presença de balsa", _db),
+                                        ("Por vencedor (qualidade)", _dv)]:
+                    if _bloco:
+                        _ws.write(_r - 1, 0, _titulo, _f_sub)
+                        _r = _escrever_tabela(_ws, _r, ["Categoria", "Casos", "Inscritos"], _bloco, [30, 12, 14]) + 3
+                _explicacao(_ws, _r, 3,
+                            "Leitura operacional: 'tipo de acesso' e 'balsa' mostram quanto das divergências envolve "
+                            "modo rodoviário puro versus travessias/transporte fluvial — fatores de risco e de tempo "
+                            "que o Índice de Qualidade penaliza. 'Por vencedor' resume, em candidatos, o saldo entre "
+                            "as escolhas da aplicação e da referência. Divergências ligadas a balsa/fluvial são as de "
+                            "maior sensibilidade operacional e merecem conferência caso a caso.", 72)
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
+# ==============================================================================
+# [DIVERGENCIA-XAI - 236ª] ORQUESTRADOR DE REDE — reprocessa as rotas divergentes
+# ==============================================================================
+def _rp_para_dict(rp):
+    """[DIVERGENCIA-XAI - 236ª] Converte um RotaPipeline (resultado do roteamento fresco do lado da
+    REFERÊNCIA) no dict `campos` que _fatos_rota_divergencia consome. Lê SEMPRE por NOME (getattr), nunca
+    por índice — robusto à evolução do NamedTuple. Defensivo a None."""
+    if rp is None:
+        return {}
+    def _g(nome, padrao=None):
+        try:
+            return getattr(rp, nome)
+        except Exception:
+            return padrao
+    return {
+        "destino": _g("municipio_destino") or "",
+        "distancia_km": _g("distancia"),
+        "linha_reta_km": _g("dist_linha_reta"),
+        "balsa": _g("balsas", ""),
+        "fonte_rota": _g("fonte_rota", ""),
+        "tempo": _g("tempo", ""),
+        "score": _g("score_rota"),
+        "lat_origem": _g("lat_origem"), "lon_origem": _g("lon_origem"),
+        "lat_destino": _g("lat_destino"), "lon_destino": _g("lon_destino"),
+    }
+
+
+def _fatos_from_linha_app(linha):
+    """[DIVERGENCIA-XAI - 236ª] Extrai os FATOS do lado da APLICAÇÃO a partir da linha de conciliação, usando
+    os valores JÁ ARMAZENADOS no estudo (a decisão real que a aplicação tomou — não re-roteia). Mapeia as
+    chaves ricas 'APP · …' que _conciliar_comparativo anexa. PURO."""
+    _campos = {
+        "destino": linha.get("Destino Aplicacao"),
+        "uf_destino": linha.get("APP · UF do Polo"),
+        "cod_ibge_destino": linha.get("APP · Cód IBGE do Polo"),
+        "distancia_km": linha.get("Distancia Aplicacao"),
+        "linha_reta_km": linha.get("APP · Linha Reta (km)"),
+        "balsa": linha.get("Balsa Aplicacao", ""),
+        "fonte_rota": linha.get("APP · Fonte da Rota", ""),
+        "tempo": linha.get("Tempo Aplicacao", ""),
+        "score": linha.get("APP · Score"),
+        "modo_acesso": linha.get("Modo Aplicacao", ""),
+        "razao_vr": linha.get("Sinuosidade Aplicacao"),
+        "coord_origem": linha.get("APP · Coordenadas da Origem"),
+        "coord_destino": linha.get("APP · Coordenadas do Polo"),
+    }
+    return _fatos_rota_divergencia(_campos)
+
+
+def _montar_destino_ref(linha):
+    """Monta a string de destino da REFERÊNCIA para o roteamento, com melhor esforço de desambiguação de UF.
+    Retorna (destino_str, uf_assumida_bool). Limitação honesta: o estudo de referência nem sempre informa a
+    UF do polo — quando não informa, herda-se a UF da ORIGEM (exames são majoritariamente intraestaduais),
+    sinalizando a suposição. Homônimos entre UFs distintas continuam sendo um risco a auditar."""
+    _dest = str(linha.get("Destino Referencia") or "").strip()
+    if not _dest:
+        return "", False
+    if "," in _dest or "-" in _dest:  # já parece conter UF/qualificador
+        return _dest, False
+    # tenta uma coluna REF · … que contenha a UF do polo da referência
+    for _k, _v in linha.items():
+        if isinstance(_k, str) and _k.startswith("REF · ") and "uf" in _k.lower() and str(_v).strip():
+            _uf = str(_v).strip().upper()[:2]
+            if len(_uf) == 2 and _uf.isalpha():
+                return f"{_dest}, {_uf}", False
+    _uf_orig = str(linha.get("UF") or "").strip().upper()[:2]
+    if len(_uf_orig) == 2 and _uf_orig.isalpha():
+        return f"{_dest}, {_uf_orig}", True  # UF assumida = a da origem
+    return _dest, False
+
+
+def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=None,
+                                   router=None, uf_para_regiao=None):
+    """[DIVERGENCIA-XAI - 236ª] ORQUESTRADOR. Para cada município cujo destino difere entre a aplicação e a
+    referência, ROTEIA origem→destino_ref pelos MESMOS motores (via calcular_pipeline_logistico, com cache
+    L1/L2), caracterizando a escolha da referência com os mesmos sinais ricos que a aplicação já possui;
+    então analisa a divergência e agrega tudo em INTELIGÊNCIA (resumo, insights, ranking, distribuições,
+    oportunidades, recomendações) + a lista de análises por município.
+
+    Parâmetros:
+      linhas             : as linhas de conciliação (saída de _conciliar_comparativo/_comparar_alocacoes).
+      limiar_empate_km   : abaixo desse |Δkm| a divergência é 'empate técnico' (ruído entre fontes).
+      cb_progresso       : callback opcional cb(i, total, rotulo) para barra de progresso na UI.
+      router             : SEAM de teste — injeta um roteador; em produção usa calcular_pipeline_logistico.
+      uf_para_regiao     : injetável; default _UF_PARA_REGIAO.
+
+    Retorna o dict `diag` pronto para _diagnostico_divergencias_html / _abas_diagnostico_divergencias /
+    _painel_divergencias_ui: agregado + {'analises': [...], 'uf_ref_assumida': N, 'falhas_roteamento': N}.
+    DEFENSIVO: cada rota isolada em try; falha de uma não derruba o lote. Rede só aqui, na borda."""
+    _router = router if router is not None else globals().get("calcular_pipeline_logistico")
+    _divergentes = [l for l in (linhas or []) if l.get("Mesmo Destino") == "Não"
+                    and str(l.get("Destino Referencia") or "").strip()
+                    and str(l.get("Destino Aplicacao") or "").strip()]
+    _total = len(_divergentes)
+    _analises, _uf_assumida, _falhas = [], 0, 0
+
+    for _i, _l in enumerate(_divergentes):
+        _origem = str(_l.get("Origem") or "").strip()
+        _uf = str(_l.get("UF") or "").strip()
+        _origem_q = f"{_origem}, {_uf}" if (_uf and "," not in _origem) else _origem
+        _destino_ref, _assumida = _montar_destino_ref(_l)
+        if _assumida:
+            _uf_assumida += 1
+        if cb_progresso:
+            try:
+                cb_progresso(_i + 1, _total, f"{_origem} → {_l.get('Destino Referencia')}")
+            except Exception:
+                pass
+        # ---- lado REF: roteia fresco (a única operação de rede) ----
+        _fatos_ref = None
+        try:
+            if _router and _origem_q and _destino_ref:
+                _rp = _router(_origem_q, _destino_ref)
+                _campos_ref = _rp_para_dict(_rp)
+                # o nome do destino da referência prevalece sobre o resolvido pelo geocoder
+                _campos_ref["destino"] = str(_l.get("Destino Referencia") or _campos_ref.get("destino") or "")
+                _fatos_ref = _fatos_rota_divergencia(_campos_ref)
+        except Exception:
+            _fatos_ref = None
+        if _fatos_ref is None:
+            # fallback honesto: usa a distância da referência já presente na linha (sem sinais ricos)
+            _falhas += 1
+            _fatos_ref = _fatos_rota_divergencia({
+                "destino": _l.get("Destino Referencia"),
+                "distancia_km": _l.get("Distancia Referencia"),
+                "tempo": _l.get("Tempo Referencia"),
+                "fonte_rota": "", "balsa": "",
+            })
+        # ---- lado APP: valores já armazenados (decisão real) ----
+        try:
+            _fatos_app = _fatos_from_linha_app(_l)
+        except Exception:
+            _fatos_app = _fatos_rota_divergencia({"destino": _l.get("Destino Aplicacao"),
+                                                  "distancia_km": _l.get("Distancia Aplicacao")})
+        # ---- análise da divergência ----
+        try:
+            _analises.append(_analisar_divergencia_par(_l, _fatos_app, _fatos_ref, limiar_empate_km))
+        except Exception:
+            continue
+
+    _ag = _agregar_diagnostico_divergencias(_analises, uf_para_regiao=uf_para_regiao)
+    _diag = dict(_ag)
+    _diag["analises"] = _analises
+    _diag["uf_ref_assumida"] = _uf_assumida
+    _diag["falhas_roteamento"] = _falhas
+    _diag["total_divergentes"] = _total
+    return _diag
+
+
+# ==============================================================================
+# [DIVERGENCIA-XAI - 236ª] PAINEL STREAMLIT — Diagnóstico Inteligente das Divergências
+# ==============================================================================
+def _painel_divergencias_ui(diag, st):
+    """[DIVERGENCIA-XAI - 236ª] Renderiza os painéis interativos do diagnóstico na aba Comparador. Recebe `st`
+    EXPLICITAMENTE (sem depender de global — decisão deliberada). DEFENSIVO: diag vazio → aviso curto; tudo
+    isolado em try. Usa os idiomas nativos do app (st.metric/st.bar_chart/st.dataframe/st.expander)."""
+    try:
+        import pandas as pd
+    except Exception:
+        pd = None
+    try:
+        if not diag or not diag.get("n_divergencias"):
+            st.caption("Nenhuma divergência de destino para diagnosticar.")
+            return
+        _res = diag.get("resumo", {}) or {}
+        _analises = diag.get("analises", []) or []
+        _dist = diag.get("distribuicoes", {}) or {}
+        _ins = diag.get("insights", []) or []
+        _recs = diag.get("recomendacoes", []) or []
+        _rank = diag.get("ranking_causas", []) or []
+        _opp = diag.get("oportunidades", []) or []
+
+        st.markdown("### 🔬 Diagnóstico Inteligente das Divergências")
+        st.caption("Para cada município em que os dois estudos escolheram locais de prova diferentes, roteamos "
+                   "a escolha da referência pelos mesmos motores e explicamos, por evidência, por que cada "
+                   "opção é melhor ou pior para o candidato e para a operação.")
+
+        # ---- KPIs ----
+        _c = st.columns(5)
+        _c[0].metric("Divergências", f"{diag.get('n_divergencias', 0):,}".replace(",", "."))
+        _c[1].metric("Candidatos impactados", f"{int(_res.get('inscritos_impactados', 0)):,}".replace(",", "."))
+        _c[2].metric("Vence a aplicação", f"{int(_res.get('app_superior', 0))}",
+                     help="Casos em que o Índice de Qualidade multicritério favorece a aplicação.")
+        _c[3].metric("Vence a referência", f"{int(_res.get('ref_superior', 0))}")
+        _c[4].metric("Empates técnicos", f"{int(_res.get('empates', 0))}")
+
+        # ---- ressalvas honestas ----
+        _assum = int(diag.get("uf_ref_assumida", 0) or 0)
+        _falhas = int(diag.get("falhas_roteamento", 0) or 0)
+        if _assum or _falhas:
+            _msgs = []
+            if _assum:
+                _msgs.append(f"em **{_assum}** caso(s) a UF do polo da referência não veio informada e foi "
+                             f"assumida a UF da origem (exames tendem a ser intraestaduais) — homônimos entre "
+                             f"UFs continuam sendo um risco a auditar")
+            if _falhas:
+                _msgs.append(f"em **{_falhas}** caso(s) o roteamento fresco do lado da referência falhou; "
+                             f"usamos a distância que já constava do estudo (sem os sinais ricos de balsa/motor)")
+            st.info("ℹ️ Transparência metodológica: " + "; ".join(_msgs) + ".")
+
+        # ---- resumo executivo ----
+        _pa = _res.get("pct_app_superior", 0.0)
+        _pr = _res.get("pct_ref_superior", 0.0)
+        st.markdown(
+            f"**Resumo:** avaliando cada escolha por um Índice de Qualidade multicritério (distância, tempo, "
+            f"acessibilidade, robustez, confiabilidade e risco operacional), a **aplicação** foi superior em "
+            f"**{_pa:.0f}%** dos casos e a **referência** em **{_pr:.0f}%**.")
+
+        # ---- insights + recomendações ----
+        if _ins:
+            with st.container(border=True):
+                st.markdown("**🔎 Insights automáticos**")
+                for _x in _ins:
+                    st.markdown("- " + str(_x))
+        if _recs:
+            with st.container(border=True):
+                st.markdown("**✅ Recomendações automáticas**")
+                for _x in _recs:
+                    st.markdown("- " + str(_x))
+
+        # ---- distribuições (bar charts nativos) ----
+        def _bar(_titulo, _chave, _label_col="Categoria"):
+            _d = _dist.get(_chave, [])
+            if not _d:
+                return
+            st.markdown(f"**{_titulo}**")
+            if pd is not None:
+                _df = pd.DataFrame(_d)
+                if _label_col in _df.columns and "Inscritos" in _df.columns:
+                    st.bar_chart(_df.set_index(_label_col)["Inscritos"])
+                    return
+            # fallback textual
+            for _x in _d[:10]:
+                st.write(f"- {_x.get('Categoria','—')}: {int(_x.get('Inscritos') or 0):,} candidatos "
+                         f"({_x.get('Casos',0)} casos)".replace(",", "."))
+
+        _tabs = st.tabs(["Por UF", "Por região", "Por vencedor", "Por acesso", "Por balsa", "Por motor (ref)"])
+        with _tabs[0]:
+            _bar("Divergências por UF (candidatos impactados)", "por_uf")
+        with _tabs[1]:
+            _bar("Divergências por região (candidatos impactados)", "por_regiao")
+        with _tabs[2]:
+            _bar("Saldo por vencedor (candidatos)", "por_vencedor")
+        with _tabs[3]:
+            _bar("Por tipo de acesso da aplicação (candidatos)", "por_acesso_app")
+        with _tabs[4]:
+            _bar("Por presença de balsa (candidatos)", "por_balsa")
+        with _tabs[5]:
+            _bar("Por motor de roteamento da referência (candidatos)", "por_motor_ref")
+
+        # ---- ranking das causas ----
+        if _rank and pd is not None:
+            st.markdown("**🏆 Ranking dos fatores determinantes**")
+            st.dataframe(pd.DataFrame(_rank)[["Causa", "Casos", "Inscritos"]],
+                         use_container_width=True, hide_index=True)
+
+        # ---- oportunidades de melhoria ----
+        if _opp and pd is not None:
+            st.markdown("**🎯 Oportunidades de melhoria (maior ganho potencial ponderado)**")
+            _dfo = pd.DataFrame(_opp)
+            _cols = [c for c in ["Município", "UF", "Inscritos", "Ganho potencial (km)",
+                                 "Impacto (km × inscritos)", "Causa"] if c in _dfo.columns]
+            st.dataframe(_dfo[_cols].head(20), use_container_width=True, hide_index=True)
+
+        # ---- pareceres técnicos (expanders por caso, top impacto) ----
+        st.markdown("**📝 Pareceres técnicos — casos de maior impacto**")
+        _ordi = sorted(_analises, key=lambda a: abs((a.get("Diferença (km)") or 0.0)
+                       * (int(a.get("Inscritos") or 0) or 1)), reverse=True)[:25]
+        for a in _ordi:
+            _mun = f"{a.get('Município','—')}/{a.get('UF','—')}"
+            _venc = a.get("Vencedor (Qualidade)", "—")
+            _dk = a.get("Diferença (km)")
+            _resumo_exp = f"{_mun} · {a.get('Categoria','—')} · vantagem: {_venc}"
+            with st.expander(_resumo_exp):
+                _cc = st.columns(3)
+                _cc[0].metric("Δ distância (km)", f"{_dk:+.1f}" if isinstance(_dk, (int, float)) else "—")
+                _cc[1].metric("IQ aplicação", f"{a.get('Índice Qualidade Aplicação','—')}")
+                _cc[2].metric("IQ referência", f"{a.get('Índice Qualidade Referência','—')}")
+                st.markdown(a.get("Parecer Técnico", "—"))
+                _hip = a.get("Hipóteses") or []
+                if _hip:
+                    st.markdown("**Hipóteses técnicas:**")
+                    for _h in _hip:
+                        st.markdown("- " + str(_h))
+                if a.get("Recomendação"):
+                    st.markdown(f"**Recomendação:** {a.get('Recomendação')}")
+    except Exception as _e:
+        try:
+            st.warning(f"Não foi possível renderizar o painel de diagnóstico: {_e}")
+        except Exception:
+            pass
+# <<< [DIVERGENCIA-XAI 236ª] FIM do bloco inserido >>>
+
+
+def _montar_xlsx_comparacao(linhas, stats, aud, relatorio, diagnostico_div=None):
     """[PERF - 139ª geração] Monta os bytes do .xlsx de 7 abas do Comparador UMA ÚNICA VEZ (no clique).
+    [DIVERGENCIA-XAI - 236ª] `diagnostico_div` (opcional, default None → zero regressão) anexa as abas do
+    Diagnóstico Inteligente das Divergências quando o usuário processa as rotas divergentes.
     Na 138ª eu montava isto dentro do bloco de exibição — ou seja, A CADA RERUN: 1,2 s de CPU bloqueante
     por interação num estudo nacional (5.571 municípios), pago até ao trocar de aba, porque st.tabs executa
     o corpo de TODAS as abas. Exatamente o bug que diagnostiquei na 137ª e reincidi na 138ª. PURO."""
@@ -18128,6 +19674,12 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio):
                 {"Indicador": "Metodo Conciliacao", "O que significa": "Como a linha foi vinculada: Codigo IBGE > Municipio+UF > Municipio > Similaridade."},
                 {"Indicador": "Convergencia de destino", "O que significa": "Percentual de municipios em que as duas solucoes escolheram o MESMO local de prova."},
             ]), "Glossario")
+            # [DIVERGENCIA-XAI - 236ª] Abas do Diagnóstico Inteligente das Divergências. No-op quando não há
+            # diagnóstico (default None). Isolado: falha aqui não derruba a planilha inteira.
+            try:
+                _abas_diagnostico_divergencias(_w, diagnostico_div)
+            except Exception as _e_div_xlsx:
+                logger.error(f"[DIVERGENCIA-XAI] Falha ao anexar abas de diagnóstico ao xlsx: {_e_div_xlsx}")
         return _buf.getvalue()
     except Exception as _e:
         logger.error(f"[COMPARADOR] Falha ao montar o xlsx: {_e}")
@@ -28012,7 +29564,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "235"
+_VERSAO_APP = "236"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
@@ -33395,6 +34947,8 @@ if _secao == _SECOES[3]:   # tab_comparador
                         st.session_state['cmp_resultado'] = {
                             "linhas": _cmp, "aud": _aud_c, "stats": _st_c, "relatorio": _rel_pronto,
                             "xlsx": _montar_xlsx_comparacao(_cmp, _st_c, _aud_c, _rel_pronto)}
+                        # [DIVERGENCIA-XAI - 236ª] nova comparação → diagnóstico anterior fica obsoleto.
+                        st.session_state.pop('cmp_diag_divergencias', None)
             except Exception as _e_cmp:
                 logger.error(f"[COMPARADOR] Falha ao ler/comparar: {_e_cmp}")
                 st.error(f"Não consegui processar a planilha de referência: {_e_cmp}")
@@ -34037,6 +35591,69 @@ if _secao == _SECOES[3]:   # tab_comparador
                     st.success("✅ Todos os municípios conciliados também são **comparáveis** (o estudo da "
                                "aplicação produziu rota válida para todos).")
 
+            # ============================================================================
+            # [DIVERGENCIA-XAI - 236ª] MOTOR DE ANÁLISE INTELIGENTE DAS DIVERGÊNCIAS
+            # Após comparar, o usuário pode ROTEAR as escolhas da referência (origem→destino_ref pelos MESMOS
+            # motores) e receber um diagnóstico explicável (XAI): por que cada estudo venceu/perdeu, hipóteses
+            # técnicas, oportunidades e recomendações — refletido em painéis, na planilha e no relatório HTML.
+            # ============================================================================
+            st.divider()
+            st.markdown("### 🔬 Análise Inteligente das Divergências")
+            _n_div_cmp = sum(1 for _l in _cmp if _l.get("Mesmo Destino") == "Não"
+                             and str(_l.get("Destino Referencia") or "").strip()
+                             and str(_l.get("Destino Aplicacao") or "").strip())
+            if _n_div_cmp == 0:
+                st.success("✅ Os dois estudos convergiram em **todos** os municípios comparáveis — não há "
+                           "divergência de destino para diagnosticar.")
+            else:
+                st.caption(f"Há **{_n_div_cmp}** município(s) em que a aplicação e a referência escolheram "
+                           f"locais de prova **diferentes**. Processe as rotas divergentes para entender, caso a "
+                           f"caso, por que cada escolha é melhor ou pior — roteando a opção da referência pelos "
+                           f"mesmos motores e aplicando o Índice de Qualidade multicritério.")
+                if st.button("🔬 Processar rotas divergentes (diagnóstico inteligente)",
+                             key="btn_proc_divergencias", use_container_width=True,
+                             help="Roteia origem→destino da referência para cada divergência e gera pareceres, "
+                                  "hipóteses, oportunidades e recomendações. Usa cache — reprocessar é rápido."):
+                    try:
+                        _prog = st.progress(0.0, text="Preparando o diagnóstico…")
+                        def _cb_div(_i, _tot, _rot):
+                            try:
+                                _prog.progress(min(1.0, _i / max(1, _tot)),
+                                               text=f"Roteando {_i}/{_tot} — {_rot}")
+                            except Exception:
+                                pass
+                        _limiar_div = float(st.session_state.get('cmp_limiar_empate', 1.0) or 1.0)
+                        _diag_div = _reprocessar_rotas_divergentes(
+                            _cmp, limiar_empate_km=_limiar_div, cb_progresso=_cb_div)
+                        try:
+                            _prog.empty()
+                        except Exception:
+                            pass
+                        st.session_state['cmp_diag_divergencias'] = _diag_div
+                        # invalida o xlsx pré-gerado → será regenerado COM as abas de diagnóstico no download
+                        try:
+                            _res_c["xlsx"] = None
+                            st.session_state['cmp_resultado'] = _res_c
+                            st.session_state.pop('relatorio_html_cmp', None)
+                        except Exception:
+                            pass
+                        _falhas_d = int(_diag_div.get("falhas_roteamento", 0) or 0)
+                        if _falhas_d:
+                            st.warning(f"Diagnóstico concluído com {_falhas_d} rota(s) sem roteamento fresco "
+                                       f"(usei a distância que já constava do estudo nesses casos).")
+                        else:
+                            st.success("✅ Diagnóstico das divergências concluído.")
+                    except Exception as _e_div:
+                        logger.error(f"[DIVERGENCIA-XAI] Falha ao processar divergências: {_e_div}", exc_info=True)
+                        st.error(f"Não foi possível processar as rotas divergentes: {_e_div}")
+            # painel persistente (renderiza em todo rerun enquanto o diagnóstico existir na sessão)
+            _diag_sess = st.session_state.get('cmp_diag_divergencias')
+            if _diag_sess:
+                with st.container(border=True):
+                    _painel_divergencias_ui(_diag_sess, st)
+                st.caption("As análises acima também vão para o **relatório HTML** (seção “Diagnóstico "
+                           "Inteligente das Divergências”) e para a **planilha** (abas “Diag - …”) ao exportar.")
+
             st.markdown("### 📝 Relatório Executivo (gerado automaticamente)")
             _rel_c = _res_c.get("relatorio") or _relatorio_executivo_comparacao(
                 _res_c["stats"], _aud_c, top_municipios=_cmp)
@@ -34057,7 +35674,8 @@ if _secao == _SECOES[3]:   # tab_comparador
                 with st.spinner("Gerando relatório..."):
                     _rel_html_cmp = _gerar_relatorio_comparacao_html(
                         _res_c["stats"], _aud_c, titulo="Relatório da Comparação de Estudos",
-                        data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"), linhas=_cmp)
+                        data_str=pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"), linhas=_cmp,
+                        diagnostico_div=st.session_state.get('cmp_diag_divergencias'))
                     if _rel_html_cmp:
                         st.session_state['relatorio_html_cmp'] = _rel_html_cmp.encode("utf-8")
                     else:
@@ -34075,7 +35693,9 @@ if _secao == _SECOES[3]:   # tab_comparador
             if not (isinstance(_xb, (bytes, bytearray)) and len(_xb) > 0):
                 with st.spinner("Preparando a planilha de comparação (24 abas)..."):
                     try:
-                        _xb_novo = _montar_xlsx_comparacao(_cmp, _res_c["stats"], _aud_c, _rel_c)
+                        _xb_novo = _montar_xlsx_comparacao(
+                            _cmp, _res_c["stats"], _aud_c, _rel_c,
+                            diagnostico_div=st.session_state.get('cmp_diag_divergencias'))
                         if isinstance(_xb_novo, (bytes, bytearray)) and len(_xb_novo) > 0:
                             _xb = bytes(_xb_novo)
                             _res_c["xlsx"] = _xb
