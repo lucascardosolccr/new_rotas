@@ -63,6 +63,30 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (242ª geração) → 📊 PLATAFORMA BI DOS RELATÓRIOS — FASE 1 [BI-PLATFORM]
+#     Início da evolução dos relatórios HTML em plataforma de BI (o pedido completo — dark/filtros/drill-down/
+#     30+ gráficos/mapas/Sankey/artigo científico completo — é multi-fase; esta é a fase 1, real e testada).
+#     Camada-plataforma JS/CSS VANILLA autossuficiente (sem libs, offline) injetada no montador dos DOIS
+#     relatórios principais (Locais de Aplicação e Comparador) — logo, padroniza os dois de uma vez. Adiciona
+#     SOBRE o que já existe, sem duplicar tema (usa a classe .dark já presente) e sem conflito com o sort/
+#     filtro/colapso do script interativo: (1) navegação lateral com SCROLL-SPY (destaca a seção em vista) +
+#     BREADCRUMB; (2) botão VOLTAR AO TOPO; (3) BUSCA GLOBAL (realça ocorrências no relatório inteiro e salta
+#     para a 1ª, com contagem); (4) EXPORTAÇÃO CSV por tabela (BOM UTF-8, ; como separador); (5) GRÁFICOS SVG
+#     de barras gerados client-side das tabelas numéricas (rótulo=1ª coluna textual, valor=1ª numérica).
+#     Também levou o script interativo (sort/filtro/colapso) ao relatório PRINCIPAL, que não o tinha. Init
+#     IDEMPOTENTE (guard). Degradação graciosa: sem JS, o relatório segue estático e legível.
+#     PROVA: teste FUNCIONAL com jsdom (DOM real) — scroll-spy, busca (realça/limpa), CSV (cabeçalho+dados),
+#     gráfico SVG (nº de barras correto) e idempotência verificados; + node --check. As 14 suítes Python
+#     seguem verdes.
+#     ROADMAP honesto (fases seguintes, quando priorizado): filtros globais cruzando gráficos; mais tipos de
+#     gráfico (linha/área/pizza/rosca/Pareto/dispersão/boxplot) e os pesados (Sankey/Sunburst/Treemap) —
+#     estes exigem dados pré-computados embutidos por módulo e/ou uma lib de charting; mapas coropléticos
+#     (exigem malhas geográficas + lib de mapa, inviáveis de forma fiel num HTML leve autossuficiente);
+#     drill-through entre datasets; expansão do artigo científico e da Leitura Automática. NÃO prometido
+#     como pronto — sinalizado no que cada fase requer. HONESTIDADE: o efeito VISUAL só se confirma abrindo o
+#     HTML no navegador; o teste jsdom cobre a LÓGICA, não a estética.
+#     NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO.
+#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
 #   v3.8 (241ª geração) → 🧰 HARDENING: REVISÃO, CORREÇÃO DE BUGS E GARGALOS [HARDENING]
 #     Rodada de auditoria/robustez sobre o que foi construído (236→240). Correções:
 #     (A) BUG DE COERÊNCIA no resgate por circuidade (importante): ao trocar o destino, o passe atualizava
@@ -8009,7 +8033,7 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_n:,} municípios · {_tot_cand:,} candidatos</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
                 f'<footer>Relatório autocontido · abre offline em qualquer navegador · gerado pela aplicação.</footer>'
-                f'<script>{_bi_js}</script>'
+                f'<script>{_bi_js}</script>{_script_interativo_html()}{_platform_bi_html()}'
                 f'</body></html>')
     except Exception:
         logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório completo — emitindo versão resiliente",
@@ -8590,7 +8614,7 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                 f'<div class="cover"><div class="tag">Relatório Técnico · Comparação de Estudos</div>'
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_conc} de {_tot} municípios conciliados</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
-                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer><script>{_bi_js}</script>{_script_interativo_html()}</body></html>')
+                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer><script>{_bi_js}</script>{_script_interativo_html()}{_platform_bi_html()}</body></html>')
     except Exception:
         logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório de comparação — versão resiliente",
                      exc_info=True)
@@ -21697,6 +21721,213 @@ def _script_interativo_html():
 # <<< [HTML-INTERATIVO 240ª] FIM >>>
 
 
+
+
+# <<< [BI-PLATFORM 242ª] INÍCIO — plataforma BI dos relatórios (fase 1) >>>
+# ==============================================================================
+# [BI-PLATFORM - 242ª geração] CAMADA-PLATAFORMA DE BI PARA OS RELATÓRIOS HTML
+# ------------------------------------------------------------------------------
+# Fase 1 da evolução dos relatórios em plataforma BI. JS/CSS VANILLA autossuficiente
+# (sem libs, roda offline). Adiciona SOBRE o que já existe, sem conflito nem
+# duplicação de tema (usa a classe `.dark` já presente):
+#   • navegação lateral com SCROLL-SPY (destaca a seção em vista) + BREADCRUMB;
+#   • botão VOLTAR AO TOPO;
+#   • BUSCA GLOBAL (realça ocorrências no relatório e salta para a 1ª);
+#   • EXPORTAÇÃO CSV por tabela;
+#   • GRÁFICOS SVG gerados das tabelas numéricas (barras), client-side.
+# Degradação graciosa: sem JS, o relatório segue estático e legível. Idempotente.
+# ==============================================================================
+
+_CSS_BI = (
+    # --- controles de tabela (CSV / gráfico) ---
+    '.bi-ctl{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}'
+    '.bi-btn{cursor:pointer;border:1px solid #cbd5e1;background:#fff;color:#1e3a8a;border-radius:6px;'
+    'padding:4px 10px;font-size:12px;font-weight:600;transition:all .15s}'
+    '.bi-btn:hover{background:#1e3a8a;color:#fff}'
+    'body.dark .bi-btn{background:#1e293b;color:#93c5fd;border-color:#334155}'
+    'body.dark .bi-btn:hover{background:#93c5fd;color:#0f172a}'
+    # --- gráfico SVG ---
+    '.bi-chart{margin:8px 0;padding:8px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;overflow-x:auto}'
+    'body.dark .bi-chart{background:#0f172a;border-color:#334155}'
+    '.bi-chart text{font-size:11px;fill:#334155}body.dark .bi-chart text{fill:#cbd5e1}'
+    '.bi-bar{fill:#2563eb}.bi-bar:hover{fill:#1e40af}body.dark .bi-bar{fill:#3b82f6}'
+    # --- scroll-spy (destaque do link ativo na nav) ---
+    'nav a.bi-active{font-weight:700;color:#1e3a8a;border-left:3px solid #2563eb;padding-left:6px}'
+    'body.dark nav a.bi-active{color:#93c5fd;border-left-color:#3b82f6}'
+    # --- busca global ---
+    '.bi-search{position:sticky;top:0;z-index:20;display:flex;gap:6px;align-items:center;'
+    'padding:8px;background:rgba(255,255,255,.92);border-bottom:1px solid #e2e8f0;backdrop-filter:blur(4px)}'
+    'body.dark .bi-search{background:rgba(15,23,42,.92);border-color:#334155}'
+    '.bi-search input{flex:1;min-width:120px;padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px}'
+    'body.dark .bi-search input{background:#1e293b;color:#e2e8f0;border-color:#334155}'
+    '.bi-search .bi-cnt{font-size:12px;color:#64748b;white-space:nowrap}'
+    'mark.bi-hl{background:#fde68a;color:#78350f;padding:0 1px;border-radius:2px}'
+    'mark.bi-hl.bi-cur{background:#f59e0b;color:#fff}'
+    # --- voltar ao topo ---
+    '.bi-top{position:fixed;right:18px;bottom:18px;z-index:30;width:42px;height:42px;border-radius:50%;'
+    'border:none;background:#2563eb;color:#fff;font-size:18px;cursor:pointer;opacity:0;pointer-events:none;'
+    'transition:opacity .2s;box-shadow:0 2px 8px rgba(0,0,0,.2)}'
+    '.bi-top.bi-show{opacity:.92;pointer-events:auto}.bi-top:hover{background:#1e40af}'
+    # --- breadcrumb ---
+    '.bi-bread{font-size:12px;color:#64748b;padding:4px 8px}body.dark .bi-bread{color:#94a3b8}'
+    '@media print{.bi-ctl,.bi-btn,.bi-search,.bi-top{display:none!important}}'
+)
+
+_JS_BI = r"""
+(function(){
+  try{
+    function ready(fn){ if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);} }
+    function el(tag,cls,txt){ var e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; }
+    function isNumStr(s){ var t=String(s).replace(/[^0-9.,\-]/g,'').replace(/\./g,'').replace(',','.'); return t!==''&&!isNaN(parseFloat(t)); }
+    function toNum(s){ var n=parseFloat(String(s).replace(/[^0-9.,\-]/g,'').replace(/\./g,'').replace(',','.')); return isNaN(n)?0:n; }
+
+    ready(function(){
+      try{ if(document.documentElement.dataset.biInit) return; document.documentElement.dataset.biInit='1'; }catch(e){}
+      var main=document.querySelector('main')||document.body;
+
+      // ---------- SCROLL-SPY + BREADCRUMB ----------
+      try{
+        var links=Array.prototype.slice.call(document.querySelectorAll('nav a[href^="#"]'));
+        var secs=links.map(function(a){ var id=a.getAttribute('href').slice(1); return {a:a, el:document.getElementById(id)}; })
+                      .filter(function(x){ return x.el; });
+        var bread=null;
+        if(secs.length){
+          bread=el('div','bi-bread','');
+          if(main.parentNode) main.insertBefore(bread, main.firstChild);
+        }
+        function spy(){
+          var y=window.scrollY||document.documentElement.scrollTop, cur=null;
+          secs.forEach(function(s){ if(s.el.offsetTop-90<=y) cur=s; });
+          if(!cur && secs.length) cur=secs[0];
+          links.forEach(function(a){ a.classList.remove('bi-active'); });
+          if(cur){ cur.a.classList.add('bi-active'); if(bread) bread.textContent='📍 '+cur.a.textContent; }
+        }
+        window.addEventListener('scroll', spy, {passive:true}); spy();
+      }catch(e){}
+
+      // ---------- VOLTAR AO TOPO ----------
+      try{
+        var top=el('button','bi-top','↑'); top.title='Voltar ao topo';
+        top.addEventListener('click', function(){ window.scrollTo({top:0,behavior:'smooth'}); });
+        document.body.appendChild(top);
+        window.addEventListener('scroll', function(){ top.classList.toggle('bi-show', (window.scrollY||0)>400); }, {passive:true});
+      }catch(e){}
+
+      // ---------- BUSCA GLOBAL ----------
+      try{
+        var bar=el('div','bi-search');
+        var inp=el('input'); inp.type='text'; inp.placeholder='🔎 Buscar no relatório (município, UF, termo)…';
+        var cnt=el('span','bi-cnt','');
+        bar.appendChild(inp); bar.appendChild(cnt);
+        if(main.parentNode) main.insertBefore(bar, main.firstChild);
+        function clearHl(){
+          var marks=main.querySelectorAll('mark.bi-hl');
+          Array.prototype.forEach.call(marks, function(m){ var t=document.createTextNode(m.textContent); m.parentNode.replaceChild(t,m); });
+          main.normalize && main.normalize();
+        }
+        function doSearch(q){
+          clearHl();
+          if(!q||q.length<2){ cnt.textContent=''; return; }
+          var ql=q.toLowerCase(), n=0, first=null;
+          var walker=document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+            acceptNode:function(node){
+              if(!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+              var p=node.parentNode; if(!p) return NodeFilter.FILTER_REJECT;
+              var tn=p.nodeName; if(tn==='SCRIPT'||tn==='STYLE'||tn==='MARK'||p.closest('.bi-search')) return NodeFilter.FILTER_REJECT;
+              return node.nodeValue.toLowerCase().indexOf(ql)>=0?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;
+            }
+          });
+          var nodes=[]; while(walker.nextNode()) nodes.push(walker.currentNode);
+          nodes.forEach(function(node){
+            var txt=node.nodeValue, low=txt.toLowerCase(), idx=0, frag=document.createDocumentFragment(), pos;
+            while((pos=low.indexOf(ql, idx))>=0){
+              if(pos>idx) frag.appendChild(document.createTextNode(txt.slice(idx,pos)));
+              var m=el('mark','bi-hl',txt.slice(pos,pos+q.length)); if(!first){ first=m; m.classList.add('bi-cur'); }
+              frag.appendChild(m); n++; idx=pos+q.length;
+            }
+            if(idx<txt.length) frag.appendChild(document.createTextNode(txt.slice(idx)));
+            node.parentNode.replaceChild(frag, node);
+          });
+          cnt.textContent=n?('■ '+n+' ocorrência'+(n>1?'s':'')):'nenhuma ocorrência';
+          if(first) first.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+        var tmr=null;
+        inp.addEventListener('input', function(){ clearTimeout(tmr); var v=inp.value; tmr=setTimeout(function(){ doSearch(v.trim()); }, 220); });
+      }catch(e){}
+
+      // ---------- TABELAS: CSV + GRÁFICO SVG ----------
+      try{
+        var tabs=document.querySelectorAll('table.dvt');
+        Array.prototype.forEach.call(tabs, function(tab, ti){
+          var thead=tab.tHead, tbody=tab.tBodies[0];
+          if(!thead||!tbody||!thead.rows.length) return;
+          var heads=Array.prototype.map.call(thead.rows[0].cells, function(c){ return c.textContent.trim(); });
+          var rows=Array.prototype.map.call(tbody.rows, function(r){ return Array.prototype.map.call(r.cells, function(c){ return c.textContent.trim(); }); });
+
+          var ctl=el('div','bi-ctl');
+          // CSV
+          var bcsv=el('button','bi-btn','⬇ CSV');
+          bcsv.addEventListener('click', function(){
+            function esc(v){ v=String(v==null?'':v); return /[",\n;]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+            var lines=[heads.map(esc).join(';')].concat(rows.map(function(r){ return r.map(esc).join(';'); }));
+            var csv='\ufeff'+lines.join('\r\n');
+            try{
+              var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob);
+              var a=el('a'); a.href=url; a.download='tabela_'+(ti+1)+'.csv'; document.body.appendChild(a); a.click();
+              setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); },100);
+            }catch(e){}
+          });
+          ctl.appendChild(bcsv);
+
+          // GRÁFICO (se houver coluna numérica)
+          var numCol=-1, labCol=0;
+          for(var c=0;c<heads.length;c++){ if(rows.length && rows.every(function(r){ return !r[c]||isNumStr(r[c]); })){ numCol=c; break; } }
+          if(numCol>=0){
+            for(var c2=0;c2<heads.length;c2++){ if(c2!==numCol && rows.some(function(r){ return r[c2] && !isNumStr(r[c2]); })){ labCol=c2; break; } }
+            var bch=el('button','bi-btn','📊 Gráfico');
+            var box=null;
+            bch.addEventListener('click', function(){
+              if(box){ box.remove(); box=null; bch.textContent='📊 Gráfico'; return; }
+              box=renderChart(rows.slice(0,25), labCol, numCol, heads[numCol]);
+              tab.parentNode.insertBefore(box, tab.nextSibling); bch.textContent='✕ Ocultar gráfico';
+            });
+            ctl.appendChild(bch);
+          }
+          tab.parentNode.insertBefore(ctl, tab);
+        });
+      }catch(e){}
+
+      function renderChart(rows, labCol, numCol, titulo){
+        var box=el('div','bi-chart');
+        var vals=rows.map(function(r){ return toNum(r[numCol]); });
+        var labs=rows.map(function(r){ return (r[labCol]||'').slice(0,18); });
+        var maxV=Math.max.apply(null, vals.concat([0])) || 1;
+        var W=Math.max(360, rows.length*46), H=220, pad=30, bw=Math.max(8,(W-2*pad)/rows.length*0.7);
+        var svg='<svg width="'+W+'" height="'+H+'" role="img" aria-label="'+(titulo||'')+'">';
+        svg+='<text x="'+pad+'" y="14" font-weight="700">'+(titulo||'')+'</text>';
+        for(var i=0;i<rows.length;i++){
+          var x=pad+(W-2*pad)/rows.length*i+((W-2*pad)/rows.length-bw)/2;
+          var h=Math.round((vals[i]/maxV)*(H-60)); var y=H-25-h;
+          svg+='<rect class="bi-bar" x="'+x.toFixed(1)+'" y="'+y+'" width="'+bw.toFixed(1)+'" height="'+h+'"><title>'+labs[i]+': '+vals[i]+'</title></rect>';
+          svg+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-3)+'" text-anchor="middle">'+vals[i]+'</text>';
+          svg+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-10)+'" text-anchor="middle" transform="rotate(0)">'+labs[i]+'</text>';
+        }
+        svg+='</svg>';
+        box.innerHTML=svg;
+        return box;
+      }
+    });
+  }catch(e){ /* degrada graciosamente */ }
+})();
+"""
+
+
+def _platform_bi_html():
+    """[BI-PLATFORM - 242ª] Bloco <style>+<script> autossuficiente da plataforma BI para embutir no relatório."""
+    return f'<style>{_CSS_BI}</style>\n<script>{_JS_BI}</script>'
+# <<< [BI-PLATFORM 242ª] FIM >>>
+
+
 def _montar_xlsx_comparacao(linhas, stats, aud, relatorio, diagnostico_div=None):
     """[PERF - 139ª geração] Monta os bytes do .xlsx de 7 abas do Comparador UMA ÚNICA VEZ (no clique).
     [DIVERGENCIA-XAI - 236ª] `diagnostico_div` (opcional, default None → zero regressão) anexa as abas do
@@ -31717,7 +31948,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "241"
+_VERSAO_APP = "242"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
