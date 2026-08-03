@@ -63,6 +63,51 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (241ª geração) → 🧰 HARDENING: REVISÃO, CORREÇÃO DE BUGS E GARGALOS [HARDENING]
+#     Rodada de auditoria/robustez sobre o que foi construído (236→240). Correções:
+#     (A) BUG DE COERÊNCIA no resgate por circuidade (importante): ao trocar o destino, o passe atualizava
+#         apenas distância/reta/balsa/coords, deixando STALE tempo, fonte, score, município e — pior — o
+#         LINK DA ROTA apontando para o destino ANTIGO (levava ao lugar errado). Agora a linha é atualizada
+#         de forma COMPLETA e COERENTE a partir da RotaPipeline nova (mapa coluna→atributo), inclusive
+#         recomputando o link do mapa OSRM pelas coordenadas novas. Verificado por teste.
+#     (B) GARGALO no gatilho do resgate: _VR_GATILHO era 1,35 — como rotas normais têm V/R ~1,3-1,5, o passe
+#         dispararia (roteando K candidatos) em uma fração enorme das linhas num run nacional, sobrecarregando
+#         OSRM/Google. Elevado para 2,00 (mira o descasamento geometria×estrada GENUÍNO; as derrotas reais
+#         tinham V/R ≥ 3,4). Somado a um TETO configurável (max_resgates, padrão 500) que limita o pior caso.
+#     (C) topk lookup NORMALIZADO (casing/espaços) — evita no-op silencioso do resgate por divergência de
+#         chave entre df["Origem"] e o topk_map.
+#     (D) TELEMETRIA por-run: _TELEMETRIA.reset() no início do orquestrador do comparador — a latência passa a
+#         refletir só o roteamento daquele diagnóstico (antes acumulava entre execuções).
+#     (E) ESTILO das tabelas interativas: o CSS injetado passou a estilizar .dvt/.tbl-wrap (bordas, cabeçalho
+#         fixo, zebra, hover) — antes as tabelas ordenáveis/filtráveis ficavam sem formatação.
+#     VARREDURA DE BUGS PRÉ-EXISTENTES (análise estática com pyflakes/AST) — 3 NameErrors latentes CORRIGIDOS:
+#     (F) `_he` indefinido em 5 funções de relatório (_caixa_explicativa, _secao_qualidade_dados_html,
+#         _narrativa_storytelling_alocacao/_comparacao, _bloco_glossario_html): usavam `_he` (html.escape) sem
+#         `import html as _he` local — quebravam as caixas explicativas, narrativas, glossário e a seção de
+#         qualidade dos dados do relatório (o próprio histórico já apontava o fix, nunca aplicado). Corrigido
+#         com o import local, seguindo a convenção que 23 outras funções já usam. Imports de MÓDULO inalterados.
+#     (G) `modo_oficial` indefinido em calcular_pipeline_logistico (barreira de colisão de centróide): a função
+#         forcar_geocodificacao_hierarquica_estrita(texto, modo_oficial=None) tem o parâmetro opcional e não
+#         havia variável no escopo → passava-se um nome inexistente (NameError naquele ramo raro). Corrigido
+#         para usar o default (None).
+#     (H) `_nom_c` indefinido no bloco de Alocação com Capacidade (UI): quebrava o plano realista quando havia
+#         coluna de capacidade. Definido com o MESMO padrão do app (_dfp_cob['Municipio Origem']/['Origem']).
+#     Também confirmado por varredura: 0 argumentos default mutáveis, 0 bare-except, 0 nomes indefinidos
+#     remanescentes. (Os 17 `iterrows` restantes estão em renderização sobre fatias pequenas — não são gargalo;
+#     não tocados por não-regressão.) HONESTIDADE: sem rede/Streamlit no sandbox, cobre-se o que é detectável
+#     ESTATICAMENTE; bugs que só aparecem em execução com dados reais não são capturáveis aqui.
+#     (I) BUG do Abstract (TypeError silencioso): _secao_abstract_html tem 2 definições (a 2ª sombreia a 1ª).
+#         A 2ª (ativa) só aceitava (df), mas a chamada em ~7919 passa (df, titulo) → TypeError, ENGOLIDO pelo
+#         try/except defensivo do relatório → a seção "Abstract" (resumo científico) sumia silenciosamente do
+#         HTML. Corrigido: a def ativa agora aceita `titulo` opcional; o Abstract volta a renderizar. As duas
+#         chamadas (7540 e 7919) foram verificadas sem TypeError. A 1ª definição (dead code, sombreada)
+#         permanece — NÃO removida por não-regressão (ambíguo se alguém pretende revivê-la); apenas reportada.
+#     Ferramentas usadas na varredura: pyflakes + ruff (regras de bug: F8xx, B0xx, PLE/PLW, comparações),
+#     análise de closures em loop (B023 — todas verificadas como falso-positivo, usadas na própria iteração),
+#     defaults mutáveis (0), asserts em produção (0), concat de string O(n²) sobre dados grandes (0),
+#     df.apply(axis=1) (só em df agregado), iterrows (só em fatias pequenas — não gargalo).
+#     NÃO-REGRESSÃO: correções aditivas/reversíveis (flag _RESGATE_CIRCUIDADE_ATIVO intacta). RotaPipeline: 42
+#     campos. Imports: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 13. balloons únicos: 1. bare-except: 0.
 #   v3.8 (240ª geração) → 📡 TELEMETRIA POR MOTOR (PRECISÃO REAL) + RELATÓRIO HTML INTERATIVO [TELEMETRIA/INTERATIVO]
 #     Atende os dois itens pendentes do doc de auditoria. (1) TELEMETRIA POR MOTOR: KPIs de PRECISÃO reais a
 #     partir da ATRIBUIÇÃO REAL das rotas (campos Motor Aplicação/Referência já calculados) — por motor:
@@ -5182,6 +5227,7 @@ def _secao_qualidade_dados_html(df):
     completude (colunas preenchidas), campos estimados (linha reta/fallback), qualidade das rotas (🟢🟡🟠),
     detecção de OUTLIERS de distância (regra de Tukey, 1,5·IQR) e nível de confiança agregado. Retorna HTML
     (string) ou ''. Puro e defensivo — cada bloco só aparece se a coluna existir."""
+    import html as _he  # [HARDENING 241ª] corrige NameError latente (_he indefinido)
     try:
         if df is None or getattr(df, "empty", True):
             return ""
@@ -5610,6 +5656,7 @@ def _narrativa_storytelling_alocacao(df):
     DADOS REAIS (não texto genérico): panorama → principais descobertas → gargalos → recomendações. Lê o df
     final, calcula os números que sustentam cada afirmação e escreve em linguagem didática. Conduz o leitor
     pela história do estudo antes das seções analíticas. Retorna HTML (string) ou ''. PURA e defensiva."""
+    import html as _he  # [HARDENING 241ª] corrige NameError latente (_he indefinido)
     try:
         if df is None or getattr(df, "empty", True):
             return ""
@@ -5720,6 +5767,7 @@ def _narrativa_storytelling_alocacao(df):
 def _narrativa_storytelling_comparacao(stats, linhas):
     """[STORYTELLING - 184ª geração] Narrativa de abertura do relatório do COMPARADOR a partir dos dados
     reais: panorama do confronto → descobertas → onde perde (gargalos) → recomendações. Retorna HTML ou ''."""
+    import html as _he  # [HARDENING 241ª] corrige NameError latente (_he indefinido)
     try:
         if not linhas:
             return ""
@@ -5804,6 +5852,7 @@ def _bloco_glossario_html():
     """[GLOSSARIO - 184ª geração] Seção de glossário automática e reutilizável para os relatórios HTML.
     Explica em linguagem simples todos os termos técnicos usados, para que qualquer leitor — inclusive leigo
     — entenda o relatório. Retorna HTML (string)."""
+    import html as _he  # [HARDENING 241ª] corrige NameError latente (_he indefinido)
     _itens = "".join(
         f'<div class="glo-item"><dt>{_he.escape(_t)}</dt><dd>{_he.escape(_d)}</dd></div>'
         for _t, _d in _GLOSSARIO_TERMOS)
@@ -5816,6 +5865,7 @@ def _bloco_glossario_html():
 def _caixa_explicativa(titulo, conteudo, tipo="info"):
     """[CAIXA-DIDATICA - 184ª geração] Caixa informativa padronizada ('O que significa isso?', 'Como
     interpretar', 'Como foi calculado'). `tipo` ∈ {info, calc, decisao} muda a cor/ícone. Retorna HTML."""
+    import html as _he  # [HARDENING 241ª] corrige NameError latente (_he indefinido)
     _cfg = {"info": ("💡", "#2563eb", "#eff6ff"),
             "calc": ("🧮", "#7c3aed", "#f5f3ff"),
             "decisao": ("⚖️", "#16a34a", "#f0fdf4")}
@@ -6665,7 +6715,7 @@ def _secao_comparacao_estrategias_html(comparacao, df=None):
         return None
 
 
-def _secao_abstract_html(df):
+def _secao_abstract_html(df, titulo=""):  # [HARDENING 241ª] aceita titulo opcional (corrige TypeError na chamada de 7919; a versão ativa ignora o título, sem crash)
     """[ARTIGO-CIENTIFICO - 218ª geração] Resumo/Abstract (PT + EN) gerado dos números do estudo. Defensivo."""
     try:
         _n = len(df)
@@ -19464,6 +19514,11 @@ def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=No
     _painel_divergencias_ui: agregado + {'analises': [...], 'uf_ref_assumida': N, 'falhas_roteamento': N}.
     DEFENSIVO: cada rota isolada em try; falha de uma não derruba o lote. Rede só aqui, na borda."""
     _router = router if router is not None else globals().get("calcular_pipeline_logistico")
+    # [TELEMETRIA-API - 241ª] zera a telemetria para refletir SÓ o roteamento deste diagnóstico (latência por run).
+    try:
+        _TELEMETRIA.reset()
+    except Exception:
+        pass
     _divergentes = [l for l in (linhas or []) if l.get("Mesmo Destino") == "Não"
                     and str(l.get("Destino Referencia") or "").strip()
                     and str(l.get("Destino Aplicacao") or "").strip()]
@@ -20344,7 +20399,8 @@ def _painel_stage_a(diag, st, pd=None):
 _UF_AMAZONIA_RESC = frozenset({"AC", "AP", "AM", "MA", "MT", "PA", "RO", "RR", "TO"})
 
 # Parâmetros (num único lugar; calibrados pela assinatura empírica das derrotas).
-_VR_GATILHO = 1.35        # V/R do escolhido acima da qual vale investigar (rota já indireta)
+_VR_GATILHO = 2.00        # V/R do escolhido acima da qual vale investigar (descasamento geometria×estrada
+                          # GENUÍNO; rotas normais têm V/R ~1,3-1,5, então 2,0 evita rotear em quase toda linha)
 _VR_SEVERO = 2.00         # descasamento grave geometria×estrada
 _K_EXTRA_BASE = 6         # candidatos diretos extras a rotear no resgate (limitado!)
 _K_EXTRA_AMAZONIA = 10    # amplia onde a malha é esparsa
@@ -20655,12 +20711,16 @@ def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscrito
 
 
 def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, params=None):
-    """[RESGATE-CIRCUIDADE - 238ª] PASSE PÓS-ALOCAÇÃO. Percorre o df_final_alo; para cada origem cujo destino
-    escolhido exibe a assinatura de risco (V/R alta, balsa ou fluvial), roteia os candidatos mais diretos do
-    topk_map pelo motor autoritativo e, se houver alternativa melhor PARA O CANDIDATO, atualiza a linha
-    (destino + distância + reta + balsa + coords) — MONOTÔNICO, LIMITADO, com fallback total (qualquer erro
-    preserva a linha original). Retorna (df, registros). A rede entra por `router` (calcular_pipeline_logistico
-    em produção; mock nos testes)."""
+    """[RESGATE-CIRCUIDADE - 238ª/241ª] PASSE PÓS-ALOCAÇÃO. Percorre o df_final_alo; para cada origem cujo
+    destino escolhido exibe a assinatura de risco (V/R alta, balsa ou fluvial), roteia os candidatos mais
+    diretos do topk_map pelo motor autoritativo e, se houver alternativa melhor PARA O CANDIDATO, atualiza a
+    linha de forma COMPLETA E COERENTE (destino + TODOS os campos dependentes do destino: distância, reta,
+    tempo, balsa, fonte, score, coords, município, link da rota e link do mapa) — MONOTÔNICO, LIMITADO, com
+    fallback total (qualquer erro preserva a linha original). Retorna (df, registros). Rede via `router`
+    (calcular_pipeline_logistico em produção; mock nos testes).
+    [241ª] CORRIGE inconsistência: antes só distância/reta/balsa/coords eram atualizados, deixando tempo,
+    fonte, score, município e o LINK apontando para o destino ANTIGO. Agora a linha reflete integralmente o
+    novo destino. Também: lookup do topk normalizado (casing/espaços) e link do mapa OSRM recomputado."""
     _regs = []
     try:
         if not ativo or df is None or getattr(df, "empty", True):
@@ -20676,9 +20736,28 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
         _c_uf = _col.get("uf") or _col.get("uf origem") or _col.get("estado")
         _c_insc = next((_col[k] for k in ("inscritos", "inscritos origem", "qtd inscritos", "candidatos",
                                           "total inscritos", "n inscritos") if k in _col), None)
-        _c_lad, _c_lod = _col.get("lat destino"), _col.get("lon destino")
         if not (_c_o and _c_d and _c_dist and _c_reta):
             return df, _regs  # sem colunas mínimas → no-op seguro
+        # índice normalizado do topk (robusto a casing/espaços entre df['Origem'] e as chaves do topk)
+        _topk_norm = {}
+        try:
+            for _k, _v in (topk_map or {}).items():
+                _topk_norm[str(_k).strip().lower()] = _v
+        except Exception:
+            _topk_norm = {}
+        # mapa coluna(df) -> atributo(RotaPipeline) para atualização COMPLETA e coerente
+        _MAP_RP = {
+            "distancia": "distancia", "tempo": "tempo", "link da rota": "link_rota", "balsas": "balsas",
+            "linha reta": "dist_linha_reta", "fonte da rota": "fonte_rota", "score da rota": "score_rota",
+            "confianca destino": "confianca_destino", "distrito destino": "distrito_destino",
+            "municipio destino": "municipio_destino", "fonte geocoding destino": "fonte_geo_destino",
+            "endereco oficial destino": "endereco_oficial_destino", "score num destino": "score_num_destino",
+            "lat destino": "lat_destino", "lon destino": "lon_destino", "link embed": "link_embed",
+        }
+        _link_osrm = globals().get("_link_osrm_publico")
+        _max_resgates = int((params or {}).get("max_resgates", 500) or 500)  # teto do pior caso (rede)
+        _n_processados = 0
+
         for _idx in list(df.index):
             try:
                 _origem = str(df.at[_idx, _c_o] or "").strip()
@@ -20693,20 +20772,25 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
                 _precisa, _ = _precisa_resgate(_vr, _balsa, _fluvial)
                 if not _precisa:
                     continue
+                if _n_processados >= _max_resgates:
+                    break  # teto atingido: limita o custo de rede no pior caso
+                _n_processados += 1
                 _uf = (str(df.at[_idx, _c_uf]).strip() if _c_uf else "")
                 _insc = _num(df.at[_idx, _c_insc], 0) if _c_insc else 0
-                _cands = topk_map.get(_origem) or topk_map.get(_origem.upper()) or []
+                _cands = (topk_map.get(_origem) or _topk_norm.get(_origem.strip().lower()) or [])
                 _nomes = [h for (_dd, h) in _cands if str(h).strip().lower() != _destino.lower()]
                 if not _nomes:
                     continue
                 _origem_q = f"{_origem}, {_uf}" if _uf else _origem
                 _cache = {}
+                _cache_rp = {}  # guarda a RotaPipeline crua p/ atualização completa da linha
 
                 def _fn_rota(_hub):
                     if _hub in _cache:
                         return _cache[_hub]
                     try:
                         _rp = _router(_origem_q, _hub)
+                        _cache_rp[_hub] = _rp
                         _d = _num(getattr(_rp, "distancia", None)); _rr = _num(getattr(_rp, "dist_linha_reta", None))
                         _out = {"dist_km": _d, "reta_km": _rr,
                                 "vr": (_d / _rr if (_d and _rr and _rr > 0) else None),
@@ -20726,18 +20810,37 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
                 _res = _resgate_por_candidatos(_origem, _uf, _esc, _nomes, _fn_rota, inscritos=_insc, params=params)
                 _regs.append(_res["registro"])
                 if _res.get("trocou"):
-                    _novo = _res.get("fatos_final") or {}
-                    _rp_novo = _fn_rota(_res["destino_final"]) or {}
+                    _rp_novo = _cache_rp.get(_res["destino_final"])
                     df.at[_idx, _c_d] = _res["destino_final"]
-                    df.at[_idx, _c_dist] = _num(_rp_novo.get("dist_km"), _res.get("dist_final_km"))
-                    if _rp_novo.get("reta_km") is not None:
-                        df.at[_idx, _c_reta] = _rp_novo["reta_km"]
-                    if _c_balsa is not None:
-                        df.at[_idx, _c_balsa] = "Sim" if _rp_novo.get("tem_balsa") else "Não"
-                    if _c_lad is not None and _rp_novo.get("lat") is not None:
-                        df.at[_idx, _c_lad] = _rp_novo["lat"]
-                    if _c_lod is not None and _rp_novo.get("lon") is not None:
-                        df.at[_idx, _c_lod] = _rp_novo["lon"]
+                    if _rp_novo is not None:
+                        # atualização COMPLETA de todos os campos dependentes do destino que existirem no df
+                        for _low, _attr in _MAP_RP.items():
+                            _cc = _col.get(_low)
+                            if _cc is None:
+                                continue
+                            try:
+                                _val = getattr(_rp_novo, _attr, None)
+                            except Exception:
+                                _val = None
+                            if _val is not None:
+                                try:
+                                    df.at[_idx, _cc] = _val
+                                except Exception:
+                                    pass
+                        # link do mapa OSRM recomputado a partir das coordenadas novas (custo zero)
+                        _cc_osrm = _col.get("link mapa osrm")
+                        if _cc_osrm is not None and callable(_link_osrm):
+                            try:
+                                _lo = _num(getattr(_rp_novo, "lat_origem", None)); _oo = _num(getattr(_rp_novo, "lon_origem", None))
+                                _ld = _num(getattr(_rp_novo, "lat_destino", None)); _od = _num(getattr(_rp_novo, "lon_destino", None))
+                                _lk = _link_osrm(_lo or 0.0, _oo or 0.0, _ld or 0.0, _od or 0.0)
+                                if _lk:
+                                    df.at[_idx, _cc_osrm] = _lk
+                            except Exception:
+                                pass
+                    else:
+                        # fallback (sem rp cru): ao menos a distância final
+                        df.at[_idx, _c_dist] = _num(_res.get("dist_final_km"), _dist)
                     # marca a linha como refinada + explicação (colunas novas, aditivas)
                     df.at[_idx, "Refinado (Resgate)"] = "Sim"
                     df.at[_idx, "Motivo do Refinamento"] = _res["registro"].get("explicacao", "")
@@ -21575,8 +21678,15 @@ _JS_INTERATIVO = r"""
 _CSS_INTERATIVO = (
     '.dvt-filtro{margin:8px 0;padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;'
     'font-size:13px;width:240px;max-width:100%}'
-    '.dvt th{user-select:none}'
+    '.dvt{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}'
+    '.dvt th{background:#1e3a8a;color:#fff;padding:8px 10px;text-align:left;border:1px solid #cbd5e1;'
+    'user-select:none;position:sticky;top:0}'
+    '.dvt td{padding:6px 10px;border:1px solid #e2e8f0}'
+    '.dvt tbody tr:nth-child(even){background:#f8fafc}'
+    '.dvt tbody tr:hover{background:#eff6ff}'
+    '.tbl-wrap{overflow-x:auto;max-width:100%}'
     '.dvt-cai{color:#94a3b8;font-size:11px}'
+    '.dv-nota{font-size:12px;color:#64748b;font-style:italic}'
 )
 
 
@@ -26358,9 +26468,9 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         if semantica.normalizar(origem_clean) != semantica.normalizar(destino_clean):
             _incrementar_metrica("desambiguacoes_estritas")
             logger.warning(f"Colisão de Centróide Detectada: '{origem_clean}' e '{destino_clean}' reduzidos ao mesmo ponto. Forçando regeocodificação hierárquica.")
-            res_o = forcar_geocodificacao_hierarquica_estrita(origem_clean, modo_oficial)
+            res_o = forcar_geocodificacao_hierarquica_estrita(origem_clean, None)  # [HARDENING 241ª] corrige NameError: usa o default do parâmetro (não havia var modo_oficial no escopo)
             if res_o: lat_o, lon_o, end_oficial_o, conf_o, score_num_o, dist_o, mun_o, fonte_geo_o, xai_o = res_o
-            res_d = forcar_geocodificacao_hierarquica_estrita(destino_clean, modo_oficial)
+            res_d = forcar_geocodificacao_hierarquica_estrita(destino_clean, None)  # [HARDENING 241ª] idem
             if res_d: lat_d, lon_d, end_oficial_d, conf_d, score_num_d, dist_d, mun_d, fonte_geo_d, xai_d = res_d
             
     tempo_geocoding = round(time.time() - start_geo, 2)
@@ -31607,7 +31717,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "240"
+_VERSAO_APP = "241"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -35559,6 +35669,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             if _caps:
                                 st.markdown("##### 🏫 Alocação com Capacidade (plano realista)")
                                 try:
+                                    # [HARDENING 241ª] corrige NameError: _nom_c indefinido neste escopo
+                                    _nom_c = (_dfp_cob['Municipio Origem'] if 'Municipio Origem' in _dfp_cob.columns
+                                              else _dfp_cob['Origem']).astype(str).tolist()
                                     _mun_cap = []
                                     for _i in range(len(_dfp_cob)):
                                         _mun_cap.append({"nome": _nom_c[_i], "uf": _uf_c[_i],
