@@ -63,6 +63,99 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (240ª geração) → 📡 TELEMETRIA POR MOTOR (PRECISÃO REAL) + RELATÓRIO HTML INTERATIVO [TELEMETRIA/INTERATIVO]
+#     Atende os dois itens pendentes do doc de auditoria. (1) TELEMETRIA POR MOTOR: KPIs de PRECISÃO reais a
+#     partir da ATRIBUIÇÃO REAL das rotas (campos Motor Aplicação/Referência já calculados) — por motor:
+#     rotas, vitórias/derrotas, TAXA DE VITÓRIA, divergência média; + LATÊNCIA por motor via acumulador
+#     THREAD-SAFE (_TelemetriaAPI, com Lock) alimentado por um gancho de UMA LINHA no wrapper de roteamento
+#     do COMPARADOR (_reprocessar_rotas_divergentes) — a função de rota do NÚCLEO fica INTACTA (zero risco à
+#     alocação). KPIs-resumo: motor mais preciso/participativo/rápido. Refletido em painel, HTML (bloco
+#     "Telemetria por motor") e planilha (aba "Diag - Telemetria"). (2) RELATÓRIO HTML INTERATIVO: script JS
+#     VANILLA autossuficiente (sem libs, roda offline ao abrir) embutido no relatório do comparador —
+#     tabelas ORDENÁVEIS (clique no cabeçalho, numérico-aware), FILTRO/busca por tabela e seções
+#     COLAPSÁVEIS (clique no título). Degradação graciosa: sem JS, o relatório segue legível e estático.
+#     Injetado junto ao _bi_js já existente, antes de </body>. PROVA: 2 suítes novas — telemetria
+#     (acumulador thread-safe sob 8 threads × 8000 rotas sem perda; KPIs de precisão; latência; render
+#     HTML/Excel/painel) e JS (node --check + teste FUNCIONAL com DOM mockado: ordenação asc/desc e filtro
+#     verificados) — mais as 13 anteriores intactas. Integração: 2 blocos + 5 chamadas de uma linha + 1
+#     gancho de latência + 1 injeção de script. NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42 campos.
+#     Imports: IDÊNTICOS (threading já era usado; import local no módulo). Requirements: INALTERADO.
+#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
+#   v3.8 (239ª geração) → 🔎 AUDITORIA AVANÇADA DO COMPARADOR (BI/XAI) [DIVERGENCIA-XAI-3]
+#     Atende o doc "auditoria inteligente das divergências" com incrementos NOVOS sobre o motor já entregue
+#     (236/237). MAPA DE COBERTURA: investigação automática, parecer, recomendação, aprendizado, motivo da
+#     derrota, distribuições e a EVOLUÇÃO DO MOTOR já existiam (236/237/238); a 239ª ADICIONA: (9) KPIs de
+#     EXTREMOS e PRECISÃO — maior derrota/vitória/economia, maior diferença de tempo, maior sinuosidade,
+#     municípios mais problemáticos, ranking de motores (vitórias×derrotas), precisão por UF/acesso; (8)
+#     recortes por FAIXA — distância, sinuosidade (V/R), candidatos e diferença de tempo; (3) motivo
+#     GRANULAR atribuído ao motor ("Google/OSRM encontrou rota menor"); (4) ÁRVORE DE DECISÃO por
+#     divergência (por que a app escolheu A, por que a ref escolheu B, quem beneficia o candidato), em texto
+#     e HTML. Refletido nas 3 saídas: painel (extremos, ranking, precisão, faixas, árvores em expanders),
+#     relatório HTML (KPIs de extremos, precisão, faixas, árvores) e planilha (6 abas novas: KPIs Extremos,
+#     Motores, Precisao, Problematicos, Faixas, Arvore). Integração cirúrgica: 1 bloco + 4 chamadas de uma
+#     linha; enriquecimento idempotente. HONESTIDADE — itens do doc NÃO implementados e por quê: telemetria
+#     por API (tempo de resposta/tentativas/fallback/status) não é rastreada na camada de rota do comparador
+#     (exigiria instrumentar o roteador); "concorrente/runner-up" é conceito da alocação, ausente na
+#     conciliação de dois estudos; e visualizações interativas pesadas (sankey/sunburst/treemap/drill-down/
+#     filtros dinâmicos) exigem app JS — num HTML estático foram entregues gráficos/tabelas ricos, não um SPA.
+#     PROVA: 2 suítes novas (núcleo avançado; renderização HTML/Excel/painel) + as 11 anteriores intactas.
+#     NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO.
+#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
+#   v3.8 (238ª geração) → 🧭 EVOLUÇÃO DA ESCOLHA DO DESTINO: RESGATE POR CIRCUIDADE [RESGATE-CIRCUIDADE]
+#     Etapas B+C do programa. Etapa B (árvore de decisão / rastreamento do descarte, item 9): motor que
+#     reconstrói o caminho da decisão e aponta em QUAL portão o vencedor da referência foi cortado — Portão 1
+#     (contagem por linha reta), 2 (matriz OSRM/shortlist), 3 (poda por dominância), 4 (sobreviveu → critério/
+#     medição) ou 0 (fora do universo) —, reusando FIELMENTE as funções reais de poda. Entregue como
+#     ferramenta OFFLINE (mod_trace.py + rastrear_arvore_decisao.py) que roda no ambiente do usuário (precisa
+#     de rede/base embarcada). Conclusão do rastreamento: como a dominância mantém o líder direto quando é o
+#     mínimo da matriz, as derrotas evitáveis só vêm dos Portões 1/2 — e o resgate funciona para ambos.
+#     Etapa C (a evolução do motor): REFINAMENTO PÓS-ALOCAÇÃO. Quando o destino escolhido exibe a assinatura
+#     de risco das derrotas reais (V/R alta, balsa ou acesso fluvial), roteia os candidatos mais diretos do
+#     topk_map pelo motor AUTORITATIVO (contornando a pré-seleção que cortou o vencedor) e adota o de menor
+#     CUSTO EFETIVO para o candidato — distância real + penalidades operacionais (balsa/fluvial/circuidade em
+#     km-equivalentes). É o "algoritmo que pensa": no caso 46 km rodoviário × 45 km com balsa, escolhe o
+#     rodoviário (custo efetivo 47 < 71). Quando a escolha da app já é a melhor mesmo sendo mais longa (evita
+#     balsa/isolamento), isso é sinalizado com o motivo e o nº de candidatos beneficiados. GARANTIAS: (a)
+#     MONOTÔNICO — só troca se for comprovadamente melhor para o candidato; nunca piora; na dúvida mantém;
+#     (b) LIMITADO — só dispara na assinatura de risco (raro → custo desprezível de rede/quota); (c)
+#     EXPLICÁVEL — registro com km/tempo salvos, candidatos beneficiados e motivo, refletido na interface
+#     (resumo do refinamento na conclusão da alocação); (d) REVERSÍVEL — flag _RESGATE_CIRCUIDADE_ATIVO=True;
+#     desligá-la restaura EXATAMENTE o comportamento da 237ª. Encaixe cirúrgico: 1 passe novo na cadeia de
+#     pós-processamento já existente (após _montar_dataframe_final), no mesmo padrão de _forcar_menor_viaria_
+#     vencedor/_segunda_passada_google. Colunas do resultado atualizadas na troca (destino, distância, reta,
+#     balsa, coords) + colunas novas "Refinado (Resgate)"/"Motivo do Refinamento". Validado em Mostardas
+#     (Camaquã→Viamão, −161 km, 400 candidatos) e Axixá (→Bacabeira, 38 km) com dados reais.
+#     PROVA: 2 suítes novas (motor de resgate: gatilho, custo efetivo, trade-off, casos reais, defensivo;
+#     passe pós-alocação com df sintético de colunas reais + roteador mock) — o efeito em produção depende de
+#     uma execução do usuário (rede), documentado. NÃO-REGRESSÃO: aditivo e reversível. RotaPipeline: 42
+#     campos. Imports: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 13. balloons únicos: 1. bare-except: 0.
+#   v3.8 (237ª geração) → 🧠 APROFUNDAMENTO DA ANÁLISE DE DIVERGÊNCIAS + PERÍCIA DAS DERROTAS [DIVERGENCIA-XAI-2]
+#     Etapa A do programa pedido (aprofundar a análise; A e B em sequência). Fundamentado nos 204 casos reais
+#     de Divergências.xlsx: das 23 derrotas (referência superior), ~9 têm a ASSINATURA EVITÁVEL — a aplicação
+#     escolheu um destino de V/R (viário/linha-reta) alta (Boa Vista do Ramos 25,8×; Novo Aripuanã 7,2×;
+#     Gurupá 6,4×; Mostardas 3,8×; Axixá 3,6×; Careiro 3,5×), geometricamente próximo porém rodoviariamente
+#     indireto, e o vencedor direto foi cortado ANTES do roteamento; as demais são ruído de geocodificação
+#     (quase-empates). NOVO (tudo PURO e testado, opera sobre os dicts `analise` da 236ª): (11) Índice de
+#     Confiança da Escolha 0-100 por solução (coerência viário×reta, consenso entre motores, estabilidade,
+#     ausência de balsa, robustez); (12) classificação automática das derrotas em EVITÁVEL (algorítmica /
+#     descasamento geometria×estrada), operacional/fluvial, geocodificação/ruído, por motor — dizendo se a
+#     app poderia ter vencido e COMO; (1/10) decomposição HEURÍSTICA da diferença por fator (sinuosidade /
+#     balsa / motor / geocodificação — rotulada como estimativa, pois a exata exigiria as geometrias);
+#     (13) aprendizado com as derrotas — detecta padrões ("X% das derrotas têm V/R alta", concentração
+#     amazônica) e emite SUGESTÕES concretas de melhoria do algoritmo (resgate por circuidade, com limiar de
+#     gatilho estimado a partir dos próprios dados); (15) novos KPIs (escolhas ótimas, taxa de derrotas
+#     evitáveis/justificáveis, ganho potencial em km e ponderado por candidatos, consenso entre motores,
+#     escolhas robustas), cada um com helper+fórmula+interpretação+aba de referência. Dobrado nas 3 saídas:
+#     painel (KPIs + tabela de derrotas classificadas + aprendizado), relatório HTML (blocos na seção de
+#     divergências) e planilha (4 abas novas: "Diag - KPIs", "Diag - Derrotas", "Diag - Confianca",
+#     "Diag - Aprendizado"). Integração cirúrgica: 1 bloco inserido + 4 chamadas de uma linha; enriquecimento
+#     idempotente no orquestrador. PRÓXIMO — Etapa B: árvore de decisão / rastreamento do descarte (item 9),
+#     ferramenta offline mirando os ~9 casos evitáveis, para confirmar em QUAL portão (contagem por reta /
+#     margem da matriz / poda por dominância) o vencedor foi cortado, antes de qualquer mudança no núcleo.
+#     PROVA: 3 suítes novas (núcleo do aprofundamento; renderização HTML/Excel/painel; verificação do arquivo
+#     integrado) + as 5 suítes da 236ª intactas. NÃO-REGRESSÃO: 100% ADITIVO (as novas seções só aparecem com
+#     diagnóstico processado). RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO.
+#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
 #   v3.8 (236ª geração) → 🔬 MOTOR DE ANÁLISE INTELIGENTE DAS DIVERGÊNCIAS (XAI) NO COMPARADOR [DIVERGENCIA-XAI]
 #     Pedido: o Comparador deixava de só dizer "quem venceu" e passa a EXPLICAR tecnicamente CADA divergência
 #     de destino entre a aplicação e o estudo de referência — como plataforma de auditoria/explicabilidade.
@@ -8447,7 +8540,7 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                 f'<div class="cover"><div class="tag">Relatório Técnico · Comparação de Estudos</div>'
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_conc} de {_tot} municípios conciliados</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
-                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer><script>{_bi_js}</script></body></html>')
+                f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer><script>{_bi_js}</script>{_script_interativo_html()}</body></html>')
     except Exception:
         logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório de comparação — versão resiliente",
                      exc_info=True)
@@ -18944,6 +19037,20 @@ def _diagnostico_divergencias_html(diag):
             '.dv-caso-rec{font-size:13px;font-weight:600;color:#0f172a;margin-top:6px}'
             '</style>')
 
+        # [DIVERGENCIA-XAI-2 - 237ª] blocos do aprofundamento (KPIs, classificação de derrotas, aprendizado)
+        try:
+            _stage_a_html = _html_stage_a(diag, _he)
+        except Exception:
+            _stage_a_html = ""
+        # [DIVERGENCIA-XAI-3 - 239ª] auditoria avançada (KPIs extremos, precisão, faixas, árvores de decisão)
+        try:
+            _stage_b_html = _html_stage_b(diag, _he)
+        except Exception:
+            _stage_b_html = ""
+        try:
+            _tel_html = _html_telemetria(diag, _he)
+        except Exception:
+            _tel_html = ""
         return (f'<section id="diag-divergencias">{_css}'
                 f'<h2>🔬 Diagnóstico Inteligente das Divergências</h2>'
                 f'{_kpis}{_box_resumo}'
@@ -18951,6 +19058,9 @@ def _diagnostico_divergencias_html(diag):
                 f'{_bar_app}{_bar_ref}{_tab_rank}'
                 f'{_dist_html}'
                 f'{_tab_opp}{_rec_html}'
+                f'{_stage_a_html}'
+                f'{_stage_b_html}'
+                f'{_tel_html}'
                 f'{_pareceres_html}'
                 f'</section>')
     except Exception:
@@ -19246,6 +19356,20 @@ def _abas_diagnostico_divergencias(writer, diag):
                             "maior sensibilidade operacional e merecem conferência caso a caso.", 72)
         except Exception:
             pass
+        # [DIVERGENCIA-XAI-2 - 237ª] abas do aprofundamento (KPIs, derrotas, confiança, aprendizado)
+        try:
+            _abas_stage_a(writer, diag)
+        except Exception:
+            pass
+        # [DIVERGENCIA-XAI-3 - 239ª] abas da auditoria avançada (KPIs extremos, motores, precisão, faixas, árvore)
+        try:
+            _abas_stage_b(writer, diag)
+        except Exception:
+            pass
+        try:
+            _abas_telemetria(writer, diag)
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -19362,7 +19486,14 @@ def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=No
         _fatos_ref = None
         try:
             if _router and _origem_q and _destino_ref:
+                # [TELEMETRIA-API - 240ª] mede a latência do roteamento da referência (núcleo de rota intacto).
+                _t0_rt = time.perf_counter()
                 _rp = _router(_origem_q, _destino_ref)
+                try:
+                    _TELEMETRIA.registrar(getattr(_rp, "fonte_rota", ""), time.perf_counter() - _t0_rt,
+                                          sucesso=(getattr(_rp, "distancia", None) is not None))
+                except Exception:
+                    pass
                 _campos_ref = _rp_para_dict(_rp)
                 # o nome do destino da referência prevalece sobre o resolvido pelo geocoder
                 _campos_ref["destino"] = str(_l.get("Destino Referencia") or _campos_ref.get("destino") or "")
@@ -19396,6 +19527,21 @@ def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=No
     _diag["uf_ref_assumida"] = _uf_assumida
     _diag["falhas_roteamento"] = _falhas
     _diag["total_divergentes"] = _total
+    # [DIVERGENCIA-XAI-2 - 237ª] enriquece com confiança, classificação de derrotas, aprendizado e KPIs.
+    try:
+        _montar_stage_a(_diag, uf_para_regiao=uf_para_regiao)
+    except Exception:
+        pass
+    # [DIVERGENCIA-XAI-3 - 239ª] enriquece com auditoria avançada (KPIs extremos, recortes, motivo, árvore).
+    try:
+        _montar_stage_b(_diag)
+    except Exception:
+        pass
+    # [TELEMETRIA-API - 240ª] enriquece com telemetria por motor (precisão real + latência acumulada).
+    try:
+        _montar_telemetria(_diag)
+    except Exception:
+        pass
     return _diag
 
 
@@ -19514,6 +19660,21 @@ def _painel_divergencias_ui(diag, st):
                                  "Impacto (km × inscritos)", "Causa"] if c in _dfo.columns]
             st.dataframe(_dfo[_cols].head(20), use_container_width=True, hide_index=True)
 
+        # [DIVERGENCIA-XAI-2 - 237ª] seções do aprofundamento (KPIs, derrotas classificadas, aprendizado)
+        try:
+            _painel_stage_a(diag, st, pd)
+        except Exception:
+            pass
+        # [DIVERGENCIA-XAI-3 - 239ª] seções da auditoria avançada (extremos, motores, precisão, faixas, árvores)
+        try:
+            _painel_stage_b(diag, st, pd)
+        except Exception:
+            pass
+        try:
+            _painel_telemetria(diag, st, pd)
+        except Exception:
+            pass
+
         # ---- pareceres técnicos (expanders por caso, top impacto) ----
         st.markdown("**📝 Pareceres técnicos — casos de maior impacto**")
         _ordi = sorted(_analises, key=lambda a: abs((a.get("Diferença (km)") or 0.0)
@@ -19542,6 +19703,1888 @@ def _painel_divergencias_ui(diag, st):
         except Exception:
             pass
 # <<< [DIVERGENCIA-XAI 236ª] FIM do bloco inserido >>>
+
+
+
+
+# <<< [DIVERGENCIA-XAI-2 237ª] INÍCIO — aprofundamento (confiança, classificação de derrotas, aprendizado, KPIs) >>>
+# ==============================================================================
+# [DIVERGENCIA-XAI-2 - 237ª geração] APROFUNDAMENTO DA ANÁLISE DE DIVERGÊNCIAS
+# ------------------------------------------------------------------------------
+# Extensão PURA e testável sobre o motor da 236ª. Opera sobre os dicts `analise`
+# produzidos por _analisar_divergencia_par. Fundamentado na assinatura empírica
+# das derrotas reais (Divergências.xlsx, 204 casos): as derrotas EVITÁVEIS têm
+# V/R (viário/linha-reta) alta na escolha da app — geometria "mente" sobre a
+# estrada. As demais são ruído de geocodificação (quase-empates).
+# Entrega: Índice de Confiança (11), classificação de derrotas (12), aprendizado
+# com derrotas (13), decomposição honesta da diferença (1/10) e novos KPIs (15).
+# ==============================================================================
+
+# Limiares empíricos (derivados de Divergências.xlsx). Ajustáveis num único lugar.
+_VR_INDIRETA = 1.40    # acima disto a rota já é sensivelmente indireta
+_VR_SEVERA = 2.00      # acima disto é descasamento geometria×estrada grave (alvo do resgate)
+_UF_AMAZONIA_XAI = frozenset({"AC", "AP", "AM", "MA", "MT", "PA", "RO", "RR", "TO"})
+
+
+def _num2(v, padrao=None):
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return padrao
+        return float(v)
+    except (TypeError, ValueError):
+        return padrao
+
+
+def _indice_confianca_escolha(analise, lado="app"):
+    """[DIVERGENCIA-XAI-2 - 237ª] ÍNDICE DE CONFIANÇA DA ESCOLHA (0-100) de UMA solução (lado 'app' ou 'ref').
+    Distinto do Índice de QUALIDADE (que compara quem é melhor): aqui medimos QUANTO CONFIAR na medição/rota
+    daquela escolha, compondo dezenas de sinais em fatores. PURO e defensivo.
+
+    Fatores (cada um 0-100, depois ponderados):
+      • coerência viário×reta (V/R): quanto menor a razão, mais confiável a medição (rota direta).
+      • consenso entre motores: menor divergência entre motores → maior confiança.
+      • estabilidade da rota: rota roteada (não geodésica) e não-fluvial → maior confiança.
+      • ausência de balsa: travessia depende de horário/clima/capacidade → reduz confiança operacional.
+      • robustez logística: reaproveita o componente de robustez do Índice de Qualidade já calculado.
+    Retorna dict {valor, faixa, componentes, fatores}."""
+    _suf = "Aplicação" if lado == "app" else "Referência"
+    _vr = _num2(analise.get(f"Sinuosidade {_suf} (V/R)"))
+    _divm = _num2(analise.get("Divergência Motores (%)"))
+    _balsa = str(analise.get(f"Balsa {_suf}") or "").strip().lower() == "sim"
+    _acesso = str(analise.get(f"Acesso {_suf}") or "").lower()
+    _fluvial = ("fluvial" in _acesso) or ("isolado" in _acesso) or ("aquav" in _acesso)
+    _iq = analise.get("_iq_app" if lado == "app" else "_iq_ref") or {}
+
+    # fator 1: coerência V/R (1.0 → 100; 1.4 → ~78; 2.0 → ~50; 3.0 → ~25; ≥5 → ~5)
+    if _vr is None or _vr <= 0:
+        _f_vr = 60.0  # desconhecido → neutro-baixo
+    else:
+        _excesso = max(0.0, _vr - 1.0)
+        _f_vr = max(5.0, 100.0 / (1.0 + 1.15 * _excesso))
+    # fator 2: consenso entre motores (0% div → 100; 30% → ~55; ≥60% → ~10)
+    if _divm is None:
+        _f_mot = 70.0
+    else:
+        _f_mot = max(10.0, 100.0 - 1.5 * _divm)
+    # fator 3: estabilidade (roteada e não-fluvial)
+    _f_est = 100.0
+    if _fluvial:
+        _f_est = 30.0
+    # fator 4: ausência de balsa
+    _f_balsa = 55.0 if _balsa else 100.0
+    # fator 5: robustez do IQ (0-100) já existente
+    _f_rob = _num2((_iq or {}).get("robustez"), 70.0)
+
+    _componentes = {
+        "coerencia_vr": round(_f_vr, 1),
+        "consenso_motores": round(_f_mot, 1),
+        "estabilidade_rota": round(_f_est, 1),
+        "ausencia_balsa": round(_f_balsa, 1),
+        "robustez": round(_f_rob, 1),
+    }
+    _peso = {"coerencia_vr": 0.30, "consenso_motores": 0.22, "estabilidade_rota": 0.20,
+             "ausencia_balsa": 0.13, "robustez": 0.15}
+    _valor = round(sum(_componentes[k] * _peso[k] for k in _peso), 1)
+    _faixa = ("Alta" if _valor >= 75 else "Média" if _valor >= 50 else "Baixa")
+    _fatores = []
+    if _vr and _vr >= _VR_SEVERA:
+        _fatores.append(f"rota muito indireta (V/R {_vr:.2f}×) — geometria não reflete a estrada")
+    elif _vr and _vr >= _VR_INDIRETA:
+        _fatores.append(f"rota sensivelmente indireta (V/R {_vr:.2f}×)")
+    if _divm and _divm >= 30:
+        _fatores.append(f"alta divergência entre motores ({_divm:.0f}%)")
+    if _balsa:
+        _fatores.append("depende de balsa (variabilidade operacional)")
+    if _fluvial:
+        _fatores.append("acesso fluvial/isolado (sem rota rodoviária plena)")
+    if not _fatores:
+        _fatores.append("medição coerente e estável")
+    return {"valor": _valor, "faixa": _faixa, "componentes": _componentes, "fatores": _fatores}
+
+
+def _classificar_derrota(analise):
+    """[DIVERGENCIA-XAI-2 - 237ª] Classifica UMA derrota (referência superior) por NATUREZA e diz se é
+    EVITÁVEL. PURO. Só faz sentido quando Vencedor (Qualidade) == 'Referência'; caso contrário retorna classe
+    'não é derrota'. Categorias: evitável (algorítmica), operacional/justificável, geocodificação/ruído,
+    por motor, por topologia. Fundamentado na assinatura real: V/R alta na app = candidato direto foi cortado
+    antes do roteamento (evitável)."""
+    if str(analise.get("Vencedor (Qualidade)")) != "Referência":
+        return {"classe": "não é derrota", "evitavel": None, "subclasse": "—", "motivo": "", "como_evitar": ""}
+    _vr_app = _num2(analise.get("Sinuosidade Aplicação (V/R)"))
+    _vr_ref = _num2(analise.get("Sinuosidade Referência (V/R)"))
+    _dif = abs(_num2(analise.get("Diferença (km)"), 0.0) or 0.0)
+    _cat = str(analise.get("Categoria") or "").lower()
+    _balsa_app = str(analise.get("Balsa Aplicação") or "").lower() == "sim"
+    _acesso_app = str(analise.get("Acesso Aplicação") or "").lower()
+    _fluvial_app = ("fluvial" in _acesso_app) or ("isolado" in _acesso_app)
+    _divm = _num2(analise.get("Divergência Motores (%)"), 0.0) or 0.0
+
+    # 1) descasamento geometria×estrada: app escolheu destino de V/R alta e bem maior que a da ref
+    if _vr_app is not None and _vr_app >= _VR_SEVERA and (_vr_ref is None or _vr_app >= _vr_ref * 1.5):
+        return {"classe": "Evitável — algorítmica (descasamento geometria×estrada)",
+                "subclasse": "candidato direto cortado na pré-seleção por linha reta/matriz",
+                "evitavel": True,
+                "motivo": (f"a aplicação escolheu um destino geometricamente próximo porém rodoviariamente "
+                           f"indireto (V/R {_vr_app:.2f}×). O vencedor da referência é mais direto "
+                           f"(V/R {_vr_ref:.2f}× )" if _vr_ref else
+                           f"a aplicação escolheu um destino de rota muito indireta (V/R {_vr_app:.2f}×)"),
+                "como_evitar": ("forçar o roteamento de candidatos mais distantes por linha reta quando o líder "
+                                "tem V/R alta — a geometria está enganando a pré-seleção (Etapa C).")}
+    # 2) fluvial/balsa: app presa a acesso fluvial/isolado, referência achou rota rodoviária
+    if _fluvial_app or _balsa_app or "balsa" in _cat or "fluvial" in _cat:
+        return {"classe": "Operacional — acesso (fluvial/balsa)",
+                "subclasse": "app ancorada em acesso fluvial/balsa; referência é rodoviária",
+                "evitavel": True,
+                "motivo": ("a rota da aplicação depende de balsa/acesso fluvial, enquanto a referência é "
+                           "rodoviária plena — melhor para o candidato."),
+                "como_evitar": ("tratar municípios fluviais com roteamento próprio e preferir hub rodoviário "
+                                "quando existir (conecta ao roteamento fluvial postergado).")}
+    # 3) sinuosidade moderada (indireta, mas não severa)
+    if _vr_app is not None and _vr_app >= _VR_INDIRETA:
+        return {"classe": "Evitável — sinuosidade moderada",
+                "subclasse": "rota da app indireta, alternativa mais direta não avaliada",
+                "evitavel": True,
+                "motivo": f"a rota da aplicação é indireta (V/R {_vr_app:.2f}×) e há alternativa mais direta.",
+                "como_evitar": "ampliar o shortlist quando o líder é indireto, para o motor autoritativo decidir."}
+    # 4) por motor (malhas distintas)
+    if _divm >= 30 or "motor" in _cat:
+        return {"classe": "Por motor (malhas cartográficas distintas)",
+                "subclasse": "divergência entre motores define o resultado", "evitavel": False,
+                "motivo": f"alta divergência entre motores ({_divm:.0f}%) — malhas discordam da via real.",
+                "como_evitar": "auditar com um segundo motor qual malha reflete a estrada real."}
+    # 5) geocodificação/ruído (quase-empate)
+    return {"classe": "Geocodificação/ruído (quase-empate)",
+            "subclasse": "diferença dentro do ruído entre fontes de medição", "evitavel": False,
+            "motivo": (f"diferença pequena ({_dif:.0f} km) atribuível a geocodificação/medição, não a "
+                       f"escolha de destino diferente em essência."),
+            "como_evitar": "sem ação algorítmica: é ruído entre fontes; revisar manualmente se relevante."}
+
+
+def _decompor_diferenca(analise):
+    """[DIVERGENCIA-XAI-2 - 237ª] Decompõe HEURISTICAMENTE a diferença de km entre app e referência em
+    componentes: balsa/detour, sinuosidade (geometria×estrada), motor (malhas), geocodificação (resíduo).
+    HONESTO: é uma atribuição heurística a partir dos sinais disponíveis — uma decomposição EXATA por
+    trecho de estrada exigiria as geometrias das rotas (não disponíveis sem rede). PURO."""
+    _dif = _num2(analise.get("Diferença (km)"), 0.0) or 0.0
+    _abs = abs(_dif)
+    if _abs <= 0.5:
+        return {"total_km": round(_dif, 1), "componentes": [], "texto": "diferença desprezível", "heuristica": True}
+    _vr_app = _num2(analise.get("Sinuosidade Aplicação (V/R)"))
+    _vr_ref = _num2(analise.get("Sinuosidade Referência (V/R)"))
+    _balsa_app = str(analise.get("Balsa Aplicação") or "").lower() == "sim"
+    _balsa_ref = str(analise.get("Balsa Referência") or "").lower() == "sim"
+    _divm = _num2(analise.get("Divergência Motores (%)"), 0.0) or 0.0
+
+    _pesos = {}
+    # sinuosidade: proporcional ao GAP de V/R entre os lados
+    if _vr_app is not None and _vr_ref is not None:
+        _gap = max(0.0, _vr_app - _vr_ref)
+        if _gap > 0.05:
+            _pesos["sinuosidade (geometria×estrada)"] = min(0.85, 0.20 + 0.35 * _gap)
+    # balsa: quando só um lado tem balsa, parte do detour vem daí
+    if _balsa_app != _balsa_ref:
+        _pesos["balsa/travessia"] = 0.25
+    # motor: proporcional à divergência entre motores
+    if _divm > 5:
+        _pesos["motor (malhas distintas)"] = min(0.40, _divm / 100.0)
+    # normaliza; o que sobra é geocodificação/resíduo
+    _soma = sum(_pesos.values())
+    if _soma >= 1.0:
+        _fator = 0.95 / _soma
+        _pesos = {k: v * _fator for k, v in _pesos.items()}
+        _soma = sum(_pesos.values())
+    _pesos["geocodificação/resíduo"] = max(0.0, 1.0 - _soma)
+
+    _comp = []
+    for _k, _p in sorted(_pesos.items(), key=lambda x: -x[1]):
+        if _p >= 0.02:
+            _comp.append({"fator": _k, "km": round(_abs * _p, 1), "pct": round(100 * _p, 0)})
+    _txt = "; ".join(f"{c['fator']}: ~{c['km']:.0f} km ({c['pct']:.0f}%)" for c in _comp)
+    return {"total_km": round(_dif, 1), "componentes": _comp, "texto": _txt, "heuristica": True}
+
+
+def _aprender_com_derrotas(analises, uf_para_regiao=None):
+    """[DIVERGENCIA-XAI-2 - 237ª] APRENDE com o conjunto de derrotas: detecta PADRÕES data-driven e emite
+    SUGESTÕES concretas de melhoria do algoritmo. PURO. Fundamentado na assinatura real (V/R alta = evitável).
+    Retorna dict {n_derrotas, padroes, sugestoes_algoritmo, limiar_vr_sugerido, resumo}."""
+    _derrotas = [a for a in (analises or []) if str(a.get("Vencedor (Qualidade)")) == "Referência"]
+    _n = len(_derrotas)
+    if _n == 0:
+        return {"n_derrotas": 0, "padroes": [], "sugestoes_algoritmo": [], "limiar_vr_sugerido": None,
+                "resumo": "Sem derrotas: a aplicação não perdeu nenhuma divergência por qualidade."}
+    _vrs = [(_num2(a.get("Sinuosidade Aplicação (V/R)")), a) for a in _derrotas]
+    _alta = [a for (v, a) in _vrs if v is not None and v >= _VR_SEVERA]
+    _indireta = [a for (v, a) in _vrs if v is not None and v >= _VR_INDIRETA]
+    _amaz = [a for a in _derrotas if str(a.get("UF") or "").upper() in _UF_AMAZONIA_XAI]
+    _balsa = [a for a in _derrotas if str(a.get("Balsa Aplicação") or "").lower() == "sim"
+              or "fluvial" in str(a.get("Acesso Aplicação") or "").lower()
+              or "isolado" in str(a.get("Acesso Aplicação") or "").lower()]
+    _insc_evit = sum(int(a.get("Inscritos") or 0) for a in _indireta)
+    _km_evit = sum(abs(_num2(a.get("Diferença (km)"), 0.0) or 0.0) for a in _indireta)
+
+    # UFs recorrentes
+    import collections as _col
+    _por_uf = _col.Counter(str(a.get("UF") or "—").upper() for a in _derrotas)
+    _ufs_rec = [uf for uf, c in _por_uf.most_common() if c >= 2]
+
+    _padroes = []
+    _pct_ind = 100 * len(_indireta) // _n
+    if _indireta:
+        _padroes.append(f"{_pct_ind}% das derrotas ({len(_indireta)}/{_n}) ocorrem quando a aplicação escolhe "
+                        f"um destino de rota INDIRETA (V/R ≥ {_VR_INDIRETA:.1f}×) — a geometria engana a "
+                        f"pré-seleção e o vencedor rodoviário direto não é avaliado.")
+    if _alta:
+        _padroes.append(f"{len(_alta)} derrota(s) têm V/R SEVERA (≥ {_VR_SEVERA:.0f}×): descasamento grave "
+                        f"geometria×estrada (litoral/lagoa/rio).")
+    if _amaz:
+        _padroes.append(f"{len(_amaz)}/{_n} derrotas estão na Amazônia Legal — malha esparsa e rios ampliam o "
+                        f"efeito da pré-seleção por linha reta.")
+    if _balsa:
+        _padroes.append(f"{len(_balsa)} derrota(s) envolvem balsa/acesso fluvial na escolha da aplicação.")
+    if _ufs_rec:
+        _padroes.append(f"Derrotas recorrentes (≥2) nas UFs: {', '.join(_ufs_rec)}.")
+    if not _padroes:
+        _padroes.append("Sem padrão dominante: as derrotas são pontuais e heterogêneas.")
+
+    # limiar V/R sugerido: menor V/R entre as derrotas evitáveis (piso de gatilho do resgate)
+    _vr_evit = sorted(v for (v, a) in _vrs if v is not None and v >= _VR_INDIRETA)
+    _limiar = round(_vr_evit[0] - 0.05, 2) if _vr_evit else None
+
+    _sugestoes = []
+    if _indireta:
+        _insc_fmt = f"{_insc_evit:,}".replace(",", ".")
+        _sugestoes.append(f"RESGATE POR CIRCUIDADE (Etapa C): quando o candidato líder tiver V/R ≥ ~{_limiar or _VR_INDIRETA:.2f}×, "
+                          f"forçar o roteamento de N candidatos adicionais mais distantes por linha reta antes de "
+                          f"decidir — um hub mais distante porém direto tende a vencer na estrada real. Ganho "
+                          f"potencial estimado: ~{_km_evit:.0f} km em {len(_indireta)} municípios "
+                          f"({_insc_fmt} candidatos).")
+    if _amaz or _balsa:
+        _sugestoes.append("Para municípios fluviais/insulares, não decidir por distância rodoviária pura "
+                          "(rotas de milhares de km são artefato do contorno terrestre) — usar roteamento "
+                          "fluvial/geodésico rotulado e preferir hub rodoviário real quando existir.")
+    _sugestoes.append("Instrumentar a árvore de decisão (Etapa B) para confirmar, caso a caso, em qual portão "
+                      "(contagem por reta / margem da matriz / poda por dominância) o vencedor foi descartado.")
+
+    _resumo = (f"Das {_n} derrotas, ~{len(_indireta)} são EVITÁVEIS (assinatura de V/R alta / geometria×estrada) "
+               f"e ~{_n - len(_indireta)} são ruído/operacionais. Concentração amazônica: {len(_amaz)}.")
+    return {"n_derrotas": _n, "padroes": _padroes, "sugestoes_algoritmo": _sugestoes,
+            "limiar_vr_sugerido": _limiar, "n_evitaveis": len(_indireta),
+            "km_potencial": round(_km_evit, 1), "inscritos_evitaveis": _insc_evit, "resumo": _resumo}
+
+
+def _kpis_divergencias(analises):
+    """[DIVERGENCIA-XAI-2 - 237ª] Gera KPIs compostos das divergências, cada um com helper, fórmula e
+    interpretação (item 15). PURO. Retorna lista de dicts prontos para UI/HTML/Excel."""
+    _tot = len(analises or [])
+    if _tot == 0:
+        return []
+    _derrotas = [a for a in analises if str(a.get("Vencedor (Qualidade)")) == "Referência"]
+    _vitorias = [a for a in analises if str(a.get("Vencedor (Qualidade)")) == "Aplicação"]
+    _empates = [a for a in analises if str(a.get("Vencedor (Qualidade)")) == "Empate"]
+    _evit = [a for a in _derrotas if (_num2(a.get("Sinuosidade Aplicação (V/R)")) or 0) >= _VR_INDIRETA]
+    _justif = [a for a in _derrotas if a not in _evit]
+    _roteadas = [a for a in analises if "geod" not in str(a.get("Motor Aplicação") or "").lower()
+                 and "reta" not in str(a.get("Motor Aplicação") or "").lower()]
+    _consenso = [a for a in analises if (_num2(a.get("Divergência Motores (%)")) or 0) < 15]
+    _robustas = [a for a in analises if (_num2(a.get("Sinuosidade Aplicação (V/R)")) or 1.0) < _VR_INDIRETA
+                 and str(a.get("Balsa Aplicação") or "").lower() != "sim"]
+    _km_evit = sum(abs(_num2(a.get("Diferença (km)"), 0.0) or 0.0) for a in _evit)
+    _insc_evit = sum(int(a.get("Inscritos") or 0) for a in _evit)
+
+    def _pct(n):
+        return round(100.0 * n / _tot, 1)
+
+    return [
+        {"nome": "Escolhas ótimas (app venceu ou empatou)", "valor": _pct(len(_vitorias) + len(_empates)),
+         "unidade": "%", "tabela": "Diag - Divergencias",
+         "formula": "(vitórias + empates) ÷ total de divergências",
+         "helper": "Fração das divergências em que a aplicação não perdeu por qualidade.",
+         "interpretacao": "Quanto maior, mais frequentemente a escolha da app é ao menos tão boa quanto a da referência."},
+        {"nome": "Taxa de derrotas evitáveis", "valor": (round(100.0 * len(_evit) / max(1, len(_derrotas)), 1) if _derrotas else 0.0),
+         "unidade": "% das derrotas", "tabela": "Diag - Derrotas",
+         "formula": "derrotas com V/R alta ÷ total de derrotas",
+         "helper": "Derrotas com assinatura de geometria×estrada (candidato direto cortado na pré-seleção).",
+         "interpretacao": "Alta = há ganho real acessível ajustando o algoritmo de escolha (Etapa C)."},
+        {"nome": "Taxa de derrotas justificáveis", "valor": (round(100.0 * len(_justif) / max(1, len(_derrotas)), 1) if _derrotas else 0.0),
+         "unidade": "% das derrotas", "tabela": "Diag - Derrotas",
+         "formula": "derrotas por ruído/operacional ÷ total de derrotas",
+         "helper": "Derrotas por geocodificação/quase-empate ou trade-off operacional legítimo.",
+         "interpretacao": "Alta = a maioria das perdas não é defeito, e sim ruído entre fontes."},
+        {"nome": "Ganho potencial (km)", "valor": round(_km_evit, 0), "unidade": "km",
+         "tabela": "Diag - Oportunidades", "formula": "Σ |Δkm| das derrotas evitáveis",
+         "helper": "Km economizáveis se as derrotas evitáveis fossem corrigidas.",
+         "interpretacao": "Piso do ganho ao implementar o resgate por circuidade."},
+        {"nome": "Ganho potencial ponderado", "valor": round(_insc_evit, 0), "unidade": "candidatos",
+         "tabela": "Diag - Oportunidades", "formula": "Σ inscritos das derrotas evitáveis",
+         "helper": "Candidatos beneficiados pela correção das derrotas evitáveis.",
+         "interpretacao": "Prioriza os ajustes pelo impacto humano real."},
+        {"nome": "Consenso entre motores", "valor": _pct(len(_consenso)), "unidade": "%",
+         "tabela": "Diag - Motores", "formula": "divergências com |div. motores| < 15% ÷ total",
+         "helper": "Fração em que os motores concordam sobre a rota.",
+         "interpretacao": "Baixo = muitas rotas dependem de qual malha se usa (auditar)."},
+        {"nome": "Escolhas robustas", "valor": _pct(len(_robustas)), "unidade": "%",
+         "tabela": "Diag - Divergencias", "formula": "V/R < 1,4× e sem balsa ÷ total",
+         "helper": "Escolhas diretas e sem dependência de travessia.",
+         "interpretacao": "Alta = decisões estáveis e de baixo risco operacional."},
+        {"nome": "Rotas roteadas (não geodésicas)", "valor": _pct(len(_roteadas)), "unidade": "%",
+         "tabela": "Diag - Divergencias", "formula": "rotas com motor real ÷ total",
+         "helper": "Fração medida por estrada real (não linha reta por ausência de rota).",
+         "interpretacao": "Baixo = muitos municípios sem rota rodoviária (fluviais/insulares)."},
+    ]
+
+
+# ==============================================================================
+# [DIVERGENCIA-XAI-2 - 237ª] ORQUESTRAÇÃO + RENDERIZAÇÃO (HTML / Excel / Painel)
+# ==============================================================================
+def _montar_stage_a(diag, uf_para_regiao=None):
+    """[DIVERGENCIA-XAI-2 - 237ª] Enriquece o diagnóstico com a análise aprofundada: por caso adiciona Índice
+    de Confiança (app/ref), classe de derrota e decomposição; no todo adiciona KPIs e aprendizado. IDEMPOTENTE
+    (não reprocessa se já feito). PURO. Retorna o próprio diag enriquecido."""
+    if not diag or diag.get("_stage_a"):
+        return diag
+    _analises = diag.get("analises") or []
+    for a in _analises:
+        try:
+            _ca = _indice_confianca_escolha(a, "app"); _cr = _indice_confianca_escolha(a, "ref")
+            a["Índice de Confiança (App)"] = _ca["valor"]; a["Índice de Confiança (Ref)"] = _cr["valor"]
+            a["_conf_app"] = _ca; a["_conf_ref"] = _cr
+            _cd = _classificar_derrota(a)
+            a["Classe da Derrota"] = _cd["classe"]; a["Derrota Evitável"] = _cd["evitavel"]; a["_derrota"] = _cd
+            a["_decomposicao"] = _decompor_diferenca(a)
+        except Exception:
+            continue
+    try:
+        diag["kpis"] = _kpis_divergencias(_analises)
+    except Exception:
+        diag["kpis"] = []
+    try:
+        diag["aprendizado"] = _aprender_com_derrotas(_analises, uf_para_regiao)
+    except Exception:
+        diag["aprendizado"] = {}
+    diag["_stage_a"] = True
+    return diag
+
+
+# ---------------------------- HTML ----------------------------
+def _secao_kpis_html(kpis, _he):
+    if not kpis:
+        return ""
+    _cards = ""
+    for k in kpis:
+        _v = k.get("valor"); _u = k.get("unidade", "")
+        _vt = (f"{_v:,.0f}".replace(",", ".") if isinstance(_v, (int, float)) and _v == int(_v)
+               else f"{_v}") if _v is not None else "—"
+        _cards += (f'<div class="dv-kpi2"><div class="dv-kpi2-v">{_he.escape(_vt)}<span class="dv-kpi2-u">'
+                   f'{_he.escape(str(_u))}</span></div><div class="dv-kpi2-n">{_he.escape(str(k.get("nome","")))}</div>'
+                   f'<div class="dv-kpi2-h">{_he.escape(str(k.get("helper","")))}</div>'
+                   f'<div class="dv-kpi2-f"><b>Fórmula:</b> {_he.escape(str(k.get("formula","")))} · '
+                   f'<b>Leitura:</b> {_he.escape(str(k.get("interpretacao","")))}</div></div>')
+    return (f'<h3>📊 Indicadores (KPIs) do diagnóstico</h3>'
+            f'<div class="dv-kpis2">{_cards}</div>')
+
+
+def _secao_derrotas_html(analises, _he):
+    _derr = [a for a in (analises or []) if str(a.get("Vencedor (Qualidade)")) == "Referência"]
+    if not _derr:
+        return '<h3>🎯 Classificação das derrotas</h3><p>A aplicação não perdeu nenhuma divergência por qualidade.</p>'
+    _evit = [a for a in _derr if a.get("Derrota Evitável") is True]
+    _linhas = ""
+    for a in sorted(_derr, key=lambda x: abs(_num2(x.get("Diferença (km)"), 0.0) or 0.0), reverse=True):
+        _cd = a.get("_derrota") or {}
+        _evb = a.get("Derrota Evitável")
+        _cor = "#dc2626" if _evb is True else "#64748b"
+        _tag = "EVITÁVEL" if _evb is True else ("—" if _evb is None else "justificável")
+        _linhas += (f'<tr><td>{_he.escape(str(a.get("Município","")))}/{_he.escape(str(a.get("UF","")))}</td>'
+                    f'<td style="color:{_cor};font-weight:600">{_he.escape(_tag)}</td>'
+                    f'<td>{_he.escape(str(a.get("Classe da Derrota","—")))}</td>'
+                    f'<td>{_he.escape(str(_cd.get("como_evitar","—")))}</td></tr>')
+    return (f'<h3>🎯 Classificação das derrotas ({len(_derr)} — evitáveis: {len(_evit)})</h3>'
+            f'<div class="tbl-wrap"><table class="dvt"><thead><tr><th>Município</th><th>Tipo</th>'
+            f'<th>Classe</th><th>Como a aplicação passaria a vencer</th></tr></thead>'
+            f'<tbody>{_linhas}</tbody></table></div>')
+
+
+def _secao_aprendizado_html(aprend, _he):
+    if not aprend or not aprend.get("n_derrotas"):
+        return ""
+    _pad = "".join(f"<li>{_he.escape(p)}</li>" for p in aprend.get("padroes", []))
+    _sug = "".join(f"<li>{_he.escape(s)}</li>" for s in aprend.get("sugestoes_algoritmo", []))
+    _res = _he.escape(aprend.get("resumo", ""))
+    return (f'<h3>🧠 Aprendizado com as derrotas</h3>'
+            f'<div class="dv-box"><div class="dv-box-t">Padrões detectados</div>'
+            f'<div class="dv-box-c">{_res}<ul>{_pad}</ul></div></div>'
+            f'<div class="dv-box" style="border-left-color:#16a34a;background:#f0fdf4">'
+            f'<div class="dv-box-t" style="color:#166534">Sugestões automáticas de melhoria do algoritmo</div>'
+            f'<div class="dv-box-c"><ul>{_sug}</ul></div></div>')
+
+
+def _css_stage_a():
+    return ('<style>'
+            '.dv-kpis2{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:12px 0}'
+            '.dv-kpi2{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px}'
+            '.dv-kpi2-v{font-size:24px;font-weight:800;color:#0f172a}.dv-kpi2-u{font-size:12px;color:#64748b;margin-left:4px}'
+            '.dv-kpi2-n{font-size:13px;font-weight:600;color:#1e3a8a;margin:4px 0}'
+            '.dv-kpi2-h{font-size:12px;color:#475569;margin:2px 0}'
+            '.dv-kpi2-f{font-size:11px;color:#64748b;margin-top:6px;border-top:1px solid #eef2f7;padding-top:6px}'
+            '</style>')
+
+
+def _html_stage_a(diag, _he):
+    """[DIVERGENCIA-XAI-2 - 237ª] Blocos HTML da análise aprofundada, para injeção na seção de divergências.
+    Idempotente. PURO."""
+    try:
+        _montar_stage_a(diag)
+        _analises = diag.get("analises") or []
+        return (_css_stage_a()
+                + _secao_kpis_html(diag.get("kpis") or [], _he)
+                + _secao_derrotas_html(_analises, _he)
+                + _secao_aprendizado_html(diag.get("aprendizado") or {}, _he))
+    except Exception:
+        return ""
+
+
+# ---------------------------- EXCEL ----------------------------
+def _abas_stage_a(writer, diag):
+    """[DIVERGENCIA-XAI-2 - 237ª] Abas Excel da análise aprofundada: KPIs, Derrotas (classificadas), Confiança
+    das Escolhas, Aprendizado. Cada aba isolada em try, com explicação didática. DEFENSIVO."""
+    try:
+        if not diag:
+            return
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        _montar_stage_a(diag)
+        _analises = diag.get("analises") or []
+        _f_tit = _wb.add_format({"bold": True, "font_size": 16, "font_color": "#1e3a8a"})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#475569"})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#fff", "bg_color": "#1e3a8a",
+                                 "border": 1, "border_color": "#cbd5e1", "align": "center", "text_wrap": True})
+        _f_exp = _wb.add_format({"font_size": 10, "font_color": "#334155", "italic": True, "text_wrap": True, "valign": "top"})
+        _f_txt = _wb.add_format({"font_size": 10, "font_color": "#334155", "text_wrap": True, "valign": "top"})
+
+        # ---- KPIs ----
+        try:
+            _kpis = diag.get("kpis") or []
+            if _kpis:
+                _ws = _wb.add_worksheet("Diag - KPIs")
+                _ws.set_column("A:A", 34); _ws.set_column("B:C", 16); _ws.set_column("D:F", 40)
+                _ws.write("A1", "Indicadores (KPIs) do diagnóstico", _f_tit)
+                for _c, _h in enumerate(["KPI", "Valor", "Unidade", "Fórmula", "O que significa", "Como interpretar"]):
+                    _ws.write(2, _c, _h, _f_hdr)
+                for _i, k in enumerate(_kpis):
+                    _r = 3 + _i
+                    _ws.write(_r, 0, str(k.get("nome", "")), _f_lbl)
+                    _ws.write_number(_r, 1, float(_num2(k.get("valor"), 0.0) or 0.0), _f_num)
+                    _ws.write(_r, 2, str(k.get("unidade", "")), _f_lbl)
+                    _ws.write(_r, 3, str(k.get("formula", "")), _f_txt)
+                    _ws.write(_r, 4, str(k.get("helper", "")), _f_txt)
+                    _ws.write(_r, 5, str(k.get("interpretacao", "")), _f_txt)
+                    _ws.set_row(_r, 44)
+        except Exception:
+            pass
+
+        # ---- Derrotas classificadas ----
+        try:
+            _derr = [a for a in _analises if str(a.get("Vencedor (Qualidade)")) == "Referência"]
+            if _derr:
+                _ws = _wb.add_worksheet("Diag - Derrotas")
+                _ws.set_column("A:A", 24); _ws.set_column("B:B", 8); _ws.set_column("C:C", 10)
+                _ws.set_column("D:D", 44); _ws.set_column("E:E", 12); _ws.set_column("F:F", 55)
+                for _c, _h in enumerate(["Município", "UF", "Evitável?", "Classe da derrota", "Δkm", "Como passaria a vencer"]):
+                    _ws.write(0, _c, _h, _f_hdr)
+                for _i, a in enumerate(sorted(_derr, key=lambda x: abs(_num2(x.get("Diferença (km)"), 0.0) or 0.0), reverse=True)):
+                    _r = 1 + _i; _cd = a.get("_derrota") or {}
+                    _ev = a.get("Derrota Evitável")
+                    _ws.write(_r, 0, str(a.get("Município", "")), _f_lbl)
+                    _ws.write(_r, 1, str(a.get("UF", "")), _f_lbl)
+                    _ws.write(_r, 2, ("Sim" if _ev is True else ("—" if _ev is None else "Não")), _f_lbl)
+                    _ws.write(_r, 3, str(a.get("Classe da Derrota", "")), _f_txt)
+                    _ws.write_number(_r, 4, abs(_num2(a.get("Diferença (km)"), 0.0) or 0.0), _f_num)
+                    _ws.write(_r, 5, str(_cd.get("como_evitar", "")), _f_txt)
+                    _ws.set_row(_r, 44)
+                _ws.freeze_panes(1, 0)
+                _re = len(_derr) + 2
+                _ws.merge_range(_re, 0, _re, 5,
+                                "Derrotas classificadas por NATUREZA. 'Evitável = Sim' marca a assinatura de "
+                                "geometria×estrada (V/R alta): a aplicação escolheu um destino geometricamente "
+                                "próximo porém rodoviariamente indireto e o vencedor direto foi cortado na "
+                                "pré-seleção. São o alvo do resgate por circuidade (Etapa C). 'Não/—' = ruído de "
+                                "geocodificação ou trade-off operacional legítimo.", _f_exp)
+                _ws.set_row(_re, 90)
+        except Exception:
+            pass
+
+        # ---- Confiança das escolhas ----
+        try:
+            if _analises:
+                _ws = _wb.add_worksheet("Diag - Confianca")
+                _ws.set_column("A:A", 24); _ws.set_column("B:B", 8); _ws.set_column("C:D", 16); _ws.set_column("E:E", 55)
+                for _c, _h in enumerate(["Município", "UF", "Confiança (App)", "Confiança (Ref)", "Fatores (App)"]):
+                    _ws.write(0, _c, _h, _f_hdr)
+                for _i, a in enumerate(_analises):
+                    _r = 1 + _i; _ca = a.get("_conf_app") or {}
+                    _ws.write(_r, 0, str(a.get("Município", "")), _f_lbl)
+                    _ws.write(_r, 1, str(a.get("UF", "")), _f_lbl)
+                    _ws.write_number(_r, 2, float(_num2(a.get("Índice de Confiança (App)"), 0.0) or 0.0), _f_num)
+                    _ws.write_number(_r, 3, float(_num2(a.get("Índice de Confiança (Ref)"), 0.0) or 0.0), _f_num)
+                    _ws.write(_r, 4, "; ".join(_ca.get("fatores", []) or []), _f_txt)
+                    _ws.set_row(_r, 30)
+                _ws.freeze_panes(1, 0)
+                _re = len(_analises) + 2
+                _ws.merge_range(_re, 0, _re, 4,
+                                "Índice de Confiança da Escolha (0-100): quanto confiar na medição/rota daquela "
+                                "opção, compondo coerência viário×reta, consenso entre motores, estabilidade da "
+                                "rota, ausência de balsa e robustez. Confiança BAIXA na app + ALTA na referência é "
+                                "um forte indício de que a app escolheu por um sinal enganoso (geometria).", _f_exp)
+                _ws.set_row(_re, 74)
+        except Exception:
+            pass
+
+        # ---- Aprendizado ----
+        try:
+            _ap = diag.get("aprendizado") or {}
+            if _ap.get("n_derrotas"):
+                _ws = _wb.add_worksheet("Diag - Aprendizado")
+                _ws.set_column("A:A", 100)
+                _ws.write("A1", "Aprendizado com as derrotas", _f_tit)
+                _r = 3
+                _ws.write(_r, 0, "Resumo", _f_hdr); _r += 1
+                _ws.write(_r, 0, str(_ap.get("resumo", "")), _f_txt); _ws.set_row(_r, 44); _r += 2
+                _ws.write(_r, 0, "Padrões detectados", _f_hdr); _r += 1
+                for p in _ap.get("padroes", []):
+                    _ws.write(_r, 0, "• " + str(p), _f_txt); _ws.set_row(_r, 44); _r += 1
+                _r += 1
+                _ws.write(_r, 0, "Sugestões automáticas de melhoria do algoritmo", _f_hdr); _r += 1
+                for s in _ap.get("sugestoes_algoritmo", []):
+                    _ws.write(_r, 0, "• " + str(s), _f_txt); _ws.set_row(_r, 58); _r += 1
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
+# ---------------------------- PAINEL STREAMLIT ----------------------------
+def _painel_stage_a(diag, st, pd=None):
+    """[DIVERGENCIA-XAI-2 - 237ª] Seções do painel: KPIs, classificação das derrotas e aprendizado.
+    Recebe st (e pd) explicitamente. DEFENSIVO."""
+    try:
+        _montar_stage_a(diag)
+        _analises = diag.get("analises") or []
+        _kpis = diag.get("kpis") or []
+        _ap = diag.get("aprendizado") or {}
+
+        if _kpis:
+            st.markdown("#### 📊 Indicadores (KPIs)")
+            _cols = st.columns(4)
+            for _i, k in enumerate(_kpis):
+                _v = k.get("valor"); _u = k.get("unidade", "")
+                _vt = (f"{_v:,.0f}".replace(",", ".") if isinstance(_v, (int, float)) and _v == int(_v) else f"{_v}") if _v is not None else "—"
+                _cols[_i % 4].metric(k.get("nome", ""), f"{_vt} {_u}".strip(),
+                                     help=f"{k.get('helper','')} · Fórmula: {k.get('formula','')}")
+
+        _derr = [a for a in _analises if str(a.get("Vencedor (Qualidade)")) == "Referência"]
+        if _derr:
+            _evit = [a for a in _derr if a.get("Derrota Evitável") is True]
+            st.markdown(f"#### 🎯 Classificação das derrotas — {len(_derr)} total, **{len(_evit)} evitáveis**")
+            if pd is not None:
+                _rows = [{"Município": a.get("Município"), "UF": a.get("UF"),
+                          "Evitável?": ("Sim" if a.get("Derrota Evitável") is True else ("—" if a.get("Derrota Evitável") is None else "Não")),
+                          "Classe": a.get("Classe da Derrota"),
+                          "Δkm": round(abs(_num2(a.get("Diferença (km)"), 0.0) or 0.0), 0),
+                          "Como passaria a vencer": (a.get("_derrota") or {}).get("como_evitar", "")}
+                         for a in sorted(_derr, key=lambda x: abs(_num2(x.get("Diferença (km)"), 0.0) or 0.0), reverse=True)]
+                st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+
+        if _ap.get("n_derrotas"):
+            with st.container(border=True):
+                st.markdown("#### 🧠 Aprendizado com as derrotas")
+                st.caption(_ap.get("resumo", ""))
+                if _ap.get("padroes"):
+                    st.markdown("**Padrões detectados:**")
+                    for p in _ap["padroes"]:
+                        st.markdown("- " + str(p))
+                if _ap.get("sugestoes_algoritmo"):
+                    st.markdown("**Sugestões automáticas de melhoria do algoritmo:**")
+                    for s in _ap["sugestoes_algoritmo"]:
+                        st.markdown("- " + str(s))
+    except Exception as _e:
+        try:
+            st.caption(f"(análise aprofundada indisponível: {_e})")
+        except Exception:
+            pass
+# <<< [DIVERGENCIA-XAI-2 237ª] FIM >>>
+
+
+
+
+# <<< [RESGATE-CIRCUIDADE 238ª] INÍCIO — evolução da escolha do destino (resgate por circuidade) >>>
+# ==============================================================================
+# [RESGATE-CIRCUIDADE - 238ª geração / Etapa C] EVOLUÇÃO DA ESCOLHA DO DESTINO
+# ------------------------------------------------------------------------------
+# Fundamento (Etapas A+B, dados reais de Divergências.xlsx): as derrotas EVITÁVEIS
+# têm a assinatura de V/R alta — a app escolheu um destino geometricamente próximo
+# porém rodoviariamente indireto, e o vencedor direto foi cortado ANTES do
+# roteamento (Portão 1: além do N por reta; Portão 2: OSRM falhou/inflou). Este
+# módulo adiciona um REFINAMENTO PÓS-ESCOLHA: quando o destino escolhido exibe a
+# assinatura de risco, roteia um conjunto LIMITADO de candidatos mais diretos pelo
+# motor AUTORITATIVO (contornando a pré-seleção) e adota o melhor PARA O CANDIDATO.
+#
+# GARANTIAS (mesma filosofia dos guardas já existentes):
+#   • MONOTÔNICO: só troca se a alternativa for comprovadamente melhor para o
+#     candidato (menor rota real; ou quase-igual eliminando balsa/circuidade).
+#     Nunca piora o resultado — na dúvida, mantém a escolha original.
+#   • LIMITADO: só dispara na assinatura de risco (raro → custo desprezível).
+#   • EXPLICÁVEL: devolve um registro com evidências (km/tempo salvos, nº de
+#     candidatos beneficiados, motivo) para painel/HTML/planilha.
+#   • REVERSÍVEL: a integração fica atrás de uma flag; desligá-la restaura o
+#     comportamento anterior EXATO.
+# 100% PURO (a rede entra por fn_rota injetada). Testável isoladamente.
+# ==============================================================================
+_UF_AMAZONIA_RESC = frozenset({"AC", "AP", "AM", "MA", "MT", "PA", "RO", "RR", "TO"})
+
+# Parâmetros (num único lugar; calibrados pela assinatura empírica das derrotas).
+_VR_GATILHO = 1.35        # V/R do escolhido acima da qual vale investigar (rota já indireta)
+_VR_SEVERO = 2.00         # descasamento grave geometria×estrada
+_K_EXTRA_BASE = 6         # candidatos diretos extras a rotear no resgate (limitado!)
+_K_EXTRA_AMAZONIA = 10    # amplia onde a malha é esparsa
+_MARGEM_TROCA = 0.005     # só troca se a alternativa for ao menos 0,5% menor (evita ruído)
+# penalidades operacionais em "km equivalentes" (para o custo efetivo do trade-off):
+_PEN_BALSA_KM = 25.0      # balsa: horário/clima/capacidade/risco
+_PEN_FLUVIAL_KM = 60.0    # acesso fluvial/isolado (sem rota rodoviária plena)
+_LAMBDA_VR = 0.15         # peso da circuidade excedente no custo efetivo
+
+
+def _num(v, d=None):
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return d
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def _hav(la1, lo1, la2, lo2):
+    try:
+        import math as _mr
+        p = _mr.pi / 180.0
+        a = (_mr.sin((la2 - la1) * p / 2) ** 2
+             + _mr.cos(la1 * p) * _mr.cos(la2 * p) * _mr.sin((lo2 - lo1) * p / 2) ** 2)
+        return 6371.0088 * 2 * _mr.asin(_mr.sqrt(min(1.0, a)))
+    except Exception:
+        return float("inf")
+
+
+def _classificar_contexto(uf, reta_km, tem_balsa, fluvial):
+    """Classifica o contexto do município para comportamento ADAPTATIVO (item: inteligência adaptativa)."""
+    _uf = str(uf or "").upper()[:2]
+    if fluvial:
+        return "fluvial/isolado"
+    if _uf in _UF_AMAZONIA_RESC:
+        return "amazônico"
+    if tem_balsa:
+        return "com balsa/travessia"
+    return "rodoviário padrão"
+
+
+def _custo_efetivo(dist_km, vr, tem_balsa, fluvial):
+    """Custo EFETIVO para o candidato: distância real + penalidades operacionais em km-equivalentes. É o
+    coração do 'algoritmo que pensa' — não escolhe só o menor km, e sim o menor CUSTO ao candidato."""
+    _d = _num(dist_km)
+    if _d is None:
+        return float("inf")
+    _v = _num(vr, 1.0) or 1.0
+    _c = _d * (1.0 + _LAMBDA_VR * max(0.0, _v - 1.0))
+    if tem_balsa:
+        _c += _PEN_BALSA_KM
+    if fluvial:
+        _c += _PEN_FLUVIAL_KM
+    return _c
+
+
+def _precisa_resgate(vr_escolhido, tem_balsa, fluvial):
+    """Dispara o resgate SÓ na assinatura de risco (raro). Retorna (bool, motivo)."""
+    _vr = _num(vr_escolhido)
+    if fluvial:
+        return True, "destino escolhido é de acesso fluvial/isolado (rota rodoviária pode existir e ser melhor)"
+    if tem_balsa:
+        return True, "destino escolhido depende de balsa (alternativa rodoviária pode ser melhor)"
+    if _vr is not None and _vr >= _VR_GATILHO:
+        return True, f"rota escolhida é indireta (V/R {_vr:.2f}×) — a geometria pode ter enganado a pré-seleção"
+    return False, ""
+
+
+def _avaliar_troca(atual, alternativa):
+    """Trade-off INTELIGENTE entre a escolha atual e uma alternativa (ambas com rota real medida). Decide pelo
+    menor CUSTO EFETIVO, mas exige margem mínima para trocar (estabilidade). Retorna dict com decisão + motivo
+    + evidências. `atual`/`alternativa` = dict {nome, dist_km, vr, tem_balsa, fluvial, tempo_min}."""
+    _ca = _custo_efetivo(atual.get("dist_km"), atual.get("vr"), atual.get("tem_balsa"), atual.get("fluvial"))
+    _cb = _custo_efetivo(alternativa.get("dist_km"), alternativa.get("vr"), alternativa.get("tem_balsa"), alternativa.get("fluvial"))
+    _da = _num(atual.get("dist_km")); _db = _num(alternativa.get("dist_km"))
+    _res = {"trocar": False, "motivo": "", "km_salvo": None, "tempo_salvo_min": None,
+            "custo_atual": round(_ca, 1) if _ca != float("inf") else None,
+            "custo_alt": round(_cb, 1) if _cb != float("inf") else None}
+    if _cb == float("inf") or _db is None:
+        _res["motivo"] = "alternativa sem rota válida"
+        return _res
+    # troca só se a alternativa tem custo efetivo menor com margem mínima
+    if _ca == float("inf") or _cb <= _ca * (1.0 - _MARGEM_TROCA):
+        _res["trocar"] = True
+        _res["km_salvo"] = round((_da - _db), 1) if (_da is not None and _db is not None) else None
+        _ta, _tb = _num(atual.get("tempo_min")), _num(alternativa.get("tempo_min"))
+        _res["tempo_salvo_min"] = round(_ta - _tb, 0) if (_ta is not None and _tb is not None) else None
+        # motivo baseado em EVIDÊNCIAS (o que mudou de fato)
+        _mots = []
+        if _da is not None and _db is not None and _db < _da:
+            _mots.append(f"reduz {round(_da - _db,1)} km de deslocamento real")
+        if atual.get("tem_balsa") and not alternativa.get("tem_balsa"):
+            _mots.append("elimina a dependência de balsa")
+        if atual.get("fluvial") and not alternativa.get("fluvial"):
+            _mots.append("substitui acesso fluvial/isolado por rota rodoviária plena")
+        _va, _vb = _num(atual.get("vr")), _num(alternativa.get("vr"))
+        if _va is not None and _vb is not None and _vb < _va - 0.1:
+            _mots.append(f"rota mais direta (V/R {_vb:.2f}× vs {_va:.2f}×)")
+        _res["motivo"] = "; ".join(_mots) or "menor custo efetivo para o candidato"
+    else:
+        # alternativa NÃO é melhor → a escolha atual se justifica; explica por quê (item: quando a app está certa)
+        _just = []
+        if _db is not None and _da is not None and _db < _da:
+            _dif = round(_da - _db, 1)
+            if alternativa.get("tem_balsa") and not atual.get("tem_balsa"):
+                _just.append(f"a alternativa economizaria {_dif} km, mas introduz travessia por balsa "
+                             f"(horário/clima/capacidade) e maior risco operacional")
+            elif alternativa.get("fluvial") and not atual.get("fluvial"):
+                _just.append(f"a alternativa economizaria {_dif} km, mas depende de acesso fluvial/isolado")
+            else:
+                _just.append(f"o ganho de {_dif} km não compensa a perda de robustez operacional")
+        _res["motivo"] = "; ".join(_just) or "a escolha atual tem menor custo efetivo para o candidato"
+    return _res
+
+
+def _resgate_circuidade(origem, uf, coord_origem, candidatos, escolhido, fn_rota,
+                        inscritos=0, params=None):
+    """[RESGATE-CIRCUIDADE - 238ª] Refinamento pós-escolha. Se o destino `escolhido` exibe a assinatura de
+    risco, roteia até K candidatos MAIS DIRETOS (por reta) pelo motor AUTORITATIVO (fn_rota) e adota o de
+    menor custo efetivo para o candidato. MONOTÔNICO e LIMITADO. Devolve dict:
+      {trocou, destino_final, dist_final_km, registro{...}}  — registro com evidências p/ UI/relatório.
+
+    `escolhido` = dict {nome, dist_km, reta_km, vr, tem_balsa, fluvial, tempo_min}
+    `candidatos` = lista de dicts {nome, lat, lon} (o universo de polos).
+    `fn_rota(destino_nome) -> dict {dist_km, tempo_min, tem_balsa, fluvial, reta_km}` (motor autoritativo)."""
+    _p = params or {}
+    _kbase = _p.get("k_extra_base", _K_EXTRA_BASE)
+    _kama = _p.get("k_extra_amazonia", _K_EXTRA_AMAZONIA)
+    _reg = {"origem": origem, "uf": uf, "acionado": False, "contexto": None, "motivo_gatilho": "",
+            "candidatos_avaliados": 0, "alternativas": [], "decisao": "manteve", "km_salvo": None,
+            "tempo_salvo_min": None, "inscritos_beneficiados": 0, "explicacao": ""}
+    try:
+        _nome_esc = escolhido.get("nome")
+        _vr = _num(escolhido.get("vr"))
+        _balsa = bool(escolhido.get("tem_balsa"))
+        _fluv = bool(escolhido.get("fluvial"))
+        _ctx = _classificar_contexto(uf, escolhido.get("reta_km"), _balsa, _fluv)
+        _reg["contexto"] = _ctx
+        _precisa, _motivo = _precisa_resgate(_vr, _balsa, _fluv)
+        if not _precisa:
+            _reg["explicacao"] = "escolha estável (sem assinatura de risco); refinamento não acionado."
+            return {"trocou": False, "destino_final": _nome_esc,
+                    "dist_final_km": _num(escolhido.get("dist_km")), "registro": _reg}
+        _reg["acionado"] = True
+        _reg["motivo_gatilho"] = _motivo
+        # candidatos mais diretos por reta (exceto o já escolhido), até K
+        try:
+            _la0, _lo0 = float(coord_origem[0]), float(coord_origem[1])
+        except Exception:
+            _reg["explicacao"] = "sem coordenada de origem para o refinamento."
+            return {"trocou": False, "destino_final": _nome_esc,
+                    "dist_final_km": _num(escolhido.get("dist_km")), "registro": _reg}
+        _por_reta = []
+        for c in (candidatos or []):
+            if str(c.get("nome", "")).strip().lower() == str(_nome_esc or "").strip().lower():
+                continue
+            _la, _lo = _num(c.get("lat")), _num(c.get("lon"))
+            if _la is None or _lo is None:
+                continue
+            _por_reta.append((_hav(_la0, _lo0, _la, _lo), c.get("nome")))
+        _por_reta.sort(key=lambda x: x[0])
+        _k = _kama if str(uf or "").upper()[:2] in _UF_AMAZONIA_RESC else _kbase
+        _cands = _por_reta[:_k]
+
+        _atual = {"nome": _nome_esc, "dist_km": _num(escolhido.get("dist_km")), "vr": _vr,
+                  "tem_balsa": _balsa, "fluvial": _fluv, "tempo_min": _num(escolhido.get("tempo_min"))}
+        _melhor = dict(_atual)
+        _melhor_troca = None
+        for (_reta, _nome) in _cands:
+            try:
+                _r = fn_rota(_nome)
+            except Exception:
+                _r = None
+            if not _r or _num(_r.get("dist_km")) is None:
+                continue
+            _reg["candidatos_avaliados"] += 1
+            _alt = {"nome": _nome, "dist_km": _num(_r.get("dist_km")), "vr": _num(_r.get("vr")),
+                    "tem_balsa": bool(_r.get("tem_balsa")), "fluvial": bool(_r.get("fluvial")),
+                    "tempo_min": _num(_r.get("tempo_min"))}
+            _av = _avaliar_troca(_melhor, _alt)
+            _reg["alternativas"].append({"nome": _nome, "dist_km": _alt["dist_km"],
+                                         "tem_balsa": _alt["tem_balsa"], "trocaria": _av["trocar"],
+                                         "motivo": _av["motivo"]})
+            if _av["trocar"]:
+                _melhor = _alt
+                _melhor_troca = _av
+        if _melhor_troca and str(_melhor.get("nome")) != str(_nome_esc):
+            _reg["decisao"] = "trocou"
+            _reg["km_salvo"] = _melhor_troca.get("km_salvo")
+            _reg["tempo_salvo_min"] = _melhor_troca.get("tempo_salvo_min")
+            _reg["inscritos_beneficiados"] = int(_num(inscritos, 0) or 0)
+            _reg["explicacao"] = (f"Refinamento adotou {_melhor.get('nome')} no lugar de {_nome_esc}: "
+                                  f"{_melhor_troca.get('motivo')}. Beneficia {int(_num(inscritos,0) or 0)} "
+                                  f"candidato(s) desta origem.")
+            return {"trocou": True, "destino_final": _melhor.get("nome"),
+                    "dist_final_km": _melhor.get("dist_km"), "registro": _reg}
+        # manteve — mas registra a justificativa (quando a escolha da app é a melhor mesmo com balsa/circuidade)
+        _reg["decisao"] = "manteve"
+        _just = ""
+        if _reg["alternativas"]:
+            _menor_alt = min((a for a in _reg["alternativas"] if a["dist_km"] is not None),
+                             key=lambda a: a["dist_km"], default=None)
+            if _menor_alt and _menor_alt["dist_km"] is not None and _atual["dist_km"] is not None \
+               and _menor_alt["dist_km"] < _atual["dist_km"]:
+                _just = _menor_alt["motivo"]
+        _reg["explicacao"] = ("Escolha original mantida: nenhuma alternativa mais direta é melhor para o "
+                              "candidato." + (f" {_just}." if _just else ""))
+        return {"trocou": False, "destino_final": _nome_esc,
+                "dist_final_km": _num(escolhido.get("dist_km")), "registro": _reg}
+    except Exception as _e:
+        _reg["explicacao"] = f"refinamento abortado com segurança ({_e}); escolha original preservada."
+        return {"trocou": False, "destino_final": escolhido.get("nome"),
+                "dist_final_km": _num(escolhido.get("dist_km")), "registro": _reg}
+
+
+def _agregar_resgates(registros):
+    """Agrega os registros de resgate de um processamento para painéis/relatório/KPIs. PURO."""
+    _regs = [r for r in (registros or []) if r]
+    _acion = [r for r in _regs if r.get("acionado")]
+    _troca = [r for r in _regs if r.get("decisao") == "trocou"]
+    _km = sum(abs(_num(r.get("km_salvo"), 0.0) or 0.0) for r in _troca)
+    _insc = sum(int(_num(r.get("inscritos_beneficiados"), 0) or 0) for r in _troca)
+    import collections as _c
+    _ctx = _c.Counter(r.get("contexto") for r in _troca)
+    return {"n_acionados": len(_acion), "n_trocas": len(_troca), "km_economizados": round(_km, 1),
+            "inscritos_beneficiados": _insc, "por_contexto": dict(_ctx),
+            "trocas": [{"origem": r.get("origem"), "uf": r.get("uf"), "destino_final": None,
+                        "km_salvo": r.get("km_salvo"), "inscritos": r.get("inscritos_beneficiados"),
+                        "explicacao": r.get("explicacao")} for r in _troca]}
+
+
+def _tempo_min(s):
+    """Extrai minutos de textos como '1h 30min', '90 min', '2 h'. Defensivo."""
+    try:
+        import re as _re
+        _t = str(s or "").lower()
+        _h = _re.search(r"(\d+)\s*h", _t)
+        _m = _re.search(r"(\d+)\s*m", _t)
+        _tot = (int(_h.group(1)) * 60 if _h else 0) + (int(_m.group(1)) if _m else 0)
+        if _tot == 0:
+            _n = _re.search(r"(\d+)", _t)
+            _tot = int(_n.group(1)) if _n else None
+        return _tot or None
+    except Exception:
+        return None
+
+
+def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscritos=0, params=None):
+    """[RESGATE-CIRCUIDADE - 238ª] Variante do resgate que recebe uma LISTA JÁ ORDENADA de candidatos (ex.:
+    do topk_map da alocação, ordenado por proximidade) — dispensa coordenadas. Roteia cada um pelo motor
+    autoritativo (fn_rota) e adota o de menor CUSTO EFETIVO para o candidato, com as MESMAS garantias
+    (monotônico, limitado, explicável). Retorna o mesmo formato de _resgate_circuidade."""
+    _p = params or {}
+    _reg = {"origem": origem, "uf": uf, "acionado": False, "contexto": None, "motivo_gatilho": "",
+            "candidatos_avaliados": 0, "alternativas": [], "decisao": "manteve", "km_salvo": None,
+            "tempo_salvo_min": None, "inscritos_beneficiados": 0, "explicacao": ""}
+    try:
+        _nome_esc = escolhido.get("nome")
+        _vr = _num(escolhido.get("vr")); _balsa = bool(escolhido.get("tem_balsa")); _fluv = bool(escolhido.get("fluvial"))
+        _reg["contexto"] = _classificar_contexto(uf, escolhido.get("reta_km"), _balsa, _fluv)
+        _precisa, _motivo = _precisa_resgate(_vr, _balsa, _fluv)
+        if not _precisa:
+            _reg["explicacao"] = "escolha estável (sem assinatura de risco); refinamento não acionado."
+            return {"trocou": False, "destino_final": _nome_esc, "dist_final_km": _num(escolhido.get("dist_km")),
+                    "registro": _reg}
+        _reg["acionado"] = True; _reg["motivo_gatilho"] = _motivo
+        _k = _p.get("k_extra_amazonia", _K_EXTRA_AMAZONIA) if str(uf or "").upper()[:2] in _UF_AMAZONIA_RESC \
+            else _p.get("k_extra_base", _K_EXTRA_BASE)
+        _atual = {"nome": _nome_esc, "dist_km": _num(escolhido.get("dist_km")), "vr": _vr,
+                  "tem_balsa": _balsa, "fluvial": _fluv, "tempo_min": _num(escolhido.get("tempo_min"))}
+        _melhor = dict(_atual); _melhor_troca = None
+        for _nome in (cand_names or [])[:_k]:
+            if str(_nome or "").strip().lower() == str(_nome_esc or "").strip().lower():
+                continue
+            try:
+                _r = fn_rota(_nome)
+            except Exception:
+                _r = None
+            if not _r or _num(_r.get("dist_km")) is None:
+                continue
+            _reg["candidatos_avaliados"] += 1
+            _alt = {"nome": _nome, "dist_km": _num(_r.get("dist_km")), "vr": _num(_r.get("vr")),
+                    "tem_balsa": bool(_r.get("tem_balsa")), "fluvial": bool(_r.get("fluvial")),
+                    "tempo_min": _num(_r.get("tempo_min"))}
+            _av = _avaliar_troca(_melhor, _alt)
+            _reg["alternativas"].append({"nome": _nome, "dist_km": _alt["dist_km"], "tem_balsa": _alt["tem_balsa"],
+                                         "trocaria": _av["trocar"], "motivo": _av["motivo"]})
+            if _av["trocar"]:
+                _melhor = _alt; _melhor_troca = _av
+        if _melhor_troca and str(_melhor.get("nome")) != str(_nome_esc):
+            _reg["decisao"] = "trocou"; _reg["km_salvo"] = _melhor_troca.get("km_salvo")
+            _reg["tempo_salvo_min"] = _melhor_troca.get("tempo_salvo_min")
+            _reg["inscritos_beneficiados"] = int(_num(inscritos, 0) or 0)
+            _reg["explicacao"] = (f"Refinamento adotou {_melhor.get('nome')} no lugar de {_nome_esc}: "
+                                  f"{_melhor_troca.get('motivo')}. Beneficia {int(_num(inscritos,0) or 0)} candidato(s).")
+            return {"trocou": True, "destino_final": _melhor.get("nome"),
+                    "dist_final_km": _melhor.get("dist_km"), "registro": _reg,
+                    "fatos_final": _melhor}
+        _reg["decisao"] = "manteve"
+        _reg["explicacao"] = "Escolha original mantida: nenhuma alternativa mais direta é melhor para o candidato."
+        return {"trocou": False, "destino_final": _nome_esc, "dist_final_km": _num(escolhido.get("dist_km")),
+                "registro": _reg}
+    except Exception as _e:
+        _reg["explicacao"] = f"refinamento abortado com segurança ({_e})."
+        return {"trocou": False, "destino_final": escolhido.get("nome"),
+                "dist_final_km": _num(escolhido.get("dist_km")), "registro": _reg}
+
+
+def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, params=None):
+    """[RESGATE-CIRCUIDADE - 238ª] PASSE PÓS-ALOCAÇÃO. Percorre o df_final_alo; para cada origem cujo destino
+    escolhido exibe a assinatura de risco (V/R alta, balsa ou fluvial), roteia os candidatos mais diretos do
+    topk_map pelo motor autoritativo e, se houver alternativa melhor PARA O CANDIDATO, atualiza a linha
+    (destino + distância + reta + balsa + coords) — MONOTÔNICO, LIMITADO, com fallback total (qualquer erro
+    preserva a linha original). Retorna (df, registros). A rede entra por `router` (calcular_pipeline_logistico
+    em produção; mock nos testes)."""
+    _regs = []
+    try:
+        if not ativo or df is None or getattr(df, "empty", True):
+            return df, _regs
+        _router = router if router is not None else globals().get("calcular_pipeline_logistico")
+        if _router is None:
+            return df, _regs
+        _col = {str(c).strip().lower(): c for c in df.columns}
+        _c_o, _c_d = _col.get("origem"), _col.get("destino")
+        _c_dist, _c_reta = _col.get("distancia"), _col.get("linha reta")
+        _c_balsa, _c_fonte = _col.get("balsas"), _col.get("fonte da rota")
+        _c_tempo = _col.get("tempo")
+        _c_uf = _col.get("uf") or _col.get("uf origem") or _col.get("estado")
+        _c_insc = next((_col[k] for k in ("inscritos", "inscritos origem", "qtd inscritos", "candidatos",
+                                          "total inscritos", "n inscritos") if k in _col), None)
+        _c_lad, _c_lod = _col.get("lat destino"), _col.get("lon destino")
+        if not (_c_o and _c_d and _c_dist and _c_reta):
+            return df, _regs  # sem colunas mínimas → no-op seguro
+        for _idx in list(df.index):
+            try:
+                _origem = str(df.at[_idx, _c_o] or "").strip()
+                _destino = str(df.at[_idx, _c_d] or "").strip()
+                _dist = _num(df.at[_idx, _c_dist]); _reta = _num(df.at[_idx, _c_reta])
+                if not _origem or not _destino or _dist is None or not _reta or _reta <= 0:
+                    continue
+                _vr = _dist / _reta
+                _balsa = (str(df.at[_idx, _c_balsa]).strip().lower() == "sim") if _c_balsa else False
+                _fonte = (str(df.at[_idx, _c_fonte]).lower()) if _c_fonte else ""
+                _fluvial = ("fluvial" in _fonte) or ("isolado" in _fonte) or ("sem rota" in _fonte)
+                _precisa, _ = _precisa_resgate(_vr, _balsa, _fluvial)
+                if not _precisa:
+                    continue
+                _uf = (str(df.at[_idx, _c_uf]).strip() if _c_uf else "")
+                _insc = _num(df.at[_idx, _c_insc], 0) if _c_insc else 0
+                _cands = topk_map.get(_origem) or topk_map.get(_origem.upper()) or []
+                _nomes = [h for (_dd, h) in _cands if str(h).strip().lower() != _destino.lower()]
+                if not _nomes:
+                    continue
+                _origem_q = f"{_origem}, {_uf}" if _uf else _origem
+                _cache = {}
+
+                def _fn_rota(_hub):
+                    if _hub in _cache:
+                        return _cache[_hub]
+                    try:
+                        _rp = _router(_origem_q, _hub)
+                        _d = _num(getattr(_rp, "distancia", None)); _rr = _num(getattr(_rp, "dist_linha_reta", None))
+                        _out = {"dist_km": _d, "reta_km": _rr,
+                                "vr": (_d / _rr if (_d and _rr and _rr > 0) else None),
+                                "tem_balsa": str(getattr(_rp, "balsas", "")).strip().lower() == "sim",
+                                "fluvial": False, "tempo_min": _tempo_min(getattr(_rp, "tempo", "")),
+                                "lat": _num(getattr(_rp, "lat_destino", None)),
+                                "lon": _num(getattr(_rp, "lon_destino", None)),
+                                "fonte": getattr(_rp, "fonte_rota", "")}
+                    except Exception:
+                        _out = None
+                    _cache[_hub] = _out
+                    return _out
+
+                _esc = {"nome": _destino, "dist_km": _dist, "reta_km": _reta, "vr": _vr,
+                        "tem_balsa": _balsa, "fluvial": _fluvial,
+                        "tempo_min": _tempo_min(df.at[_idx, _c_tempo]) if _c_tempo else None}
+                _res = _resgate_por_candidatos(_origem, _uf, _esc, _nomes, _fn_rota, inscritos=_insc, params=params)
+                _regs.append(_res["registro"])
+                if _res.get("trocou"):
+                    _novo = _res.get("fatos_final") or {}
+                    _rp_novo = _fn_rota(_res["destino_final"]) or {}
+                    df.at[_idx, _c_d] = _res["destino_final"]
+                    df.at[_idx, _c_dist] = _num(_rp_novo.get("dist_km"), _res.get("dist_final_km"))
+                    if _rp_novo.get("reta_km") is not None:
+                        df.at[_idx, _c_reta] = _rp_novo["reta_km"]
+                    if _c_balsa is not None:
+                        df.at[_idx, _c_balsa] = "Sim" if _rp_novo.get("tem_balsa") else "Não"
+                    if _c_lad is not None and _rp_novo.get("lat") is not None:
+                        df.at[_idx, _c_lad] = _rp_novo["lat"]
+                    if _c_lod is not None and _rp_novo.get("lon") is not None:
+                        df.at[_idx, _c_lod] = _rp_novo["lon"]
+                    # marca a linha como refinada + explicação (colunas novas, aditivas)
+                    df.at[_idx, "Refinado (Resgate)"] = "Sim"
+                    df.at[_idx, "Motivo do Refinamento"] = _res["registro"].get("explicacao", "")
+            except Exception:
+                continue  # linha problemática → preservada como estava
+        return df, _regs
+    except Exception:
+        return df, _regs
+# <<< [RESGATE-CIRCUIDADE 238ª] FIM >>>
+
+
+
+
+# <<< [DIVERGENCIA-XAI-3 239ª] INÍCIO — auditoria avançada (KPIs extremos, recortes, motivo granular, árvore) >>>
+# ==============================================================================
+# [DIVERGENCIA-XAI-3 - 239ª geração] AUDITORIA AVANÇADA DO COMPARADOR
+# ------------------------------------------------------------------------------
+# Incrementos NOVOS sobre o motor de divergências (236/237). Puro e testável.
+# Adiciona: KPIs avançados (maior derrota/vitória/economia, municípios mais
+# problemáticos, motores mais vencedores/derrotados, precisão por dimensão),
+# recortes estatísticos por faixa (distância, V/R, inscritos), motivo GRANULAR
+# da derrota (qual motor achou a rota menor) e ÁRVORE DE DECISÃO por divergência.
+# ==============================================================================
+
+
+def _n3(v, d=None):
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return d
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def _motivo_granular(analise):
+    """[DIVERGENCIA-XAI-3 - 239ª] Motivo GRANULAR da divergência, atribuindo ao MOTOR quando aplicável
+    (item 3 do doc: 'Google encontrou rota menor', 'OSRM encontrou rota menor'…). PURO."""
+    _venc = str(analise.get("Vencedor (Qualidade)") or "")
+    _cat = str(analise.get("Categoria") or "")
+    _ma = str(analise.get("Motor Aplicação") or "").upper()
+    _mr = str(analise.get("Motor Referência") or "").upper()
+    _dif = _n3(analise.get("Diferença (km)"), 0.0) or 0.0
+    _divm = _n3(analise.get("Divergência Motores (%)"), 0.0) or 0.0
+    def _mnome(m):
+        for _k in ("GOOGLE", "OSRM", "GRAPHHOPPER", "VALHALLA"):
+            if _k in m:
+                return _k.capitalize() if _k != "OSRM" else "OSRM"
+        return "outro motor"
+    # quem tem a rota menor?
+    if _venc == "Referência" and _dif > 0:  # ref mais curta
+        _base = f"{_mnome(_mr)} (referência) encontrou uma rota {abs(_dif):.0f} km menor"
+    elif _venc == "Aplicação" and _dif < 0:
+        _base = f"{_mnome(_ma)} (aplicação) encontrou uma rota {abs(_dif):.0f} km menor"
+    else:
+        _base = "diferença dentro do erro esperado entre fontes"
+    _extra = []
+    if _ma and _mr and _mnome(_ma) != _mnome(_mr):
+        _extra.append(f"motores distintos ({_mnome(_ma)} × {_mnome(_mr)})")
+    if _divm >= 30:
+        _extra.append(f"alta divergência entre malhas ({_divm:.0f}%)")
+    if "balsa" in _cat.lower():
+        _extra.append("dependência de balsa em um dos lados")
+    if "sinuos" in _cat.lower():
+        _extra.append("trajeto mais sinuoso de um lado")
+    return _base + (" — " + "; ".join(_extra) if _extra else "")
+
+
+def _faixa(v, cortes, rotulos):
+    for _i, _c in enumerate(cortes):
+        if v < _c:
+            return rotulos[_i]
+    return rotulos[-1]
+
+
+def _distribuicoes_avancadas(analises):
+    """[DIVERGENCIA-XAI-3 - 239ª] Recortes por FAIXA (item 8 do doc): distância, razão V/R, inscritos e
+    diferença de tempo. Conta casos e inscritos por faixa. PURO."""
+    import collections as _c
+    _out = {}
+    _defs = {
+        "por_faixa_distancia": (lambda a: _n3(a.get("Distância Aplicação (km)")),
+                                [50, 100, 200, 400], ["até 50 km", "50–100", "100–200", "200–400", "acima de 400"]),
+        "por_faixa_vr": (lambda a: _n3(a.get("Sinuosidade Aplicação (V/R)")),
+                         [1.2, 1.5, 2.0, 3.0], ["≤1,2× (direta)", "1,2–1,5×", "1,5–2,0×", "2,0–3,0×", ">3,0× (severa)"]),
+        "por_faixa_inscritos": (lambda a: _n3(a.get("Inscritos")),
+                                [50, 200, 500, 1000], ["até 50", "50–200", "200–500", "500–1000", "acima de 1000"]),
+        "por_faixa_dif_tempo": (lambda a: abs(_n3(a.get("Diferença Tempo (min)"), 0.0) or 0.0),
+                                [10, 30, 60, 120], ["≤10 min", "10–30", "30–60", "60–120", ">120 min"]),
+    }
+    for _nome, (_fx, _cortes, _rot) in _defs.items():
+        _cnt = _c.Counter(); _ins = _c.Counter()
+        for a in (analises or []):
+            _v = _fx(a)
+            if _v is None:
+                continue
+            _f = _faixa(_v, _cortes, _rot)
+            _cnt[_f] += 1
+            _ins[_f] += int(_n3(a.get("Inscritos"), 0) or 0)
+        _out[_nome] = [{"Categoria": _r, "Casos": _cnt.get(_r, 0), "Inscritos": _ins.get(_r, 0)}
+                       for _r in _rot if _cnt.get(_r, 0)]
+    return _out
+
+
+def _kpis_avancados(analises):
+    """[DIVERGENCIA-XAI-3 - 239ª] KPIs de EXTREMOS e PRECISÃO (item 9 do doc): maior derrota/vitória/economia,
+    maiores diferenças, municípios mais problemáticos, motores mais vencedores/derrotados e precisão por
+    dimensão. Cada KPI traz o registro (município/valor) e helper/fórmula/interpretação. PURO."""
+    import collections as _c
+    _tot = len(analises or [])
+    if _tot == 0:
+        return {"extremos": [], "ranking_motores": [], "municipios_problematicos": [], "precisao": []}
+    _derr = [a for a in analises if str(a.get("Vencedor (Qualidade)")) == "Referência"]
+    _vit = [a for a in analises if str(a.get("Vencedor (Qualidade)")) == "Aplicação"]
+
+    def _rec(lista, chave, absoluto=True):
+        _best = None; _bv = None
+        for a in lista:
+            _v = _n3(a.get(chave))
+            if _v is None:
+                continue
+            _cmp = abs(_v) if absoluto else _v
+            if _bv is None or _cmp > _bv:
+                _bv = _cmp; _best = a
+        return _best
+
+    _extremos = []
+    _md = _rec(_derr, "Diferença (km)")
+    if _md:
+        _extremos.append({"kpi": "Maior derrota (km)", "municipio": f"{_md.get('Município')}/{_md.get('UF')}",
+                          "valor": round(abs(_n3(_md.get("Diferença (km)"), 0)), 1), "unidade": "km",
+                          "formula": "máx |Δkm| entre as derrotas", "helper": "Derrota com maior diferença de distância.",
+                          "interpretacao": "Foco prioritário de auditoria/otimização."})
+    _mv = _rec(_vit, "Diferença (km)")
+    if _mv:
+        _extremos.append({"kpi": "Maior vitória (km)", "municipio": f"{_mv.get('Município')}/{_mv.get('UF')}",
+                          "valor": round(abs(_n3(_mv.get("Diferença (km)"), 0)), 1), "unidade": "km",
+                          "formula": "máx |Δkm| entre as vitórias", "helper": "Vitória com maior economia de distância.",
+                          "interpretacao": "Onde a aplicação mais beneficia o candidato."})
+    _mt = _rec(analises, "Diferença Tempo (min)")
+    if _mt:
+        _extremos.append({"kpi": "Maior diferença de tempo", "municipio": f"{_mt.get('Município')}/{_mt.get('UF')}",
+                          "valor": round(abs(_n3(_mt.get("Diferença Tempo (min)"), 0)), 0), "unidade": "min",
+                          "formula": "máx |Δtempo|", "helper": "Maior diferença de tempo de deslocamento.",
+                          "interpretacao": "Alto impacto na experiência do candidato."})
+    _ms = _rec(analises, "Sinuosidade Aplicação (V/R)", absoluto=False)
+    if _ms:
+        _extremos.append({"kpi": "Maior sinuosidade (V/R)", "municipio": f"{_ms.get('Município')}/{_ms.get('UF')}",
+                          "valor": round(_n3(_ms.get("Sinuosidade Aplicação (V/R)"), 0), 2), "unidade": "×",
+                          "formula": "máx V/R da aplicação", "helper": "Rota mais indireta escolhida pela aplicação.",
+                          "interpretacao": "Candidata nº 1 ao resgate por circuidade."})
+    _eco = sum(abs(_n3(a.get("Diferença (km)"), 0.0) or 0.0) for a in _vit)
+    _extremos.append({"kpi": "Economia total (vitórias)", "municipio": "—", "valor": round(_eco, 0), "unidade": "km",
+                      "formula": "Σ |Δkm| das vitórias", "helper": "Km que a aplicação economiza vs a referência.",
+                      "interpretacao": "Benefício agregado ao conjunto de candidatos."})
+
+    # ranking de motores (vencedores × derrotados)
+    _rank = _c.Counter(); _rankd = _c.Counter()
+    for a in analises:
+        _venc = str(a.get("Vencedor (Qualidade)"))
+        _m_venc = a.get("Motor Aplicação") if _venc == "Aplicação" else (a.get("Motor Referência") if _venc == "Referência" else None)
+        _m_perd = a.get("Motor Referência") if _venc == "Aplicação" else (a.get("Motor Aplicação") if _venc == "Referência" else None)
+        if _m_venc:
+            _rank[str(_m_venc)] += 1
+        if _m_perd:
+            _rankd[str(_m_perd)] += 1
+    _ranking = [{"motor": _m, "vitorias": _rank.get(_m, 0), "derrotas": _rankd.get(_m, 0)}
+                for _m in sorted(set(list(_rank) + list(_rankd)), key=lambda x: -_rank.get(x, 0))]
+
+    # municípios mais problemáticos (derrotas de maior impacto km×inscritos)
+    _prob = sorted(_derr, key=lambda a: abs((_n3(a.get("Diferença (km)"), 0.0) or 0.0)
+                   * (int(_n3(a.get("Inscritos"), 0) or 0) or 1)), reverse=True)[:15]
+    _municipios = [{"municipio": f"{a.get('Município')}/{a.get('UF')}",
+                    "impacto_km_insc": round(abs((_n3(a.get("Diferença (km)"), 0.0) or 0.0)
+                                                  * (int(_n3(a.get("Inscritos"), 0) or 0) or 1)), 0),
+                    "dif_km": round(abs(_n3(a.get("Diferença (km)"), 0.0) or 0.0), 1),
+                    "inscritos": int(_n3(a.get("Inscritos"), 0) or 0),
+                    "classe": a.get("Classe da Derrota", a.get("Categoria", "—"))} for a in _prob]
+
+    # precisão por dimensão = % de não-derrota (vitória+empate) por UF/região/acesso
+    def _precisao_por(chave):
+        _por = _c.defaultdict(lambda: [0, 0])
+        for a in analises:
+            _k = str(a.get(chave) or "—")
+            _por[_k][1] += 1
+            if str(a.get("Vencedor (Qualidade)")) != "Referência":
+                _por[_k][0] += 1
+        return [{"grupo": _k, "precisao_pct": round(100.0 * _ok / _t, 1), "casos": _t}
+                for _k, (_ok, _t) in sorted(_por.items(), key=lambda kv: -kv[1][1]) if _t]
+    _precisao = {"por_uf": _precisao_por("UF"), "por_acesso": _precisao_por("Acesso Aplicação")}
+
+    return {"extremos": _extremos, "ranking_motores": _ranking,
+            "municipios_problematicos": _municipios, "precisao": _precisao}
+
+
+def _arvore_divergencia(analise):
+    """[DIVERGENCIA-XAI-3 - 239ª] ÁRVORE DE DECISÃO por divergência (item 4 do doc): por que a app escolheu A,
+    por que a ref escolheu B, e quem beneficia mais o candidato — tudo a partir dos fatos já calculados. PURO."""
+    _mun = f"{analise.get('Município','?')}/{analise.get('UF','?')}"
+    _da = _n3(analise.get("Distância Aplicação (km)")); _dr = _n3(analise.get("Distância Referência (km)"))
+    _va = _n3(analise.get("Sinuosidade Aplicação (V/R)")); _vr = _n3(analise.get("Sinuosidade Referência (V/R)"))
+    _ba = str(analise.get("Balsa Aplicação") or "").lower() == "sim"
+    _br = str(analise.get("Balsa Referência") or "").lower() == "sim"
+    _venc = str(analise.get("Vencedor (Qualidade)"))
+
+    def _porques(dist, vr, balsa, outro_dist, outro_balsa, outro_vr):
+        _p = []
+        if dist is not None and outro_dist is not None and dist < outro_dist:
+            _p.append(f"menor distância viária ({dist:.0f} km)")
+        if vr is not None and vr < 1.4:
+            _p.append(f"rota direta (V/R {vr:.2f}×)")
+        elif vr is not None and outro_vr is not None and vr < outro_vr - 0.2:
+            _p.append(f"rota mais direta que a alternativa (V/R {vr:.2f}× vs {outro_vr:.2f}×)")
+        if not balsa and outro_balsa:
+            _p.append("sem dependência de balsa")
+        if balsa and not outro_balsa:
+            _p.append("aceita travessia por balsa")
+        if vr is not None and vr >= 2.0:
+            _p.append(f"apesar de rota indireta (V/R {vr:.2f}×)")
+        return _p or ["critério multicritério"]
+
+    _no_app = {"destino": analise.get("Destino Aplicação", "—"),
+               "porques": _porques(_da, _va, _ba, _dr, _br, _vr)}
+    _no_ref = {"destino": analise.get("Destino Referência", "—"),
+               "porques": _porques(_dr, _vr, _br, _da, _ba, _va)}
+    _benef = ("A aplicação" if _venc == "Aplicação" else "A referência" if _venc == "Referência" else "Empate técnico")
+    _motivo = analise.get("Parecer Técnico") or _motivo_granular(analise)
+    return {"municipio": _mun, "app": _no_app, "ref": _no_ref, "beneficia": _benef,
+            "vencedor": _venc, "motivo": _motivo}
+
+
+def _arvore_divergencia_texto(arv):
+    _L = [f"ÁRVORE — {arv['municipio']}"]
+    _L.append(f"  ├─ Aplicação escolheu {arv['app']['destino']}")
+    for p in arv['app']['porques']:
+        _L.append(f"  │    ✔ {p}")
+    _L.append(f"  ├─ Referência escolheu {arv['ref']['destino']}")
+    for p in arv['ref']['porques']:
+        _L.append(f"  │    ✔ {p}")
+    _L.append(f"  └─ Quem beneficia mais o candidato: {arv['beneficia']}")
+    return "\n".join(_L)
+
+
+def _arvore_divergencia_html(arv, _he):
+    def _e(x):
+        return _he.escape(str(x))
+    _pa = "".join(f"<li>{_e(p)}</li>" for p in arv['app']['porques'])
+    _pr = "".join(f"<li>{_e(p)}</li>" for p in arv['ref']['porques'])
+    _cor = "#16a34a" if arv['vencedor'] == "Aplicação" else "#dc2626" if arv['vencedor'] == "Referência" else "#64748b"
+    return (f'<div class="arvd"><div class="arvd-h">🌳 {_e(arv["municipio"])}</div>'
+            f'<div class="arvd-cols"><div class="arvd-c"><div class="arvd-t">Aplicação → '
+            f'{_e(arv["app"]["destino"])}</div><ul>{_pa}</ul></div>'
+            f'<div class="arvd-c"><div class="arvd-t">Referência → {_e(arv["ref"]["destino"])}</div>'
+            f'<ul>{_pr}</ul></div></div>'
+            f'<div class="arvd-b" style="border-color:{_cor}">Quem beneficia mais o candidato: '
+            f'<b style="color:{_cor}">{_e(arv["beneficia"])}</b></div></div>')
+
+
+# ==============================================================================
+# [DIVERGENCIA-XAI-3 - 239ª] ORQUESTRAÇÃO + RENDERIZAÇÃO (HTML / Excel / Painel)
+# ==============================================================================
+def _montar_stage_b(diag):
+    """Enriquece o diag com auditoria avançada (idempotente). PURO."""
+    if not diag or diag.get("_stage_b"):
+        return diag
+    _an = diag.get("analises") or []
+    for a in _an:
+        try:
+            a["Motivo Granular"] = _motivo_granular(a)
+        except Exception:
+            pass
+    try:
+        diag["kpis_av"] = _kpis_avancados(_an)
+    except Exception:
+        diag["kpis_av"] = {}
+    try:
+        diag["dist_av"] = _distribuicoes_avancadas(_an)
+    except Exception:
+        diag["dist_av"] = {}
+    try:
+        _ord = sorted(_an, key=lambda a: abs((_n3(a.get("Diferença (km)"), 0.0) or 0.0)
+                      * (int(_n3(a.get("Inscritos"), 0) or 0) or 1)), reverse=True)[:15]
+        diag["arvores"] = [_arvore_divergencia(a) for a in _ord]
+    except Exception:
+        diag["arvores"] = []
+    diag["_stage_b"] = True
+    return diag
+
+
+def _css_stage_b():
+    return ('<style>'
+            '.arvd{border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin:10px 0;background:#fff}'
+            '.arvd-h{font-weight:700;color:#0f172a;margin-bottom:8px}'
+            '.arvd-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}'
+            '.arvd-c{background:#f8fafc;border-radius:8px;padding:10px}'
+            '.arvd-t{font-weight:600;color:#1e3a8a;margin-bottom:4px}'
+            '.arvd-b{border-left:4px solid #64748b;padding:8px 10px;margin-top:10px;background:#f8fafc;border-radius:6px}'
+            '.exkp{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:10px 0}'
+            '.exkp-c{border:1px solid #e2e8f0;border-radius:10px;padding:10px;background:#fff}'
+            '.exkp-v{font-size:20px;font-weight:800;color:#0f172a}.exkp-n{font-size:12px;color:#1e3a8a;font-weight:600}'
+            '.exkp-m{font-size:11px;color:#64748b}</style>')
+
+
+def _tabela_html_b(titulo, colunas, linhas, _he):
+    if not linhas:
+        return ""
+    _h = "".join(f"<th>{_he.escape(str(c))}</th>" for c in colunas)
+    _b = ""
+    for l in linhas:
+        _b += "<tr>" + "".join(f"<td>{_he.escape(str(l.get(c,'—')))}</td>" for c in colunas) + "</tr>"
+    return (f'<h3>{_he.escape(titulo)}</h3><div class="tbl-wrap"><table class="dvt"><thead><tr>{_h}</tr>'
+            f'</thead><tbody>{_b}</tbody></table></div>')
+
+
+def _html_stage_b(diag, _he):
+    """Blocos HTML da auditoria avançada, para injeção na seção de divergências. PURO/idempotente."""
+    try:
+        _montar_stage_b(diag)
+        _kav = diag.get("kpis_av") or {}
+        _dav = diag.get("dist_av") or {}
+        _arv = diag.get("arvores") or []
+        _out = _css_stage_b()
+        # extremos
+        _ex = _kav.get("extremos") or []
+        if _ex:
+            _cards = ""
+            for e in _ex:
+                _cards += (f'<div class="exkp-c"><div class="exkp-v">{_he.escape(str(e.get("valor","—")))} '
+                           f'{_he.escape(str(e.get("unidade","")))}</div><div class="exkp-n">{_he.escape(str(e.get("kpi","")))}'
+                           f'</div><div class="exkp-m">{_he.escape(str(e.get("municipio","")))} · '
+                           f'{_he.escape(str(e.get("helper","")))}</div></div>')
+            _out += f'<h3>📌 KPIs de extremos</h3><div class="exkp">{_cards}</div>'
+        # ranking motores
+        _out += _tabela_html_b("⚙️ Motores: vitórias × derrotas", ["motor", "vitorias", "derrotas"],
+                               _kav.get("ranking_motores") or [], _he)
+        # municípios problemáticos
+        _out += _tabela_html_b("🚩 Municípios mais problemáticos", ["municipio", "dif_km", "inscritos", "classe"],
+                               _kav.get("municipios_problematicos") or [], _he)
+        # precisão por UF
+        _prec = (_kav.get("precisao") or {}).get("por_uf") or []
+        _out += _tabela_html_b("🎯 Precisão por UF (% de não-derrota)", ["grupo", "precisao_pct", "casos"], _prec, _he)
+        # faixas
+        for _ch, _tit in [("por_faixa_distancia", "Distribuição por faixa de distância"),
+                          ("por_faixa_vr", "Distribuição por faixa de sinuosidade (V/R)"),
+                          ("por_faixa_inscritos", "Distribuição por faixa de candidatos")]:
+            _out += _tabela_html_b("📊 " + _tit, ["Categoria", "Casos", "Inscritos"], _dav.get(_ch) or [], _he)
+        # árvores
+        if _arv:
+            _out += '<h3>🌳 Árvores de decisão das divergências (maior impacto)</h3>'
+            _out += "".join(_arvore_divergencia_html(a, _he) for a in _arv)
+        return _out
+    except Exception:
+        return ""
+
+
+def _abas_stage_b(writer, diag):
+    """Abas Excel da auditoria avançada: KPIs Extremos, Motores, Precisão, Faixas, Árvore. DEFENSIVO."""
+    try:
+        if not diag:
+            return
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        _montar_stage_b(diag)
+        _kav = diag.get("kpis_av") or {}; _dav = diag.get("dist_av") or {}; _arv = diag.get("arvores") or []
+        _f_tit = _wb.add_format({"bold": True, "font_size": 15, "font_color": "#1e3a8a"})
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#fff", "bg_color": "#1e3a8a", "border": 1, "text_wrap": True})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#475569"})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_txt = _wb.add_format({"font_size": 10, "text_wrap": True, "valign": "top", "font_color": "#334155"})
+
+        def _aba(nome, colunas, linhas, larg=None):
+            if not linhas:
+                return
+            try:
+                _ws = _wb.add_worksheet(nome)
+            except Exception:
+                return  # nome colidente/erro → pula esta aba sem derrubar as demais
+            for _c, _h in enumerate(colunas):
+                _ws.write(0, _c, _h, _f_hdr)
+                if larg and _c < len(larg):
+                    _ws.set_column(_c, _c, larg[_c])
+            for _i, _l in enumerate(linhas):
+                for _c, _h in enumerate(colunas):
+                    _v = _l.get(_h)
+                    if isinstance(_v, (int, float)) and not isinstance(_v, bool):
+                        _ws.write_number(_i + 1, _c, float(_v), _f_num)
+                    else:
+                        _ws.write(_i + 1, _c, "—" if _v is None else str(_v), _f_lbl)
+            _ws.freeze_panes(1, 0)
+
+        # KPIs extremos (renomeia chaves p/ cabeçalho amigável)
+        _ex = [{"KPI": e.get("kpi"), "Município": e.get("municipio"), "Valor": e.get("valor"),
+                "Unidade": e.get("unidade"), "Fórmula": e.get("formula"), "Interpretação": e.get("interpretacao")}
+               for e in (_kav.get("extremos") or [])]
+        _aba("Diag - KPIs Extremos", ["KPI", "Município", "Valor", "Unidade", "Fórmula", "Interpretação"],
+             _ex, [26, 22, 12, 10, 34, 40])
+        _aba("Diag - Ranking Motores", ["motor", "vitorias", "derrotas"], _kav.get("ranking_motores") or [], [26, 12, 12])
+        _aba("Diag - Precisao", ["grupo", "precisao_pct", "casos"], (_kav.get("precisao") or {}).get("por_uf") or [], [12, 14, 10])
+        _aba("Diag - Problematicos", ["municipio", "dif_km", "inscritos", "classe"],
+             _kav.get("municipios_problematicos") or [], [24, 12, 12, 40])
+        # faixas (empilha os 4 recortes numa aba)
+        try:
+            _ws = _wb.add_worksheet("Diag - Faixas")
+            _ws.set_column("A:A", 24); _ws.set_column("B:C", 12)
+            _r = 0
+            for _ch, _tit in [("por_faixa_distancia", "Por faixa de distância"),
+                              ("por_faixa_vr", "Por faixa de sinuosidade (V/R)"),
+                              ("por_faixa_inscritos", "Por faixa de candidatos"),
+                              ("por_faixa_dif_tempo", "Por faixa de diferença de tempo")]:
+                _lin = _dav.get(_ch) or []
+                if not _lin:
+                    continue
+                _ws.write(_r, 0, _tit, _f_tit); _r += 1
+                for _c, _h in enumerate(["Categoria", "Casos", "Inscritos"]):
+                    _ws.write(_r, _c, _h, _f_hdr)
+                _r += 1
+                for _l in _lin:
+                    _ws.write(_r, 0, str(_l.get("Categoria")), _f_lbl)
+                    _ws.write_number(_r, 1, int(_l.get("Casos", 0)), _f_num)
+                    _ws.write_number(_r, 2, int(_l.get("Inscritos", 0)), _f_num)
+                    _r += 1
+                _r += 1
+        except Exception:
+            pass
+        # árvore de decisão (texto por município)
+        try:
+            if _arv:
+                _ws = _wb.add_worksheet("Diag - Arvore")
+                _ws.set_column("A:A", 24); _ws.set_column("B:B", 22); _ws.set_column("C:C", 50); _ws.set_column("D:D", 22)
+                for _c, _h in enumerate(["Município", "App escolheu (porquês)", "Ref escolheu (porquês)", "Beneficia o candidato"]):
+                    _ws.write(0, _c, _h, _f_hdr)
+                for _i, a in enumerate(_arv):
+                    _ws.write(_i + 1, 0, a.get("municipio"), _f_lbl)
+                    _ws.write(_i + 1, 1, f"{a['app']['destino']}: " + "; ".join(a['app']['porques']), _f_txt)
+                    _ws.write(_i + 1, 2, f"{a['ref']['destino']}: " + "; ".join(a['ref']['porques']), _f_txt)
+                    _ws.write(_i + 1, 3, a.get("beneficia"), _f_lbl)
+                    _ws.set_row(_i + 1, 46)
+                _ws.freeze_panes(1, 0)
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
+def _painel_stage_b(diag, st, pd=None):
+    """Seções do painel: KPIs de extremos, ranking de motores, precisão, faixas e árvores. DEFENSIVO."""
+    try:
+        _montar_stage_b(diag)
+        _kav = diag.get("kpis_av") or {}; _dav = diag.get("dist_av") or {}; _arv = diag.get("arvores") or []
+        _ex = _kav.get("extremos") or []
+        if _ex:
+            st.markdown("#### 📌 KPIs de extremos")
+            _cols = st.columns(min(4, len(_ex)) or 1)
+            for _i, e in enumerate(_ex):
+                _cols[_i % len(_cols)].metric(e.get("kpi", ""), f"{e.get('valor','—')} {e.get('unidade','')}".strip(),
+                                              help=f"{e.get('municipio','')} · {e.get('helper','')}")
+        if pd is not None:
+            _rank = _kav.get("ranking_motores") or []
+            if _rank:
+                st.markdown("**⚙️ Motores: vitórias × derrotas**")
+                st.dataframe(pd.DataFrame(_rank), use_container_width=True, hide_index=True)
+            _prob = _kav.get("municipios_problematicos") or []
+            if _prob:
+                st.markdown("**🚩 Municípios mais problemáticos**")
+                st.dataframe(pd.DataFrame(_prob), use_container_width=True, hide_index=True)
+            _prec = (_kav.get("precisao") or {}).get("por_uf") or []
+            if _prec:
+                st.markdown("**🎯 Precisão por UF (% de não-derrota)**")
+                st.dataframe(pd.DataFrame(_prec), use_container_width=True, hide_index=True)
+            _tabs = st.tabs(["Distância", "Sinuosidade (V/R)", "Candidatos"])
+            for _t, _ch in zip(_tabs, ["por_faixa_distancia", "por_faixa_vr", "por_faixa_inscritos"]):
+                with _t:
+                    _lin = _dav.get(_ch) or []
+                    if _lin:
+                        st.bar_chart(pd.DataFrame(_lin).set_index("Categoria")["Inscritos"])
+        if _arv:
+            st.markdown("**🌳 Árvores de decisão das divergências (maior impacto)**")
+            for a in _arv[:12]:
+                with st.expander(f"{a['municipio']} — beneficia: {a['beneficia']}"):
+                    _c1, _c2 = st.columns(2)
+                    _c1.markdown(f"**Aplicação → {a['app']['destino']}**")
+                    for p in a['app']['porques']:
+                        _c1.markdown(f"- {p}")
+                    _c2.markdown(f"**Referência → {a['ref']['destino']}**")
+                    for p in a['ref']['porques']:
+                        _c2.markdown(f"- {p}")
+    except Exception as _e:
+        try:
+            st.caption(f"(auditoria avançada indisponível: {_e})")
+        except Exception:
+            pass
+# <<< [DIVERGENCIA-XAI-3 239ª] FIM >>>
+
+
+
+
+# <<< [TELEMETRIA-API 240ª] INÍCIO >>>
+# ==============================================================================
+# [TELEMETRIA-API - 240ª geração] TELEMETRIA POR MOTOR + KPIs DE PRECISÃO REAIS
+# ------------------------------------------------------------------------------
+# Precisão/participação por motor derivadas da ATRIBUIÇÃO REAL das rotas (campos
+# Motor Aplicação/Referência já calculados) — não de suposição. Latência por
+# motor via acumulador THREAD-SAFE (a app é paralela) alimentado por um gancho
+# aditivo de uma linha no fim de calcular_pipeline_logistico. Tudo defensivo.
+# ==============================================================================
+
+
+class _TelemetriaAPI:
+    """Acumulador THREAD-SAFE de telemetria de roteamento: por motor, nº de rotas e latências. Alimentado
+    durante qualquer processamento (aditivo). Métodos defensivos; nunca lançam."""
+    def __init__(self):
+        import threading as _th
+        self._lock = _th.Lock()
+        self._por_motor = {}  # motor -> {"n": int, "lat": [float,...], "falhas": int}
+
+    def registrar(self, motor, latencia_s=None, sucesso=True):
+        try:
+            _m = _normalizar_motor(motor)
+            with self._lock:
+                _d = self._por_motor.setdefault(_m, {"n": 0, "lat": [], "falhas": 0})
+                _d["n"] += 1
+                if not sucesso:
+                    _d["falhas"] += 1
+                if latencia_s is not None:
+                    try:
+                        _l = float(latencia_s)
+                        if _l >= 0:
+                            _d["lat"].append(_l)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+
+    def snapshot(self):
+        try:
+            with self._lock:
+                return {m: {"n": d["n"], "lat": list(d["lat"]), "falhas": d["falhas"]}
+                        for m, d in self._por_motor.items()}
+        except Exception:
+            return {}
+
+    def reset(self):
+        try:
+            with self._lock:
+                self._por_motor = {}
+        except Exception:
+            pass
+
+
+# instância global (a app registra aqui; a leitura é defensiva)
+_TELEMETRIA = _TelemetriaAPI()
+
+
+def _tnum(v, d=None):
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return d
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def _normalizar_motor(m):
+    _s = str(m or "").upper()
+    for _k, _r in (("GOOGLE", "Google"), ("OSRM", "OSRM"), ("GRAPHHOPPER", "GraphHopper"),
+                   ("VALHALLA", "Valhalla"), ("GEOD", "Geodésica"), ("RETA", "Geodésica")):
+        if _k in _s:
+            return _r
+    return (str(m).strip() or "Desconhecido")
+
+
+def _percentil(vals, p):
+    _v = sorted(x for x in vals if x is not None)
+    if not _v:
+        return None
+    _k = (len(_v) - 1) * p
+    _f = int(_k)
+    if _f + 1 < len(_v):
+        return round(_v[_f] + (_v[_f + 1] - _v[_f]) * (_k - _f), 2)
+    return round(_v[_f], 2)
+
+
+def _telemetria_motores(analises, acumulador=None):
+    """[TELEMETRIA-API - 240ª] KPIs de PRECISÃO e PARTICIPAÇÃO por motor, da atribuição real das rotas. Para
+    cada motor: nº de rotas (app+ref), vitórias/derrotas por qualidade, taxa de vitória, divergência média
+    quando envolvido, e (se houver acumulador) latência média/p95 e taxa de falha. PURO. Retorna
+    {por_motor:[...], kpis:{...}}."""
+    import collections as _c
+    _rotas = _c.Counter(); _vit = _c.Counter(); _der = _c.Counter()
+    _div = _c.defaultdict(list)
+    for a in (analises or []):
+        _ma = _normalizar_motor(a.get("Motor Aplicação"))
+        _mr = _normalizar_motor(a.get("Motor Referência"))
+        _venc = str(a.get("Vencedor (Qualidade)"))
+        _dvm = _tnum(a.get("Divergência Motores (%)"))
+        for _lado, _m in (("app", _ma), ("ref", _mr)):
+            _rotas[_m] += 1
+            if _dvm is not None:
+                _div[_m].append(_dvm)
+        if _venc == "Aplicação":
+            _vit[_ma] += 1; _der[_mr] += 1
+        elif _venc == "Referência":
+            _vit[_mr] += 1; _der[_ma] += 1
+    _snap = (acumulador.snapshot() if acumulador else {}) or {}
+    _motores = sorted(set(list(_rotas) + list(_snap)), key=lambda m: -_rotas.get(m, 0))
+    _por = []
+    for _m in _motores:
+        _v, _d = _vit.get(_m, 0), _der.get(_m, 0)
+        _tot = _v + _d
+        _lat = (_snap.get(_m, {}) or {}).get("lat", [])
+        _n_tel = (_snap.get(_m, {}) or {}).get("n", 0)
+        _falhas = (_snap.get(_m, {}) or {}).get("falhas", 0)
+        _por.append({
+            "motor": _m,
+            "rotas": _rotas.get(_m, 0),
+            "vitorias": _v, "derrotas": _d,
+            "taxa_vitoria_pct": round(100.0 * _v / _tot, 1) if _tot else None,
+            "divergencia_media_pct": round(sum(_div[_m]) / len(_div[_m]), 1) if _div.get(_m) else None,
+            "latencia_media_s": round(sum(_lat) / len(_lat), 2) if _lat else None,
+            "latencia_p95_s": _percentil(_lat, 0.95) if _lat else None,
+            "taxa_falha_pct": round(100.0 * _falhas / _n_tel, 1) if _n_tel else None,
+        })
+    # KPIs-resumo
+    _kpis = {}
+    _com_taxa = [p for p in _por if p["taxa_vitoria_pct"] is not None and (p["vitorias"] + p["derrotas"]) >= 2]
+    if _com_taxa:
+        _best = max(_com_taxa, key=lambda p: p["taxa_vitoria_pct"])
+        _kpis["motor_mais_preciso"] = {"motor": _best["motor"], "taxa": _best["taxa_vitoria_pct"]}
+    if _por:
+        _maisp = max(_por, key=lambda p: p["rotas"])
+        _kpis["motor_mais_participativo"] = {"motor": _maisp["motor"], "rotas": _maisp["rotas"]}
+        _comlat = [p for p in _por if p["latencia_media_s"] is not None]
+        if _comlat:
+            _rapido = min(_comlat, key=lambda p: p["latencia_media_s"])
+            _kpis["motor_mais_rapido"] = {"motor": _rapido["motor"], "latencia_s": _rapido["latencia_media_s"]}
+    return {"por_motor": _por, "kpis": _kpis, "tem_latencia": any(p["latencia_media_s"] is not None for p in _por)}
+
+
+def _montar_telemetria(diag, acumulador=None):
+    if not diag or diag.get("_telemetria"):
+        return diag
+    try:
+        diag["telemetria"] = _telemetria_motores(diag.get("analises") or [], acumulador or _TELEMETRIA)
+    except Exception:
+        diag["telemetria"] = {"por_motor": [], "kpis": {}}
+    diag["_telemetria"] = True
+    return diag
+
+
+def _html_telemetria(diag, _he):
+    try:
+        _montar_telemetria(diag)
+        _t = diag.get("telemetria") or {}
+        _por = _t.get("por_motor") or []
+        if not _por:
+            return ""
+        _tem_lat = _t.get("tem_latencia")
+        _cols = ["motor", "rotas", "vitorias", "derrotas", "taxa_vitoria_pct", "divergencia_media_pct"]
+        _labels = ["Motor", "Rotas", "Vitórias", "Derrotas", "Taxa de vitória (%)", "Divergência média (%)"]
+        if _tem_lat:
+            _cols += ["latencia_media_s", "latencia_p95_s", "taxa_falha_pct"]
+            _labels += ["Latência média (s)", "Latência p95 (s)", "Taxa de falha (%)"]
+        _h = "".join(f"<th>{_he.escape(l)}</th>" for l in _labels)
+        _b = ""
+        for p in _por:
+            _b += "<tr>" + "".join(f"<td>{_he.escape(str(p.get(c) if p.get(c) is not None else '—'))}</td>" for c in _cols) + "</tr>"
+        _kp = _t.get("kpis") or {}
+        _resumo = []
+        if _kp.get("motor_mais_preciso"):
+            _resumo.append(f"motor mais preciso: <b>{_he.escape(_kp['motor_mais_preciso']['motor'])}</b> "
+                           f"({_kp['motor_mais_preciso']['taxa']}% de vitória)")
+        if _kp.get("motor_mais_participativo"):
+            _resumo.append(f"mais participativo: <b>{_he.escape(_kp['motor_mais_participativo']['motor'])}</b>")
+        if _kp.get("motor_mais_rapido"):
+            _resumo.append(f"mais rápido: <b>{_he.escape(_kp['motor_mais_rapido']['motor'])}</b> "
+                           f"({_kp['motor_mais_rapido']['latencia_s']} s)")
+        _nota = ("" if _tem_lat else '<p class="dv-nota">Latência por motor aparece quando há telemetria de '
+                 'roteamento acumulada na sessão (após processar rotas). A precisão vem da atribuição real das rotas.</p>')
+        return (f'<h3>📡 Telemetria por motor (precisão real)</h3>'
+                + (f'<p>{"; ".join(_resumo)}.</p>' if _resumo else "")
+                + f'<div class="tbl-wrap"><table class="dvt"><thead><tr>{_h}</tr></thead><tbody>{_b}</tbody></table></div>'
+                + _nota)
+    except Exception:
+        return ""
+
+
+def _abas_telemetria(writer, diag):
+    try:
+        if not diag:
+            return
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        _montar_telemetria(diag)
+        _por = (diag.get("telemetria") or {}).get("por_motor") or []
+        if not _por:
+            return
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#fff", "bg_color": "#1e3a8a", "border": 1, "text_wrap": True})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#475569"})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_exp = _wb.add_format({"font_size": 10, "italic": True, "text_wrap": True, "font_color": "#334155", "valign": "top"})
+        try:
+            _ws = _wb.add_worksheet("Diag - Telemetria")
+        except Exception:
+            return
+        _cols = [("motor", "Motor", 16), ("rotas", "Rotas", 10), ("vitorias", "Vitórias", 10),
+                 ("derrotas", "Derrotas", 10), ("taxa_vitoria_pct", "Taxa vitória (%)", 14),
+                 ("divergencia_media_pct", "Diverg. média (%)", 14), ("latencia_media_s", "Latência média (s)", 16),
+                 ("latencia_p95_s", "Latência p95 (s)", 14), ("taxa_falha_pct", "Taxa falha (%)", 12)]
+        for _c, (_k, _lab, _w) in enumerate(_cols):
+            _ws.write(0, _c, _lab, _f_hdr); _ws.set_column(_c, _c, _w)
+        for _i, p in enumerate(_por):
+            for _c, (_k, _lab, _w) in enumerate(_cols):
+                _v = p.get(_k)
+                if isinstance(_v, (int, float)) and not isinstance(_v, bool):
+                    _ws.write_number(_i + 1, _c, float(_v), _f_num)
+                else:
+                    _ws.write(_i + 1, _c, "—" if _v is None else str(_v), _f_lbl)
+        _ws.freeze_panes(1, 0)
+        _re = len(_por) + 2
+        _ws.merge_range(_re, 0, _re, 8,
+                        "Precisão por motor a partir da ATRIBUIÇÃO REAL das rotas (qual motor produziu cada "
+                        "rota). 'Taxa de vitória' = vitórias ÷ (vitórias+derrotas) do lado roteado por aquele "
+                        "motor. Latência/p95/falha aparecem quando há telemetria de roteamento acumulada.", _f_exp)
+        _ws.set_row(_re, 60)
+    except Exception:
+        return
+
+
+def _painel_telemetria(diag, st, pd=None):
+    try:
+        _montar_telemetria(diag)
+        _t = diag.get("telemetria") or {}
+        _por = _t.get("por_motor") or []
+        if not _por:
+            return
+        st.markdown("#### 📡 Telemetria por motor (precisão real)")
+        _kp = _t.get("kpis") or {}
+        _cols = st.columns(3)
+        if _kp.get("motor_mais_preciso"):
+            _cols[0].metric("Motor mais preciso", _kp["motor_mais_preciso"]["motor"],
+                            f"{_kp['motor_mais_preciso']['taxa']}% vitória")
+        if _kp.get("motor_mais_participativo"):
+            _cols[1].metric("Mais participativo", _kp["motor_mais_participativo"]["motor"],
+                            f"{_kp['motor_mais_participativo']['rotas']} rotas")
+        if _kp.get("motor_mais_rapido"):
+            _cols[2].metric("Mais rápido", _kp["motor_mais_rapido"]["motor"],
+                            f"{_kp['motor_mais_rapido']['latencia_s']} s")
+        if pd is not None:
+            st.dataframe(pd.DataFrame(_por), use_container_width=True, hide_index=True)
+        if not _t.get("tem_latencia"):
+            st.caption("Latência por motor aparece após processar rotas (telemetria acumulada na sessão). "
+                       "A precisão vem da atribuição real das rotas.")
+    except Exception as _e:
+        try:
+            st.caption(f"(telemetria indisponível: {_e})")
+        except Exception:
+            pass
+# <<< [TELEMETRIA-API 240ª] FIM >>>
+
+
+
+
+# <<< [HTML-INTERATIVO 240ª] INÍCIO >>>
+# ==============================================================================
+# [HTML-INTERATIVO - 240ª geração] INTERATIVIDADE NO RELATÓRIO (JS EMBUTIDO)
+# ------------------------------------------------------------------------------
+# Torna o relatório HTML do Comparador interativo, SEM dependências externas
+# (JS vanilla autossuficiente, roda offline ao abrir no navegador). Recursos:
+#   • tabelas ordenáveis (clique no cabeçalho, numérico-aware);
+#   • filtro/busca por tabela;
+#   • seções colapsáveis (clique no título).
+# Degradação graciosa: sem JS, o relatório continua legível (tudo estático).
+# ==============================================================================
+
+_JS_INTERATIVO = r"""
+(function(){
+  try{
+    function ready(fn){ if(document.readyState!=='loading'){fn();} else {document.addEventListener('DOMContentLoaded',fn);} }
+    function txt(s){ return (s==null?'':String(s)).trim().toLowerCase(); }
+    function limpaNum(s){ return String(s).replace(/[^0-9.,\-]/g,'').replace(/\./g,'').replace(',','.'); }
+    function isNum(s){ var t=limpaNum(s); return t!=='' && !isNaN(parseFloat(t)); }
+    function num(s){ var n=parseFloat(limpaNum(s)); return isNaN(n)?0:n; }
+    ready(function(){
+      var tabelas = document.querySelectorAll('table.dvt');
+      Array.prototype.forEach.call(tabelas, function(tab){
+        var thead=tab.tHead, tbody=tab.tBodies[0];
+        if(!thead||!tbody||!thead.rows.length) return;
+        var inp=document.createElement('input');
+        inp.type='text'; inp.placeholder='filtrar\u2026'; inp.className='dvt-filtro';
+        if(tab.parentNode){ tab.parentNode.insertBefore(inp, tab); }
+        inp.addEventListener('input', function(){
+          var q=txt(inp.value);
+          Array.prototype.forEach.call(tbody.rows, function(r){
+            r.style.display = (r.textContent.toLowerCase().indexOf(q)>=0)?'':'none';
+          });
+        });
+        Array.prototype.forEach.call(thead.rows[0].cells, function(th, ci){
+          th.style.cursor='pointer'; th.title='ordenar';
+          var asc=true;
+          th.addEventListener('click', function(){
+            var rows=Array.prototype.slice.call(tbody.rows);
+            var allNum=rows.every(function(r){ return !r.cells[ci] || isNum(r.cells[ci].textContent); });
+            rows.sort(function(x,y){
+              var xv=x.cells[ci]?x.cells[ci].textContent:'', yv=y.cells[ci]?y.cells[ci].textContent:'';
+              var c = allNum ? (num(xv)-num(yv)) : txt(xv).localeCompare(txt(yv));
+              return asc ? c : -c;
+            });
+            asc=!asc;
+            Array.prototype.forEach.call(rows, function(r){ tbody.appendChild(r); });
+          });
+        });
+      });
+      var sec=document.getElementById('diag-divergencias');
+      if(sec){
+        var hs=sec.querySelectorAll('h3');
+        Array.prototype.forEach.call(hs, function(h){
+          h.style.cursor='pointer';
+          h.insertAdjacentHTML('afterbegin','<span class="dvt-cai">\u25be</span> ');
+          var grupo=[]; var el=h.nextElementSibling;
+          while(el && el.tagName!=='H3' && el.tagName!=='H2'){ grupo.push(el); el=el.nextElementSibling; }
+          h.addEventListener('click', function(){
+            var col = h.getAttribute('data-col')==='1';
+            h.setAttribute('data-col', col?'0':'1');
+            var span=h.querySelector('.dvt-cai'); if(span){ span.textContent = col?'\u25be':'\u25b8'; }
+            Array.prototype.forEach.call(grupo, function(g){ g.style.display = col?'':'none'; });
+          });
+        });
+      }
+    });
+  }catch(e){ /* degrada graciosamente */ }
+})();
+"""
+
+_CSS_INTERATIVO = (
+    '.dvt-filtro{margin:8px 0;padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;'
+    'font-size:13px;width:240px;max-width:100%}'
+    '.dvt th{user-select:none}'
+    '.dvt-cai{color:#94a3b8;font-size:11px}'
+)
+
+
+def _script_interativo_html():
+    """[HTML-INTERATIVO - 240ª] Retorna o bloco <style>+<script> autossuficiente para embutir no relatório.
+    Sem dependências; degradação graciosa. Idempotente por natureza (só adiciona comportamento no load)."""
+    return f'<style>{_CSS_INTERATIVO}</style>\n<script>{_JS_INTERATIVO}</script>'
+# <<< [HTML-INTERATIVO 240ª] FIM >>>
 
 
 def _montar_xlsx_comparacao(linhas, stats, aud, relatorio, diagnostico_div=None):
@@ -29564,8 +31607,10 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "236"
+_VERSAO_APP = "240"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
+# [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
+_RESGATE_CIRCUIDADE_ATIVO = True
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
 
@@ -32799,6 +34844,18 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 df_final_alo = None
                 with _perfil_fase("Montagem do DataFrame (Alocação)"):
                     df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
+                # [RESGATE-CIRCUIDADE - 238ª] Refinamento pós-alocação (Etapa C): quando o destino escolhido
+                # exibe a assinatura de risco (V/R alta / balsa / acesso fluvial), roteia os candidatos mais
+                # diretos do topk_map pelo motor autoritativo e adota o melhor PARA O CANDIDATO. Monotônico
+                # (só troca se for melhor), limitado (só na assinatura), reversível (flag). Falha → df intacto.
+                if _RESGATE_CIRCUIDADE_ATIVO:
+                    try:
+                        with _perfil_fase("Refinamento por resgate (circuidade)"):
+                            df_final_alo, _regs_resgate = _refinar_por_resgate_circuidade(
+                                df_final_alo, st.session_state.get('alo_topk_map') or {})
+                            st.session_state['alo_resgate'] = _agregar_resgates(_regs_resgate)
+                    except Exception as _e_resg:
+                        logger.error(f"[RESGATE-CIRCUIDADE] refinamento abortado (df preservado): {_e_resg}")
                 # [VIÁRIA-PADRÃO - 184ª geração] No modo VIÁRIA, alinha o CONCORRENTE ao 2º MENOR VIÁRIA
                 # (o runner_up_map traz o 2º em linha reta). Aditivo/defensivo; usa o pipeline já roteado do
                 # 2º colocado e recalcula os índices da disputa. No modo linha reta este passo não roda.
@@ -33163,6 +35220,24 @@ if _secao == _SECOES[2]:   # tab_alocacao
             if 'alo_tempo_total' in st.session_state:
                 st.success(f"✨ Alocação concluída automaticamente! {st.session_state.get('alo_linhas', 0)} linhas processadas em {_formatar_duracao(st.session_state['alo_tempo_total'])}.")
                 st.session_state.pop('alo_tempo_total', None)
+            # [RESGATE-CIRCUIDADE - 238ª] Resumo do refinamento: destinos melhorados PARA O CANDIDATO.
+            _resg = st.session_state.get('alo_resgate') or {}
+            if _resg.get('n_trocas'):
+                with st.container(border=True):
+                    st.markdown("#### 🧭 Refinamento inteligente da escolha (resgate por circuidade)")
+                    _cc = st.columns(3)
+                    _cc[0].metric("Destinos melhorados", _resg.get('n_trocas', 0),
+                                  help="Origens em que um destino mais direto — melhor para o candidato — "
+                                       "substituiu a escolha inicial de rota indireta/com balsa.")
+                    _cc[1].metric("Km economizados", f"{_resg.get('km_economizados', 0):,.0f}".replace(",", "."))
+                    _cc[2].metric("Candidatos beneficiados", f"{_resg.get('inscritos_beneficiados', 0):,}".replace(",", "."))
+                    for _t in (_resg.get('trocas') or [])[:30]:
+                        st.markdown(f"- **{_t.get('origem')}/{_t.get('uf')}**: {_t.get('explicacao', '')}")
+                    st.caption("Cada troca só ocorre quando é comprovadamente melhor para o candidato: menor "
+                               "rota real, ou quase-igual eliminando balsa/circuidade. A escolha nunca piora.")
+            elif _resg.get('n_acionados'):
+                st.caption(f"🧭 O refinamento por circuidade avaliou {_resg.get('n_acionados')} escolha(s) de "
+                           f"perfil de risco; todas já eram as melhores para o candidato — nenhuma troca necessária.")
             # [FASE2-RESUMO-ALOC - 184ª geração] RESUMO EXECUTIVO da alocação: KPIs no topo (municípios de
             # origem, polos utilizados, deslocamento médio/máximo ao polo) antes do detalhamento denso. A
             # resposta em 5 segundos. Defensivo: cada métrica só aparece se a coluna existir; erro →
