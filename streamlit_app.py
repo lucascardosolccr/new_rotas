@@ -63,6 +63,28 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (243ª geração) → 🔗 LAUDO DE DIVERGÊNCIAS: LINKS DAS ROTAS + MARGEM DE INVERSÃO [LAUDO-DIVERGENCIA]
+#     Atende o doc de aprimoramento do laudo de divergências. MAPA DE COBERTURA: motor vencedor/perdedor +
+#     diferença entre motores, índices de qualidade/robustez/confiança/risco/isolamento/balsa/sinuosidade/
+#     acessibilidade, parecer detalhado, comparativos, motivo granular por motor, telemetria por motor e
+#     árvore de decisão ("por que venceu / por que os demais perderam") JÁ existiam (236/237/239/240 + Etapa
+#     B). NOVO nesta geração: (§2/§3) LINKS das rotas de cada estudo — Google Maps (direções e satélite),
+#     OpenStreetMap, OSRM e visualização de coordenadas (origem/destino) — para o usuário abrir o trajeto
+#     exato considerado por cada estudo; e (§6) MARGEM DE INVERSÃO da decisão: por quanto o destino de menor
+#     rota viária venceu e o que inverteria (quantos km a rota do perdedor precisaria encurtar). Requisito de
+#     dados: threading ADITIVO de coord_origem nos fatos e de coords+IBGE na análise (novas chaves; nada
+#     removido). Refletido nas 3 saídas: painel (expanders com links por município), HTML (tabela "Laudo
+#     técnico — rotas e margem" com links que abrem em nova aba) e planilha (aba "Diag - Rotas e Margem" com
+#     hyperlinks clicáveis). Integração: 1 bloco + 5 chamadas de uma linha; enriquecimento idempotente.
+#     REVISÃO CRÍTICA DO MOTOR DA MENOR ROTA VIÁRIA (§8/§9/§10) — conclusão: o motor JÁ segue a filosofia
+#     pedida no §10 (menor viária PREDOMINANTE; multicritério só valida/qualifica exceções): fora da
+#     tolerância de 4% vence sempre a menor distância (_selecionar_vencedor_rota, tol=0.04); DENTRO do empate
+#     técnico desempata por sem-balsa e depois confiabilidade; e o descasamento geometria×estrada que cortava
+#     o vencedor direto na pré-seleção JÁ foi tratado pelo resgate por circuidade (238ª). Não se justificou
+#     um redesenho (seria risco sem benefício e feriria o §10). NÃO foi alterada a lógica de decisão nesta
+#     geração — apenas ADICIONADAS evidências (links/margem). PROVA: suíte nova (margem, links com coords
+#     corretas, HTML/Excel/painel, defensivo) + as 14 anteriores intactas. NÃO-REGRESSÃO: 100% ADITIVO.
+#     RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 13. balloons: 1. bare: 0.
 #   v3.8 (242ª geração) → 📊 PLATAFORMA BI DOS RELATÓRIOS — FASE 1 [BI-PLATFORM]
 #     Início da evolução dos relatórios HTML em plataforma de BI (o pedido completo — dark/filtros/drill-down/
 #     30+ gráficos/mapas/Sankey/artigo científico completo — é multi-fase; esta é a fase 1, real e testada).
@@ -18738,6 +18760,12 @@ def _analisar_divergencia_par(linha, fatos_app, fatos_ref, limiar_empate_km=1.0)
     return {
         "Município": _mun, "UF": _uf, "Inscritos": int(_insc),
         "Destino Aplicação": fatos_app.get("destino"), "Destino Referência": fatos_ref.get("destino"),
+        "Coord Origem": fatos_app.get("coord_origem") or fatos_ref.get("coord_origem"),
+        "Coord Destino Aplicação": fatos_app.get("coord_destino"),
+        "Coord Destino Referência": fatos_ref.get("coord_destino"),
+        "IBGE Destino Aplicação": fatos_app.get("cod_ibge_destino"),
+        "IBGE Destino Referência": fatos_ref.get("cod_ibge_destino"),
+
         "Distância Aplicação (km)": _da, "Distância Referência (km)": _dr,
         "Diferença (km)": _dif_km, "Diferença (%)": _dif_pct,
         "Diferença Tempo (min)": _dif_tempo,
@@ -19125,6 +19153,10 @@ def _diagnostico_divergencias_html(diag):
             _tel_html = _html_telemetria(diag, _he)
         except Exception:
             _tel_html = ""
+        try:
+            _laudo_html = _html_laudo(diag, _he)
+        except Exception:
+            _laudo_html = ""
         return (f'<section id="diag-divergencias">{_css}'
                 f'<h2>🔬 Diagnóstico Inteligente das Divergências</h2>'
                 f'{_kpis}{_box_resumo}'
@@ -19135,6 +19167,7 @@ def _diagnostico_divergencias_html(diag):
                 f'{_stage_a_html}'
                 f'{_stage_b_html}'
                 f'{_tel_html}'
+                f'{_laudo_html}'
                 f'{_pareceres_html}'
                 f'</section>')
     except Exception:
@@ -19444,6 +19477,10 @@ def _abas_diagnostico_divergencias(writer, diag):
             _abas_telemetria(writer, diag)
         except Exception:
             pass
+        try:
+            _abas_laudo(writer, diag)
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -19621,6 +19658,10 @@ def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=No
         _montar_telemetria(_diag)
     except Exception:
         pass
+    try:
+        _montar_laudo(_diag)
+    except Exception:
+        pass
     return _diag
 
 
@@ -19751,6 +19792,10 @@ def _painel_divergencias_ui(diag, st):
             pass
         try:
             _painel_telemetria(diag, st, pd)
+        except Exception:
+            pass
+        try:
+            _painel_laudo(diag, st, pd)
         except Exception:
             pass
 
@@ -21926,6 +21971,244 @@ def _platform_bi_html():
     """[BI-PLATFORM - 242ª] Bloco <style>+<script> autossuficiente da plataforma BI para embutir no relatório."""
     return f'<style>{_CSS_BI}</style>\n<script>{_JS_BI}</script>'
 # <<< [BI-PLATFORM 242ª] FIM >>>
+
+
+
+
+# <<< [LAUDO-DIVERGENCIA 243ª] INÍCIO — links das rotas + margem de inversão >>>
+# ==============================================================================
+# [LAUDO-DIVERGENCIA - 243ª geração] LAUDO TÉCNICO: LINKS DAS ROTAS + MARGEM
+# ------------------------------------------------------------------------------
+# Incrementos novos ao laudo de divergências (236→242 já cobrem motor vencedor/
+# perdedor, índices, parecer, árvore de decisão, telemetria). Aqui: (§2) LINKS
+# das rotas de cada estudo (Google Maps direções/satélite, OpenStreetMap, OSRM,
+# visualização de coordenadas) e (§6) MARGEM DE INVERSÃO da decisão ("quanto
+# faltou para inverter"). PURO/defensivo. A renderização entra no painel/HTML/xlsx.
+# ==============================================================================
+
+
+def _lnum(v):
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coord_par(c):
+    """Aceita (lat,lon) tupla/lista e devolve (lat,lon) floats válidos ou None."""
+    try:
+        if c is None:
+            return None
+        if isinstance(c, (tuple, list)) and len(c) >= 2:
+            la, lo = _lnum(c[0]), _lnum(c[1])
+            return (la, lo) if (la is not None and lo is not None) else None
+    except Exception:
+        pass
+    return None
+
+
+def _links_lado(coord_origem, coord_destino):
+    """[LAUDO - 243ª] Links da rota de UM estudo (origem→destino) em múltiplos provedores. Retorna dict
+    {google, osm, osrm, satelite, destino_view} — só as chaves com coordenadas válidas."""
+    _o = _coord_par(coord_origem)
+    _d = _coord_par(coord_destino)
+    _out = {}
+    if _d:
+        _dll = f"{_d[0]:.6f},{_d[1]:.6f}"
+        _out["destino_view"] = f"https://www.google.com/maps?q={_dll}"
+        _out["satelite"] = f"https://www.google.com/maps?q={_dll}&t=k"
+    if _o and _d:
+        _oll = f"{_o[0]:.6f},{_o[1]:.6f}"
+        _dll = f"{_d[0]:.6f},{_d[1]:.6f}"
+        _out["google"] = (f"https://www.google.com/maps/dir/?api=1&origin={_oll}"
+                          f"&destination={_dll}&travelmode=driving")
+        _out["osm"] = (f"https://www.openstreetmap.org/directions?engine=fossgis_osrm_car"
+                       f"&route={_oll};{_dll}")
+        _fn = globals().get("_link_osrm_publico")
+        if callable(_fn):
+            try:
+                _lk = _fn(_o[0], _o[1], _d[0], _d[1])
+                if _lk:
+                    _out["osrm"] = _lk
+            except Exception:
+                pass
+        _out.setdefault("osrm", f"https://map.project-osrm.org/?loc={_oll}&loc={_dll}")
+    return _out
+
+
+def _links_rota_divergencia(analise):
+    """[LAUDO - 243ª] Conjunto de links para as rotas dos DOIS estudos de uma divergência (§2/§3). PURO."""
+    _co = analise.get("Coord Origem")
+    _links = {
+        "aplicacao": _links_lado(_co, analise.get("Coord Destino Aplicação")),
+        "referencia": _links_lado(_co, analise.get("Coord Destino Referência")),
+    }
+    _ov = _coord_par(_co)
+    if _ov:
+        _links["origem_view"] = f"https://www.google.com/maps?q={_ov[0]:.6f},{_ov[1]:.6f}"
+    return _links
+
+
+def _margem_inversao(analise):
+    """[LAUDO - 243ª] Margem de inversão da decisão (§6): por quanto o vencedor (menor viária) ganhou e
+    quanto faltaria para o outro município vencer. PURO. Usa as distâncias já calculadas."""
+    _da = _lnum(analise.get("Distância Aplicação (km)"))
+    _dr = _lnum(analise.get("Distância Referência (km)"))
+    _res = {"margem_km": None, "margem_pct": None, "vencedor_dist": None, "texto": ""}
+    if _da is None or _dr is None:
+        _res["texto"] = "margem indisponível (distância ausente em um dos estudos)"
+        return _res
+    _venc = "Aplicação" if _da < _dr else ("Referência" if _dr < _da else "Empate")
+    _margem = abs(_da - _dr)
+    _menor = min(_da, _dr)
+    _pct = (100.0 * _margem / _menor) if _menor > 0 else None
+    _perd = "Referência" if _venc == "Aplicação" else ("Aplicação" if _venc == "Referência" else "—")
+    _res.update({"margem_km": round(_margem, 1), "margem_pct": round(_pct, 1) if _pct is not None else None,
+                 "vencedor_dist": _venc})
+    if _venc == "Empate":
+        _res["texto"] = "empate técnico de distância viária entre os dois destinos"
+    else:
+        _res["texto"] = (f"{_venc} vence por {round(_margem,1)} km"
+                         + (f" ({round(_pct,1)}%)" if _pct is not None else "")
+                         + f"; para inverter, o destino da {_perd} precisaria de uma rota "
+                         f"{round(_margem,1)} km mais curta (ou o vencedor {round(_margem,1)} km mais longa).")
+    return _res
+
+
+def _montar_laudo(diag):
+    """Enriquece o diag com links + margem por divergência (idempotente). PURO."""
+    if not diag or diag.get("_laudo"):
+        return diag
+    _an = diag.get("analises") or []
+    for a in _an:
+        try:
+            a["_margem"] = _margem_inversao(a)
+            a["_links"] = _links_rota_divergencia(a)
+        except Exception:
+            pass
+    diag["_laudo"] = True
+    return diag
+
+
+def _html_laudo(diag, _he):
+    """Seção HTML: tabela de links das rotas + margem de inversão por município (§2/§6). PURO/idempotente."""
+    try:
+        _montar_laudo(diag)
+        _an = diag.get("analises") or []
+        # ordena por impacto (maior diferença × inscritos) e limita
+        def _imp(a):
+            _d = _lnum(a.get("Diferença (km)")) or 0.0
+            _i = _lnum(a.get("Inscritos")) or 1.0
+            return abs(_d) * (_i or 1)
+        _ord = sorted(_an, key=_imp, reverse=True)[:40]
+        if not _ord:
+            return ""
+        def _a(url, txt):
+            return f'<a href="{_he.escape(url)}" target="_blank" rel="noopener">{txt}</a>' if url else "—"
+        _linhas = ""
+        for a in _ord:
+            _lk = a.get("_links") or {}
+            _mg = a.get("_margem") or {}
+            _app = _lk.get("aplicacao") or {}
+            _ref = _lk.get("referencia") or {}
+            _rot_app = " · ".join(x for x in [_a(_app.get("google"), "Google"), _a(_app.get("osm"), "OSM"),
+                                              _a(_app.get("osrm"), "OSRM"), _a(_app.get("satelite"), "Sat")] if x != "—") or "—"
+            _rot_ref = " · ".join(x for x in [_a(_ref.get("google"), "Google"), _a(_ref.get("osm"), "OSM"),
+                                              _a(_ref.get("osrm"), "OSRM"), _a(_ref.get("satelite"), "Sat")] if x != "—") or "—"
+            _linhas += (f"<tr><td>{_he.escape(str(a.get('Município','?')))}/{_he.escape(str(a.get('UF','')))}</td>"
+                        f"<td>{_he.escape(str(a.get('Destino Aplicação','—')))}<br><small>{_rot_app}</small></td>"
+                        f"<td>{_he.escape(str(a.get('Destino Referência','—')))}<br><small>{_rot_ref}</small></td>"
+                        f"<td>{_mg.get('margem_km','—')} km" + (f" ({_mg.get('margem_pct')}%)" if _mg.get('margem_pct') is not None else "")
+                        + f"<br><small>{_he.escape(str(_mg.get('texto','')))}</small></td></tr>")
+        return (f'<h3>🔗 Laudo técnico — rotas de cada estudo e margem da decisão</h3>'
+                f'<p class="dv-nota">Abra a rota exata considerada por cada estudo (Google Maps, OpenStreetMap, '
+                f'OSRM, satélite). A margem indica por quanto o destino de menor rota viária venceu e o que '
+                f'inverteria a decisão.</p>'
+                f'<div class="tbl-wrap"><table class="dvt"><thead><tr><th>Município</th>'
+                f'<th>Aplicação (rota)</th><th>Referência (rota)</th><th>Margem de inversão</th></tr></thead>'
+                f'<tbody>{_linhas}</tbody></table></div>')
+    except Exception:
+        return ""
+
+
+def _abas_laudo(writer, diag):
+    """Aba Excel: links das rotas + margem por município. DEFENSIVO."""
+    try:
+        if not diag:
+            return
+        _wb = getattr(writer, "book", None)
+        if _wb is None or not hasattr(_wb, "add_format"):
+            return
+        _montar_laudo(diag)
+        _an = diag.get("analises") or []
+        if not _an:
+            return
+        _f_hdr = _wb.add_format({"bold": True, "font_size": 10, "font_color": "#fff", "bg_color": "#1e3a8a", "border": 1, "text_wrap": True})
+        _f_lbl = _wb.add_format({"font_size": 10, "font_color": "#475569"})
+        _f_num = _wb.add_format({"font_size": 10, "num_format": "#,##0.0", "align": "right"})
+        _f_lnk = _wb.add_format({"font_size": 9, "font_color": "#2563eb", "underline": 1})
+        try:
+            _ws = _wb.add_worksheet("Diag - Rotas e Margem")
+        except Exception:
+            return
+        _cols = ["Município", "UF", "Destino Aplicação", "Rota App (Google)", "Rota App (OSRM)",
+                 "Destino Referência", "Rota Ref (Google)", "Rota Ref (OSRM)", "Margem (km)", "Margem (%)", "O que inverteria"]
+        _larg = [20, 6, 22, 16, 16, 22, 16, 16, 12, 10, 46]
+        for _c, (_h, _w) in enumerate(zip(_cols, _larg)):
+            _ws.write(0, _c, _h, _f_hdr); _ws.set_column(_c, _c, _w)
+        for _i, a in enumerate(_an):
+            _lk = a.get("_links") or {}; _mg = a.get("_margem") or {}
+            _app = _lk.get("aplicacao") or {}; _ref = _lk.get("referencia") or {}
+            _r = _i + 1
+            _ws.write(_r, 0, str(a.get("Município", "—")), _f_lbl)
+            _ws.write(_r, 1, str(a.get("UF", "")), _f_lbl)
+            _ws.write(_r, 2, str(a.get("Destino Aplicação", "—")), _f_lbl)
+            _ws.write_url(_r, 3, _app.get("google", ""), _f_lnk, "abrir") if _app.get("google") else _ws.write(_r, 3, "—", _f_lbl)
+            _ws.write_url(_r, 4, _app.get("osrm", ""), _f_lnk, "abrir") if _app.get("osrm") else _ws.write(_r, 4, "—", _f_lbl)
+            _ws.write(_r, 5, str(a.get("Destino Referência", "—")), _f_lbl)
+            _ws.write_url(_r, 6, _ref.get("google", ""), _f_lnk, "abrir") if _ref.get("google") else _ws.write(_r, 6, "—", _f_lbl)
+            _ws.write_url(_r, 7, _ref.get("osrm", ""), _f_lnk, "abrir") if _ref.get("osrm") else _ws.write(_r, 7, "—", _f_lbl)
+            _ws.write_number(_r, 8, _mg.get("margem_km") or 0.0, _f_num)
+            _ws.write_number(_r, 9, _mg.get("margem_pct") or 0.0, _f_num)
+            _ws.write(_r, 10, str(_mg.get("texto", "")), _f_lbl)
+        _ws.freeze_panes(1, 0)
+    except Exception:
+        return
+
+
+def _painel_laudo(diag, st, pd=None):
+    """Seção do painel: links das rotas + margem por município. DEFENSIVO."""
+    try:
+        _montar_laudo(diag)
+        _an = diag.get("analises") or []
+        if not _an:
+            return
+        st.markdown("#### 🔗 Rotas de cada estudo e margem da decisão")
+        st.caption("Abra a rota exata de cada estudo (Google/OSM/OSRM/satélite) e veja por quanto o destino de "
+                   "menor rota viária venceu.")
+        def _imp(a):
+            return abs(_lnum(a.get("Diferença (km)")) or 0.0) * (_lnum(a.get("Inscritos")) or 1)
+        for a in sorted(_an, key=_imp, reverse=True)[:25]:
+            _lk = a.get("_links") or {}; _mg = a.get("_margem") or {}
+            _app = _lk.get("aplicacao") or {}; _ref = _lk.get("referencia") or {}
+            with st.expander(f"{a.get('Município','?')}/{a.get('UF','')} — {_mg.get('texto','')[:80]}"):
+                _c1, _c2 = st.columns(2)
+                _c1.markdown(f"**Aplicação → {a.get('Destino Aplicação','—')}**")
+                for _k, _lab in [("google", "Google Maps"), ("osm", "OpenStreetMap"), ("osrm", "OSRM"), ("satelite", "Satélite")]:
+                    if _app.get(_k):
+                        _c1.markdown(f"[{_lab}]({_app[_k]})")
+                _c2.markdown(f"**Referência → {a.get('Destino Referência','—')}**")
+                for _k, _lab in [("google", "Google Maps"), ("osm", "OpenStreetMap"), ("osrm", "OSRM"), ("satelite", "Satélite")]:
+                    if _ref.get(_k):
+                        _c2.markdown(f"[{_lab}]({_ref[_k]})")
+    except Exception as _e:
+        try:
+            st.caption(f"(laudo de rotas indisponível: {_e})")
+        except Exception:
+            pass
+# <<< [LAUDO-DIVERGENCIA 243ª] FIM >>>
 
 
 def _montar_xlsx_comparacao(linhas, stats, aud, relatorio, diagnostico_div=None):
@@ -31948,7 +32231,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "242"
+_VERSAO_APP = "243"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
