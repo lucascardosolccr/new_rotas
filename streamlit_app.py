@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.9
+# VERSÃO: 3.13
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,89 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.13 (250ª geração) → 🛠️ CORREÇÃO DEFINITIVA DE 2 ERROS CRÍTICOS DE EXECUÇÃO [FIX-CATEGORICAL+PIPELINE]
+#     Investigação de causa-raiz (não remendo) de dois TypeError que derrubavam o app, cada um reproduzido
+#     e corrigido em duas camadas (preventiva + defensiva), com testes que impedem a volta silenciosa.
+#     ── ERRO 1: "Cannot setitem on a Categorical with a new category" em
+#        df_final.loc[mask,'Status Linha Reta']="Calculada via Haversine Vetorizado". CAUSA: o otimizador de
+#        memória _otimizar_dtypes_memoria (197ª) convertia colunas string de baixa cardinalidade para
+#        'category'; 'Status Linha Reta' virava categórica e, ao receber um rótulo NOVO depois, o pandas
+#        recusava. FIX (1-preventivo): denylist estendida com as colunas ESCRITAS após a construção
+#        ('Status Linha Reta', 'Status da Rota', 'Fonte da Rota', 'Modo/Acesso', 'Justificativa...', etc.) —
+#        ficam string; as demais SEGUEM otimizadas (mantém ~60% de economia). FIX (2-defensivo): helper
+#        _set_col_seguro(df,mask,col,valor) — antes de qualquer .loc, garante que o rótulo é categoria válida
+#        (add_categories, ou cai p/ object); blinda QUALQUER escrita, inclusive futuras. Auditoria: TODAS as
+#        atribuições .loc[mask,'col']=string do app agora passam por _set_col_seguro (as de 'Linha Reta' são
+#        float, imunes). Cobre df_final, df_final_alo e 'Alerta Coerência Viária'.
+#     ── ERRO 2: "'NoneType' object is not subscriptable" em km_rota=res_google[0]. CAUSA: entrava-se em
+#        'if res_google or res_osrm:' com ≥1 motor, mas a BARREIRA FÍSICA (_viaria_fisicamente_possivel)
+#        podia descartar AMBOS logo depois (→ None); a decisão caía num else que assumia "Google venceu" e
+#        indexava res_google=None. FIX (arquitetural): else→'elif _route_ok(res_google)' + flag
+#        _venc_definido; quando nenhum motor VÁLIDO vence, o bloco de resultado é pulado e a execução cai no
+#        fallback geodésico estimado que já existia (comportamento correto e auditável). CONTRATO DEFENSIVO:
+#        _route_ok(res) valida (sequência indexável, ≥5 posições, distância>0) e _route_val(res,idx,default)
+#        faz acesso seguro — aplicados nos branches vencedores de Google E OSRM (paridade). Reproduzidos os
+#        cenários que quebravam (Google descartado / ambos descartados / tupla curta): todos agora caem no
+#        estimado sem crash; os caminhos que já funcionavam seguem idênticos. Cobre executar_pipeline_unificado
+#        (já guardado por 'res and len(res)>=31').
+#     PROVA: suíte de não-regressão agora com 71 asserts (16 novos no BLOCO G) — reprodução dos dois bugs,
+#        validação dos helpers, e verificação de que o código usa as novas estruturas. NÃO-REGRESSÃO:
+#        RotaPipeline 42 (idêntico), 0 função removida, imports de topo idênticos, requirements INALTERADO,
+#        _SECOES 14, balloons 1, bare 0. PERFORMANCE: vetorização/paralelismo preservados; _set_col_seguro só
+#        age quando a coluna é categórica (custo ~zero no caminho normal); economia de memória mantida.
+#   v3.12 (249ª geração) → 📊 BI FASE 3: CROSS-FILTER POR CLIQUE NOS GRÁFICOS + CHIPS DE FILTRO ATIVO [BI-FASE3]
+#     Evolução aditiva do Painel Executivo Interativo, escolhida por diagnóstico: os gráficos NÃO eram
+#     clicáveis (faltava o recurso que DEFINE um BI interativo) e não havia visão do filtro ativo.
+#     (1) CROSS-FILTER POR CLIQUE: clicar numa barra do gráfico "Polos mais demandados" filtra por aquele
+#         destino; clicar no "Distância média por UF" filtra por aquele estado (toggle: clicar de novo limpa).
+#         Implementação: _hbar passou a gravar as hit-regions (cv._hit = faixas y↔rótulo); _bindBarClick(cv,cb)
+#         mapeia o clique ao rótulo e dispara o filtro existente (elPolo/elUF) + upd(). Reusa 100% da máquina
+#         de filtros que já existia — nada novo no pipeline de dados. (2) CHIPS DE FILTRO ATIVO: barra #biChips
+#         mostra cada filtro em vigor (UF, Polo, Fonte, Balsa, mín. candidatos, distância máx., busca) como um
+#         chip removível (× por chip) + "Limpar todos" quando há 2+. renderChips() roda dentro do upd() via
+#         _safe, então acompanha qualquer mudança de filtro (inclusive as vindas de clique no gráfico). a11y:
+#         cada × tem aria-label. PROVA: teste headless (Playwright) — clique no gráfico de UF filtrou 40→8
+#         registros, criou o chip "UF: RR", e remover o chip restaurou os 40; ZERO erro de JS; + 6 asserts
+#         novos (F10–F15) na suíte. Cobre os DOIS relatórios (mesma _painel_interativo_bi_html).
+#     NÃO-REGRESSÃO: contido no painel; nenhuma mudança em dados/exports. RotaPipeline: 42 (idêntico).
+#     Imports de topo: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 14. balloons: 1. bare: 0.
+#   v3.11 (248ª geração) → 🐛 FIX DO PAINEL EXECUTIVO (visualizações não apareciam) + 📊 BI FASE 2 [BI-FIX+FASE2]
+#     Atende o pedido: (A) o Painel Executivo Interativo dos relatórios NÃO renderizava os gráficos;
+#     (B) evoluir a plataforma BI. CAUSA RAIZ do bug (diagnosticada e PROVADA em navegador headless):
+#     COLISÃO DE ID — o <select> do filtro de UF e o <canvas> do gráfico de UF usavam o MESMO id="biUF".
+#     document.getElementById("biUF") retornava o <select>, então desenharUF() chamava getContext() num
+#     <select> → TypeError "cv.getContext is not a function" → abortava upd() no meio, deixando EM BRANCO
+#     o gráfico de UF e TODOS os seguintes (sunburst, Sankey, mapa) + a tabela. FIX cirúrgico: canvas
+#     renomeado p/ id="biUFc" (o select segue "biUF"); elUFc reaponta p/ "biUFc". BLINDAGEM (impede a
+#     classe inteira do bug voltar): cada desenho passou a ser chamado via _safe(fn,arg) com try/catch —
+#     uma falha isolada de um gráfico não derruba mais os demais. Cobre os DOIS relatórios (principal e
+#     comparação) porque ambos usam a MESMA _painel_interativo_bi_html. BI FASE 2 (aditivo): (1) NOVO
+#     gráfico "🎯 Piores casos" — Top 12 municípios por deslocamento no filtro (barras, ranking acionável);
+#     (2) "🖼️ Baixar gráficos (PNG)" — compõe os 7 gráficos numa imagem e baixa (offline, canvas→PNG).
+#     _hbar ganhou parâmetro opcional maxN (default 8 — retrocompatível) p/ o novo gráfico usar 12.
+#     PROVA: teste headless (Playwright) confirma 7/7 canvases com pixels pintados, ZERO erro de JS e o
+#     download do PNG; + 10 asserts novos no BLOCO F da suíte (sem colisão de ID, _safe presente, Fase 2)
+#     que impedem regressão silenciosa. NÃO-REGRESSÃO: mudança contida no painel (renome de 1 id + blindagem
+#     + 2 adições). RotaPipeline: 42 (idêntico). Imports de topo: IDÊNTICOS. Requirements: INALTERADO.
+#     _SECOES: 14. balloons: 1. bare: 0.
+#   v3.10 (247ª geração) → ⚡ SEÇÃO INSTITUCIONAL: PERFORMANCE + ACESSIBILIDADE + IMPRESSÃO [DEV-ABOUT-2]
+#     Rodada 2 — refinamentos ADITIVOS e de baixo risco sobre a seção "Sobre o Desenvolvedor" (V246),
+#     escolhidos por DIAGNÓSTICO (não por achismo): o resto do código já é maduro (imports locais são
+#     lazy-loading proposital; cache e tratamento de erro extensos — refatorar seria risco sem benefício).
+#     (1) PERFORMANCE: memoização determinística de _dev_about_html (saída ~40 KB reconstruída a cada
+#         relatório). A função é PURA (depende só de compacto/data_str + constantes imutáveis) — verificado
+#         por AST. Cache em dict simples (thread-safe p/ saída idempotente; não usa @st.cache_data porque
+#         roda fora do contexto Streamlit, dentro dos montadores de relatório). Chave VERSÃO-AWARE (nunca
+#         serve HTML com versão obsoleta). MEDIDO: 1ª geração ~7,8ms → cache hit ~0,003ms (~2400× no
+#         repeat; os 6 pontos de chamada se beneficiam automaticamente). (2) ACESSIBILIDADE (a11y):
+#         role='region' + aria-label na seção; aria-label no botão LinkedIn; aria-hidden no ícone SVG
+#         decorativo; alt descritivo em foto e QR. (3) IMPRESSÃO: @media print (fundo sólido sem glow,
+#         sombras removidas, break-inside:avoid nos cartões e timeline) — o relatório já imprimia; a seção
+#         agora também. (4) prefers-color-scheme:dark — respeita o tema do SO antes de qualquer toggle JS.
+#         Tudo com escopo .devab (zero efeito no resto do relatório). PROVA: suíte de não-regressão (36
+#         asserts) segue verde + testes novos (memoização idêntica/hit/versão-aware, presença dos atributos
+#         a11y, CSS de impressão) + render visual em modo impressão. NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline:
+#         42 (idêntico). Imports de topo: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 14. balloons: 1. bare: 0.
 #   v3.9 (246ª geração) → 👨‍💻 SEÇÃO INSTITUCIONAL "SOBRE O DESENVOLVEDOR" [DEV-ABOUT]
 #     Rodada 1 do plano de evolução contínua. Apresentação institucional do desenvolvedor (Lucas Cardoso
 #     Cruz) e da filosofia da plataforma, presente de forma consistente em TODAS as superfícies: (1) NOVA
@@ -7316,6 +7399,15 @@ def _painel_interativo_bi_html(df):
             ".pbi-btn{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:7px 13px;font-size:12px;font-weight:600;cursor:pointer}"
             ".pbi-btn.sec{background:#334155}.pbi-btn:hover{opacity:.9}"
             ".pbi-count{font-size:11.5px;color:#94a3b8}"
+            ".pbi-chips{display:flex;flex-wrap:wrap;gap:7px;margin:2px 0 14px;min-height:0}"
+            ".pbi-chip{display:inline-flex;align-items:center;gap:6px;background:rgba(59,130,246,.16);"
+            "border:1px solid #3b82f6;color:#bfdbfe;border-radius:999px;padding:4px 10px;font-size:11.5px;font-weight:600}"
+            ".pbi-chip button{background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:50%;"
+            "width:16px;height:16px;font-size:11px;line-height:1;cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center}"
+            ".pbi-chip button:hover{background:#ef4444}"
+            ".pbi-chip-clear{background:transparent;border:1px dashed #64748b;color:#94a3b8;cursor:pointer;"
+            "border-radius:999px;padding:4px 11px;font-size:11px;font-weight:600}"
+            ".pbi-chip-clear:hover{border-color:#ef4444;color:#fca5a5}"
             ".pbi-tab-wrap{max-height:0;overflow:hidden;transition:max-height .3s ease;margin-top:8px}"
             ".pbi-tab-wrap.open{max-height:600px;overflow:auto}"
             ".pbi-tab{width:100%;border-collapse:collapse;font-size:11.5px}"
@@ -7335,6 +7427,7 @@ def _painel_interativo_bi_html(df):
             f'<div class="pbi-sub">Filtre e os indicadores abaixo se recalculam na hora. Clique em '
             f'<b>“Ver registros”</b> para auditar exatamente quais municípios compõem cada número.</div>'
             f'<div class="pbi-filtros">{_sel_uf}{_sel_polo}{_sel_fonte}{_sel_balsa}{_sel_cand}{_sel_dist}{_sel_busca}</div>'
+            f'<div class="pbi-chips" id="biChips"></div>'
             f'<div class="pbi-kpis">{_kpis_html}</div>'
             f'<div class="pbi-charts" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0 2px">'
             f'<div style="grid-column:1 / -1"><div class="pbi-clab">Distribuição das distâncias no filtro (histograma ao vivo)</div>'
@@ -7342,7 +7435,9 @@ def _painel_interativo_bi_html(df):
             f'<div><div class="pbi-clab">Polos mais demandados no filtro</div>'
             f'<canvas id="biPolos" height="200" class="pbi-cv"></canvas></div>'
             f'<div><div class="pbi-clab">Distância média por UF no filtro</div>'
-            f'<canvas id="biUF" height="200" class="pbi-cv"></canvas></div>'
+            f'<canvas id="biUFc" height="200" class="pbi-cv"></canvas></div>'
+            f'<div style="grid-column:1 / -1"><div class="pbi-clab">🎯 Piores casos: municípios com maior deslocamento no filtro (Top 12)</div>'
+            f'<canvas id="biPiores" height="260" class="pbi-cv"></canvas></div>'
             f'<div style="grid-column:1 / -1"><div class="pbi-clab">Composição da demanda: UF → Polo (sunburst ao vivo)</div>'
             f'<canvas id="biSun" height="300" class="pbi-cv"></canvas></div>'
             f'<div style="grid-column:1 / -1"><div class="pbi-clab">Fluxo de candidatos: UF → Polo (Sankey ao vivo)</div>'
@@ -7350,6 +7445,7 @@ def _painel_interativo_bi_html(df):
             f'<div style="grid-column:1 / -1"><div class="pbi-clab">Mapa de concentração: origens no filtro (tamanho = candidatos, cor = distância)</div>'
             f'<canvas id="biMapa" height="420" class="pbi-cv"></canvas></div></div>'
             f'<div class="pbi-actions"><button class="pbi-btn" id="biVer">📋 Ver registros do filtro</button>'
+            f'<button class="pbi-btn sec" id="biPng">🖼️ Baixar gráficos (PNG)</button>'
             f'<button class="pbi-btn sec" id="biLimpar">↺ Limpar filtros</button>'
             f'<span class="pbi-count" id="biCount"></span></div>'
             f'<div class="pbi-tab-wrap" id="biTabWrap"><table class="pbi-tab"><thead><tr>{_thead}</tr></thead>'
@@ -7361,14 +7457,20 @@ def _painel_interativo_bi_html(df):
             f'function fmt(x,d){{if(x==null||isNaN(x))return "—";return Number(x).toLocaleString("pt-BR",'
             f'{{minimumFractionDigits:d,maximumFractionDigits:d}});}}'
             f'function pct(x){{return (x==null||isNaN(x))?"—":fmt(x,0)+"%";}}'
+            f'function _safe(fn,a){{try{{fn(a);}}catch(e){{if(window.console&&console.warn)console.warn("[BI] gráfico falhou:",e);}}}}'
+            f'function _bindBarClick(cv,cb){{if(!cv||cv._bound)return;cv._bound=true;cv.style.cursor="pointer";'
+            f'cv.addEventListener("click",function(e){{if(!cv._hit)return;var rect=cv.getBoundingClientRect();'
+            f'var yr=(e.clientY-rect.top)*(cv.height/rect.height);'
+            f'for(var i=0;i<cv._hit.length;i++){{if(yr>=cv._hit[i].y0&&yr<=cv._hit[i].y1){{cb(cv._hit[i].label);return;}}}}}});}}'
             f'var elUF=document.getElementById("biUF"),elF=document.getElementById("biFonte"),'
             f'elB=document.getElementById("biBalsa"),elKm=document.getElementById("biKm"),'
             f'elKmL=document.getElementById("biKmLbl"),elPolo=document.getElementById("biPolo"),'
             f'elCand=document.getElementById("biCand"),elCandL=document.getElementById("biCandLbl"),'
             f'elBusca=document.getElementById("biBusca"),elHist=document.getElementById("biHist"),'
-            f'elPolosC=document.getElementById("biPolos"),elUFc=document.getElementById("biUF"),'
+            f'elPolosC=document.getElementById("biPolos"),elUFc=document.getElementById("biUFc"),'
             f'elSun=document.getElementById("biSun"),elSank=document.getElementById("biSank"),'
             f'elMapa=document.getElementById("biMapa");'
+            f'var elPiores=document.getElementById("biPiores");'
             f'function filtrar(){{var u=elUF?elUF.value:"",f=elF?elF.value:"",b=elB?elB.value:"",'
             f'km=elKm?parseFloat(elKm.value):1e9,pl=elPolo?elPolo.value:"",'
             f'cmin=elCand?parseFloat(elCand.value):0,q=elBusca?elBusca.value.trim().toLowerCase():"";'
@@ -7396,14 +7498,33 @@ def _painel_interativo_bi_html(df):
             f'document.getElementById("kEst").textContent=fmt(ne,0);}}'
             f'var cnt=document.getElementById("biCount");if(cnt)cnt.textContent=F.length+" de "+DADOS.length+" registros";'
             f'if(elCandL&&elCand)elCandL.textContent=elCand.value;'
-            f'desenharHist(kms);desenharPolos(F);desenharUF(F);desenharSun(F);desenharSank(F);desenharMapa(F);renderTab(F);}}'
-            f'function _hbar(cv,pairs,unidade,cor1,cor2){{if(!cv)return;var ctx=cv.getContext("2d");if(!ctx)return;'
+            f'_safe(desenharHist,kms);_safe(desenharPolos,F);_safe(desenharUF,F);_safe(desenharPiores,F);_safe(desenharSun,F);_safe(desenharSank,F);_safe(desenharMapa,F);_safe(renderTab,F);_safe(renderChips,F);}}'
+            f'function renderChips(){{var box=document.getElementById("biChips");if(!box)return;var ch=[];'
+            f'function add(lbl,clr){{ch.push({{t:lbl,c:clr}});}}'
+            f'if(elUF&&elUF.value)add("UF: "+elUF.value,function(){{elUF.value="";upd();}});'
+            f'if(elPolo&&elPolo.value)add("Polo: "+elPolo.value,function(){{elPolo.value="";upd();}});'
+            f'if(elF&&elF.value)add("Fonte: "+elF.value,function(){{elF.value="";upd();}});'
+            f'if(elB&&elB.value)add("Balsa: "+elB.value,function(){{elB.value="";upd();}});'
+            f'if(elCand&&parseFloat(elCand.value)>0)add("Mín. cand.: "+elCand.value,function(){{elCand.value=0;upd();}});'
+            f'if(elKm&&parseFloat(elKm.value)<1000)add("Até "+elKm.value+" km",function(){{elKm.value=1000;upd();}});'
+            f'if(elBusca&&elBusca.value.trim())add("Busca: \\u201C"+elBusca.value.trim()+"\\u201D",function(){{elBusca.value="";upd();}});'
+            f'box.innerHTML="";if(!ch.length){{return;}}'
+            f'ch.forEach(function(x){{var el=document.createElement("span");el.className="pbi-chip";'
+            f'el.appendChild(document.createTextNode(x.t));var b=document.createElement("button");'
+            f'b.textContent="\\u00d7";b.setAttribute("aria-label","Remover filtro "+x.t);b.onclick=x.c;el.appendChild(b);box.appendChild(el);}});'
+            f'if(ch.length>1){{var cl=document.createElement("button");cl.className="pbi-chip-clear";'
+            f'cl.textContent="Limpar todos";cl.onclick=function(){{if(elUF)elUF.value="";if(elF)elF.value="";'
+            f'if(elB)elB.value="";if(elKm)elKm.value=1000;if(elPolo)elPolo.value="";if(elCand)elCand.value=0;'
+            f'if(elBusca)elBusca.value="";upd();}};box.appendChild(cl);}}}}'
+            f'function _hbar(cv,pairs,unidade,cor1,cor2,maxN){{if(!cv)return;var ctx=cv.getContext("2d");if(!ctx)return;'
             f'var W=cv.clientWidth||300,H=cv.height;cv.width=W;ctx.clearRect(0,0,W,H);'
             f'if(!pairs.length){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
             f'ctx.fillText("Sem dados no filtro atual.",10,H/2);return;}}'
-            f'pairs=pairs.slice(0,8);var vmax=Math.max.apply(null,pairs.map(function(p){{return p[1];}}))||1;'
+            f'pairs=pairs.slice(0,maxN||8);var vmax=Math.max.apply(null,pairs.map(function(p){{return p[1];}}))||1;'
             f'var rowH=Math.min(24,(H-8)/pairs.length),lblW=Math.min(120,W*0.42),bx=lblW+6,bw=W-bx-52;'
+            f'cv._hit=[];'
             f'for(var i=0;i<pairs.length;i++){{var y=6+i*rowH;var val=pairs[i][1];var w=Math.max(1,(val/vmax)*bw);'
+            f'cv._hit.push({{y0:y,y1:y+rowH,label:pairs[i][0]}});'
             f'ctx.fillStyle="#cbd5e1";ctx.font="11px sans-serif";ctx.textAlign="left";'
             f'var nm=(""+pairs[i][0]);if(nm.length>18)nm=nm.slice(0,17)+"…";ctx.fillText(nm,4,y+rowH*0.7);'
             f'var g=ctx.createLinearGradient(bx,0,bx+w,0);g.addColorStop(0,cor1);g.addColorStop(1,cor2);'
@@ -7413,11 +7534,18 @@ def _painel_interativo_bi_html(df):
             f'function desenharPolos(F){{if(!elPolosC)return;var agg={{}};F.forEach(function(r){{if(!r.d)return;'
             f'agg[r.d]=(agg[r.d]||0)+(TEM_C?(r.c||0):1);}});'
             f'var pairs=Object.keys(agg).map(function(k){{return [k,agg[k]];}}).sort(function(a,b){{return b[1]-a[1];}});'
-            f'_hbar(elPolosC,pairs,TEM_C?"cand":"n","#818cf8","#4f46e5");}}'
+            f'_hbar(elPolosC,pairs,TEM_C?"cand":"n","#818cf8","#4f46e5");'
+            f'if(elPolo)_bindBarClick(elPolosC,function(lbl){{elPolo.value=(elPolo.value===lbl?"":lbl);upd();}});}}'
             f'function desenharUF(F){{if(!elUFc)return;var s={{}},c={{}};F.forEach(function(r){{if(!r.u||r.km==null)return;'
             f's[r.u]=(s[r.u]||0)+r.km;c[r.u]=(c[r.u]||0)+1;}});'
             f'var pairs=Object.keys(s).map(function(k){{return [k,s[k]/c[k]];}}).sort(function(a,b){{return b[1]-a[1];}});'
-            f'_hbar(elUFc,pairs,"km","#34d399","#059669");}}'
+            f'_hbar(elUFc,pairs,"km","#34d399","#059669");'
+            f'if(elUF)_bindBarClick(elUFc,function(lbl){{elUF.value=(elUF.value===lbl?"":lbl);upd();}});}}'
+            f'function desenharPiores(F){{if(!elPiores)return;'
+            f'var rows=F.filter(function(r){{return r.km!=null&&!isNaN(r.km);}})'
+            f'.sort(function(a,b){{return b.km-a.km;}}).slice(0,12);'
+            f'var pairs=rows.map(function(r){{return [(r.o||"—")+(r.u?" ("+r.u+")":""),r.km];}});'
+            f'_hbar(elPiores,pairs,"km","#fb7185","#e11d48",12);}}'
             f'var SUNPAL=["#2563eb","#16a34a","#dc2626","#d97706","#7c3aed","#0891b2","#db2777","#65a30d",'
             f'"#ea580c","#4f46e5","#0d9488","#be123c"];'
             f'function _lighten(hex,f){{var n=parseInt(hex.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;'
@@ -7586,9 +7714,21 @@ def _painel_interativo_bi_html(df):
             f'var lb=document.getElementById("biLimpar");if(lb)lb.addEventListener("click",function(){{'
             f'if(elUF)elUF.value="";if(elF)elF.value="";if(elB)elB.value="";if(elKm)elKm.value=1000;'
             f'if(elPolo)elPolo.value="";if(elCand)elCand.value=0;if(elBusca)elBusca.value="";upd();}});'
+            f'var pb=document.getElementById("biPng");if(pb)pb.addEventListener("click",function(){{try{{'
+            f'var ids=["biHist","biPolos","biUFc","biPiores","biSun","biSank","biMapa"];'
+            f'var cvs=ids.map(function(i){{return document.getElementById(i);}}).filter(function(c){{return c&&c.width&&c.height;}});'
+            f'if(!cvs.length)return;var pad=16,gap=18,maxW=0,totH=pad;'
+            f'cvs.forEach(function(c){{maxW=Math.max(maxW,c.width);totH+=c.height+gap;}});'
+            f'var out=document.createElement("canvas");out.width=maxW+pad*2;out.height=totH+pad;'
+            f'var o=out.getContext("2d");o.fillStyle="#0f172a";o.fillRect(0,0,out.width,out.height);'
+            f'o.fillStyle="#93c5fd";o.font="bold 16px sans-serif";o.fillText("Painel Executivo — gráficos do filtro atual",pad,pad+4);'
+            f'var y=pad+gap;cvs.forEach(function(c){{try{{o.drawImage(c,pad,y);}}catch(e){{}}y+=c.height+gap;}});'
+            f'var url=out.toDataURL("image/png");var a=document.createElement("a");'
+            f'a.href=url;a.download="painel_executivo_graficos.png";a.click();'
+            f'}}catch(e){{if(window.console&&console.warn)console.warn("[BI] export PNG falhou:",e);}}}});'
             f'window.addEventListener("resize",function(){{var F=filtrar();'
-            f'desenharHist(F.map(function(r){{return r.km;}}).filter(function(x){{return x!=null&&!isNaN(x);}}));'
-            f'desenharPolos(F);desenharUF(F);desenharSun(F);desenharSank(F);desenharMapa(F);}});'
+            f'_safe(desenharHist,F.map(function(r){{return r.km;}}).filter(function(x){{return x!=null&&!isNaN(x);}}));'
+            f'_safe(desenharPolos,F);_safe(desenharUF,F);_safe(desenharPiores,F);_safe(desenharSun,F);_safe(desenharSank,F);_safe(desenharMapa,F);}});'
             f'upd();}})();</script>'
         )
         return _html
@@ -27654,6 +27794,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         link_osrm_viewer = ""  # [VIS-DINAMICA] default; preenchido só quando o OSRM vence
         link_embed_comparativo = ""  # [VIS-DUAL] mapa do provedor comparativo (não-vencedor)
         link_rota_comparativo = ""   # [VIS-DUAL] link do provedor comparativo
+        _venc_definido = False       # [FIX PIPELINE - 250ª] só vira True se um motor VÁLIDO vencer;
+                                     # se a barreira física descartar AMBOS, segue False → cai no fallback geodésico
         km_g = res_google[0] if res_google else None
         km_o = res_osrm[0] if res_osrm else None
         n_alt_osrm = (res_osrm[3] if res_osrm and len(res_osrm) > 3 else 1)
@@ -27689,11 +27831,12 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         
         if res_osrm and (osrm_vence or not res_google):
             # ---------------- OSRM É O VENCEDOR (ou Google indisponível) ----------------
+            _venc_definido = True
             km_rota = km_o
-            tempo_m = res_osrm[1]
+            tempo_m = _route_val(res_osrm, 1, default=0)
             tempo_rota = f"{tempo_m} min" if tempo_m < 60 else f"{tempo_m // 60} h {tempo_m % 60} min"
-            _geo_osrm = res_osrm[4] if len(res_osrm) > 4 else ""
-            balsa_rota = res_osrm[2]
+            _geo_osrm = _route_val(res_osrm, 4, default="")
+            balsa_rota = _route_val(res_osrm, 2, default="Não")
             score_rota = 88  # OSRM não fornece score próprio; valor fixo (idx 5 agora é snap_info)
             # [VIS-NAMES] Mapa EMBARCADO desenha a geometria EXATA do OSRM com rótulos por
             # NOME oficial (origem/destino), não coordenadas — conforme o pedido.
@@ -27729,12 +27872,13 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             else:
                 motivo_roteamento = (f"Distância e tempo via malha OSRM ({km_o}km): o Google Maps não respondeu para "
                                      f"medição. Mapa embarcado do OSRM (geometria exata, nomes) + link do visualizador OSRM.")
-        else:
+        elif _route_ok(res_google):
             # ---------------- GOOGLE É O VENCEDOR ----------------
-            km_rota = res_google[0]
-            tempo_rota = res_google[1]
-            balsa_rota = res_google[3]
-            score_rota = res_google[4]
+            _venc_definido = True
+            km_rota = _route_val(res_google, 0)
+            tempo_rota = _route_val(res_google, 1)
+            balsa_rota = _route_val(res_google, 3, default="Não")
+            score_rota = _route_val(res_google, 4, default=50)
             # [VIS-DINAMICA - 30ª geração] CENÁRIO 1 — GOOGLE VENCE: o mapa embarcado é
             # EXCLUSIVAMENTE do Google (NUNCA OSRM) e há UM ÚNICO link (Google). O mapa e o
             # link são construídos a partir dos MESMOS parâmetros (nome oficial qualificado),
@@ -27780,62 +27924,63 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                                      f"Google e auditáveis — abrem exatamente esta rota traçada pelos nomes das "
                                      f"localidades. (OSRM indisponível para comparação nesta execução.)")
             
-        tempo_roteamento = round(time.time() - start_rot, 2)
-        tempo_total = round(time.time() - start_total, 2)
-        # [TELEMETRIA-MOTORES - 195ª geração] registro observacional do resultado multi-motor (dashboard).
-        try:
-            _tm_motores = _todos_motores if '_todos_motores' in dir() else {}
-            _tm_consenso = _consenso if '_consenso' in dir() else {}
-            if _tm_motores:
-                _registrar_telemetria_motores(fonte_rota, _tm_motores, _tm_consenso, dist_linha_reta, km_rota)
-        except Exception:
-            pass
-        # [AUDIT-MOTORES] Rastro das consultas aos motores (mesma geocodificação validada p/ todos)
-        # [GRAPHHOPPER-PARIDADE-FIX - 221ª] extrai o OSRM REAL (não o contendor vencedor) e os dados próprios
-        # do GraphHopper, para o comparativo/auditoria distinguir OSRM de GraphHopper corretamente.
-        _osrm_real_aud = None
-        try:
-            _osrm_orig = (_motores_resultados or {}).get("OSRM") if '_motores_resultados' in dir() else None
-            _osrm_real_aud = float(_osrm_orig[0]) if _osrm_orig else None
-        except Exception:
+        if _venc_definido:
+            tempo_roteamento = round(time.time() - start_rot, 2)
+            tempo_total = round(time.time() - start_total, 2)
+            # [TELEMETRIA-MOTORES - 195ª geração] registro observacional do resultado multi-motor (dashboard).
+            try:
+                _tm_motores = _todos_motores if '_todos_motores' in dir() else {}
+                _tm_consenso = _consenso if '_consenso' in dir() else {}
+                if _tm_motores:
+                    _registrar_telemetria_motores(fonte_rota, _tm_motores, _tm_consenso, dist_linha_reta, km_rota)
+            except Exception:
+                pass
+            # [AUDIT-MOTORES] Rastro das consultas aos motores (mesma geocodificação validada p/ todos)
+            # [GRAPHHOPPER-PARIDADE-FIX - 221ª] extrai o OSRM REAL (não o contendor vencedor) e os dados próprios
+            # do GraphHopper, para o comparativo/auditoria distinguir OSRM de GraphHopper corretamente.
             _osrm_real_aud = None
-        _gh_km_aud = _gh_tmin_aud = _gh_bal_aud = None
-        try:
-            if ('_res_gh' in dir()) and _res_gh and _res_gh[0]:
-                _gh_km_aud = round(float(_res_gh[0]), 2)
-                _gh_tmin_aud = _res_gh[1] if len(_res_gh) > 1 else None
-                _gh_bal_aud = _res_gh[2] if len(_res_gh) > 2 else None
-        except Exception:
+            try:
+                _osrm_orig = (_motores_resultados or {}).get("OSRM") if '_motores_resultados' in dir() else None
+                _osrm_real_aud = float(_osrm_orig[0]) if _osrm_orig else None
+            except Exception:
+                _osrm_real_aud = None
             _gh_km_aud = _gh_tmin_aud = _gh_bal_aud = None
-        auditoria_motores = _montar_auditoria_motores(
-            origem_clean, destino_clean, end_oficial_o, end_oficial_d,
-            lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
-            orig_param_fb, dest_param_fb, link_rota, km_g, km_o, fonte_rota,
-            osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap,
-            km_graphhopper=_gh_km_aud, tempo_graphhopper=_gh_tmin_aud, balsa_graphhopper=_gh_bal_aud,
-            km_osrm_real=_osrm_real_aud)
-        # [M11] RotaPipeline NamedTuple — acesso por nome elimina bugs de índice
-        retorno = RotaPipeline(
-            distancia=km_rota, tempo=tempo_rota, link_rota=link_rota, balsas=balsa_rota,
-            dist_linha_reta=dist_linha_reta, fonte_rota=fonte_rota, score_rota=score_rota,
-            confianca_origem=conf_o, score_num_origem=score_num_o, distrito_origem=dist_o,
-            municipio_origem=mun_o, fonte_geo_origem=fonte_geo_o, endereco_oficial_origem=end_oficial_o,
-            confianca_destino=conf_d, score_num_destino=score_num_d, distrito_destino=dist_d,
-            municipio_destino=mun_d, fonte_geo_destino=fonte_geo_d, endereco_oficial_destino=end_oficial_d,
-            lat_origem=lat_o, lon_origem=lon_o, lat_destino=lat_d, lon_destino=lon_d,
-            tempo_geocoding=tempo_geocoding, tempo_roteamento=tempo_roteamento, tempo_total=tempo_total,
-            xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_roteamento,
-            link_embed=link_embed, status_linha_reta=status_linha_reta,
-            comparativo_provedores=comparativo_prov,
-            link_osrm_viewer=link_osrm_viewer,
-            link_embed_comparativo=link_embed_comparativo,
-            link_rota_comparativo=link_rota_comparativo,
-            auditoria_motores=auditoria_motores,
-            dados_graphhopper=_dados_gh_str
-        )
-        CACHE_L1_ROTAS[chave_rota_cache] = retorno
-        _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
-        return retorno
+            try:
+                if ('_res_gh' in dir()) and _res_gh and _res_gh[0]:
+                    _gh_km_aud = round(float(_res_gh[0]), 2)
+                    _gh_tmin_aud = _res_gh[1] if len(_res_gh) > 1 else None
+                    _gh_bal_aud = _res_gh[2] if len(_res_gh) > 2 else None
+            except Exception:
+                _gh_km_aud = _gh_tmin_aud = _gh_bal_aud = None
+            auditoria_motores = _montar_auditoria_motores(
+                origem_clean, destino_clean, end_oficial_o, end_oficial_d,
+                lat_o, lon_o, lat_d, lon_d, fonte_geo_o, fonte_geo_d, score_num_o, score_num_d,
+                orig_param_fb, dest_param_fb, link_rota, km_g, km_o, fonte_rota,
+                osrm_snap=_osrm_snap, validacao_espacial=validacao_espacial, mitigacao_snap=mitigacao_snap,
+                km_graphhopper=_gh_km_aud, tempo_graphhopper=_gh_tmin_aud, balsa_graphhopper=_gh_bal_aud,
+                km_osrm_real=_osrm_real_aud)
+            # [M11] RotaPipeline NamedTuple — acesso por nome elimina bugs de índice
+            retorno = RotaPipeline(
+                distancia=km_rota, tempo=tempo_rota, link_rota=link_rota, balsas=balsa_rota,
+                dist_linha_reta=dist_linha_reta, fonte_rota=fonte_rota, score_rota=score_rota,
+                confianca_origem=conf_o, score_num_origem=score_num_o, distrito_origem=dist_o,
+                municipio_origem=mun_o, fonte_geo_origem=fonte_geo_o, endereco_oficial_origem=end_oficial_o,
+                confianca_destino=conf_d, score_num_destino=score_num_d, distrito_destino=dist_d,
+                municipio_destino=mun_d, fonte_geo_destino=fonte_geo_d, endereco_oficial_destino=end_oficial_d,
+                lat_origem=lat_o, lon_origem=lon_o, lat_destino=lat_d, lon_destino=lon_d,
+                tempo_geocoding=tempo_geocoding, tempo_roteamento=tempo_roteamento, tempo_total=tempo_total,
+                xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_roteamento,
+                link_embed=link_embed, status_linha_reta=status_linha_reta,
+                comparativo_provedores=comparativo_prov,
+                link_osrm_viewer=link_osrm_viewer,
+                link_embed_comparativo=link_embed_comparativo,
+                link_rota_comparativo=link_rota_comparativo,
+                auditoria_motores=auditoria_motores,
+                dados_graphhopper=_dados_gh_str
+            )
+            CACHE_L1_ROTAS[chave_rota_cache] = retorno
+            _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
+            return retorno
         
     km_terrestre = round(dist_linha_reta * obter_fator_desvio_rodoviario(dist_linha_reta), 2)
     v_comercial = 45.0 if km_terrestre < 50.0 else 65.0
@@ -28332,6 +28477,40 @@ def geocodificar_endpoints_paralelo(lista_enderecos, max_itens=None):
         except Exception:
             pass
     return resultados
+
+
+def _route_ok(res, minimo=5):
+    """[FIX PIPELINE - 250ª geração] Um resultado de motor de rota (Google/OSRM/GraphHopper) é VÁLIDO
+    quando é uma sequência indexável com pelo menos `minimo` posições e a distância (índice 0) é um número
+    > 0. Centraliza a validação que antes estava espalhada (ou ausente) — a causa do erro
+    'NoneType/... object is not subscriptable' em `km_rota = res_google[0]` era justamente um resultado
+    inválido (None, tupla curta, etc.) sendo indexado direto. Nunca levanta: em dúvida, devolve False."""
+    try:
+        if res is None or isinstance(res, (str, bytes, dict, bool)):
+            return False
+        if not hasattr(res, "__len__") or not hasattr(res, "__getitem__"):
+            return False
+        if len(res) < minimo:
+            return False
+        _d = res[0]
+        return isinstance(_d, (int, float)) and not isinstance(_d, bool) and _d > 0
+    except Exception:
+        return False
+
+
+def _route_val(res, idx, default=None, minimo=5):
+    """[FIX PIPELINE - 250ª geração] Acesso DEFENSIVO a um campo de um resultado de rota: devolve res[idx]
+    só se o resultado for válido (_route_ok) e o índice existir; caso contrário devolve `default`. Substitui
+    indexações diretas (res[0], res[1], res[3], res[4]...) que quebravam quando o motor retornava algo fora
+    do contrato. Nunca levanta."""
+    try:
+        if not _route_ok(res, minimo=min(minimo, idx + 1)):
+            return default
+        if idx >= len(res):
+            return default
+        return res[idx]
+    except Exception:
+        return default
 
 
 def _viaria_fisicamente_possivel(km_viaria, km_reta, tolerancia=0.999):
@@ -29862,6 +30041,17 @@ _COLS_NAO_CATEGORIZAR = {
     "Município Origem", "Município Destino", "UF", "Vencedor", "Regiao", "Região",
     "Cód IBGE Origem", "Cód IBGE Destino", "Cód IBGE", "Origem", "Destino",
     "Municipio", "Município", "Cidade",
+    # [FIX CATEGORICAL - 250ª geração] Colunas ESCRITAS via .loc/atribuição DEPOIS de o DataFrame ser
+    # montado (e portanto depois de passar por este otimizador). Se fossem categóricas, um .loc com um
+    # rótulo NOVO — ex.: df.loc[mask,'Status Linha Reta'] = "Calculada via Haversine Vetorizado" — lançaria
+    # "Cannot setitem on a Categorical with a new category". Mantê-las como string elimina a causa-raiz do
+    # erro SEM abrir mão do ganho de memória nas demais colunas. (Camada preventiva; há ainda a defensiva
+    # _set_col_seguro para qualquer .loc futuro que escapar desta lista.)
+    "Status Linha Reta", "Status da Rota", "Status das Rotas", "Status de Confiança", "Status",
+    "Fonte da Rota", "Modo/Acesso", "Motivo Roteamento", "Motivo Resumido Perda",
+    "Justificativa Hub (XAI)", "Justificativa de Alocacao", "Justificativa Homônimos",
+    "Por Que o Vencedor Venceu (criterio a criterio)", "2º Polo - Era MELHOR em N criterios",
+    "Hub 2o (Custo)",
 }
 
 def _otimizar_dtypes_memoria(df, limiar_cardinalidade=0.5, min_linhas=100):
@@ -29895,6 +30085,43 @@ def _otimizar_dtypes_memoria(df, limiar_cardinalidade=0.5, min_linhas=100):
                 continue  # coluna problemática → deixa como está
         return out
     except Exception:
+        return df
+
+
+def _set_col_seguro(df, mask, coluna, valor):
+    """[FIX CATEGORICAL - 250ª geração] Atribui df.loc[mask, coluna] = valor de forma À PROVA de Categorical.
+    Se a coluna for categórica e o valor for um rótulo NOVO (não presente nas categorias), o pandas lançaria
+    'Cannot setitem on a Categorical with a new category'. Aqui, antes de atribuir, garantimos que o valor é
+    uma categoria válida — adicionando-a quando faltar (para escalares string) ou, em último caso, convertendo
+    a coluna para object. Isso blinda QUALQUER escrita pontual, inclusive futuras, sem exigir que o autor
+    lembre da denylist. Defensivo: se algo falhar, cai no comportamento padrão do pandas, preservando o fluxo."""
+    try:
+        if df is None or coluna not in getattr(df, "columns", []):
+            if df is not None:
+                df.loc[mask, coluna] = valor
+            return df
+        _s = df[coluna]
+        if isinstance(_s.dtype, pd.CategoricalDtype):
+            try:
+                if isinstance(valor, str) or np.isscalar(valor):
+                    _novos = [valor]
+                else:
+                    _novos = list(pd.unique(pd.Series(list(valor))))
+            except Exception:
+                _novos = [valor]
+            _faltantes = [v for v in _novos if v is not None and v not in _s.cat.categories]
+            if _faltantes:
+                try:
+                    df[coluna] = _s.cat.add_categories(_faltantes)
+                except Exception:
+                    df[coluna] = _s.astype(object)
+        df.loc[mask, coluna] = valor
+        return df
+    except Exception:
+        try:
+            df.loc[mask, coluna] = valor
+        except Exception:
+            logger.error("[SET-COL-SEGURO] Falha ao atribuir coluna '%s' — ignorada", coluna, exc_info=True)
         return df
 
 
@@ -30388,15 +30615,15 @@ def _validar_coerencia_viaria(df):
         df = df.copy()
         if 'Alerta Coerência Viária' not in df.columns:
             df['Alerta Coerência Viária'] = ''
-        df.loc[_mask, 'Alerta Coerência Viária'] = ("⚠️ vencedor com viária MAIOR que o concorrente — "
+        _set_col_seguro(df, _mask, 'Alerta Coerência Viária', ("⚠️ vencedor com viária MAIOR que o concorrente — "
                                                     "provável acesso fluvial/rota rodoviária indisponível; "
-                                                    "reprocessar ou tratar como acesso fluvial")
+                                                    "reprocessar ou tratar como acesso fluvial"))
         _sem_alerta = df['Alerta Coerência Viária'].astype(str).str.strip().isin(['', 'nan', '—'])
         _mf2 = _mf & _sem_alerta
         if _mf2.any():
-            df.loc[_mf2, 'Alerta Coerência Viária'] = ("🚢 desvio rodoviário implausível (> 4× a linha reta) "
+            _set_col_seguro(df, _mf2, 'Alerta Coerência Viária', ("🚢 desvio rodoviário implausível (> 4× a linha reta) "
                                                        "— trajeto provavelmente fluvial na prática; distância "
-                                                       "rodoviária pode superestimar o deslocamento real")
+                                                       "rodoviária pode superestimar o deslocamento real"))
         _ex, _cmo, _cmd = [], ('Municipio Origem' if 'Municipio Origem' in df.columns else None), \
             ('Municipio Destino' if 'Municipio Destino' in df.columns else None)
         for _, _r in df[_mask].head(5).iterrows():
@@ -32514,7 +32741,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "246"
+_VERSAO_APP = "250"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -32671,6 +32898,19 @@ def _dev_about_html(compacto=False, data_str=""):
     compacto=False → versão completa (cartão + valores + tecnologias + QR).
     """
     try:
+        # [DEV-ABOUT PERF - Rodada 2] Memoização determinística. A saída depende SÓ de
+        # (compacto, data_str) + constantes imutáveis (_DEV_INFO, versão estável). Como este
+        # HTML (~40 KB) é reconstruído a cada geração de relatório, memoizá-lo elimina trabalho
+        # redundante sem qualquer risco (mesma entrada ⇒ mesma saída). Dict simples: thread-safe
+        # o bastante para saída idempotente; não usa @st.cache_data porque roda fora do contexto
+        # Streamlit (dentro dos montadores de relatório, às vezes em threads).
+        # Chave inclui a versão: se _VERSAO_APP mudasse em runtime, o cache não serviria
+        # HTML com a versão antiga (defensivo — na prática a versão é estável no processo).
+        _ck = (bool(compacto), str(data_str or ""), _dev_versao_atual())
+        _cache = globals().setdefault("_DEV_ABOUT_HTML_CACHE", {})
+        _hit = _cache.get(_ck)
+        if _hit is not None:
+            return _hit
         import html as _he
         d = _DEV_INFO
         _ver = _dev_versao_atual()
@@ -32731,15 +32971,27 @@ def _dev_about_html(compacto=False, data_str=""):
             ".devab-foot b{color:#eaf4ff}"
             ".devab-sig{margin-top:14px;font-size:12.5px;color:#9fd4ff;font-weight:700;letter-spacing:.04em}"
             "@media(max-width:640px){.devab-name{font-size:23px}.devab-photo{width:104px;height:104px}}"
+            # [DEV-ABOUT A11Y - Rodada 2] Respeita a preferência de tema do SISTEMA operacional,
+            # mesmo antes de qualquer toggle de JS do relatório. Só afeta esta seção (escopo .devab).
+            "@media(prefers-color-scheme:dark){body:not(.dark) .devab-card{background:rgba(255,255,255,.10)}}"
+            # [DEV-ABOUT PRINT - Rodada 2] Impressão limpa: o relatório já suporta impressão; a seção
+            # institucional agora também. Evita fundo pesado de tinta e garante contraste no papel.
+            "@media print{.devab{margin:14px auto}"
+            ".devab-wrap{background:#0a2540 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;"
+            "box-shadow:none;border:1px solid #0a2540}"
+            ".devab-wrap:before{display:none}"
+            ".devab-btn{box-shadow:none}.devab-photo{box-shadow:none}"
+            ".devab-card,.devab-quote{break-inside:avoid;page-break-inside:avoid}"
+            ".devab-tl-item{break-inside:avoid}}"
             "</style>"
         )
 
         # --- Cabeçalho + cartão principal ---
-        parts = [_css, "<section class='devab' id='sobre-desenvolvedor'>",
+        parts = [_css, "<section class='devab' id='sobre-desenvolvedor' role='region' aria-label='Sobre o Desenvolvedor'>",
                  "<div class='devab-wrap'>",
                  "<span class='devab-tag'>Sobre o Desenvolvedor</span>",
                  "<div class='devab-top'>",
-                 "<img class='devab-photo' alt='%s' src='%s'>" % (esc(d["nome"]), _DEV_FOTO_DATAURI),
+                 "<img class='devab-photo' alt='Foto de %s' src='%s'>" % (esc(d["nome"]), _DEV_FOTO_DATAURI),
                  "<div class='devab-idwrap'>",
                  "<h3 class='devab-name'>%s</h3>" % esc(d["nome"]),
                  "<p class='devab-role'>%s</p>" % esc(d["cargo"]),
@@ -32797,12 +33049,14 @@ def _dev_about_html(compacto=False, data_str=""):
         # --- CTA LinkedIn + QR ---
         parts.append("<div class='devab-cta'>")
         parts.append(
-            "<a class='devab-btn' href='%s' target='_blank' rel='noopener'>"
-            "<svg width='20' height='20' viewBox='0 0 24 24' fill='#fff'><path d='M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.14 2.07 2.07 0 0 1 0 4.14zM7.12 20.45H3.55V9h3.57v11.45zM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0z'/></svg>"
-            "Conheça minha trajetória no LinkedIn</a>" % esc(d["linkedin"]))
+            "<a class='devab-btn' href='%s' target='_blank' rel='noopener' "
+            "aria-label='Abrir o perfil de %s no LinkedIn (nova aba)'>"
+            "<svg width='20' height='20' viewBox='0 0 24 24' fill='#fff' aria-hidden='true' focusable='false'><path d='M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.14 2.07 2.07 0 0 1 0 4.14zM7.12 20.45H3.55V9h3.57v11.45zM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0z'/></svg>"
+            "Conheça minha trajetória no LinkedIn</a>" % (esc(d["linkedin"]), esc(d["nome"])))
         parts.append(
-            "<div class='devab-qr-wrap'><img class='devab-qr' alt='QR Code LinkedIn' src='%s'>"
-            "<span>Aponte a câmera<br>para acessar o perfil</span></div>" % _DEV_QR_DATAURI)
+            "<div class='devab-qr-wrap'><img class='devab-qr' "
+            "alt='QR Code que leva ao perfil de %s no LinkedIn' src='%s'>"
+            "<span>Aponte a câmera<br>para acessar o perfil</span></div>" % (esc(d["nome"]), _DEV_QR_DATAURI))
         parts.append("</div>")
 
         # --- Rodapé institucional (tecnologias, agradecimentos, versão, data, assinatura) ---
@@ -32817,7 +33071,9 @@ def _dev_about_html(compacto=False, data_str=""):
         parts.append("</div>")
 
         parts.append("</div></section>")
-        return "".join(parts)
+        _out = "".join(parts)
+        _cache[_ck] = _out  # memoiza a saída idempotente para as próximas gerações
+        return _out
     except Exception:
         try:
             logger.error("[DEV-ABOUT] Falha ao montar seção HTML — omitindo (relatório segue normal)", exc_info=True)
@@ -34720,7 +34976,7 @@ if _secao == _SECOES[1]:   # tab_processamento
                     distancias_vetorizadas = 6371.0088 * c
                     mask_validas = (df_final['Lat Origem'] != 0.0) & (df_final['Lat Destino'] != 0.0)
                     df_final.loc[mask_validas, 'Linha Reta'] = np.round(distancias_vetorizadas[mask_validas], 2)
-                    df_final.loc[mask_validas, 'Status Linha Reta'] = "Calculada via Haversine Vetorizado"
+                    _set_col_seguro(df_final, mask_validas, 'Status Linha Reta', "Calculada via Haversine Vetorizado")
                     
                     tempo_lote_segundos = round(time.time() - _start_clock, 2)
                     cache_historico_lotes.set(f"lote_{_start_clock}", {
@@ -36550,7 +36806,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 dist_vet_alo = 6371.0088 * c_alo
                 mask_val_alo = (df_final_alo['Lat Origem'] != 0.0) & (df_final_alo['Lat Destino'] != 0.0)
                 df_final_alo.loc[mask_val_alo, 'Linha Reta'] = np.round(dist_vet_alo[mask_val_alo], 2)
-                df_final_alo.loc[mask_val_alo, 'Status Linha Reta'] = "Calculada via Haversine Vetorizado"
+                _set_col_seguro(df_final_alo, mask_val_alo, 'Status Linha Reta', "Calculada via Haversine Vetorizado")
                 
                 tempo_alo_segundos = round(time.time() - _start, 2)
                 cache_historico_lotes.set(f"alocacao_{_start}", {
