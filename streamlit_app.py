@@ -63,6 +63,45 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.8 (245ª geração) → 🎯 RESGATE POR CIRCUIDADE: GATILHO 1,45× + TETO PRIORIZADO POR IMPACTO [RESGATE-2]
+#     Evolução de DECISÃO pedida no doc de aprendizado (para a app perder menos e beneficiar mais o
+#     candidato). Duas mudanças no passe de resgate (V238), feitas com disciplina e testadas:
+#     (1) GATILHO de V/R baixado de 2,00× para 1,45× — captura mais derrotas evitáveis do tipo Pauini/Ipixuna
+#         (rota indireta cujo vencedor rodoviário direto não era avaliado). Antes, 1,45 era arriscado em runs
+#         nacionais (dispararia em muitas linhas); agora é seguro por causa da mudança (2).
+#     (2) TETO PRIORIZADO POR IMPACTO — o passe virou DUAS FASES: FASE 1 varre todas as linhas (custo baixo,
+#         só calcula V/R) e coleta as de assinatura de risco com uma PRIORIDADE = excesso de circuidade (km)
+#         × candidatos (piso p/ balsa/fluvial); ordena por impacto; FASE 2 roteia e atualiza apenas as TOP
+#         max_resgates (padrão 500). Assim o orçamento de rede (OSRM/Google) é gasto nos casos de MAIOR
+#         benefício potencial ao candidato, não nos primeiros da lista — o que torna o gatilho 1,45 viável
+#         nacionalmente sem estourar quota/tempo. Toda a lógica de resgate anterior é preservada (monotônico:
+#         só troca se for melhor; atualização COMPLETA da linha; topk normalizado; fallback total; flag
+#         _RESGATE_CIRCUIDADE_ATIVO). PROVA: teste novo de priorização (teto=1 com 2 assinaturas → só a de
+#         maior km×candidatos é resgatada; a de baixo impacto não consome o orçamento) + os testes de resgate
+#         e do passe (Mostardas→Viamão, Axixá→Bacabeira, atualização coerente de link/tempo/município)
+#         intactos. HONESTIDADE: o efeito em produção depende de um run seu (rede); no sandbox valida-se a
+#         lógica com mocks; _RESGATE_CIRCUIDADE_ATIVO=False restaura o comportamento sem resgate.
+#     NÃO-REGRESSÃO: mudança contida no passe (reversível pela flag). RotaPipeline: 42. Imports: IDÊNTICOS.
+#     Requirements: INALTERADO. _SECOES: 13. balloons: 1. bare: 0.
+#   v3.8 (244ª geração) → 🗂️ ANÁLISE DE DIVERGÊNCIAS EM CARTÕES (didática) [CARTOES-DIVERGENCIA]
+#     Atende o pedido central do doc: a análise, após processada, estava "confusa, desorganizada, com pouca
+#     didática, difícil de interpretar" (parágrafos densos de texto corrido). SOLUÇÃO: reestruturação da
+#     APRESENTAÇÃO em CARTÕES escaneáveis — cada divergência num cartão com hierarquia visual clara: veredito
+#     em destaque (cor por quem venceu), rota app→ref com distâncias, frase didática de 1 linha, chips de
+#     métricas (Δkm, Δtempo, candidatos, IQ app vs ref, categoria), badge Evitável/Justificável e recomendação
+#     destacada. Ordenados por impacto (Δkm × candidatos). No painel (st.container por cartão, com st.info na
+#     recomendação) e no HTML (seção no TOPO das divergências, antes do texto denso; CSS com dark mode). NÃO
+#     recalcula nada — distila os campos que a análise JÁ tem (236/237); o texto técnico completo (parecer)
+#     segue disponível logo abaixo. MAPA DE COBERTURA do resto do doc: aprendizado com derrotas + padrões
+#     recorrentes (§4/§5/§12), resgate por circuidade (§6), tratamento fluvial e instrumentação da árvore de
+#     decisão / rastreamento do portão de descarte (§6/§8), e a explicação do raciocínio (§3) JÁ existiam
+#     (V237/V238/V239 + Etapa B) — o próprio doc cita a saída desses recursos. Não reconstruídos. Melhoria de
+#     DECISÃO nesta geração: nenhuma alteração no motor (o resgate do §6 já está implementado desde a 238ª;
+#     mexer de novo sem um caso concreto novo seria risco sem benefício). PROVA: suíte nova (dados do cartão,
+#     veredito/cores/badges, frase com balsa, HTML balanceado + ordenação, painel) com os casos REAIS do doc
+#     (Pauini/Curralinho/Ipixuna) + as 15 anteriores intactas. NÃO-REGRESSÃO: 100% ADITIVO (cartões no topo;
+#     seção densa preservada abaixo). RotaPipeline: 42. Imports: IDÊNTICOS. Requirements: INALTERADO.
+#     _SECOES: 13. balloons: 1. bare: 0.
 #   v3.8 (243ª geração) → 🔗 LAUDO DE DIVERGÊNCIAS: LINKS DAS ROTAS + MARGEM DE INVERSÃO [LAUDO-DIVERGENCIA]
 #     Atende o doc de aprimoramento do laudo de divergências. MAPA DE COBERTURA: motor vencedor/perdedor +
 #     diferença entre motores, índices de qualidade/robustez/confiança/risco/isolamento/balsa/sinuosidade/
@@ -19157,9 +19196,14 @@ def _diagnostico_divergencias_html(diag):
             _laudo_html = _html_laudo(diag, _he)
         except Exception:
             _laudo_html = ""
+        try:
+            _cartoes_html = _html_cartoes(diag, _he)
+        except Exception:
+            _cartoes_html = ""
         return (f'<section id="diag-divergencias">{_css}'
                 f'<h2>🔬 Diagnóstico Inteligente das Divergências</h2>'
                 f'{_kpis}{_box_resumo}'
+                f'{_cartoes_html}'
                 f'{_ins_html}'
                 f'{_bar_app}{_bar_ref}{_tab_rank}'
                 f'{_dist_html}'
@@ -19701,6 +19745,12 @@ def _painel_divergencias_ui(diag, st):
                      help="Casos em que o Índice de Qualidade multicritério favorece a aplicação.")
         _c[3].metric("Vence a referência", f"{int(_res.get('ref_superior', 0))}")
         _c[4].metric("Empates técnicos", f"{int(_res.get('empates', 0))}")
+
+        # [CARTOES-DIVERGENCIA - 244ª] resumo visual escaneável no topo (antes do conteúdo denso)
+        try:
+            _painel_cartoes(diag, st)
+        except Exception:
+            pass
 
         # ---- ressalvas honestas ----
         _assum = int(diag.get("uf_ref_assumida", 0) or 0)
@@ -20468,8 +20518,9 @@ def _painel_stage_a(diag, st, pd=None):
 _UF_AMAZONIA_RESC = frozenset({"AC", "AP", "AM", "MA", "MT", "PA", "RO", "RR", "TO"})
 
 # Parâmetros (num único lugar; calibrados pela assinatura empírica das derrotas).
-_VR_GATILHO = 2.00        # V/R do escolhido acima da qual vale investigar (descasamento geometria×estrada
-                          # GENUÍNO; rotas normais têm V/R ~1,3-1,5, então 2,0 evita rotear em quase toda linha)
+_VR_GATILHO = 1.45        # V/R do escolhido acima da qual vale investigar. Com o TETO PRIORIZADO POR IMPACTO
+                          # (244ª), 1,45 captura mais derrotas evitáveis (ex.: Pauini/Ipixuna) sem estourar o
+                          # orçamento de rede: o teto gasta os roteamentos nos casos de maior km×candidatos.
 _VR_SEVERO = 2.00         # descasamento grave geometria×estrada
 _K_EXTRA_BASE = 6         # candidatos diretos extras a rotear no resgate (limitado!)
 _K_EXTRA_AMAZONIA = 10    # amplia onde a malha é esparsa
@@ -20825,8 +20876,11 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
         }
         _link_osrm = globals().get("_link_osrm_publico")
         _max_resgates = int((params or {}).get("max_resgates", 500) or 500)  # teto do pior caso (rede)
-        _n_processados = 0
 
+        # FASE 1 [244ª]: coleta as linhas com assinatura de risco e PRIORIZA por impacto (excesso de
+        # circuidade em km × candidatos). Assim o teto gasta o orçamento de rede nos casos mais valiosos —
+        # o que torna seguro baixar o gatilho de V/R para 1,45 sem penalizar runs nacionais.
+        _candidatas = []
         for _idx in list(df.index):
             try:
                 _origem = str(df.at[_idx, _c_o] or "").strip()
@@ -20841,11 +20895,18 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
                 _precisa, _ = _precisa_resgate(_vr, _balsa, _fluvial)
                 if not _precisa:
                     continue
-                if _n_processados >= _max_resgates:
-                    break  # teto atingido: limita o custo de rede no pior caso
-                _n_processados += 1
-                _uf = (str(df.at[_idx, _c_uf]).strip() if _c_uf else "")
                 _insc = _num(df.at[_idx, _c_insc], 0) if _c_insc else 0
+                _exc = max(_dist - _reta, 0.0)  # excesso de circuidade em km
+                _prio = (max(_exc, 15.0) if (_balsa or _fluvial) else _exc) * max(_num(_insc, 0) or 0.0, 1.0)
+                _candidatas.append((_prio, _idx, _origem, _destino, _dist, _reta, _vr, _balsa, _fluvial, _insc))
+            except Exception:
+                continue
+        _candidatas.sort(key=lambda x: x[0], reverse=True)  # maior impacto primeiro
+
+        # FASE 2 [244ª]: roteia e atualiza as linhas de maior impacto, respeitando o teto.
+        for (_prio, _idx, _origem, _destino, _dist, _reta, _vr, _balsa, _fluvial, _insc) in _candidatas[:_max_resgates]:
+            try:
+                _uf = (str(df.at[_idx, _c_uf]).strip() if _c_uf else "")
                 _cands = (topk_map.get(_origem) or _topk_norm.get(_origem.strip().lower()) or [])
                 _nomes = [h for (_dd, h) in _cands if str(h).strip().lower() != _destino.lower()]
                 if not _nomes:
@@ -22209,6 +22270,191 @@ def _painel_laudo(diag, st, pd=None):
         except Exception:
             pass
 # <<< [LAUDO-DIVERGENCIA 243ª] FIM >>>
+
+
+
+
+# <<< [CARTOES-DIVERGENCIA 244ª] INÍCIO — apresentação em cartões (didática) >>>
+# ==============================================================================
+# [CARTOES-DIVERGENCIA - 244ª geração] APRESENTAÇÃO EM CARTÕES (didática)
+# ------------------------------------------------------------------------------
+# Reestrutura a Análise de Divergências: em vez de parágrafos densos de texto
+# corrido (difíceis de escanear), cada divergência vira um CARTÃO com hierarquia
+# visual clara — veredito em destaque, chips de métricas, critério decisivo,
+# evitável/justificável e recomendação. NÃO recalcula nada: distila os campos
+# que a análise já tem (236/237). O texto completo (parecer) segue disponível
+# na seção existente logo abaixo. PURO/defensivo.
+# ==============================================================================
+
+
+def _cnum(v, d=None):
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return d
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def _dados_cartao(a):
+    """[CARTÕES - 244ª] Distila os campos do cartão a partir da análise (defensivo). PURO."""
+    _venc = str(a.get("Vencedor (Qualidade)") or "—")
+    _dif = _cnum(a.get("Diferença (km)"), 0.0) or 0.0
+    _dt = _cnum(a.get("Diferença Tempo (min)"))
+    _insc = int(_cnum(a.get("Inscritos"), 0) or 0)
+    _iqa = _cnum(a.get("Índice Qualidade Aplicação"))
+    _iqr = _cnum(a.get("Índice Qualidade Referência"))
+    _da = _cnum(a.get("Distância Aplicação (km)"))
+    _dr = _cnum(a.get("Distância Referência (km)"))
+    _cat = str(a.get("Categoria") or "—")
+    _classe = str(a.get("Classe da Derrota") or "").strip()
+    _rec = str(a.get("Recomendação") or "").strip()
+    # veredito curto + cor
+    if _venc == "Referência":
+        _vd, _cor = "Referência é melhor", "#dc2626"
+    elif _venc == "Aplicação":
+        _vd, _cor = "Aplicação é melhor", "#16a34a"
+    else:
+        _vd, _cor = "Empate técnico", "#64748b"
+    # frase didática (1 linha) a partir dos campos estruturados
+    _catl = _cat.lower()
+    _tem_balsa = "balsa" in _catl or "hidrov" in _catl or "fluvial" in _catl
+    if _venc == "Referência":
+        _frase = f"A referência leva o candidato {abs(_dif):.0f} km mais perto"
+        if _tem_balsa:
+            _frase += " e sem depender de balsa"
+        _frase += "."
+    elif _venc == "Aplicação":
+        _frase = f"A aplicação leva o candidato {abs(_dif):.0f} km mais perto"
+        if _tem_balsa:
+            _frase += ", evitando dependência de balsa"
+        _frase += "."
+    else:
+        _frase = "Os dois destinos têm trajeto rodoviário praticamente equivalente."
+    # evitável / justificável
+    _ev_txt, _ev_cor = "", ""
+    if _classe:
+        _cl = _classe.lower()
+        if "evit" in _cl:
+            _ev_txt, _ev_cor = "Evitável", "#ea580c"
+        elif "justif" in _cl:
+            _ev_txt, _ev_cor = "Justificável", "#2563eb"
+        else:
+            _ev_txt, _ev_cor = _classe[:22], "#64748b"
+    return {
+        "mun": f"{a.get('Município','?')}/{a.get('UF','')}",
+        "veredito": _vd, "cor": _cor, "frase": _frase, "categoria": _cat,
+        "dest_app": str(a.get("Destino Aplicação", "—")), "dest_ref": str(a.get("Destino Referência", "—")),
+        "da": _da, "dr": _dr, "dif_km": abs(_dif), "dt_min": _dt, "inscritos": _insc,
+        "iqa": _iqa, "iqr": _iqr, "evitavel": _ev_txt, "ev_cor": _ev_cor, "recomendacao": _rec,
+    }
+
+
+def _css_cartoes():
+    return ('<style>'
+            '.cds{display:grid;gap:12px;margin:10px 0}'
+            '.cd{border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}'
+            'body.dark .cd{background:#0f172a;border-color:#334155}'
+            '.cd-h{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 14px;'
+            'border-bottom:1px solid #f1f5f9;flex-wrap:wrap}body.dark .cd-h{border-color:#1e293b}'
+            '.cd-t{font-weight:800;color:#0f172a;font-size:15px}body.dark .cd-t{color:#e2e8f0}'
+            '.cd-badge{color:#fff;font-weight:700;font-size:12px;padding:3px 10px;border-radius:999px}'
+            '.cd-b{padding:10px 14px}'
+            '.cd-rota{font-size:13px;color:#334155;margin-bottom:8px}body.dark .cd-rota{color:#cbd5e1}'
+            '.cd-rota b{color:#0f172a}body.dark .cd-rota b{color:#f8fafc}'
+            '.cd-frase{font-size:14px;color:#0f172a;margin:6px 0;font-weight:500}body.dark .cd-frase{color:#e2e8f0}'
+            '.cd-chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}'
+            '.chip{font-size:12px;padding:3px 9px;border-radius:8px;background:#f1f5f9;color:#334155;white-space:nowrap}'
+            'body.dark .chip{background:#1e293b;color:#cbd5e1}'
+            '.chip.neg{background:#fee2e2;color:#991b1b}.chip.pos{background:#dcfce7;color:#166534}'
+            '.cd-rec{font-size:13px;margin-top:8px;padding:8px 10px;border-left:3px solid #f59e0b;'
+            'background:#fffbeb;border-radius:6px;color:#78350f}body.dark .cd-rec{background:#1c1917;color:#fde68a}'
+            '</style>')
+
+
+def _html_cartao(d, _he):
+    def _e(x):
+        return _he.escape(str(x))
+    _chips = ""
+    _chips += f'<span class="chip {"neg" if d["veredito"].startswith("Referência") else "pos"}">Δ {d["dif_km"]:.0f} km</span>'
+    if d["dt_min"] is not None:
+        _chips += f'<span class="chip">Δ tempo {abs(d["dt_min"]):.0f} min</span>'
+    _chips += f'<span class="chip">👥 {d["inscritos"]} candidatos</span>'
+    if d["iqa"] is not None and d["iqr"] is not None:
+        _chips += f'<span class="chip">IQ {d["iqa"]:.0f} (app) vs {d["iqr"]:.0f} (ref)</span>'
+    _chips += f'<span class="chip">{_e(d["categoria"])}</span>'
+    if d["evitavel"]:
+        _chips += f'<span class="chip" style="background:{d["ev_cor"]};color:#fff">{_e(d["evitavel"])}</span>'
+    _da = f'{d["da"]:.0f} km' if d["da"] is not None else "—"
+    _dr = f'{d["dr"]:.0f} km' if d["dr"] is not None else "—"
+    _rec = f'<div class="cd-rec">💡 {_e(d["recomendacao"])}</div>' if d["recomendacao"] else ""
+    return (f'<div class="cd"><div class="cd-h"><span class="cd-t">{_e(d["mun"])}</span>'
+            f'<span class="cd-badge" style="background:{d["cor"]}">{_e(d["veredito"])}</span></div>'
+            f'<div class="cd-b">'
+            f'<div class="cd-rota">Aplicação → <b>{_e(d["dest_app"])}</b> ({_da}) &nbsp;•&nbsp; '
+            f'Referência → <b>{_e(d["dest_ref"])}</b> ({_dr})</div>'
+            f'<div class="cd-frase">{_e(d["frase"])}</div>'
+            f'<div class="cd-chips">{_chips}</div>{_rec}</div></div>')
+
+
+def _html_cartoes(diag, _he):
+    """[CARTÕES - 244ª] Seção HTML de cartões escaneáveis, no topo das divergências. PURO/idempotente."""
+    try:
+        _an = diag.get("analises") or []
+        if not _an:
+            return ""
+        def _imp(a):
+            return abs(_cnum(a.get("Diferença (km)"), 0.0) or 0.0) * (_cnum(a.get("Inscritos"), 1) or 1)
+        _ord = sorted(_an, key=_imp, reverse=True)
+        _cards = "".join(_html_cartao(_dados_cartao(a), _he) for a in _ord)
+        return (_css_cartoes()
+                + '<h3>🗂️ Divergências em cartões (resumo visual)</h3>'
+                + '<p class="dv-nota">Cada divergência num cartão escaneável: veredito, métricas, critério e '
+                + 'recomendação. O texto técnico completo de cada caso está logo abaixo.</p>'
+                + f'<div class="cds">{_cards}</div>')
+    except Exception:
+        return ""
+
+
+def _painel_cartoes(diag, st):
+    """[CARTÕES - 244ª] Cartões no painel Streamlit (topo das divergências). DEFENSIVO."""
+    try:
+        _an = diag.get("analises") or []
+        if not _an:
+            return
+        st.markdown("#### 🗂️ Divergências em cartões (resumo visual)")
+        st.caption("Veredito, métricas, critério e recomendação em cada cartão. O texto completo está mais abaixo.")
+        def _imp(a):
+            return abs(_cnum(a.get("Diferença (km)"), 0.0) or 0.0) * (_cnum(a.get("Inscritos"), 1) or 1)
+        for a in sorted(_an, key=_imp, reverse=True):
+            d = _dados_cartao(a)
+            with st.container(border=True):
+                _c1, _c2 = st.columns([3, 1])
+                _c1.markdown(f"**{d['mun']}**")
+                _c2.markdown(f"<span style='background:{d['cor']};color:#fff;padding:2px 8px;border-radius:8px;"
+                             f"font-size:12px;font-weight:700'>{d['veredito']}</span>", unsafe_allow_html=True)
+                _da = f"{d['da']:.0f} km" if d['da'] is not None else "—"
+                _dr = f"{d['dr']:.0f} km" if d['dr'] is not None else "—"
+                st.markdown(f"Aplicação → **{d['dest_app']}** ({_da})  •  Referência → **{d['dest_ref']}** ({_dr})")
+                st.markdown(f"*{d['frase']}*")
+                _chips = [f"Δ {d['dif_km']:.0f} km"]
+                if d['dt_min'] is not None:
+                    _chips.append(f"Δ tempo {abs(d['dt_min']):.0f} min")
+                _chips.append(f"👥 {d['inscritos']} candidatos")
+                if d['iqa'] is not None and d['iqr'] is not None:
+                    _chips.append(f"IQ {d['iqa']:.0f} vs {d['iqr']:.0f}")
+                _chips.append(d['categoria'])
+                if d['evitavel']:
+                    _chips.append(f"⚑ {d['evitavel']}")
+                st.markdown("  ·  ".join(f"`{c}`" for c in _chips))
+                if d['recomendacao']:
+                    st.info(f"💡 {d['recomendacao']}")
+    except Exception as _e:
+        try:
+            st.caption(f"(cartões indisponíveis: {_e})")
+        except Exception:
+            pass
+# <<< [CARTOES-DIVERGENCIA 244ª] FIM >>>
 
 
 def _montar_xlsx_comparacao(linhas, stats, aud, relatorio, diagnostico_div=None):
@@ -32231,7 +32477,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "243"
+_VERSAO_APP = "245"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
