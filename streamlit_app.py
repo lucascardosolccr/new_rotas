@@ -1,6 +1,6 @@
 # ==============================================================================
-# VERSÃO: 3.8
-# DATA: 2026-06
+# VERSÃO: 3.9
+# DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
 #
@@ -63,6 +63,25 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.9 (246ª geração) → 👨‍💻 SEÇÃO INSTITUCIONAL "SOBRE O DESENVOLVEDOR" [DEV-ABOUT]
+#     Rodada 1 do plano de evolução contínua. Apresentação institucional do desenvolvedor (Lucas Cardoso
+#     Cruz) e da filosofia da plataforma, presente de forma consistente em TODAS as superfícies: (1) NOVA
+#     seção nativa no menu (14ª seção, grupo "Aprender") — cartão com foto, bio, missão/visão/propósito,
+#     12 áreas de especialidade com barras, Nossa Filosofia, diferenciais (XAI), timeline, valores, botão
+#     LinkedIn + QR Code; (2) PÁGINA INICIAL — apresentação compacta colapsável abaixo das boas-vindas;
+#     (3) RELATÓRIOS HTML — seção institucional (glassmorphism, dark-mode nativo) ao final dos 4 caminhos
+#     (principal, comparação e os 2 fallbacks resilientes), com versão e data de geração; (4) PLANILHAS —
+#     aba "Sobre o Desenvolvedor" (foto, valores, tecnologias, LinkedIn clicável + QR) nos 10 exports;
+#     (5) MANUAL e ENCICLOPÉDIA — chamada contextual para a seção. ENGENHARIA: módulo autocontido com
+#     prefixos _dev_/_DEV_ (zero colisão); assets (foto WebP 340px ~5,5KB + QR PNG do LinkedIn) embutidos
+#     em base64 → OFFLINE e SEM dependência nova (requirements INALTERADO). QR verificado (decodifica p/ o
+#     perfil). Todos os 3 builders são DEFENSIVOS (try/except) — se a seção falhar, app/relatório/planilha
+#     seguem normais. A aba Excel é IDEMPOTENTE (não duplica). PROVA: suíte de não-regressão nova (36
+#     asserts) confirma RotaPipeline IDÊNTICO (42 campos), imports de topo IDÊNTICOS, 0 função/classe
+#     removida, 13 seções originais preservadas, balloons=1, bare-except=0; + testes funcionais dos 3
+#     builders (HTML balanceado, Excel idempotente, render Streamlit) e render visual (claro+escuro).
+#     NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42. Imports de topo: IDÊNTICOS. Requirements: INALTERADO.
+#     _SECOES: 13 → 14 (só adição). balloons: 1. bare: 0.
 #   v3.8 (245ª geração) → 🎯 RESGATE POR CIRCUIDADE: GATILHO 1,45× + TETO PRIORIZADO POR IMPACTO [RESGATE-2]
 #     Evolução de DECISÃO pedida no doc de aprendizado (para a app perder menos e beneficiar mais o
 #     candidato). Duas mudanças no passe de resgate (V238), feitas com disciplina e testadas:
@@ -8093,6 +8112,7 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 f'<div class="cover"><div class="tag">Relatório Técnico · Planejamento de Locais de Aplicação</div>'
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_n:,} municípios · {_tot_cand:,} candidatos</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
+                f'{_dev_about_html(data_str=data_str)}'  # [DEV-ABOUT] seção institucional ao final
                 f'<footer>Relatório autocontido · abre offline em qualquer navegador · gerado pela aplicação.</footer>'
                 f'<script>{_bi_js}</script>{_script_interativo_html()}{_platform_bi_html()}'
                 f'</body></html>')
@@ -8151,7 +8171,8 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                 'visão completa.</div>'
                 f'{_tabela_html}'
                 '</div>'
-                '<footer>Relatório autocontido · abre offline em qualquer navegador · gerado pela aplicação.</footer>'
+                + _dev_about_html(compacto=True, data_str=_data_s)  # [DEV-ABOUT] institucional (compacto)
+                + '<footer>Relatório autocontido · abre offline em qualquer navegador · gerado pela aplicação.</footer>'
                 '</body></html>')
         except Exception:
             logger.error("[RELATORIO-RESILIENTE] Falha até na versão mínima", exc_info=True)
@@ -8675,6 +8696,7 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                 f'<div class="cover"><div class="tag">Relatório Técnico · Comparação de Estudos</div>'
                 f'<h1>{_he.escape(titulo)}</h1><p>{_he.escape(data_str)} · {_conc} de {_tot} municípios conciliados</p></div>'
                 f'<div class="wrap"><nav><div class="lbl">Sumário</div>{_nav}</nav><main>{_corpo}</main></div>'
+                f'{_dev_about_html(data_str=data_str)}'  # [DEV-ABOUT] seção institucional ao final
                 f'<footer>Relatório autocontido · abre offline em qualquer navegador.</footer><script>{_bi_js}</script>{_script_interativo_html()}{_platform_bi_html()}</body></html>')
     except Exception:
         logger.error("[RELATORIO-HTML-PRO] Falha ao gerar relatório de comparação — versão resiliente",
@@ -8714,7 +8736,8 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
                 'visual completa não pôde ser gerada nesta execução, mas o placar principal está preservado '
                 'abaixo. Gere novamente ou use a planilha Excel para a visão completa.</div>'
                 f'{_placar_html}</div>'
-                '<footer style="padding:20px 40px;color:#64748b;font-size:12px">Relatório autocontido · abre '
+                + _dev_about_html(compacto=True, data_str=_dat)  # [DEV-ABOUT] institucional (compacto)
+                + '<footer style="padding:20px 40px;color:#64748b;font-size:12px">Relatório autocontido · abre '
                 'offline em qualquer navegador.</footer></body></html>')
         except Exception:
             logger.error("[RELATORIO-RESILIENTE] Falha até na versão mínima do comparador", exc_info=True)
@@ -13540,6 +13563,7 @@ def _montar_planilha_lote_xlsx(df_final):
     arquivo continua válido (defensivo). Retorna bytes."""
     _buf = io.BytesIO()
     with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
+        _dev_escrever_aba_excel(_w)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
         _df_rotas_lote = _renomear_colunas_exame(df_final)
         _df_rotas_lote.to_excel(_w, index=False, sheet_name="Rotas")
         # [EXPORT-PADRAO - 184ª geração] Padrão institucional na aba principal do Lote.
@@ -13642,6 +13666,7 @@ def _xlsx_bytes(df, sheet_name="Dados"):
     e zero CPU desperdiçada (as bases de ambiguidade tinham 521 + 1.690 linhas por rerun)."""
     _buf = io.BytesIO()
     with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
+        _dev_escrever_aba_excel(_w)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
         df.to_excel(_w, index=False, sheet_name=sheet_name)
     return _buf.getvalue()
 
@@ -13652,6 +13677,7 @@ def _xlsx_bytes_2(df1, nome1, df2=None, nome2="Aba2"):
     bytes: sem isto, um XLSX de 2 abas era remontado a cada rerun da aplicação inteira."""
     _buf = io.BytesIO()
     with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
+        _dev_escrever_aba_excel(_w)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
         df1.to_excel(_w, index=False, sheet_name=nome1)
         if df2 is not None and len(df2):
             df2.to_excel(_w, index=False, sheet_name=nome2)
@@ -22468,6 +22494,7 @@ def _montar_xlsx_comparacao(linhas, stats, aud, relatorio, diagnostico_div=None)
         _df = pd.DataFrame(linhas)
         _buf = io.BytesIO()
         with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
+            _dev_escrever_aba_excel(_w)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
             # [XLSX-PRO - 182ª geração] A CAPA ABRE O RELATÓRIO — numa aba PRÓPRIA.
             # Título, data, KPIs e navegação vivem AQUI. NUNCA nas abas de dados, onde quebrariam o
             # AutoFiltro, a ordenação, a tabela dinâmica e o read_excel() (a lição da 171ª, que me custou
@@ -31396,6 +31423,15 @@ if not st.session_state.get('_onboarding_dispensado', False):
                 st.session_state['_onboarding_dispensado'] = True
                 st.rerun()
 
+# [DEV-ABOUT - Rodada 1] Apresentação institucional na PÁGINA INICIAL (colapsável, aditiva).
+# Fica logo abaixo das boas-vindas: humaniza o projeto sem competir com o fluxo principal.
+# Versão "home" = cartão resumido + link/QR + convite para a seção completa no menu.
+try:
+    with st.expander("👨‍💻 Sobre o Desenvolvedor — conheça quem está por trás da plataforma", expanded=False):
+        _dev_render_streamlit(contexto="home")
+except Exception:
+    logger.error("[DEV-ABOUT] Falha ao exibir apresentação na home — ignorada", exc_info=True)
+
 with st.sidebar:
     # [OFFLINE - 144ª geração] Controle do curto-circuito oficial. Ligado por padrão porque a sede do
     # IBGE é a coordenada OFICIAL, determinística e auditável — e porque a nuvem, nesses casos, era
@@ -32466,6 +32502,7 @@ _SECOES = [
     "🩺 Monitor APIs",
     "🔍 Auditoria da Aplicação",
     "⭐ Pesquisa de Satisfação",
+    "👨\u200d💻 Sobre o Desenvolvedor",   # [DEV-ABOUT - Rodada 1] seção institucional (índice 13)
 ]
 # [UI-LAZY - 142ª geração] TRAVA DURANTE O PROCESSAMENTO. Efeito colateral REAL da renderização
 # preguiçosa: com st.tabs, o corpo de todas as abas executava sempre, então o processamento em chunks
@@ -32477,10 +32514,577 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "245"
+_VERSAO_APP = "246"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
+
+# ==============================================================================
+# MÓDULO INSTITUCIONAL — "SOBRE O DESENVOLVEDOR"  [DEV-ABOUT - Rodada 1]
+# ------------------------------------------------------------------------------
+# Objetivo (Rodada 1 do plano de evolução): apresentar, de forma elegante, moderna e
+# consistente, o desenvolvedor da plataforma e a filosofia do projeto — em TODAS as
+# superfícies (app, relatórios HTML e planilhas), sem tocar em nenhuma funcionalidade
+# existente. Tudo aqui é ADITIVO e defensivo: cada builder tem try/except e degrada com
+# elegância (o app/relatório/planilha nunca quebra por causa desta seção).
+#
+# ARQUITETURA:
+#   - _DEV_INFO: fonte única de verdade (dados institucionais).
+#   - _DEV_FOTO_B64 / _DEV_QR_B64: assets embutidos (offline, zero dependência nova).
+#   - _dev_about_html(...): seção HTML autocontida para os relatórios (usa a paleta e o
+#     dark-mode que os relatórios já possuem — classe .dark no <body>).
+#   - _dev_render_streamlit(...): seção nativa para o app (aba própria + reuso na home,
+#     manual e enciclopédia).
+#   - _dev_escrever_aba_excel(writer): adiciona a aba "Sobre o Desenvolvedor" a QUALQUER
+#     planilha (xlsxwriter), com foto, valores e link — idempotente por nome de aba.
+#
+# NÃO-REGRESSÃO: nenhum símbolo pré-existente é modificado. Os identificadores começam com
+# _dev_/_DEV_ para não colidir. Ler _VERSAO_APP é seguro (global; os builders só são
+# chamados na região de UI/geração, após sua definição). Se _VERSAO_APP ainda não existir
+# por qualquer motivo, cai em "—" sem erro.
+# ==============================================================================
+
+# --- Assets embutidos (base64) -------------------------------------------------
+# Foto do desenvolvedor: WebP 340x340 (~5,5 KB) — nítida em cartão, leve no HTML.
+_DEV_FOTO_B64 = "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"
+_DEV_FOTO_DATAURI = "data:image/webp;base64," + _DEV_FOTO_B64
+# QR Code do LinkedIn: PNG 240x240 — decodifica exatamente para o perfil (verificado).
+_DEV_QR_B64 = "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"
+_DEV_QR_DATAURI = "data:image/png;base64," + _DEV_QR_B64
+
+
+def _dev_versao_atual():
+    """Lê _VERSAO_APP com segurança total (global). Retorna string 'vNNN' ou 'v—'."""
+    try:
+        return "v" + str(globals().get("_VERSAO_APP", "—"))
+    except Exception:
+        return "v—"
+
+
+# --- Fonte única de verdade (conteúdo institucional aprimorado) ----------------
+_DEV_INFO = {
+    "nome": "Lucas Cardoso Cruz",
+    "cargo": "Especialista em Vibe Coding · Analista de Dados · Idealizador da Plataforma",
+    "linkedin": "https://www.linkedin.com/in/lucascardosolcc",
+    "linkedin_label": "linkedin.com/in/lucascardosolcc",
+    # Biografia institucional reescrita (não copia o texto-base; amplia a filosofia).
+    "bio": (
+        "Lucas Cardoso Cruz projeta software na fronteira entre a Educação e a Tecnologia — "
+        "uma formação multidisciplinar que molda sua maneira de construir sistemas: unir "
+        "profundidade técnica a clareza, simplicidade e uma experiência de uso impecável. "
+        "Sua marca é a criatividade aplicada a problemas complexos, transformando desafios "
+        "logísticos e geográficos em decisões mensuráveis, transparentes e auditáveis. "
+        "Foi essa combinação de pensamento analítico, ciência de dados e engenharia de "
+        "software que deu origem a esta plataforma e a diversos outros projetos ao longo de "
+        "sua trajetória."
+    ),
+    "missao": (
+        "Colocar tecnologia, dados e inteligência geográfica a serviço das pessoas — "
+        "aproximando cada candidato do seu local de prova com o menor deslocamento possível."
+    ),
+    "visao": (
+        "Ser a referência nacional em inteligência logística para exames: decisões "
+        "explicáveis, baseadas em evidência e reproduzíveis, ao alcance de qualquer gestor."
+    ),
+    "proposito": (
+        "Reduzir trajetos desnecessários e mitigar o impacto de balsas, regiões isoladas e "
+        "barreiras geográficas, promovendo uma distribuição mais justa, eficiente e humana."
+    ),
+    "frase": (
+        "\u201CTecnologia só importa quando melhora a vida de uma pessoa real. Cada rota "
+        "encurtada é um candidato que chega mais perto do seu futuro.\u201D"
+    ),
+    # Áreas de especialidade (rótulo, nível 0-100 para as barras).
+    "skills": [
+        ("Ciência de Dados", 95), ("Engenharia de Software", 92), ("Vibe Coding", 98),
+        ("Business Intelligence", 90), ("Geoprocessamento & SIG", 88), ("Geocodificação", 93),
+        ("Otimização Logística", 91), ("Desenvolvimento Python", 95), ("Streamlit", 96),
+        ("IA Aplicada", 87), ("Engenharia de Dados", 89), ("Analytics", 92),
+    ],
+    # Filosofia da plataforma.
+    "filosofia": [
+        ("Reduzir deslocamentos", "Cada quilômetro poupado tem impacto humano e operacional."),
+        ("Otimizar a logística", "Alocação inteligente de candidatos a polos de aplicação."),
+        ("Decidir com dados", "Nada é palpite: tudo nasce de evidência mensurável."),
+        ("Aproximar candidatos", "O local de prova mais próximo e viável, sempre."),
+        ("Reduzir custos", "Eficiência operacional sem sacrificar justiça territorial."),
+        ("Decisões transparentes", "O porquê de cada escolha fica registrado e legível."),
+        ("Auditoria completa", "Toda decisão é rastreável e reproduzível ponta a ponta."),
+        ("Múltiplos motores de rota", "Consenso entre motores, não dependência de um só."),
+        ("Inteligência geográfica", "Geodésia rigorosa e contexto territorial em cada análise."),
+        ("Melhoria contínua", "A plataforma evolui a cada geração, sem regressões."),
+    ],
+    # Diferenciais.
+    "diferenciais": [
+        ("Decisões auditáveis", "Cada resultado carrega a trilha de como foi obtido."),
+        ("IA explicável (XAI)", "Não é caixa-preta: mostra o raciocínio por trás da escolha."),
+        ("Múltiplos motores de roteamento", "Cruza fontes e desempata pela menor distância real."),
+        ("Análise territorial", "Classificação por UF, região, acesso, balsa e isolamento."),
+        ("Comparador inteligente", "Confronta estudos e revela divergências com contexto."),
+        ("Dashboards analíticos", "Cross-filtering vivo para explorar os dados de perto."),
+        ("Relatórios científicos", "Documentos autocontidos, offline, com método e referências."),
+        ("Exportações inteligentes", "Excel e GIS prontos para auditoria e integração."),
+        ("Aprendizado contínuo", "Cada rodada incorpora melhorias sem perder capacidade."),
+        ("Otimização por evidência", "Resgate de rotas e alocação guiados por impacto real."),
+    ],
+    # Valores.
+    "valores": [
+        "Inovação", "Ética", "Transparência", "Criatividade", "Precisão",
+        "Robustez", "Confiabilidade", "Melhoria Contínua", "Inteligência Analítica",
+        "Excelência Técnica",
+    ],
+    # Timeline (rótulo, título, descrição).
+    "timeline": [
+        ("Formação", "Educação + Tecnologia",
+         "Base multidisciplinar que une didática, clareza e rigor técnico."),
+        ("Evolução profissional", "Dados & Engenharia",
+         "Da análise de dados à engenharia de software e ao Vibe Coding."),
+        ("Concepção", "A ideia da plataforma",
+         "Criatividade aplicada a um problema real: aproximar candidatos das provas."),
+        ("Construção", "Motor de Inteligência Logística",
+         "Geocodificação, geodésia, roteamento e BI num sistema único e auditável."),
+        ("Evolução contínua", "Centenas de gerações",
+         "Aprimoramento cumulativo e disciplinado, sempre sem regressões."),
+    ],
+    # Tecnologias (para rodapé de relatório e aba Excel).
+    "tecnologias": (
+        "Python · Streamlit · Pandas/NumPy · Plotly/Altair · scikit-learn (DBSCAN) · "
+        "GeographicLib/GeoPy · RapidFuzz · OSRM & Google · DiskCache · PyDeck · XlsxWriter"
+    ),
+    "agradecimentos": (
+        "A todos que confiam nesta plataforma para tomar decisões que impactam a vida de "
+        "milhares de candidatos — obrigado por transformar dados em oportunidade."
+    ),
+}
+
+
+# ==============================================================================
+# BUILDER 1 — SEÇÃO HTML (para os relatórios exportáveis)
+# ==============================================================================
+def _dev_about_html(compacto=False, data_str=""):
+    """Retorna uma seção HTML autocontida 'Sobre o Desenvolvedor' para embutir nos
+    relatórios. Usa as MESMAS variáveis de tema que os relatórios já respeitam (a classe
+    .dark no <body>), então acompanha o modo claro/escuro sem JS adicional. Defensivo:
+    qualquer falha retorna '' (o relatório sai normalmente, apenas sem esta seção).
+
+    compacto=True  → versão enxuta (cartão + filosofia + link), ideal para o RODAPÉ.
+    compacto=False → versão completa (cartão + valores + tecnologias + QR).
+    """
+    try:
+        import html as _he
+        d = _DEV_INFO
+        _ver = _dev_versao_atual()
+        _dt = _he.escape(str(data_str or ""))
+        esc = lambda s: _he.escape(str(s))
+
+        # CSS com escopo próprio (prefixo .devab-) para NÃO colidir com o CSS do relatório.
+        # Suporta dark-mode via 'body.dark .devab-...' — igual ao padrão dos relatórios.
+        _css = (
+            "<style>"
+            ".devab{max-width:1180px;margin:26px auto 8px;padding:0 24px;font-family:inherit}"
+            ".devab-wrap{background:linear-gradient(135deg,#0a2540 0%,#12395f 55%,#1e5f8f 100%);"
+            "border-radius:22px;padding:34px 30px;color:#eef4fb;box-shadow:0 18px 46px rgba(10,37,64,.28);position:relative;overflow:hidden}"
+            ".devab-wrap:before{content:'';position:absolute;top:-60px;right:-60px;width:220px;height:220px;"
+            "background:radial-gradient(circle,rgba(56,189,248,.30),transparent 70%);border-radius:50%}"
+            ".devab-tag{display:inline-block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;"
+            "background:rgba(255,255,255,.14);padding:5px 13px;border-radius:999px;margin-bottom:16px;font-weight:600}"
+            ".devab-top{display:flex;gap:26px;align-items:center;flex-wrap:wrap}"
+            ".devab-photo{width:132px;height:132px;border-radius:50%;object-fit:cover;flex:0 0 auto;"
+            "border:4px solid rgba(255,255,255,.22);box-shadow:0 10px 28px rgba(0,0,0,.32)}"
+            ".devab-idwrap{flex:1 1 320px;min-width:260px}"
+            ".devab-name{font-size:28px;font-weight:800;margin:0 0 4px;line-height:1.15}"
+            ".devab-role{font-size:14px;color:#bfe0ff;font-weight:600;margin:0 0 14px}"
+            ".devab-bio{font-size:14.5px;line-height:1.68;color:#dfeaf6;margin:0}"
+            ".devab-quote{margin:20px 0 4px;padding:14px 20px;border-left:4px solid #38bdf8;"
+            "background:rgba(255,255,255,.08);border-radius:0 12px 12px 0;font-style:italic;font-size:14.5px;color:#eaf4ff}"
+            ".devab-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-top:22px}"
+            ".devab-card{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.14);"
+            "border-radius:15px;padding:16px 18px;backdrop-filter:blur(6px)}"
+            ".devab-card h4{margin:0 0 7px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:#9fd4ff}"
+            ".devab-card p{margin:0;font-size:13.5px;line-height:1.6;color:#e6f0fa}"
+            ".devab-vals{display:flex;flex-wrap:wrap;gap:9px;margin-top:8px}"
+            ".devab-chip{background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.18);"
+            "padding:6px 13px;border-radius:999px;font-size:12.5px;font-weight:600;color:#eaf4ff}"
+            ".devab-skills{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:11px 26px;margin-top:8px}"
+            ".devab-skill{font-size:12.5px}"
+            ".devab-skill .r{display:flex;justify-content:space-between;margin-bottom:4px;color:#dfeaf6}"
+            ".devab-bar{height:7px;background:rgba(255,255,255,.16);border-radius:99px;overflow:hidden}"
+            ".devab-bar i{display:block;height:100%;background:linear-gradient(90deg,#38bdf8,#7dd3fc);border-radius:99px}"
+            ".devab-cta{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:24px;"
+            "padding-top:22px;border-top:1px solid rgba(255,255,255,.16)}"
+            ".devab-btn{display:inline-flex;align-items:center;gap:10px;background:#0a66c2;color:#fff !important;"
+            "text-decoration:none;padding:12px 22px;border-radius:12px;font-weight:700;font-size:14px;"
+            "box-shadow:0 8px 22px rgba(10,102,194,.45);transition:transform .15s}"
+            ".devab-btn:hover{transform:translateY(-2px)}"
+            ".devab-qr{width:96px;height:96px;border-radius:12px;background:#fff;padding:6px;box-shadow:0 6px 18px rgba(0,0,0,.25)}"
+            ".devab-qr-wrap{display:flex;align-items:center;gap:11px;font-size:12px;color:#cfe4f7}"
+            ".devab-tl{margin-top:22px;display:grid;gap:0}"
+            ".devab-tl-item{display:flex;gap:14px;padding:10px 0;border-bottom:1px dashed rgba(255,255,255,.14)}"
+            ".devab-tl-item:last-child{border-bottom:0}"
+            ".devab-tl-dot{flex:0 0 auto;width:13px;height:13px;border-radius:50%;background:#38bdf8;margin-top:5px;"
+            "box-shadow:0 0 0 4px rgba(56,189,248,.22)}"
+            ".devab-tl-c .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#9fd4ff;font-weight:700}"
+            ".devab-tl-c .ti{font-size:14.5px;font-weight:700;margin:2px 0 2px;color:#fff}"
+            ".devab-tl-c .de{font-size:13px;color:#dfeaf6;line-height:1.55}"
+            ".devab-foot{margin-top:22px;padding-top:16px;border-top:1px solid rgba(255,255,255,.16);"
+            "font-size:12px;color:#bcd6ee;line-height:1.7}"
+            ".devab-foot b{color:#eaf4ff}"
+            ".devab-sig{margin-top:14px;font-size:12.5px;color:#9fd4ff;font-weight:700;letter-spacing:.04em}"
+            "@media(max-width:640px){.devab-name{font-size:23px}.devab-photo{width:104px;height:104px}}"
+            "</style>"
+        )
+
+        # --- Cabeçalho + cartão principal ---
+        parts = [_css, "<section class='devab' id='sobre-desenvolvedor'>",
+                 "<div class='devab-wrap'>",
+                 "<span class='devab-tag'>Sobre o Desenvolvedor</span>",
+                 "<div class='devab-top'>",
+                 "<img class='devab-photo' alt='%s' src='%s'>" % (esc(d["nome"]), _DEV_FOTO_DATAURI),
+                 "<div class='devab-idwrap'>",
+                 "<h3 class='devab-name'>%s</h3>" % esc(d["nome"]),
+                 "<p class='devab-role'>%s</p>" % esc(d["cargo"]),
+                 "<p class='devab-bio'>%s</p>" % esc(d["bio"]),
+                 "</div></div>",
+                 "<div class='devab-quote'>%s</div>" % esc(d["frase"]),
+                 ]
+
+        # --- Missão / Visão / Propósito ---
+        parts.append("<div class='devab-grid'>")
+        for _t, _k in [("Missão", "missao"), ("Visão", "visao"), ("Propósito", "proposito")]:
+            parts.append("<div class='devab-card'><h4>%s</h4><p>%s</p></div>" % (_t, esc(d[_k])))
+        parts.append("</div>")
+
+        if not compacto:
+            # --- Áreas de especialidade (barras) ---
+            parts.append("<div class='devab-card' style='margin-top:16px'><h4>Áreas de Especialidade</h4>"
+                         "<div class='devab-skills'>")
+            for _lbl, _lv in d["skills"]:
+                parts.append(
+                    "<div class='devab-skill'><div class='r'><span>%s</span><span>%d%%</span></div>"
+                    "<div class='devab-bar'><i style='width:%d%%'></i></div></div>" % (esc(_lbl), _lv, _lv))
+            parts.append("</div></div>")
+
+            # --- Nossa Filosofia ---
+            parts.append("<div class='devab-card' style='margin-top:16px'><h4>Nossa Filosofia</h4>"
+                         "<div class='devab-grid' style='margin-top:12px'>")
+            for _t, _de in d["filosofia"]:
+                parts.append("<div class='devab-card' style='background:rgba(255,255,255,.06)'>"
+                             "<h4 style='color:#7dd3fc'>%s</h4><p>%s</p></div>" % (esc(_t), esc(_de)))
+            parts.append("</div></div>")
+
+            # --- Por que esta plataforma é diferente ---
+            parts.append("<div class='devab-card' style='margin-top:16px'><h4>Por que esta plataforma é diferente?</h4>"
+                         "<div class='devab-grid' style='margin-top:12px'>")
+            for _t, _de in d["diferenciais"]:
+                parts.append("<div class='devab-card' style='background:rgba(255,255,255,.06)'>"
+                             "<h4 style='color:#7dd3fc'>%s</h4><p>%s</p></div>" % (esc(_t), esc(_de)))
+            parts.append("</div></div>")
+
+            # --- Timeline ---
+            parts.append("<div class='devab-card' style='margin-top:16px'><h4>Trajetória</h4><div class='devab-tl'>")
+            for _lbl, _ti, _de in d["timeline"]:
+                parts.append("<div class='devab-tl-item'><div class='devab-tl-dot'></div>"
+                             "<div class='devab-tl-c'><div class='lbl'>%s</div><div class='ti'>%s</div>"
+                             "<div class='de'>%s</div></div></div>" % (esc(_lbl), esc(_ti), esc(_de)))
+            parts.append("</div></div>")
+
+        # --- Valores ---
+        parts.append("<div class='devab-card' style='margin-top:16px'><h4>Valores</h4><div class='devab-vals'>")
+        for _v in d["valores"]:
+            parts.append("<span class='devab-chip'>%s</span>" % esc(_v))
+        parts.append("</div></div>")
+
+        # --- CTA LinkedIn + QR ---
+        parts.append("<div class='devab-cta'>")
+        parts.append(
+            "<a class='devab-btn' href='%s' target='_blank' rel='noopener'>"
+            "<svg width='20' height='20' viewBox='0 0 24 24' fill='#fff'><path d='M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.14 2.07 2.07 0 0 1 0 4.14zM7.12 20.45H3.55V9h3.57v11.45zM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0z'/></svg>"
+            "Conheça minha trajetória no LinkedIn</a>" % esc(d["linkedin"]))
+        parts.append(
+            "<div class='devab-qr-wrap'><img class='devab-qr' alt='QR Code LinkedIn' src='%s'>"
+            "<span>Aponte a câmera<br>para acessar o perfil</span></div>" % _DEV_QR_DATAURI)
+        parts.append("</div>")
+
+        # --- Rodapé institucional (tecnologias, agradecimentos, versão, data, assinatura) ---
+        parts.append("<div class='devab-foot'>")
+        parts.append("<b>Tecnologias:</b> %s<br>" % esc(d["tecnologias"]))
+        parts.append("<b>Agradecimentos:</b> %s" % esc(d["agradecimentos"]))
+        _meta = "<b>Versão:</b> %s" % esc(_ver)
+        if _dt:
+            _meta += " &nbsp;·&nbsp; <b>Gerado em:</b> %s" % _dt
+        parts.append("<br>" + _meta)
+        parts.append("<div class='devab-sig'>Motor Nacional de Inteligência Logística para Exames · concebido e desenvolvido por %s</div>" % esc(d["nome"]))
+        parts.append("</div>")
+
+        parts.append("</div></section>")
+        return "".join(parts)
+    except Exception:
+        try:
+            logger.error("[DEV-ABOUT] Falha ao montar seção HTML — omitindo (relatório segue normal)", exc_info=True)
+        except Exception:
+            pass
+        return ""
+
+
+# ==============================================================================
+# BUILDER 2 — SEÇÃO NATIVA STREAMLIT (app: aba própria + reuso)
+# ==============================================================================
+def _dev_render_streamlit(contexto="aba"):
+    """Renderiza a seção 'Sobre o Desenvolvedor' nativamente no app.
+    contexto='aba'    → versão completa (aba dedicada do menu).
+    contexto='home'   → versão resumida (cartão + link), para embutir em telas.
+    Defensivo: em caso de falha, mostra um aviso curto e segue (não derruba a aba)."""
+    try:
+        import streamlit as _st
+        d = _DEV_INFO
+        _ver = _dev_versao_atual()
+
+        # Cartão de topo com HTML enxuto (o CSS aqui é local e não conflita com o app).
+        _st.markdown(
+            "<style>"
+            ".dvcard{background:linear-gradient(135deg,#0a2540,#12395f 55%,#1e5f8f);border-radius:20px;"
+            "padding:28px;color:#eef4fb;box-shadow:0 14px 38px rgba(10,37,64,.30);position:relative;overflow:hidden}"
+            ".dvcard:before{content:'';position:absolute;top:-50px;right:-50px;width:180px;height:180px;"
+            "background:radial-gradient(circle,rgba(56,189,248,.30),transparent 70%);border-radius:50%}"
+            ".dvtag{display:inline-block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;"
+            "background:rgba(255,255,255,.15);padding:5px 13px;border-radius:999px;margin-bottom:14px;font-weight:700}"
+            ".dvtop{display:flex;gap:22px;align-items:center;flex-wrap:wrap}"
+            ".dvphoto{width:118px;height:118px;border-radius:50%;object-fit:cover;"
+            "border:4px solid rgba(255,255,255,.22);box-shadow:0 8px 24px rgba(0,0,0,.32)}"
+            ".dvname{font-size:26px;font-weight:800;margin:0 0 3px;line-height:1.15}"
+            ".dvrole{font-size:13.5px;color:#bfe0ff;font-weight:600;margin:0 0 12px}"
+            ".dvbio{font-size:14px;line-height:1.66;color:#dfeaf6;margin:0;max-width:640px}"
+            ".dvquote{margin-top:18px;padding:13px 18px;border-left:4px solid #38bdf8;background:rgba(255,255,255,.08);"
+            "border-radius:0 12px 12px 0;font-style:italic;font-size:14px;color:#eaf4ff}"
+            "</style>"
+            "<div class='dvcard'><span class='dvtag'>Sobre o Desenvolvedor</span>"
+            "<div class='dvtop'>"
+            "<img class='dvphoto' src='" + _DEV_FOTO_DATAURI + "'>"
+            "<div><h2 class='dvname'>" + d["nome"] + "</h2>"
+            "<p class='dvrole'>" + d["cargo"] + "</p>"
+            "<p class='dvbio'>" + d["bio"] + "</p></div></div>"
+            "<div class='dvquote'>" + d["frase"] + "</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        _st.write("")
+        # Botão LinkedIn (nativo, sempre clicável) — usa link_button quando disponível.
+        _cta1, _cta2 = _st.columns([3, 2])
+        with _cta1:
+            try:
+                _st.link_button("🔗  Conheça minha trajetória no LinkedIn", d["linkedin"],
+                                use_container_width=True)
+            except Exception:
+                _st.markdown("[🔗 **Conheça minha trajetória no LinkedIn**](%s)" % d["linkedin"])
+        with _cta2:
+            _st.caption("📱 QR Code do perfil (aponte a câmera):")
+            _st.markdown("<img src='%s' width='120' style='border-radius:12px;background:#fff;padding:6px'>"
+                         % _DEV_QR_DATAURI, unsafe_allow_html=True)
+
+        if contexto == "home":
+            _st.caption("Para conhecer a filosofia completa, os valores e a trajetória do projeto, "
+                        "acesse a seção **👨‍💻 Sobre o Desenvolvedor** no menu lateral.")
+            return
+
+        # --- Missão / Visão / Propósito ---
+        _st.markdown("### 🎯 Missão, Visão e Propósito")
+        _mc = _st.columns(3)
+        for _col, (_t, _k) in zip(_mc, [("Missão", "missao"), ("Visão", "visao"), ("Propósito", "proposito")]):
+            with _col:
+                with _st.container(border=True):
+                    _st.markdown("**%s**" % _t)
+                    _st.write(d[_k])
+
+        # --- Áreas de especialidade (barras nativas) ---
+        _st.markdown("### 🧠 Áreas de Especialidade")
+        _sc = _st.columns(2)
+        for _i, (_lbl, _lv) in enumerate(d["skills"]):
+            with _sc[_i % 2]:
+                _st.markdown("**%s** — %d%%" % (_lbl, _lv))
+                _st.progress(_lv / 100.0)
+
+        # --- Nossa Filosofia ---
+        _st.markdown("### 🧭 Nossa Filosofia")
+        _fc = _st.columns(2)
+        for _i, (_t, _de) in enumerate(d["filosofia"]):
+            with _fc[_i % 2]:
+                with _st.container(border=True):
+                    _st.markdown("**%s**" % _t)
+                    _st.caption(_de)
+
+        # --- Diferenciais ---
+        _st.markdown("### ⭐ Por que esta plataforma é diferente?")
+        _dc = _st.columns(2)
+        for _i, (_t, _de) in enumerate(d["diferenciais"]):
+            with _dc[_i % 2]:
+                with _st.container(border=True):
+                    _st.markdown("**%s**" % _t)
+                    _st.caption(_de)
+
+        # --- Timeline ---
+        _st.markdown("### 🗓️ Trajetória")
+        for _lbl, _ti, _de in d["timeline"]:
+            with _st.container(border=True):
+                _st.markdown("**%s · %s**" % (_lbl, _ti))
+                _st.caption(_de)
+
+        # --- Valores ---
+        _st.markdown("### 💎 Valores")
+        _st.markdown(" &nbsp; ".join("`%s`" % _v for _v in d["valores"]))
+
+        # --- Rodapé institucional ---
+        _st.divider()
+        _st.markdown("**Tecnologias:** %s" % d["tecnologias"])
+        _st.caption("Versão %s · Motor Nacional de Inteligência Logística para Exames · "
+                    "concebido e desenvolvido por %s" % (_ver, d["nome"]))
+    except Exception as _e:
+        try:
+            import streamlit as _st
+            _st.info("A seção institucional está temporariamente indisponível nesta visualização.")
+            logger.error("[DEV-ABOUT] Falha no render Streamlit: %s", _e, exc_info=True)
+        except Exception:
+            pass
+
+
+# ==============================================================================
+# BUILDER 3 — ABA EXCEL "SOBRE O DESENVOLVEDOR"
+# ==============================================================================
+def _dev_escrever_aba_excel(writer, nome_aba="Sobre o Desenvolvedor"):
+    """Adiciona (se ainda não existir) a aba institucional a QUALQUER planilha aberta com
+    engine='xlsxwriter'. Idempotente por nome de aba. Defensivo: qualquer falha é engolida
+    silenciosamente (a planilha sai normalmente, apenas sem esta aba)."""
+    try:
+        _wb = writer.book
+        # Idempotência: não duplica a aba se já existir.
+        try:
+            _existentes = set(getattr(_wb, "sheetnames", {}) or {})
+            if not _existentes:
+                # xlsxwriter guarda as worksheets em .worksheets_objs
+                _existentes = {getattr(_w, "name", "") for _w in getattr(_wb, "worksheets_objs", [])}
+        except Exception:
+            _existentes = set()
+        if nome_aba in _existentes:
+            return
+        d = _DEV_INFO
+        _ver = _dev_versao_atual()
+        _ws = _wb.add_worksheet(nome_aba)
+        _ws.hide_gridlines(2)
+        _ws.set_column("A:A", 2)
+        _ws.set_column("B:B", 26)
+        _ws.set_column("C:C", 92)
+
+        # Formatos (paleta institucional).
+        _f_title = _wb.add_format({"bold": True, "font_size": 20, "font_color": "#0a2540",
+                                   "align": "left", "valign": "vcenter"})
+        _f_role = _wb.add_format({"italic": True, "font_size": 11, "font_color": "#1e5f8f"})
+        _f_h = _wb.add_format({"bold": True, "font_size": 12, "font_color": "#ffffff",
+                               "bg_color": "#0a2540", "align": "left", "valign": "vcenter",
+                               "indent": 1})
+        _f_k = _wb.add_format({"bold": True, "font_color": "#0a2540", "valign": "top",
+                               "text_wrap": True, "indent": 1})
+        _f_v = _wb.add_format({"font_color": "#1f2937", "valign": "top", "text_wrap": True})
+        _f_link = _wb.add_format({"font_color": "#0a66c2", "underline": True, "bold": True})
+        _f_small = _wb.add_format({"font_color": "#64748b", "font_size": 9, "italic": True})
+        _f_chip = _wb.add_format({"font_color": "#0a2540", "bold": True, "text_wrap": True})
+
+        _r = 1
+        # Foto (inserida a partir de um buffer em memória — sem tocar o disco).
+        try:
+            import base64 as _b64, io as _io
+            _img = _io.BytesIO(_b64.b64decode(_DEV_FOTO_B64))
+            _ws.set_row(_r, 96)
+            _ws.insert_image(_r, 1, "dev_foto.webp",
+                             {"image_data": _img, "x_scale": 0.75, "y_scale": 0.75,
+                              "object_position": 1})
+        except Exception:
+            pass
+        _ws.write(_r, 2, d["nome"], _f_title)
+        _ws.write(_r + 1, 2, d["cargo"], _f_role)
+        _r += 7
+
+        def _row_kv(k, v, fmtk=None, fmtv=None):
+            nonlocal _r
+            _ws.write(_r, 1, k, fmtk or _f_k)
+            _ws.write(_r, 2, v, fmtv or _f_v)
+            _r += 1
+
+        def _section(titulo):
+            nonlocal _r
+            _r += 1
+            _ws.merge_range(_r, 1, _r, 2, titulo, _f_h)
+            _ws.set_row(_r, 22)
+            _r += 1
+
+        _section("Apresentação")
+        _ws.merge_range(_r, 1, _r, 2, d["bio"], _f_v)
+        _ws.set_row(_r, 92)
+        _r += 1
+        _row_kv("Frase", d["frase"])
+
+        _section("Missão · Visão · Propósito")
+        _row_kv("Missão", d["missao"])
+        _row_kv("Visão", d["visao"])
+        _row_kv("Propósito", d["proposito"])
+
+        _section("Nossa Filosofia")
+        for _t, _de in d["filosofia"]:
+            _row_kv(_t, _de)
+
+        _section("Por que esta plataforma é diferente?")
+        for _t, _de in d["diferenciais"]:
+            _row_kv(_t, _de)
+
+        _section("Áreas de Especialidade")
+        for _lbl, _lv in d["skills"]:
+            _ws.write(_r, 1, _lbl, _f_k)
+            _ws.write(_r, 2, ("█" * max(1, int(round(_lv / 5.0)))) + "  %d%%" % _lv, _f_chip)
+            _r += 1
+
+        _section("Valores")
+        _ws.merge_range(_r, 1, _r, 2, "  ·  ".join(d["valores"]), _f_chip)
+        _r += 1
+
+        _section("Rede Profissional")
+        try:
+            _ws.write_url(_r, 2, d["linkedin"], _f_link, string=d["linkedin_label"])
+        except Exception:
+            _ws.write(_r, 2, d["linkedin"], _f_link)
+        _ws.write(_r, 1, "LinkedIn", _f_k)
+        _r += 1
+        # QR do LinkedIn ao lado.
+        try:
+            import base64 as _b64, io as _io
+            _imgqr = _io.BytesIO(_b64.b64decode(_DEV_QR_B64))
+            _ws.set_row(_r, 92)
+            _ws.write(_r, 1, "QR Code", _f_k)
+            _ws.insert_image(_r, 2, "qr_linkedin.png",
+                             {"image_data": _imgqr, "x_scale": 0.5, "y_scale": 0.5})
+            _r += 1
+        except Exception:
+            pass
+
+        _section("Tecnologias")
+        _ws.merge_range(_r, 1, _r, 2, d["tecnologias"], _f_v)
+        _ws.set_row(_r, 30)
+        _r += 1
+
+        _section("Sobre esta plataforma")
+        _row_kv("Aplicação", "Motor Nacional de Inteligência Logística para Exames")
+        _row_kv("Versão", _ver)
+        _row_kv("Agradecimentos", d["agradecimentos"])
+        _r += 1
+        _ws.merge_range(_r, 1, _r, 2,
+                        "Concebido e desenvolvido por %s" % d["nome"], _f_small)
+    except Exception:
+        try:
+            logger.error("[DEV-ABOUT] Falha ao escrever aba Excel — omitindo (planilha segue normal)", exc_info=True)
+        except Exception:
+            pass
+        return
+
+# ============================ FIM DO MÓDULO DEV-ABOUT ==========================
+
+
 
 _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state.get('alo_em_andamento'))
 
@@ -32518,7 +33122,7 @@ _GRUPOS_NAV = {
     "🔍 Consultar": [0, 1],        # Deslocamento · Estudo em Lote
     "🎯 Decidir":   [2, 3, 7],     # Locais de Aplicação · Comparador · Polos Alternativos
     "📊 Analisar":  [4, 5, 6],     # Painel · Calculadora · Classificação
-    "📚 Aprender":  [8, 9],        # Enciclopédia · Manual
+    "📚 Aprender":  [8, 9, 13],    # Enciclopédia · Manual · Sobre o Desenvolvedor
     "⚙️ Sistema":   [10, 11, 12],  # Monitor APIs · Auditoria · Satisfação
 }
 assert sorted(_i for _v in _GRUPOS_NAV.values() for _i in _v) == list(range(len(_SECOES))), \
@@ -33823,6 +34427,7 @@ if _secao == _SECOES[1]:   # tab_processamento
                                             lambda x: _prevoo_higienizar_texto(x) if isinstance(x, str) else x)
                                 _buf_limpo = io.BytesIO()
                                 with pd.ExcelWriter(_buf_limpo, engine='xlsxwriter') as _w_limpo:
+                                    _dev_escrever_aba_excel(_w_limpo)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
                                     _df_limpo.to_excel(_w_limpo, index=False)
                                 st.session_state['prevoo_planilha_limpa'] = _buf_limpo.getvalue()
                             except Exception as _e_limpo:
@@ -34787,6 +35392,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     try:
                         _buf_pl = io.BytesIO()
                         with pd.ExcelWriter(_buf_pl, engine='xlsxwriter') as _w:
+                            _dev_escrever_aba_excel(_w)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
                             _rk.rename(columns={'municipio': 'Município', 'uf': 'UF', 'codigo_ibge': 'Cód. IBGE',
                                                 'municipios_cobertos': 'Municípios cobertos',
                                                 'candidatos_cobertos': 'Candidatos cobertos',
@@ -35971,6 +36577,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 
                 output_buffer = io.BytesIO()
                 with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
+                    _dev_escrever_aba_excel(writer)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
                     # [EXPORT-PADRAO - 184ª geração] Índice navegável como PRIMEIRA aba (sumário clicável com
                     # hyperlinks para todas as seções). Criado antes das demais para ficar no topo.
                     try:
@@ -37322,6 +37929,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             _df_e2 = _df_estudo_puramente_viaria(st.session_state['df_processado'], _cmp_e2)
                             _buf_e2 = io.BytesIO()
                             with pd.ExcelWriter(_buf_e2, engine="xlsxwriter") as _wr_e2:
+                                _dev_escrever_aba_excel(_wr_e2)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
                                 _df_e2.to_excel(_wr_e2, index=False, sheet_name="Estudo Puramente Viario")
                                 try:
                                     _aba_comparacao_estrategias(_wr_e2, _cmp_e2)
@@ -37731,6 +38339,7 @@ if _secao == _SECOES[3]:   # tab_comparador
                 try:
                     _buf_nw = io.BytesIO()
                     with pd.ExcelWriter(_buf_nw, engine="xlsxwriter") as _wnw:
+                        _dev_escrever_aba_excel(_wnw)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
                         _escrever_aba_profissional(_wnw, _df_pl, "Placar dos Estudos")
                         _escrever_aba_profissional(_wnw, _df_det, "Detalhe por Municipio")
                         if _rn.get("municipios_divergentes"):
@@ -39203,6 +39812,7 @@ if _secao == _SECOES[5]:   # tab_calculadora
                     with st.spinner('Montando o relatório...'):
                         _oc = io.BytesIO()
                         with pd.ExcelWriter(_oc, engine='xlsxwriter') as writer:
+                            _dev_escrever_aba_excel(writer)  # [DEV-ABOUT] aba institucional (idempotente, defensiva)
                             df_resumo = pd.DataFrame([{"Métrica Principal": f"{calc_op} de {calc_campo}", "Total de Linhas Analisadas": len(df_base_calc)}])
                             df_resumo.to_excel(writer, sheet_name='Resumo Executivo', index=False)
                             df_agg.to_excel(writer, sheet_name='Dados Consolidados', index=False)
@@ -39844,6 +40454,7 @@ if _secao == _SECOES[7]:   # tab_proximidade
 
 if _secao == _SECOES[8]:   # tab_enciclopedia
     st.info("📚 **Objetivo desta aba:** Repositório mestre de conhecimento. Detalha toda a jornada técnica de um dado — do município de origem do candidato até o local de aplicação da prova — passando pela identificação territorial oficial (IBGE), pela desambiguação de municípios homônimos e pela validação de integridade do deslocamento.")
+    st.caption("👨‍💻 Conheça a filosofia, os valores e a trajetória por trás desta plataforma na seção **Sobre o Desenvolvedor** (menu **📚 Aprender**).")
     renderizar_guia_aba("enciclopedia")
     st.markdown("# 📚 Enciclopédia Operacional e Base de Conhecimento Core")
     # [DOC-SYNC - 151ª geração] Bloco das CAMADAS NOVAS (gerações 126-150). A enciclopédia estava sincronizada
@@ -40952,6 +41563,7 @@ def _carregar_handbook_html():
 
 if _secao == _SECOES[9]:   # tab_manual
     st.info("📖 **Bem-vindo ao Manual Operacional!** Este espaço é destinado a todos os usuários da plataforma, ensinando de forma prática o 'passo a passo' para executar as operações do dia a dia.")
+    st.caption("👨‍💻 Para conhecer a filosofia do projeto e quem o desenvolve, visite a seção **Sobre o Desenvolvedor** (menu **📚 Aprender**).")
     renderizar_guia_aba("manual")
     st.markdown("### 📖 Manual do Usuário e Treinamento")
     # [DOC-184 - 184ª geração] Adendo NATIVO de documentação: o handbook embarcado (blob) é da geração
@@ -41541,3 +42153,12 @@ if _secao == _SECOES[12]:   # tab_pesquisa
 
         Toda avaliação também é **salva localmente** (cache) como backup, evitando perda de dados.
         """)
+
+# ==============================================================================
+# SEÇÃO 13 — SOBRE O DESENVOLVEDOR  [DEV-ABOUT - Rodada 1]
+# Aditivo: novo bloco de roteamento, mesmo padrão dos demais (comparação por STRING).
+# Renderiza a apresentação institucional nativa (cartão, filosofia, valores, timeline,
+# LinkedIn + QR). Não interfere em nenhuma outra seção.
+# ==============================================================================
+if _secao == _SECOES[13]:   # tab_sobre_desenvolvedor
+    _dev_render_streamlit(contexto="aba")
