@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.20
+# VERSÃO: 3.21
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,33 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.21 (258ª geração) → 📊 BI FASE 2: LOTE GANHA GRÁFICOS + LEITURA AUTOMÁTICA + COERÊNCIA TELA↔RELATÓRIO + DOCS [BI-LOTE+REPORT+DOCS]
+#     Rodada em 4 frentes, todas provadas antes de integrar (Altair→PNG e Plotly→to_html no sandbox):
+#     (A) ESTUDO EM LOTE ganha 2 gráficos onde só havia tabelas (a 2ª seção sem visual do mapeamento):
+#         _grafico_distribuicao_distancias (histograma da coluna 'Distancia' — a FORMA do deslocamento, cauda
+#         longa que a média esconde) e _grafico_fontes_rota (barras de procedência: verde = rota medida
+#         Google/OSRM/GraphHopper, âmbar = estimativa geodésica — leitura direta de confiabilidade). Novo
+#         container "📊 Visão Gráfica do Lote" logo após o Resumo Executivo, ambos com _leitura_grafico de
+#         conclusão dinâmica (mediana/P90; % de rotas medidas). Colunas já prontas no df — não recalcula nada.
+#     (B) _leitura_grafico ("📖 Como ler / 🔎 O que diz") sob os 2 gráficos do Comparador (257ª), reusando o
+#         helper que o app já tinha — conclusão calculada dos dados (o híbrido poupa X km migrando N municípios;
+#         vencemos em N estados, maior ganho em UF). Uniformiza a linguagem visual pedida.
+#     (C) COERÊNCIA TELA↔RELATÓRIO: os 2 gráficos do Comparador vão agora ao relatório HTML da comparação, em
+#         PLOTLY (idioma dos demais gráficos do relatório, que já carrega Plotly — ZERO dependência nova).
+#         _fig_planos_comparacao_report e _fig_estados_divergente_report, embutidos via o _emb() existente após
+#         a seção "Distribuição de Vitórias", computados das MESMAS linhas conciliadas pelas MESMAS funções
+#         puras da tela (_plano_hibrido / _rankings_comparacao) — o que se vê na tela é o que sai no documento.
+#     (D) DOCUMENTAÇÃO (handbook+manual+enciclopédia+corporativa): seguindo a convenção do próprio app (o blob
+#         do handbook é defasado de propósito; o adendo NATIVO é a ponte viva), 3 painéis ADITIVOS documentando
+#         a camada de BI — novo adendo "Novidades 257-258" no Manual, novo bloco na Enciclopédia Core, e novo
+#         expander "Camada de Visualização e BI" na Documentação Corporativa. O adendo da 184ª segue intacto.
+#     PROVA: 4 gráficos renderizados e conferidos (2 Altair visualmente sem colisão de rótulos; 2 Plotly por
+#         estrutura+to_html — híbrido verde é a menor barra, PA verde/AM vermelho) + 13 edge cases retornam
+#         None sem exceção. NÃO-REGRESSÃO: 4 funções novas + 4 pontos de render/2 seções de relatório + 3
+#         painéis de doc; nada removido/alterado em pipeline/dados/tabelas/exports. RotaPipeline 42 (idêntico),
+#         0 função removida, imports de topo idênticos (altair e plotly já importados), requirements INALTERADO,
+#         _SECOES 14, balloons 1, bare 0. PERFORMANCE: agregações O(n) sob demanda; gráficos só quando a seção
+#         está aberta; relatório inalterado no custo (Plotly já era carregado). Fecha a Fase 2 do plano de BI.
 #   v3.20 (257ª geração) → 📊 BI DEDICADO NO COMPARADOR: 2 GRÁFICOS ONDE ANTES SÓ HAVIA TABELAS [BI-COMPARADOR]
 #     Melhoria de BI escolhida por EVIDÊNCIA: mapeada a densidade de visualização por aba, o Comparador de
 #     Estudos era a 2ª maior seção de análise e a mais densa em dados SEM UM ÚNICO gráfico — dezenas de
@@ -8837,6 +8864,67 @@ def _bi_dashboard_comparacao(linhas):
         return "", "", ""
 
 
+def _fig_planos_comparacao_report(hb):
+    """[BI-COMPARADOR-REPORT - 258ª geração] Versão PLOTLY (para o relatório HTML) do gráfico de planos da tela:
+    barras horizontais do custo total de deslocamento (km-candidato) dos três planos — só o nosso, só o do
+    concorrente, e o híbrido (o melhor de cada município). Traz ao relatório o mesmo visual que a tela ganhou
+    na 257ª, mantendo tela e export coerentes. Usa go.Figure (Plotly já é carregado no relatório); cores no
+    padrão do relatório (verde #16a34a = melhor). Consome as chaves de _plano_hibrido(). PURO e defensivo:
+    dict None/vazio/sem os três custos/todos-zero → None. Retorna go.Figure ou None."""
+    if not isinstance(hb, dict):
+        return None
+    try:
+        _n = float(hb.get("custo_so_nosso_km_candidato"))
+        _d = float(hb.get("custo_so_dele_km_candidato"))
+        _h = float(hb.get("custo_hibrido_km_candidato"))
+    except (TypeError, ValueError):
+        return None
+    if _n <= 0 and _d <= 0 and _h <= 0:
+        return None
+    _labels = ["Só o do concorrente", "Só o nosso estudo", "🏆 Híbrido (melhor de cada)"]
+    _vals = [_d, _n, _h]
+    _cores = ["#f59e0b", "#2563eb", "#16a34a"]
+    _fig = go.Figure(go.Bar(x=_vals, y=_labels, orientation="h", marker_color=_cores,
+                            text=[_fmt_num(v) for v in _vals], textposition="outside",
+                            hovertemplate="%{y}: %{x:,.0f} km-candidato<extra></extra>"))
+    _fig.update_layout(height=300, margin=dict(l=10, r=30, t=16, b=40), template="plotly_white",
+                       xaxis_title="Deslocamento total (km-candidato) — menor é melhor")
+    return _fig
+
+
+def _fig_estados_divergente_report(estados, max_estados=18):
+    """[BI-COMPARADOR-REPORT - 258ª geração] Versão PLOTLY (para o relatório HTML) do gráfico divergente por
+    estado da tela: para cada UF, a economia ponderada (km × candidatos) — verde à direita = nós poupamos;
+    vermelho à esquerda = a referência leva o candidato mais perto. Traz ao relatório a leitura geográfica que
+    a tela ganhou na 257ª. Ordenado por magnitude, limita aos max_estados de maior |economia|. Consome
+    estados[] de _rankings_comparacao(). Cores no padrão do relatório (#16a34a/#dc2626). PURO e defensivo:
+    lista None/vazia/itens-lixo/sem sinal → None. Retorna go.Figure ou None."""
+    if not isinstance(estados, (list, tuple)) or not estados:
+        return None
+    _linhas = []
+    for _e in estados:
+        if not isinstance(_e, dict):
+            continue
+        try:
+            _v = float(_e.get("economia_km_candidato"))
+        except (TypeError, ValueError):
+            continue
+        _linhas.append((str(_e.get("UF") or "—").upper(), _v))
+    if not _linhas or all(abs(v) < 1e-9 for _, v in _linhas):
+        return None
+    _linhas = sorted(_linhas, key=lambda x: -abs(x[1]))[:max_estados]
+    _linhas = sorted(_linhas, key=lambda x: x[1])
+    _ufs = [u for u, _ in _linhas]
+    _vals = [v for _, v in _linhas]
+    _cores = ["#16a34a" if v >= 0 else "#dc2626" for v in _vals]
+    _fig = go.Figure(go.Bar(x=_vals, y=_ufs, orientation="h", marker_color=_cores,
+                            hovertemplate="%{y}: %{x:,.0f} km-candidato<extra></extra>"))
+    _fig.update_layout(height=max(280, 24 * len(_ufs)), margin=dict(l=10, r=20, t=16, b=40),
+                       template="plotly_white",
+                       xaxis_title="Economia ponderada (km-candidato) — ◀ referência · nós ▶")
+    return _fig
+
+
 def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparação", data_str="", linhas=None,
                                      diagnostico_div=None):
     """[RELATORIO-HTML-PRO - 184ª geração] Relatório HTML AUTOCONTIDO (offline) da COMPARAÇÃO entre estudos,
@@ -8918,6 +9006,41 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
         _fig_w.update_layout(height=320, margin=dict(l=40, r=20, t=16, b=40), template="plotly_white",
                              yaxis_title="% dos municípios")
         _sec.append(("vitorias", "Distribuição de Vitórias", _emb(_fig_w)))
+        # [BI-COMPARADOR-REPORT - 258ª geração] Coerência tela↔export: traz ao relatório os dois gráficos que a
+        # tela ganhou na 257ª — comparação de planos (híbrido) e divergente por estado — computados das mesmas
+        # linhas conciliadas pelas mesmas funções puras da tela. Defensivo: sem dados → seção não aparece.
+        try:
+            if linhas:
+                _hb_rep = _plano_hibrido(linhas)
+                _fig_pl = _fig_planos_comparacao_report(_hb_rep)
+                if _fig_pl is not None:
+                    _sec.append(("planos", "Plano Híbrido — o melhor de cada município",
+                                 '<p class="lead">Três planos, um número que decide: o custo total de '
+                                 'deslocamento (km × candidatos) adotando <b>só o nosso</b> estudo, <b>só o do '
+                                 'concorrente</b>, ou o <b>híbrido</b> (o melhor polo de cada município). A barra '
+                                 'verde é sempre a mais curta — por construção.</p>' + _emb(_fig_pl)
+                                 + _caixa_explicativa(
+                                     "Como ler",
+                                     "Cada barra é o deslocamento total de um plano; <b>menor é melhor</b>. O "
+                                     "híbrido não é um terceiro estudo — é a decisão de tomar, município a "
+                                     "município, quem quer que leve o candidato mais perto. Por isso ele nunca "
+                                     "perde para nenhum dos dois isoladamente.", "info")))
+                _rk_rep = _rankings_comparacao(linhas)
+                _fig_es = _fig_estados_divergente_report((_rk_rep or {}).get("estados"))
+                if _fig_es is not None:
+                    _sec.append(("estados_div", "Onde cada estudo vence (por estado)",
+                                 '<p class="lead">A economia ponderada (km × candidatos) por estado. Barras '
+                                 '<b style="color:#16a34a">verdes</b> à direita: a nossa solução leva o candidato '
+                                 'mais perto ali. Barras <b style="color:#dc2626">vermelhas</b> à esquerda: a '
+                                 'referência leva mais perto naquele estado.</p>' + _emb(_fig_es)
+                                 + _caixa_explicativa(
+                                     "Como ler",
+                                     "Responde num relance a pergunta geográfica que a tabela responde em números: "
+                                     "<b>onde cada estudo vence?</b>. Concentrações de vermelho apontam regiões a "
+                                     "revisar primeiro — é onde adotar a escolha da referência mais pouparia "
+                                     "deslocamento aos candidatos.", "info")))
+        except Exception:
+            pass
         # [SUNBURST+TREEMAP - 184ª geração] Hierarquia UF → vencedor (anel) e treemap de volume por UF/vencedor,
         # a partir das linhas conciliadas. Só aparece se houver UF nas linhas.
         if linhas:
@@ -18046,6 +18169,71 @@ def _grafico_estados_divergente(estados, max_estados=18):
                  alt.Tooltip("rotulo:N", title="km-candidato"),
                  alt.Tooltip("lado:N", title="Quem leva mais perto")],
     ).properties(height=max(180, 22 * len(_dados)), title="Onde cada estudo vence (por estado)")
+
+
+def _grafico_distribuicao_distancias(df):
+    """[BI-LOTE - 258ª geração] Histograma da distribuição das distâncias viárias do lote — mostra num relance
+    a FORMA do deslocamento: onde está a massa das rotas (curtas? médias?) e se há cauda longa de casos
+    extremos. Complementa o Resumo Executivo (que dá média/total) revelando o que a média esconde. Usa a
+    coluna 'Distancia' já pronta no df processado. PURO e defensivo: df None/sem coluna/menos de 3 valores
+    positivos válidos → None (nada renderiza). Retorna alt.Chart ou None."""
+    try:
+        if df is None or 'Distancia' not in df.columns:
+            return None
+        _d = pd.to_numeric(df['Distancia'], errors='coerce').dropna()
+        _d = _d[_d > 0]
+        if len(_d) < 3:
+            return None
+        _dados = pd.DataFrame({"km": _d.values})
+        return alt.Chart(_dados).mark_bar(color="#3B82F6", cornerRadiusEnd=2).encode(
+            x=alt.X("km:Q", bin=alt.Bin(maxbins=30), title="Distância viária (km)"),
+            y=alt.Y("count():Q", title="Nº de rotas"),
+            tooltip=[alt.Tooltip("count():Q", title="Rotas"),
+                     alt.Tooltip("km:Q", bin=alt.Bin(maxbins=30), title="Faixa (km)")],
+        ).properties(height=240, title="Como as distâncias se distribuem no lote")
+    except Exception:
+        return None
+
+
+def _grafico_fontes_rota(df):
+    """[BI-LOTE - 258ª geração] Barras horizontais de PROCEDÊNCIA de cada rota — de qual motor veio a distância
+    (Google/OSRM/GraphHopper = MEDIDA, verde) versus estimativa geodésica (fallback, âmbar). Responde a
+    pergunta de CONFIANÇA que pertence ao lado dos resultados: 'quanto deste lote é rota real medida e quanto
+    é estimativa por ausência de rota?'. Usa a coluna 'Fonte da Rota' já pronta. Cor por classe (medida ×
+    estimada) para a leitura de qualidade ser imediata. PURO e defensivo: df None/sem coluna/tudo vazio →
+    None. Retorna alt.Chart ou None."""
+    try:
+        if df is None or 'Fonte da Rota' not in df.columns:
+            return None
+        _s = df['Fonte da Rota'].astype(str).str.strip()
+        _s = _s[(_s != "") & (_s.str.lower() != "nan")]
+        if len(_s) == 0:
+            return None
+        _cont = _s.value_counts().reset_index()
+        _cont.columns = ["fonte", "rotas"]
+        if _cont.empty:
+            return None
+
+        def _cor(f):
+            _fl = f.lower()
+            if "estima" in _fl or "geodés" in _fl or "geodes" in _fl or "reta" in _fl:
+                return "#F59E0B"
+            return "#10B981"
+        _cont["cor"] = _cont["fonte"].map(_cor)
+        _cont["rotulo"] = _cont["rotas"].map(lambda v: _fmt_num(v))
+        _base = alt.Chart(_cont)
+        _barras = _base.mark_bar(cornerRadiusEnd=4).encode(
+            x=alt.X("rotas:Q", title="Nº de rotas", axis=alt.Axis(grid=False)),
+            y=alt.Y("fonte:N", sort="-x", title=None),
+            color=alt.Color("cor:N", scale=None, legend=None),
+            tooltip=[alt.Tooltip("fonte:N", title="Motor"), alt.Tooltip("rotas:Q", title="Rotas")],
+        )
+        _txt = _base.mark_text(align="left", dx=4, color="#374151", fontSize=12).encode(
+            x=alt.X("rotas:Q"), y=alt.Y("fonte:N", sort="-x"), text="rotulo:N")
+        return (_barras + _txt).properties(height=max(140, 30 * len(_cont)),
+                                           title="De onde veio cada rota (medida × estimada)")
+    except Exception:
+        return None
 
 
 def _metodologia_indicadores():
@@ -32475,6 +32663,21 @@ with st.sidebar:
         * **Validação Anti-Zero:** Previne *overflows* e colisões de centróide.
         * **Bounding Box Territorial:** Bloqueia coordenadas impossíveis nos 27 estados.
         """)
+    with st.expander("📊 Camada de Visualização e Business Intelligence"):
+        st.markdown("""
+        Sobre a base de **tabelas auditáveis**, a plataforma oferece uma **camada de visualização** nas seções
+        analíticas — sempre **aditiva** (nenhuma tabela é substituída) e **defensiva** (sem dado suficiente, o
+        gráfico não é renderizado e a tabela permanece).
+        * **Painel Estratégico:** cross-filtering interativo (Altair), rankings regionais e operacionais.
+        * **Comparador de Estudos:** comparação de planos (nosso × concorrente × **híbrido**) e mapa divergente
+          por estado (onde cada estudo leva o candidato mais perto).
+        * **Estudo em Lote:** distribuição de distâncias (forma do deslocamento) e procedência das rotas
+          (medida por estrada × estimativa geodésica) — leitura direta de confiabilidade.
+        * **Relatórios HTML:** os gráficos do Comparador são embarcados no documento exportado (Plotly,
+          autocontido), garantindo **coerência entre a tela e o relatório**.
+        * **Leitura assistida:** cada gráfico traz um rodapé *"Como ler / O que diz"* com conclusão calculada
+          automaticamente dos dados do próprio estudo.
+        """)
     st.markdown("---")
     st.subheader("✉️ Suporte e Feedback")
     st.caption("Envie uma solicitação diretamente para a equipe de Engenharia (Requer SMTP).")
@@ -33469,7 +33672,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "257"
+_VERSAO_APP = "258"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -35781,6 +35984,38 @@ if _secao == _SECOES[1]:   # tab_processamento
                             _cap.append(f"{_nb} rota(s) com balsa")
                         if _cap:
                             st.caption("Panorama do lote: " + " · ".join(_cap) + ".")
+                    except Exception:
+                        pass
+                with st.container(border=True):
+                    st.markdown("#### 📊 Visão Gráfica do Lote")
+                    st.caption("O Resumo acima dá os números; aqui você vê a **forma** deles — a distribuição "
+                               "das distâncias e a procedência das rotas.")
+                    try:
+                        _g_dist = _grafico_distribuicao_distancias(_df_fin)
+                        if _g_dist is not None:
+                            st.altair_chart(_g_dist, use_container_width=True)
+                            _dd = pd.to_numeric(_df_fin['Distancia'], errors='coerce').dropna()
+                            _dd = _dd[_dd > 0]
+                            if len(_dd) >= 3:
+                                _med = float(_dd.median()); _p90 = float(_dd.quantile(0.90))
+                                _leitura_grafico(
+                                    como_ler="cada barra conta quantas rotas caem numa faixa de distância; a "
+                                             "massa à esquerda são as rotas curtas, a cauda à direita os casos longos.",
+                                    conclusao=f"metade das rotas fica até **{_med:.0f} km** e 9 em cada 10 até "
+                                              f"**{_p90:.0f} km** — a cauda acima disso concentra os deslocamentos críticos.")
+                        _g_font = _grafico_fontes_rota(_df_fin)
+                        if _g_font is not None:
+                            st.altair_chart(_g_font, use_container_width=True)
+                            _fs = _df_fin['Fonte da Rota'].astype(str).str.strip()
+                            _fs = _fs[(_fs != "") & (_fs.str.lower() != "nan")]
+                            _n_tot = len(_fs)
+                            _n_est = int(_fs.str.lower().str.contains("estima|geodés|geodes|reta", regex=True).sum())
+                            _pct_med = (100.0 * (_n_tot - _n_est) / _n_tot) if _n_tot else 0.0
+                            _leitura_grafico(
+                                como_ler="cada barra é um motor de rota; verde são distâncias medidas por estrada, "
+                                         "âmbar é a estimativa geodésica usada quando não há rota viária.",
+                                conclusao=f"**{_pct_med:.0f}%** das rotas do lote são medidas (verde); o restante é "
+                                          "estimativa por ausência de rota — quanto maior o verde, mais auditável o estudo.")
                     except Exception:
                         pass
                 with st.container(border=True):
@@ -40048,6 +40283,15 @@ if _secao == _SECOES[3]:   # tab_comparador
                         _g_planos = _grafico_planos_comparacao(_hb)
                         if _g_planos is not None:
                             st.altair_chart(_g_planos, use_container_width=True)
+                            _leitura_grafico(
+                                como_ler="cada barra é o deslocamento total (km × candidatos) de um plano; menor "
+                                         "é melhor. O híbrido toma, de cada município, o polo mais perto.",
+                                conclusao=(f"o híbrido poupa **{_fmt_num(_hb['ganho_do_hibrido_sobre_nos'])} "
+                                           f"km-candidato** sobre adotar só o nosso estudo, migrando "
+                                           f"**{_hb['municipios_do_concorrente']}** município(s)."
+                                           if _hb.get("vale_a_pena") else
+                                           "o nosso estudo já é o melhor em todos os municípios — não há ganho "
+                                           "em adotar escolhas do concorrente."))
                         if _hb["vale_a_pena"]:
                             st.success(
                                 f"⚡ **O híbrido poupa {_fmt_num(_hb['ganho_do_hibrido_sobre_nos'])} "
@@ -40081,6 +40325,16 @@ if _secao == _SECOES[3]:   # tab_comparador
                             _g_estados = _grafico_estados_divergente(_rk["estados"])
                             if _g_estados is not None:
                                 st.altair_chart(_g_estados, use_container_width=True)
+                                _est_v = [e for e in _rk["estados"]
+                                          if isinstance(e, dict) and (e.get("economia_km_candidato") or 0) > 0]
+                                _est_p = [e for e in _rk["estados"]
+                                          if isinstance(e, dict) and (e.get("economia_km_candidato") or 0) < 0]
+                                _top_uf = _est_v[0].get("UF") if _est_v else "—"
+                                _leitura_grafico(
+                                    como_ler="barras verdes (direita) = estados onde a nossa solução leva o "
+                                             "candidato mais perto; vermelhas (esquerda) = onde a referência leva mais perto.",
+                                    conclusao=f"vencemos em **{len(_est_v)}** estado(s) e perdemos em "
+                                              f"**{len(_est_p)}**; o maior ganho está em **{_top_uf}**.")
                     with _r2:
                         st.markdown("##### 🏫 Locais de prova — quem recebe mais")
                         st.caption("Quantos candidatos cada polo recebe, e com que deslocamento médio. "
@@ -41498,6 +41752,41 @@ if _secao == _SECOES[8]:   # tab_enciclopedia
     st.caption("👨‍💻 Conheça a filosofia, os valores e a trajetória por trás desta plataforma na seção **Sobre o Desenvolvedor** (menu **📚 Aprender**).")
     renderizar_guia_aba("enciclopedia")
     st.markdown("# 📚 Enciclopédia Operacional e Base de Conhecimento Core")
+    # [DOC-BI - 258ª geração] Camada de visualização/BI (gerações 257-258). Aditivo — antecede o bloco 152→178.
+    with st.expander("🆕 Camada de Business Intelligence e visualização (gerações 257 → 258)", expanded=False):
+        st.markdown("""
+        A plataforma sempre foi forte em **tabelas auditáveis**. Estas gerações adicionaram uma **camada de
+        visualização** nas seções mais densas em dados — sem substituir nenhuma tabela. Um gráfico bem escolhido
+        responde num relance o que uma tabela responde em números; os dois convivem.
+
+        ---
+
+        ### ⚖️ Comparador de Estudos — dois gráficos de decisão
+        - **Comparação de planos (barras horizontais):** o custo total de deslocamento (km × candidatos) de
+          três planos — *só o nosso estudo*, *só o do concorrente* e o **plano híbrido** (tomar, de cada
+          município, o polo que leva o candidato mais perto). Por construção o híbrido **nunca perde** para
+          nenhum dos dois isolados — a barra verde é sempre a mais curta.
+        - **Divergente por estado (barras que apontam para os dois lados):** a economia ponderada por UF.
+          Verde para a direita = a nossa solução leva o candidato mais perto naquele estado; vermelho para a
+          esquerda = a referência leva mais perto. Torna **geográfica** a pergunta "onde cada estudo vence?".
+
+        ### ⚙️ Estudo em Lote — a forma e a procedência dos dados
+        - **Distribuição de distâncias (histograma):** revela a **forma** do deslocamento — onde está a massa
+          das rotas e se há uma cauda longa de casos extremos que a média esconde.
+        - **Procedência das rotas (barras horizontais):** de qual motor veio cada distância — **verde** para
+          rota medida por estrada (Google/OSRM/GraphHopper), **âmbar** para a estimativa geodésica (fallback
+          quando não há rota viária). É uma leitura direta de **confiabilidade**: quanto do lote é medido.
+
+        ### 📖 Leitura automática e coerência com o relatório
+        Cada gráfico traz um rodapé **"Como ler / O que diz"** com conclusão calculada dos próprios dados. Os
+        gráficos do Comparador também vão ao **relatório HTML** exportado (em Plotly), mantendo tela e documento
+        coerentes.
+
+        ---
+
+        > **Princípio:** visualização é **aditiva**. Nenhuma tabela, exportação ou filtro foi removido; se
+        > faltar dado, o gráfico simplesmente não aparece e a tabela permanece intacta.
+        """)
     # [DOC-SYNC - 151ª geração] Bloco das CAMADAS NOVAS (gerações 126-150). A enciclopédia estava sincronizada
     # até a ~125ª e não conhecia metade do que a plataforma faz hoje. Container fixo, rótulo estático (132ª).
     # [DOCS - 179ª geração] A DÍVIDA DE DOCUMENTAÇÃO, PAGA.
@@ -42631,6 +42920,31 @@ Planilha de Locais com **camada analítica** (Resumo Executivo, Síntese por UF,
 
 #### ⚠️ Limitação conhecida (honesta)
 Municípios de **acesso fluvial** não têm rota rodoviária real: a app sinaliza (🟡/🟠) e usa o melhor proxy disponível; a referência oficial usa matrizes com pernas de **balsa/fluvial** (rod_fiocruz/hid_ibge) que motores rodoviários não produzem. O roteamento fluvial (base ANTAQ) é o próximo passo planejado.
+""")
+
+    # [DOC-BI - 258ª geração] Adendo NATIVO das gerações 257-258 (BI/visualização). Segue a convenção da
+    # 184ª: o handbook embarcado (blob) fica defasado de propósito; este painel é a ponte viva que documenta
+    # handbook + manual + enciclopédia de uma vez. Aditivo — o adendo da 184ª segue intacto acima.
+    with st.expander("🆕 **Novidades das gerações 257–258 — Business Intelligence e visualização** (adendo oficial)", expanded=False):
+        st.markdown("""
+#### 📊 Gráficos onde antes só havia tabelas
+As seções mais densas em dados ganharam **visualização**, escolhida por evidência (mapeamento de densidade de BI por aba) — sem remover nenhuma tabela: os gráficos são uma **camada de leitura ao lado** dos números que já existiam.
+
+**⚖️ No Comparador de Estudos (257ª):**
+- **Comparação de planos** — barras horizontais do custo total de deslocamento (km-candidato) dos três planos: *só o nosso*, *só o do concorrente* e o **híbrido** (o melhor polo de cada município). A barra verde (híbrido) é sempre a mais curta **por construção** — a vantagem salta aos olhos. Aparece logo abaixo das três métricas do híbrido.
+- **Divergente por estado** — a economia ponderada (km × candidatos) por UF: barras **verdes** à direita = a nossa solução leva o candidato mais perto ali; **vermelhas** à esquerda = a referência leva mais perto naquele estado. Responde num relance a pergunta geográfica *"onde cada estudo vence?"*. Aparece ao lado da tabela "Estados — quem mais ganha".
+
+**⚙️ No Estudo em Lote (258ª):**
+- **Distribuição de distâncias** — histograma que mostra a **forma** do deslocamento do lote: onde está a massa das rotas e se há cauda longa de casos extremos (o que a média sozinha esconde).
+- **Procedência das rotas** — barras horizontais de *de onde veio cada rota*: **verde** para distâncias medidas por estrada (Google/OSRM/GraphHopper) e **âmbar** para a estimativa geodésica (usada quando não há rota viária). Uma leitura direta de **confiabilidade** do estudo: quanto do lote é rota real medida.
+
+Todo gráfico traz um rodapé **"📖 Como ler / 🔎 O que diz"** com uma conclusão automática calculada dos próprios dados do estudo.
+
+#### 📄 Coerência entre tela e relatório (258ª)
+Os dois gráficos do Comparador foram levados também ao **relatório HTML da comparação** (renderizados em Plotly, no mesmo padrão dos demais gráficos do relatório) — o que você vê na tela é o que sai no documento exportado, mantendo tela e export coerentes.
+
+#### 🔒 Garantia de não-regressão
+Nada foi removido ou alterado: todas as tabelas, exportações, filtros e análises seguem idênticos. Os gráficos são **estritamente aditivos**, cada um defensivo (se faltar dado, o gráfico simplesmente não aparece e a tabela permanece).
 """)
 
     # [DOC-EMBED - 95a geracao] Handbook tecnico completo embarcado (28 secoes) — inline + download.
