@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.19
+# VERSÃO: 3.20
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,32 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.20 (257ª geração) → 📊 BI DEDICADO NO COMPARADOR: 2 GRÁFICOS ONDE ANTES SÓ HAVIA TABELAS [BI-COMPARADOR]
+#     Melhoria de BI escolhida por EVIDÊNCIA: mapeada a densidade de visualização por aba, o Comparador de
+#     Estudos era a 2ª maior seção de análise e a mais densa em dados SEM UM ÚNICO gráfico — dezenas de
+#     tabelas, zero visual. Em vez de forçar gráficos em tudo, dois visuais bem escolhidos onde um gráfico
+#     BATE uma tabela, cada um renderizado e conferido visualmente no sandbox (Altair→PNG) antes de integrar:
+#     (1) COMPARAÇÃO DE PLANOS (_grafico_planos_comparacao): barras horizontais do custo total de deslocamento
+#         (km-candidato) dos 3 planos — só o nosso, só o do concorrente, e o híbrido. O híbrido é ≤ aos dois
+#         POR CONSTRUÇÃO; a barra verde (a mais curta) torna a vantagem óbvia num relance. Renderizado logo
+#         após as 3 métricas do híbrido, transformando três números soltos numa decisão visual. HORIZONTAL de
+#         propósito: rótulo por linha, sem a colisão de rótulos que a versão vertical sofria em tela estreita.
+#     (2) DIVERGENTE POR ESTADO (_grafico_estados_divergente): para cada UF, a economia ponderada (km ×
+#         candidatos) — verde à direita = nós poupamos; vermelho à esquerda = a referência leva mais perto.
+#         Responde num relance a pergunta geográfica 'onde cada estudo vence?' que só existia como tabela.
+#         Ordenado por magnitude, recorta os 18 estados de maior |economia| (com até 27 UFs, tabela vira
+#         parede e 27 barras viram emaranhado). Renderizado logo após a tabela 'Estados — quem mais ganha'.
+#     Ambas as funções são PURAS e consomem EXATAMENTE as chaves que _plano_hibrido() e _rankings_comparacao()
+#     já produzem (custo_so_nosso/dele/hibrido_km_candidato; estados[].UF/economia_km_candidato) — não
+#     recalculam nada, só desenham. Números em pt-BR (_fmt_num). DEFENSIVAS: dict/lista None/vazio/lixo/sem
+#     sinal → None e o gráfico simplesmente não aparece (tabela intacta). PROVA: 10 edge cases retornam None
+#     sem exceção + render visual dos dois PNGs confirmando rótulos sem colisão, cores e narrativa corretas.
+#     NÃO-REGRESSÃO: 2 funções novas + 2 pontos de render, ambos sob os try/except que já existiam nos painéis;
+#     nada alterado no pipeline/dados/tabelas/exports (as tabelas seguem idênticas — os gráficos são CAMADA
+#     visual aditiva ao lado delas). RotaPipeline 42 (idêntico), 0 função removida, imports de topo idênticos
+#     (altair já importado), requirements INALTERADO, _SECOES 14, balloons 1, bare 0. PERFORMANCE: 2 agregações
+#     O(n) triviais sobre dados já em memória, sob demanda na aba (só quando o painel do concorrente/rankings
+#     está aberto). Fecha a lacuna de BI da seção mais data-rich do app usando 100% de dados existentes.
 #   v3.19 (256ª geração) → 🔄 RECONCILIAÇÃO PÓS-DIAGNÓSTICO NO COMPARADOR (atualiza a info após reprocessar) [POS-DIAGNOSTICO]
 #     Atende o pedido direto: "atualizar as informações na aba de comparação após processar as divergências".
 #     PROBLEMA: ao clicar em "Processar rotas divergentes", o diagnóstico roteia de novo (fresco) a escolha
@@ -17941,6 +17967,87 @@ def _rankings_comparacao(linhas, top=15):
     return {"estados": _est[:top], "polos": _polos[:top], "divergencias": _divs}
 
 
+def _grafico_planos_comparacao(hb):
+    """[BI-COMPARADOR - 257ª geração] Gráfico do PLANO HÍBRIDO — barras horizontais comparando o custo total
+    de deslocamento (km-candidato) dos três planos: só o nosso, só o do concorrente, e o híbrido (o melhor
+    de cada município). O híbrido é ≤ aos outros dois POR CONSTRUÇÃO; a barra verde (a mais curta) torna
+    isso visível num relance e transforma três métricas soltas numa decisão óbvia — sem forçar o gestor a
+    ler números. Barras HORIZONTAIS de propósito: cada rótulo fica na própria linha, então nunca colidem em
+    largura nenhuma. Consome exatamente as chaves que _plano_hibrido() produz. PURO e defensivo: dict
+    None/vazio/sem os três custos/valores não-numéricos/todos-zero → None (nada renderiza). Não recalcula
+    nada — só desenha o que o painel já computou. Retorna um alt.Chart ou None."""
+    if not isinstance(hb, dict):
+        return None
+    try:
+        _n = float(hb.get("custo_so_nosso_km_candidato"))
+        _d = float(hb.get("custo_so_dele_km_candidato"))
+        _h = float(hb.get("custo_hibrido_km_candidato"))
+    except (TypeError, ValueError):
+        return None
+    if _n <= 0 and _d <= 0 and _h <= 0:
+        return None
+    _dados = pd.DataFrame([
+        {"plano": "Só o nosso estudo", "custo": _n, "cor": "#3B82F6"},
+        {"plano": "Só o do concorrente", "custo": _d, "cor": "#F59E0B"},
+        {"plano": "🏆 Híbrido (melhor de cada)", "custo": _h, "cor": "#10B981"},
+    ])
+    _dados["rotulo"] = _dados["custo"].map(lambda v: _fmt_num(v))
+    _base = alt.Chart(_dados)
+    _barras = _base.mark_bar(cornerRadiusEnd=4).encode(
+        x=alt.X("custo:Q", title="Deslocamento total (km-candidato) — menor é melhor",
+                axis=alt.Axis(grid=False)),
+        y=alt.Y("plano:N", sort="-x", title=None),
+        color=alt.Color("cor:N", scale=None, legend=None),
+        tooltip=[alt.Tooltip("plano:N", title="Plano"),
+                 alt.Tooltip("rotulo:N", title="km-candidato")],
+    )
+    _txt = _base.mark_text(align="left", dx=4, color="#374151", fontSize=12).encode(
+        x=alt.X("custo:Q"), y=alt.Y("plano:N", sort="-x"), text="rotulo:N")
+    return (_barras + _txt).properties(height=180, title="Custo de deslocamento por plano")
+
+
+def _grafico_estados_divergente(estados, max_estados=18):
+    """[BI-COMPARADOR - 257ª geração] Gráfico DIVERGENTE por estado — para cada UF, a economia ponderada
+    (km × candidatos). Barra VERDE à direita = a NOSSA solução leva o candidato mais perto ali; barra
+    VERMELHA à esquerda = a solução de REFERÊNCIA leva mais perto naquele estado. Responde num relance a
+    pergunta inerentemente geográfica 'onde cada estudo vence?', que hoje só existia como TABELA de UF ×
+    economia. Ordenado por magnitude e limitado aos max_estados de maior |economia| — com até 27 UFs, uma
+    tabela vira parede de números e um gráfico com 27 barras vira emaranhado; o recorte por magnitude mostra
+    o que é decisão-relevante. Consome exatamente os itens que _rankings_comparacao()['estados'] produz
+    (campos UF e economia_km_candidato). PURO e defensivo: lista None/vazia/itens-lixo/sem sinal numérico →
+    None. Retorna um alt.Chart ou None."""
+    if not isinstance(estados, (list, tuple)) or not estados:
+        return None
+    _linhas = []
+    for _e in estados:
+        if not isinstance(_e, dict):
+            continue
+        try:
+            _v = float(_e.get("economia_km_candidato"))
+        except (TypeError, ValueError):
+            continue
+        _uf = str(_e.get("UF") or "—").upper()
+        _linhas.append({"UF": _uf, "economia": _v})
+    if not _linhas or all(abs(l["economia"]) < 1e-9 for l in _linhas):
+        return None
+    _linhas = sorted(_linhas, key=lambda x: -abs(x["economia"]))[:max_estados]
+    _dados = pd.DataFrame(_linhas)
+    _dados["lado"] = _dados["economia"].map(lambda v: "Nós poupamos" if v >= 0 else "Referência mais perto")
+    _dados["rotulo"] = _dados["economia"].map(lambda v: _fmt_num(v))
+    return alt.Chart(_dados).mark_bar(cornerRadiusEnd=4).encode(
+        x=alt.X("economia:Q", title="Economia ponderada (km-candidato) — ◀ referência · nós ▶",
+                axis=alt.Axis(grid=False)),
+        y=alt.Y("UF:N", sort=alt.EncodingSortField(field="economia", order="descending"), title=None),
+        color=alt.Color("lado:N",
+                        scale=alt.Scale(domain=["Nós poupamos", "Referência mais perto"],
+                                        range=["#10B981", "#EF4444"]),
+                        legend=alt.Legend(title=None, orient="top")),
+        tooltip=[alt.Tooltip("UF:N", title="Estado"),
+                 alt.Tooltip("rotulo:N", title="km-candidato"),
+                 alt.Tooltip("lado:N", title="Quem leva mais perto")],
+    ).properties(height=max(180, 22 * len(_dados)), title="Onde cada estudo vence (por estado)")
+
+
 def _metodologia_indicadores():
     """[CMP-VALID - 149ª geração] METODOLOGIA EXPLÍCITA — anti-caixa-preta. Cada indicador declara COMO é
     calculado, de QUAIS colunas, e QUAIS registros participam. Requisito de auditoria governamental: um
@@ -33362,7 +33469,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "256"
+_VERSAO_APP = "257"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -39936,6 +40043,11 @@ if _secao == _SECOES[3]:   # tab_comparador
                         _h3.metric("🏆 HÍBRIDO",
                                    f"{_fmt_num(_hb['custo_hibrido_km_candidato'])} km-cand.",
                                    help="Deslocamento total se você tomar, de cada município, o melhor polo.")
+                        # [BI-COMPARADOR - 257ª geração] O gráfico traduz as 3 métricas acima numa decisão
+                        # visual: a barra verde (híbrido) é sempre a mais curta — o ganho salta aos olhos.
+                        _g_planos = _grafico_planos_comparacao(_hb)
+                        if _g_planos is not None:
+                            st.altair_chart(_g_planos, use_container_width=True)
                         if _hb["vale_a_pena"]:
                             st.success(
                                 f"⚡ **O híbrido poupa {_fmt_num(_hb['ganho_do_hibrido_sobre_nos'])} "
@@ -39963,6 +40075,12 @@ if _secao == _SECOES[3]:   # tab_comparador
                             st.dataframe(_colorir_risco(pd.DataFrame(_rk["estados"]),
                                                         cols_negativo_ruim=["economia_km_candidato"]),
                                          use_container_width=True, hide_index=True, height=280)
+                            # [BI-COMPARADOR - 257ª geração] O mesmo dado da tabela acima, agora como mapa
+                            # de calor divergente: verde à direita = nós poupamos; vermelho à esquerda =
+                            # a referência leva mais perto. O padrão geográfico aparece num relance.
+                            _g_estados = _grafico_estados_divergente(_rk["estados"])
+                            if _g_estados is not None:
+                                st.altair_chart(_g_estados, use_container_width=True)
                     with _r2:
                         st.markdown("##### 🏫 Locais de prova — quem recebe mais")
                         st.caption("Quantos candidatos cada polo recebe, e com que deslocamento médio. "
