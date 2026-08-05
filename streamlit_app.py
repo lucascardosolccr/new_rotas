@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.13
+# VERSÃO: 3.19
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,122 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.19 (256ª geração) → 🔄 RECONCILIAÇÃO PÓS-DIAGNÓSTICO NO COMPARADOR (atualiza a info após reprocessar) [POS-DIAGNOSTICO]
+#     Atende o pedido direto: "atualizar as informações na aba de comparação após processar as divergências".
+#     PROBLEMA: ao clicar em "Processar rotas divergentes", o diagnóstico roteia de novo (fresco) a escolha
+#     da referência e passa a SABER coisas que o placar do topo (calculado sobre os dados ORIGINAIS) não
+#     reflete — quantas divergências se confirmaram como vantagem real da referência, o impacto ponderado,
+#     e o veredito líquido. Isso ficava só nas sub-abas densas do diagnóstico; faltava a PONTE clara entre
+#     "o que a tela mostrava" e "o que agora sabemos". NOVA função pura _resumo_pos_diagnostico_divergencias
+#     (diag): consolida do dict já produzido (sem rede, sem rerotear) — KPIs (divergências rerroteadas,
+#     confirmadas p/ aplicação, onde a referência é melhor, candidatos em rota pior) + narrativa curta que
+#     RECONCILIA com o placar ("confirma" vs. "merece ajuste fino") + agregado de km/impacto + ressalva
+#     honesta sobre rotas sem roteamento fresco. Sinaliza houve_ajuste (referência venceu algo) p/ trocar o
+#     título e sugerir o plano híbrido. INTEGRAÇÃO (aditiva): (1) na ABA, um painel de destaque logo acima
+#     do diagnóstico detalhado, renderizado a cada rerun enquanto o diagnóstico existir na sessão — some
+#     quando não há; (2) no RELATÓRIO HTML da comparação, o mesmo veredito no topo da seção de diagnóstico
+#     (markdown→<b> convertido), mantendo tela e export coerentes. PURA/defensiva: diag inválido/vazio/lixo
+#     → estrutura vazia e nada aparece. PROVA: teste isolado (cenário confirmado e cenário com ajuste),
+#     render visual do painel, edge cases; 16 asserts novos (BLOCO M). NÃO-REGRESSÃO: nova função + 2 pontos
+#     de render; nada alterado no pipeline/roteamento/placar (que segue como estava — a reconciliação é uma
+#     CAMADA de leitura, não recomputa o topo). RotaPipeline 42 (idêntico), 0 função removida, imports de
+#     topo idênticos, requirements INALTERADO, _SECOES 14, balloons 1, bare 0. Suíte com 152 asserts.
+#   v3.18 (255ª geração) → 🔬 SCORECARD POR MOTOR NO MONITOR APIs (observabilidade de qualidade) [TELEMETRIA-POR-MOTOR]
+#     Após análise arquitetural (a infra de APIs/rede já é madura: multi-motor, consenso, circuit breaker,
+#     timeouts em 100% das chamadas, retry tunado, 8 caches, paralelismo), o único ganho real e SEM nova
+#     dependência era EXPOR dados que já são coletados mas não mostrados. A telemetria observacional grava,
+#     por rota, as distâncias de TODOS os motores (não só do vencedor) — mas o painel só agregava vencedores.
+#     NOVA função pura _agregar_telemetria_por_motor(buf): deriva um scorecard por motor — respostas (em
+#     quantas rotas devolveu distância válida), vitórias e taxa de vitória, distância média, concordância
+#     (% dentro de ±10% da mediana do consenso) e VIÉS mediano vs. consenso (negativo = tende a encurtar;
+#     positivo = a alongar). Revela padrões acionáveis: ex. "Google vence porque devolve rotas ~4% mais
+#     curtas; OSRM concorda 100% mas vence menos; GraphHopper é mais ruidoso e responde menos". Integrado
+#     como tabela "🔬 Scorecard por Motor" na aba Monitor APIs, logo após o bloco de consenso multi-motor
+#     (mesma fonte, _tm_buf). PURA e defensiva: buffer vazio/None/lixo → [] e nada aparece; 100%
+#     observacional, não afeta nenhuma decisão de roteamento. Atende o item "score de qualidade por API /
+#     dashboards internos" do pedido de reengenharia usando dados existentes. 15 asserts novos (BLOCO L).
+#     NÃO-REGRESSÃO: nova função + 1 bloco de render; nada alterado no pipeline. RotaPipeline 42 (idêntico),
+#     0 função removida, imports de topo idênticos, requirements INALTERADO, _SECOES 14, balloons 1, bare 0.
+#     Suíte com 136 asserts. PERFORMANCE: agregação O(n) sobre buffer limitado (≤5000), sob demanda na aba.
+#   v3.17 (254ª geração) → 📊 BI FASE 5: URL COMPARTILHÁVEL + TOOLTIPS MAPA/SUNBURST + KPIs CLICÁVEIS + SPARKLINES [BI-FASE5]
+#     Fecha as 4 recomendações da Fase 5, cada uma testada em navegador real (Playwright) + JS revalidado (node):
+#     (1) FILTRO PERSISTIDO NA URL (hash): cada mudança de filtro grava o estado em location.hash via
+#         history.replaceState; ao abrir o link, _lerHash() restaura UF/fonte/balsa/polo/busca/candidatos/km
+#         e o painel reaparece com a MESMA visão. Defensivo (hash inválido é ignorado; setSel só aplica opção
+#         existente). Provado: filtrar→"#uf=PA&b=Sim"→recarregar restaura idêntico.
+#     (2) TOOLTIPS NO MAPA E NO SUNBURST (antes só nas barras): mapa grava _hitp (x,y,raio,dados) e
+#         _bindHoverMapa mostra município/UF/km/candidatos/polo do ponto mais próximo; sunburst grava _hits
+#         (segU=anéis de UF, segP=anéis de Polo) e _bindHoverSun detecta o setor por coordenada polar
+#         (anel interno→UF+%, anel externo→UF→Polo). Reusa o #biTip e fmt() pt-BR da Fase 4.
+#     (3) KPIs CLICÁVEIS: "Rotas com balsa" e "Rotas estimadas" viraram filtros de 1 clique (alternam
+#         on/off, com destaque visual .pbi-kpi-on e emoji 🔎). _optExiste garante no-op seguro se a opção
+#         "Estimada" não existir nos dados. Provado: clique filtra 30→15 e o 2º clique restaura.
+#     (4) SPARKLINES NOS CABEÇALHOS: mini-histograma de distribuição (canvas) sob "Distância (km)" e
+#         "Candidatos", recalculado a cada filtro em _desenharSpark (nb≈√n bins) — leitura instantânea da
+#         forma da distribuição sem sair da tabela.
+#     PROVA: teste headless confirmou os 4 itens (hash grava+restaura; tooltips de mapa e sunburst com texto
+#         correto; KPI filtra/destaca/alterna; 2 sparklines desenhados) + 7/7 gráficos renderizando, ZERO
+#         erro de JS. 14 asserts novos (BLOCO K). Cobre os DOIS relatórios (mesma _painel_interativo_bi_html).
+#     NÃO-REGRESSÃO: tudo contido no painel; nada alterado no pipeline/dados/exports. RotaPipeline 42
+#         (idêntico), 0 função removida, imports de topo idênticos, requirements INALTERADO, _SECOES 14,
+#         balloons 1, bare 0. Suíte com 121 asserts. PERFORMANCE: inalterada (100% client-side, sob demanda).
+#   v3.16 (253ª geração) → 🧠 STORYTELLING ANALÍTICO AO VIVO ("Leitura do Analista") [STORYTELLING-DASH]
+#     Atende os itens 6 e 14 do plano (textos analíticos automáticos / inteligência analítica). A base já
+#     tinha storytelling nos relatórios (184ª) e insights (_insights_automaticos_html); o que FALTAVA era uma
+#     leitura analítica AO VIVO no Painel Estratégico e uma leitura transversal complementar no relatório.
+#     NOVA função _narrativa_analitica_dashboard(df): lê o recorte e escreve como um analista experiente —
+#     (1) panorama (volume, candidatos, UFs/regiões, média vs mediana com detecção de cauda longa);
+#     (2) concentração/Pareto por UF ponderada por km·candidato (quantos estados = 80% do esforço);
+#     (3) piores casos nomeados + percentil 95; (4) impacto de balsa/acesso fluvial; (5) confiabilidade
+#     (％ estimativa geodésica vs rota medida); (6) qualidade média (Score) e rotas a reprocessar. PURA,
+#     defensiva (falha → [] e nada aparece), números em pt-BR, e degrada com elegância quando faltam colunas.
+#     INTEGRAÇÃO (aditiva): renderizada no Painel Estratégico logo após os KPIs (recalcula a cada filtro,
+#     lendo o MESMO df_cf dos gráficos) E como seção "Leitura do Analista" no relatório HTML principal (com
+#     uf_col="UF Origem"). PROVA: teste isolado + render visual (lê como analista, com números em negrito e
+#     enquadramento acionável); 15 asserts novos (BLOCO J) cobrindo conteúdo e edge cases (df vazio/1 linha/
+#     só-Distancia/None nunca quebram). NÃO-REGRESSÃO: nova função + 2 pontos de chamada, nada alterado no
+#     pipeline. RotaPipeline 42 (idêntico), 0 função removida, imports de topo idênticos, requirements
+#     INALTERADO, _SECOES 14, balloons 1, bare 0. Suíte com 107 asserts. PERFORMANCE: leitura O(n) do recorte,
+#     desprezível ante o processamento; sem novas dependências.
+#   v3.15 (252ª geração) → 📊 BI FASE 4: TOOLTIPS + EXPORT CSV + TABELA ORDENÁVEL [BI-FASE4]
+#     Evolução aditiva do Painel Executivo Interativo, três recursos de BI que faltavam, cada um
+#     testado em navegador real (Playwright) + JS revalidado por parser (node --check):
+#     (1) TOOLTIPS AO PASSAR O MOUSE: agora dá para LER o valor exato de uma barra sem precisar clicar
+#         (o clique filtra; o hover só informa). _hbar passou a gravar valor+unidade nas hit-regions;
+#         helper _bindHover(cv) mostra um tooltip fixo (fmt pt-BR, ex.: "PA — 382,8 km") nos 3 gráficos de
+#         barra (Polos, UF, Piores casos). Div #biTip com CSS próprio; some no mouseleave.
+#     (2) EXPORT CSV DOS DADOS FILTRADOS: botão "⬇️ Baixar dados (CSV)" gera CSV das linhas do filtro
+#         atual (respeita as colunas presentes), com escape de aspas/;/quebra, separador ';' e BOM UTF-8
+#         (Excel abre com acentos corretos). Complementa o export PNG dos gráficos já existente.
+#     (3) TABELA DRILL-DOWN ORDENÁVEL: clicar no cabeçalho ordena por aquela coluna (asc↔desc no 2º
+#         clique), com indicador visual (↑/↓) e ordenação numérica p/ km/candidatos, alfabética p/ texto.
+#         Cabeçalhos ganharam data-k + class sortable; estado _sortK/_sortD; renderTab aplica a ordenação.
+#     PROVA: teste headless confirmou 7/7 gráficos renderizando, tooltip visível com valor correto, CSV
+#         baixado (31 linhas, BOM, header) e ordenação asc/desc correta com indicador — tudo com ZERO erro
+#         de JS. Cobre os DOIS relatórios (mesma _painel_interativo_bi_html). 13 asserts novos (BLOCO I).
+#     NÃO-REGRESSÃO: contido no painel; nenhuma mudança em dados/pipeline/exports existentes. RotaPipeline
+#         42 (idêntico), 0 função removida, imports de topo idênticos, requirements INALTERADO, _SECOES 14,
+#         balloons 1, bare 0. Suíte com 92 asserts. PERFORMANCE: inalterada (tudo client-side, sob demanda).
+#   v3.14 (251ª geração) → 🔎 VARREDURA DE GARGALOS/BUGS + HARDENING PREVENTIVO [AUDIT-DEFENSIVA]
+#     Auditoria ampla à caça de bugs/gargalos reais (não só os relatados). RESULTADO: a base já é muito
+#     robusta — 20 classes de bug varridas (colisão de ID, category, divisão por zero, iloc[0] sem guarda,
+#     mutable defaults, == None, split()[N], iterrows em loop quente, KeyError, redefinição de constante...)
+#     e a GRANDE maioria já estava protegida. Correções/melhorias ADITIVAS aplicadas:
+#     (1) HARDENING de +3 acessos diretos a tuplas de rota que restavam (mesma classe do ERRO 2 da 250ª):
+#         res_g_runner[0]/[2] (auditoria do 2º colocado) e _res_g[0] (reprocessamento) → agora via _route_val,
+#         com _km_g validado antes da barreira física. Agora NENHUM res*[N] de motor é indexado direto.
+#     (2) _route_val passou a rejeitar índice negativo (evita wrap-around surpresa do Python) — robustez;
+#         na prática só se usam índices fixos 0-4, mas o contrato fica à prova de uso indevido futuro.
+#     (3) LIMPEZA de código morto: a 1ª de DUAS definições de _secao_abstract_html (184ª, só-PT) era
+#         redefinição silenciosa — a 2ª (218ª, bilíngue PT+EN) sempre a sobrescrevia antes de qualquer
+#         chamada. Removida (44 linhas mortas) SEM mudança de comportamento (o Python já só usava a 2ª).
+#         Elimina o único caso de função top-level duplicada do arquivo.
+#     VERIFICAÇÕES: JS do painel executivo revalidado por parser (node --check) — sintaxe OK; painel testado
+#         sob condições extremas (df vazio, 1 linha, colunas mínimas, distâncias todas-NaN) — robusto, sem
+#         crash; edge cases dos helpers (_set_col_seguro com mask vazio/coluna inexistente/df None/valor None;
+#         _route_val idx negativo/grande) — todos tratados. NÃO-REGRESSÃO: RotaPipeline 42 (idêntico), 0
+#         função removida (só a duplicata morta), imports de topo idênticos, requirements INALTERADO, _SECOES
+#         14, balloons 1, bare 0. Suíte com 79 asserts (8 novos no BLOCO H). PERFORMANCE: inalterada.
 #   v3.13 (250ª geração) → 🛠️ CORREÇÃO DEFINITIVA DE 2 ERROS CRÍTICOS DE EXECUÇÃO [FIX-CATEGORICAL+PIPELINE]
 #     Investigação de causa-raiz (não remendo) de dois TypeError que derrubavam o app, cada um reproduzido
 #     e corrigido em duas camadas (preventiva + defensiva), com testes que impedem a volta silenciosa.
@@ -5691,51 +5807,10 @@ def _secao_diagnostico_comparacao_html(stats, aud, linhas=None):
         return ""
 
 
-def _secao_abstract_html(df, titulo=""):
-    """[RELATORIO-CIENTIFICO - 184ª geração] Gera o ABSTRACT (resumo técnico estruturado) no topo do
-    relatório, no padrão de artigo científico: objetivo, metodologia, amostra e principais resultados —
-    tudo derivado dos dados reais. PURA (retorna string HTML) e defensiva."""
-    import html as _he
-    try:
-        if df is None or getattr(df, "empty", True):
-            return ""
-        _n = len(df)
-        _uf_col = "UF Origem" if "UF Origem" in df.columns else ("UF" if "UF" in df.columns else None)
-        _n_uf = int(df[_uf_col].nunique()) if _uf_col else 0
-        _insc_col = next((c for c in ["Inscritos", "Quantidade de Inscritos", "QT_INSCRITOS"] if c in df.columns), None)
-        _tot_insc = int(pd.to_numeric(df[_insc_col], errors="coerce").fillna(0).sum()) if _insc_col else 0
-        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
-        _media = float(_dist.mean()) if _dist is not None and _dist.notna().any() else 0.0
-        _mediana = float(_dist.median()) if _dist is not None and _dist.notna().any() else 0.0
-        # taxa de rota viária real vs fallback
-        _fonte_col = "Fonte da Rota" if "Fonte da Rota" in df.columns else None
-        _n_real = 0
-        if _fonte_col:
-            _f = df[_fonte_col].astype(str).str.lower()
-            _n_real = int((~(_f.str.contains("geodés") | _f.str.contains("falha") | _f.str.contains("linha reta"))).sum())
-        _pct_real = 100.0 * _n_real / max(_n, 1)
-        return (
-            '<section id="abstract" class="sec"><h2>Resumo (Abstract)</h2>'
-            '<div style="background:#f8fafc;border-left:4px solid #1e3a8a;padding:16px 20px;border-radius:8px;'
-            'line-height:1.7;text-align:justify">'
-            f'<p><b>Objetivo.</b> Determinar, para cada um dos {_n:,} municípios de origem analisados, o local '
-            f'de aplicação de prova que minimiza o deslocamento viário real dos {_tot_insc:,} candidatos '
-            'inscritos, priorizando a menor rota rodoviária efetiva.</p>'
-            '<p><b>Metodologia.</b> Roteamento híbrido de duas fases combinando a matriz viária do OSRM '
-            '(descoberta ampla de candidatos) e o Google Maps (decisão de qualidade, motor prioritário), com '
-            'prova de otimalidade por dominância geométrica, validação de consistência física e classificação '
-            'de confiabilidade por região. A distância viária real é a métrica de decisão; a linha reta '
-            'geodésica atua como limite inferior e salvaguarda.</p>'
-            f'<p><b>Amostra.</b> {_n:,} municípios de origem distribuídos por {_n_uf} unidades federativas, '
-            f'totalizando {_tot_insc:,} candidatos.</p>'
-            f'<p><b>Principais resultados.</b> Distância viária média de {_media:,.1f} km (mediana '
-            f'{_mediana:,.1f} km). {_pct_real:.1f}% dos municípios foram resolvidos com rota viária real '
-            'medida pelos motores de roteamento; os demais recorreram à estimativa geodésica por ausência de '
-            'malha rodoviária conectada (tipicamente municípios de acesso fluvial).</p>'
-            '</div></section>')
-    except Exception:
-        logger.error("[RELATORIO-CIENTIFICO] Falha ao gerar abstract", exc_info=True)
-        return ""
+# [LIMPEZA 251ª geração] A 1ª definição de _secao_abstract_html (184ª geração, abstract só-PT) foi
+# REMOVIDA: era código morto — a 2ª definição (218ª geração, abstract bilíngue PT+EN, L~6860) sempre a
+# sobrescrevia antes de qualquer chamada (as 2 chamadas ativas rodam depois dela). Sem mudança de
+# comportamento: o Python já usava exclusivamente a 2ª versão. Elimina redefinição silenciosa e 44 linhas mortas.
 
 
 def _secao_fluxograma_html():
@@ -6033,6 +6108,181 @@ def _narrativa_storytelling_comparacao(stats, linhas):
     except Exception:
         logger.error("[STORYTELLING] Falha na narrativa do comparador", exc_info=True)
         return ""
+
+
+def _narrativa_analitica_dashboard(df, uf_col="UF_Sintetica_Origem", reg_col="Regiao_Sintetica_Origem"):
+    """[STORYTELLING-DASH - 253ª geração] Lê o recorte FILTRADO do Painel Estratégico e gera uma narrativa
+    analítica ao vivo, escrita como um analista de dados experiente: o que os números dizem, quais padrões
+    e exceções aparecem, o que merece atenção e onde estão as oportunidades. Retorna uma lista de parágrafos
+    (strings) — o chamador decide como exibir. PURA e defensiva: qualquer falha devolve lista vazia (o
+    dashboard segue normal). Não altera o df.
+
+    Só usa colunas que existirem; degrada com elegância quando faltam. Números em pt-BR."""
+    try:
+        import pandas as _pd
+        import numpy as _np
+        if df is None or getattr(df, "empty", True):
+            return []
+        _n = len(df)
+        if _n == 0:
+            return []
+
+        def _br(x, casas=0):
+            try:
+                if x is None or (isinstance(x, float) and (_np.isnan(x) or _np.isinf(x))):
+                    return "—"
+                s = f"{float(x):,.{casas}f}"
+                return s.replace(",", "§").replace(".", ",").replace("§", ".")
+            except Exception:
+                return "—"
+
+        paras = []
+        tem_dist = "Distancia" in df.columns
+        _d = _pd.to_numeric(df["Distancia"], errors="coerce") if tem_dist else None
+        _dv = _d[_d > 0].dropna() if _d is not None else None
+
+        # ---- 1. Panorama geral ----
+        _frag = f"O recorte atual reúne <b>{_br(_n)}</b> {'rota' if _n == 1 else 'rotas'}"
+        # candidatos (se houver)
+        _insc_col = next((c for c in ["Inscritos", "Quantidade de Inscritos", "QT_INSCRITOS", "Candidatos"] if c in df.columns), None)
+        _tot_insc = None
+        if _insc_col:
+            _tot_insc = int(_pd.to_numeric(df[_insc_col], errors="coerce").fillna(0).sum())
+            if _tot_insc > 0:
+                _frag += f", que representam <b>{_br(_tot_insc)}</b> candidatos"
+        # UFs e regiões
+        _n_uf = int(df[uf_col].nunique()) if uf_col in df.columns else 0
+        _n_reg = int(df[reg_col].nunique()) if reg_col in df.columns else 0
+        if _n_uf:
+            _frag += f", distribuídos por <b>{_n_uf}</b> {'estado' if _n_uf == 1 else 'estados'}"
+            if _n_reg:
+                _frag += f" em <b>{_n_reg}</b> {'região' if _n_reg == 1 else 'regiões'}"
+        _frag += "."
+        if _dv is not None and len(_dv):
+            _media = float(_dv.mean()); _mediana = float(_dv.median())
+            _frag += (f" O deslocamento viário médio é de <b>{_br(_media, 1)} km</b> "
+                      f"(mediana de {_br(_mediana, 1)} km).")
+            # assimetria: média >> mediana indica cauda de rotas longas
+            if _mediana > 0 and _media > _mediana * 1.25:
+                paras.append(_frag + " <b>A média supera a mediana de forma expressiva</b>, sinal de uma "
+                             "cauda de rotas muito longas que puxa o indicador para cima — a maioria dos "
+                             "candidatos enfrenta distâncias menores do que a média sugere, mas um grupo "
+                             "específico arca com trajetos bem acima do típico.")
+            else:
+                paras.append(_frag + " Média e mediana estão próximas, indicando uma distribuição de "
+                             "distâncias relativamente equilibrada, sem uma cauda longa dominante.")
+        else:
+            paras.append(_frag)
+
+        # ---- 2. Concentração / Pareto de candidatos ou distância por UF ----
+        if uf_col in df.columns and _dv is not None and len(_dv) >= 5:
+            _base = df.copy()
+            _base["_d"] = _pd.to_numeric(_base["Distancia"], errors="coerce")
+            _peso = _insc_col if (_insc_col and _tot_insc) else None
+            if _peso:
+                _base["_km_cand"] = _base["_d"] * _pd.to_numeric(_base[_peso], errors="coerce").fillna(0)
+                _por_uf = _base.groupby(uf_col)["_km_cand"].sum().sort_values(ascending=False)
+                _rotulo = "km·candidato (esforço logístico total)"
+            else:
+                _por_uf = _base.groupby(uf_col)["_d"].sum().sort_values(ascending=False)
+                _rotulo = "quilômetros somados"
+            _tot = float(_por_uf.sum())
+            if _tot > 0 and len(_por_uf) >= 2:
+                _top = _por_uf.head(1)
+                _uf_top = str(_top.index[0]); _pct_top = 100.0 * float(_top.iloc[0]) / _tot
+                # quantas UFs para 80%
+                _acum = 0.0; _n80 = 0
+                for _v in _por_uf.values:
+                    _acum += _v; _n80 += 1
+                    if _acum >= 0.8 * _tot:
+                        break
+                _pct_ufs = 100.0 * _n80 / len(_por_uf)
+                _txt = (f"Em termos de {_rotulo}, <b>{_uf_top}</b> concentra sozinho "
+                        f"<b>{_br(_pct_top, 1)}%</b> do esforço do recorte.")
+                if _pct_ufs <= 50:
+                    _txt += (f" A concentração é alta: apenas <b>{_n80}</b> "
+                             f"{'estado' if _n80 == 1 else 'estados'} "
+                             f"({_br(_pct_ufs, 0)}% do total) já respondem por 80% de tudo — priorizar "
+                             "esses pontos traz o maior retorno por esforço investido.")
+                else:
+                    _txt += (f" O esforço está pulverizado: são necessários <b>{_n80}</b> estados "
+                             "para chegar a 80% do total, o que indica um desafio distribuído, sem poucos "
+                             "gargalos óbvios.")
+                paras.append(_txt)
+
+        # ---- 3. Piores casos (rotas extremas) ----
+        if _dv is not None and len(_dv) >= 3 and "Municipio Origem" in df.columns:
+            _base = df.copy()
+            _base["_d"] = _pd.to_numeric(_base["Distancia"], errors="coerce")
+            _piores = _base[_base["_d"] > 0].sort_values("_d", ascending=False).head(3)
+            if not _piores.empty:
+                _itens = []
+                for _, _r in _piores.iterrows():
+                    _mo = str(_r.get("Municipio Origem", "?"))
+                    _uf = str(_r.get(uf_col, "")) if uf_col in df.columns else ""
+                    _km = _r["_d"]
+                    _itens.append(f"{_mo}{f' ({_uf})' if _uf and _uf != 'nan' else ''} com {_br(_km, 0)} km")
+                _p95 = float(_dv.quantile(0.95))
+                paras.append("Os deslocamentos mais críticos partem de " + "; ".join(_itens) +
+                             f". O percentil 95 é de <b>{_br(_p95, 0)} km</b>: 5% das rotas do recorte "
+                             "superam esse valor e concentram a maior parte do sofrimento logístico — são "
+                             "os casos a investigar primeiro (acesso fluvial, ausência de polo próximo ou "
+                             "barreira geográfica costumam explicar os extremos).")
+
+        # ---- 4. Balsa / acesso fluvial ----
+        _balsa_col = next((c for c in ["Balsas", "Modo/Acesso", "Depende de Balsa"] if c in df.columns), None)
+        if _balsa_col:
+            _sb = df[_balsa_col].astype(str).str.lower()
+            _n_balsa = int((_sb.str.contains("sim") | _sb.str.contains("balsa") | _sb.str.contains("fluvial")).sum())
+            if _n_balsa > 0:
+                _pct_b = 100.0 * _n_balsa / _n
+                paras.append(f"<b>{_br(_n_balsa)}</b> {'rota depende' if _n_balsa == 1 else 'rotas dependem'} "
+                             f"de balsa ou acesso fluvial ({_br(_pct_b, 1)}% do recorte). Esses trajetos "
+                             "merecem leitura à parte: a distância rodoviária costuma subestimar o tempo real "
+                             "de deslocamento, e a dependência de travessia adiciona risco operacional "
+                             "(horário, clima, capacidade) que não aparece nos quilômetros.")
+
+        # ---- 5. Fonte da rota / qualidade ----
+        _fonte_col = next((c for c in ["Fonte da Rota", "Status da Rota"] if c in df.columns), None)
+        if _fonte_col:
+            _sf = df[_fonte_col].astype(str).str.lower()
+            _n_est = int((_sf.str.contains("geodés") | _sf.str.contains("estimad") | _sf.str.contains("linha reta")).sum())
+            if _n_est > 0:
+                _pct_e = 100.0 * _n_est / _n
+                if _pct_e >= 5:
+                    paras.append(f"Atenção à confiabilidade: <b>{_br(_pct_e, 1)}%</b> das rotas "
+                                 f"({_br(_n_est)} de {_br(_n)}) foram resolvidas por estimativa geodésica, e "
+                                 "não por rota viária medida — tipicamente municípios sem malha rodoviária "
+                                 "conectada (acesso fluvial). Para esses, trate as distâncias como referência, "
+                                 "não como medição exata.")
+                else:
+                    paras.append(f"A cobertura de roteamento viário real é alta: apenas {_br(_pct_e, 1)}% do "
+                                 "recorte recorreu a estimativa geodésica, o que dá boa confiança aos números "
+                                 "de distância e tempo apresentados.")
+
+        # ---- 6. Score / qualidade média (se houver) ----
+        if "Score Final Global" in df.columns:
+            _sc = _pd.to_numeric(df["Score Final Global"], errors="coerce").dropna()
+            if len(_sc) >= 3:
+                _sc_med = float(_sc.mean())
+                _sc_baixo = int((_sc < 50).sum())
+                _frag_sc = f"A qualidade média das decisões (Score Global) no recorte é de <b>{_br(_sc_med, 0)}/100</b>."
+                if _sc_baixo > 0:
+                    _frag_sc += (f" Há <b>{_br(_sc_baixo)}</b> {'rota' if _sc_baixo == 1 else 'rotas'} com "
+                                 "score abaixo de 50 — candidatas a reprocessamento ou revisão manual, pois "
+                                 "sinalizam geocodificação incerta ou rota de baixa confiabilidade.")
+                else:
+                    _frag_sc += " Nenhuma rota ficou abaixo de 50, o que indica um recorte homogêneo e confiável."
+                paras.append(_frag_sc)
+
+        return [p for p in paras if p]
+    except Exception:
+        try:
+            logger.error("[STORYTELLING-DASH] Falha ao montar narrativa do dashboard", exc_info=True)
+        except Exception:
+            pass
+        return []
+
 
 
 def _bloco_glossario_html():
@@ -7356,18 +7606,18 @@ def _painel_interativo_bi_html(df):
                      '<input type="range" id="biKm" min="0" max="1000" step="10" value="1000"></label>')
 
         # ---- cabeçalhos da tabela ----
-        _ths = ['<th>Município de origem</th>']
+        _ths = ['<th data-k="o" class="sortable">Município de origem</th>']
         if _tem_d:
-            _ths.append('<th>Polo (destino)</th>')
+            _ths.append('<th data-k="d" class="sortable">Polo (destino)</th>')
         if _tem_u:
-            _ths.append('<th>UF</th>')
-        _ths.append('<th class="num">Distância (km)</th>')
+            _ths.append('<th data-k="u" class="sortable">UF</th>')
+        _ths.append('<th data-k="km" class="num sortable">Distância (km)<br><canvas id="spkKm" class="pbi-spk" width="90" height="22"></canvas></th>')
         if _tem_c:
-            _ths.append('<th class="num">Candidatos</th>')
+            _ths.append('<th data-k="c" class="num sortable">Candidatos<br><canvas id="spkC" class="pbi-spk" width="90" height="22"></canvas></th>')
         if _tem_f:
-            _ths.append('<th>Fonte</th>')
+            _ths.append('<th data-k="f" class="sortable">Fonte</th>')
         if _tem_b:
-            _ths.append('<th>Balsa</th>')
+            _ths.append('<th data-k="b" class="sortable">Balsa</th>')
         _thead = "".join(_ths)
 
         # ---- KPI cards (recalculados no JS) ----
@@ -7378,8 +7628,8 @@ def _painel_interativo_bi_html(df):
             + '<div class="pbi-kpi"><div class="pbi-kv" id="kMedia">—</div><div class="pbi-kl">Distância média</div></div>'
             + '<div class="pbi-kpi"><div class="pbi-kv" id="kP95">—</div><div class="pbi-kl">P95 (pior caso típico)</div></div>'
             + '<div class="pbi-kpi"><div class="pbi-kv" id="kMax">—</div><div class="pbi-kl">Maior distância</div></div>'
-            + ('<div class="pbi-kpi"><div class="pbi-kv" id="kBalsa">—</div><div class="pbi-kl">Rotas com balsa</div></div>' if _tem_b else '')
-            + ('<div class="pbi-kpi"><div class="pbi-kv" id="kEst">—</div><div class="pbi-kl">Rotas estimadas</div></div>' if _tem_f else '')
+            + ('<div class="pbi-kpi pbi-kpi-clk" data-fk="bal" title="Clique para filtrar só rotas com balsa"><div class="pbi-kv" id="kBalsa">—</div><div class="pbi-kl">Rotas com balsa 🔎</div></div>' if _tem_b else '')
+            + ('<div class="pbi-kpi pbi-kpi-clk" data-fk="est" title="Clique para filtrar só rotas estimadas"><div class="pbi-kv" id="kEst">—</div><div class="pbi-kl">Rotas estimadas 🔎</div></div>' if _tem_f else '')
         )
 
         _css = (
@@ -7419,11 +7669,24 @@ def _painel_interativo_bi_html(df):
             ".pbi-cv{width:100%;background:rgba(255,255,255,.03);border:1px solid #334155;border-radius:10px}"
             "@media(max-width:640px){.pbi-charts{grid-template-columns:1fr !important}}"
             "body.dark .pbi-wrap{box-shadow:0 8px 30px rgba(0,0,0,.4)}"
+            ".pbi-tip{position:fixed;z-index:9999;pointer-events:none;background:rgba(15,23,42,.97);"
+            "color:#e2e8f0;border:1px solid #3b82f6;border-radius:8px;padding:7px 11px;font-size:12px;"
+            "font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.4);opacity:0;transition:opacity .08s;white-space:nowrap}"
+            ".pbi-tip b{color:#93c5fd}"
+            ".pbi-kpi-clk{cursor:pointer;transition:transform .1s,box-shadow .1s}"
+            ".pbi-kpi-clk:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(59,130,246,.35);border-color:#3b82f6}"
+            ".pbi-kpi-clk.pbi-kpi-on{border-color:#3b82f6;background:rgba(59,130,246,.14)}"
+            ".pbi-spk{display:block;margin-top:3px;opacity:.85}"
+            ".pbi-tab th.sortable{cursor:pointer;user-select:none;position:relative}"
+            ".pbi-tab th.sortable:hover{color:#93c5fd}"
+            ".pbi-tab th.sortable:after{content:'\\2195';opacity:.35;margin-left:5px;font-size:10px}"
+            ".pbi-tab th.sort-asc:after{content:'\\2191';opacity:1;color:#3b82f6}"
+            ".pbi-tab th.sort-desc:after{content:'\\2193';opacity:1;color:#3b82f6}"
             "</style>"
         )
 
         _html = (
-            f'{_css}<div class="pbi-wrap"><h3>📊 Painel Executivo Interativo</h3>'
+            f'{_css}<div class="pbi-wrap"><div class="pbi-tip" id="biTip"></div><h3>📊 Painel Executivo Interativo</h3>'
             f'<div class="pbi-sub">Filtre e os indicadores abaixo se recalculam na hora. Clique em '
             f'<b>“Ver registros”</b> para auditar exatamente quais municípios compõem cada número.</div>'
             f'<div class="pbi-filtros">{_sel_uf}{_sel_polo}{_sel_fonte}{_sel_balsa}{_sel_cand}{_sel_dist}{_sel_busca}</div>'
@@ -7445,6 +7708,7 @@ def _painel_interativo_bi_html(df):
             f'<div style="grid-column:1 / -1"><div class="pbi-clab">Mapa de concentração: origens no filtro (tamanho = candidatos, cor = distância)</div>'
             f'<canvas id="biMapa" height="420" class="pbi-cv"></canvas></div></div>'
             f'<div class="pbi-actions"><button class="pbi-btn" id="biVer">📋 Ver registros do filtro</button>'
+            f'<button class="pbi-btn sec" id="biCsv">⬇️ Baixar dados (CSV)</button>'
             f'<button class="pbi-btn sec" id="biPng">🖼️ Baixar gráficos (PNG)</button>'
             f'<button class="pbi-btn sec" id="biLimpar">↺ Limpar filtros</button>'
             f'<span class="pbi-count" id="biCount"></span></div>'
@@ -7458,10 +7722,41 @@ def _painel_interativo_bi_html(df):
             f'{{minimumFractionDigits:d,maximumFractionDigits:d}});}}'
             f'function pct(x){{return (x==null||isNaN(x))?"—":fmt(x,0)+"%";}}'
             f'function _safe(fn,a){{try{{fn(a);}}catch(e){{if(window.console&&console.warn)console.warn("[BI] gráfico falhou:",e);}}}}'
+            f'function _desenharSpark(cvId,vals,cor){{var cv=document.getElementById(cvId);if(!cv)return;'
+            f'var ctx=cv.getContext("2d");if(!ctx)return;var W=cv.width,H=cv.height;ctx.clearRect(0,0,W,H);'
+            f'vals=(vals||[]).filter(function(x){{return x!=null&&!isNaN(x);}});'
+            f'if(vals.length<2){{return;}}'
+            f'var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);if(mx<=mn){{mx=mn+1;}}'
+            f'var nb=Math.min(16,Math.max(6,Math.round(Math.sqrt(vals.length))));var bins=new Array(nb).fill(0);'
+            f'for(var i=0;i<vals.length;i++){{var idx=Math.floor((vals[i]-mn)/(mx-mn)*nb);if(idx>=nb)idx=nb-1;if(idx<0)idx=0;bins[idx]++;}}'
+            f'var bmax=Math.max.apply(null,bins)||1;var bw=W/nb;'
+            f'for(var j=0;j<nb;j++){{var bh=(bins[j]/bmax)*(H-2);'
+            f'ctx.fillStyle=cor||"#60a5fa";ctx.fillRect(j*bw+0.5,H-bh,Math.max(1,bw-1),bh);}}}}'
             f'function _bindBarClick(cv,cb){{if(!cv||cv._bound)return;cv._bound=true;cv.style.cursor="pointer";'
             f'cv.addEventListener("click",function(e){{if(!cv._hit)return;var rect=cv.getBoundingClientRect();'
             f'var yr=(e.clientY-rect.top)*(cv.height/rect.height);'
             f'for(var i=0;i<cv._hit.length;i++){{if(yr>=cv._hit[i].y0&&yr<=cv._hit[i].y1){{cb(cv._hit[i].label);return;}}}}}});}}'
+            f'function _bindHover(cv){{if(!cv||cv._hover)return;cv._hover=true;var tip=document.getElementById("biTip");if(!tip)return;'
+            f'cv.addEventListener("mousemove",function(e){{if(!cv._hit){{tip.style.opacity=0;return;}}'
+            f'var rect=cv.getBoundingClientRect();var yr=(e.clientY-rect.top)*(cv.height/rect.height);var achou=null;'
+            f'for(var i=0;i<cv._hit.length;i++){{if(yr>=cv._hit[i].y0&&yr<=cv._hit[i].y1){{achou=cv._hit[i];break;}}}}'
+            f'if(achou){{var u=achou.unidade||"";var vtxt=(u==="km")?fmt(achou.valor,1)+" km":(u==="cand"?fmt(achou.valor,0)+" candidatos":(u==="n"?fmt(achou.valor,0)+" rotas":fmt(achou.valor,0)));'
+            f'tip.innerHTML="<b>"+achou.label+"</b><br>"+vtxt;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";tip.style.opacity=1;}}'
+            f'else{{tip.style.opacity=0;}}}});'
+            f'cv.addEventListener("mouseleave",function(){{tip.style.opacity=0;}});}}'
+            f'function _bindHoverMapa(cv){{if(!cv||cv._hoverm)return;cv._hoverm=true;var tip=document.getElementById("biTip");if(!tip)return;'
+            f'cv.addEventListener("mousemove",function(e){{if(!cv._hitp||!cv._hitp.length){{tip.style.opacity=0;return;}}'
+            f'var rect=cv.getBoundingClientRect();var sx=cv.width/rect.width,sy=cv.height/rect.height;'
+            f'var mx=(e.clientX-rect.left)*sx,my=(e.clientY-rect.top)*sy;var achou=null,melhor=1e9;'
+            f'for(var i=0;i<cv._hitp.length;i++){{var p=cv._hitp[i];var dx=mx-p.x,dy=my-p.y;var dd=dx*dx+dy*dy;'
+            f'var rr=(p.rad+3)*(p.rad+3);if(dd<=rr&&dd<melhor){{melhor=dd;achou=p;}}}}'
+            f'if(achou){{var linhas="<b>"+(achou.o||"—")+(achou.u?" ("+achou.u+")":"")+"</b>";'
+            f'if(achou.km!=null)linhas+="<br>"+fmt(achou.km,1)+" km";'
+            f'if(TEM_C&&achou.c!=null)linhas+="<br>"+fmt(achou.c,0)+" candidatos";'
+            f'if(TEM_D&&achou.d)linhas+="<br>→ "+achou.d;'
+            f'tip.innerHTML=linhas;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";tip.style.opacity=1;cv.style.cursor="pointer";}}'
+            f'else{{tip.style.opacity=0;cv.style.cursor="default";}}}});'
+            f'cv.addEventListener("mouseleave",function(){{tip.style.opacity=0;}});}}'
             f'var elUF=document.getElementById("biUF"),elF=document.getElementById("biFonte"),'
             f'elB=document.getElementById("biBalsa"),elKm=document.getElementById("biKm"),'
             f'elKmL=document.getElementById("biKmLbl"),elPolo=document.getElementById("biPolo"),'
@@ -7496,9 +7791,14 @@ def _painel_interativo_bi_html(df):
             f'document.getElementById("kBalsa").textContent=fmt(nb,0);}}'
             f'if(TEM_F){{var ne=F.filter(function(r){{return r.f==="Estimada";}}).length;'
             f'document.getElementById("kEst").textContent=fmt(ne,0);}}'
+            f'var _kc=document.querySelectorAll(".pbi-kpi-clk");for(var _z=0;_z<_kc.length;_z++){{var _fk=_kc[_z].getAttribute("data-fk");'
+            f'var _on=(_fk==="bal"&&elB&&elB.value==="Sim")||(_fk==="est"&&elF&&elF.value==="Estimada");'
+            f'if(_on)_kc[_z].classList.add("pbi-kpi-on");else _kc[_z].classList.remove("pbi-kpi-on");}}'
             f'var cnt=document.getElementById("biCount");if(cnt)cnt.textContent=F.length+" de "+DADOS.length+" registros";'
             f'if(elCandL&&elCand)elCandL.textContent=elCand.value;'
-            f'_safe(desenharHist,kms);_safe(desenharPolos,F);_safe(desenharUF,F);_safe(desenharPiores,F);_safe(desenharSun,F);_safe(desenharSank,F);_safe(desenharMapa,F);_safe(renderTab,F);_safe(renderChips,F);}}'
+            f'_safe(desenharHist,kms);_safe(desenharPolos,F);_safe(desenharUF,F);_safe(desenharPiores,F);_safe(desenharSun,F);_safe(desenharSank,F);_safe(desenharMapa,F);_safe(renderTab,F);_safe(renderChips,F);'
+            f'try{{_desenharSpark("spkKm",F.map(function(r){{return r.km;}}),"#60a5fa");if(TEM_C)_desenharSpark("spkC",F.map(function(r){{return r.c;}}),"#818cf8");}}catch(e){{}}'
+            f'if(typeof _gravarHash==="function")_gravarHash();}}'
             f'function renderChips(){{var box=document.getElementById("biChips");if(!box)return;var ch=[];'
             f'function add(lbl,clr){{ch.push({{t:lbl,c:clr}});}}'
             f'if(elUF&&elUF.value)add("UF: "+elUF.value,function(){{elUF.value="";upd();}});'
@@ -7524,7 +7824,7 @@ def _painel_interativo_bi_html(df):
             f'var rowH=Math.min(24,(H-8)/pairs.length),lblW=Math.min(120,W*0.42),bx=lblW+6,bw=W-bx-52;'
             f'cv._hit=[];'
             f'for(var i=0;i<pairs.length;i++){{var y=6+i*rowH;var val=pairs[i][1];var w=Math.max(1,(val/vmax)*bw);'
-            f'cv._hit.push({{y0:y,y1:y+rowH,label:pairs[i][0]}});'
+            f'cv._hit.push({{y0:y,y1:y+rowH,label:pairs[i][0],valor:val,unidade:unidade}});'
             f'ctx.fillStyle="#cbd5e1";ctx.font="11px sans-serif";ctx.textAlign="left";'
             f'var nm=(""+pairs[i][0]);if(nm.length>18)nm=nm.slice(0,17)+"…";ctx.fillText(nm,4,y+rowH*0.7);'
             f'var g=ctx.createLinearGradient(bx,0,bx+w,0);g.addColorStop(0,cor1);g.addColorStop(1,cor2);'
@@ -7535,17 +7835,17 @@ def _painel_interativo_bi_html(df):
             f'agg[r.d]=(agg[r.d]||0)+(TEM_C?(r.c||0):1);}});'
             f'var pairs=Object.keys(agg).map(function(k){{return [k,agg[k]];}}).sort(function(a,b){{return b[1]-a[1];}});'
             f'_hbar(elPolosC,pairs,TEM_C?"cand":"n","#818cf8","#4f46e5");'
-            f'if(elPolo)_bindBarClick(elPolosC,function(lbl){{elPolo.value=(elPolo.value===lbl?"":lbl);upd();}});}}'
+            f'if(elPolo)_bindBarClick(elPolosC,function(lbl){{elPolo.value=(elPolo.value===lbl?"":lbl);upd();}});_bindHover(elPolosC);}}'
             f'function desenharUF(F){{if(!elUFc)return;var s={{}},c={{}};F.forEach(function(r){{if(!r.u||r.km==null)return;'
             f's[r.u]=(s[r.u]||0)+r.km;c[r.u]=(c[r.u]||0)+1;}});'
             f'var pairs=Object.keys(s).map(function(k){{return [k,s[k]/c[k]];}}).sort(function(a,b){{return b[1]-a[1];}});'
             f'_hbar(elUFc,pairs,"km","#34d399","#059669");'
-            f'if(elUF)_bindBarClick(elUFc,function(lbl){{elUF.value=(elUF.value===lbl?"":lbl);upd();}});}}'
+            f'if(elUF)_bindBarClick(elUFc,function(lbl){{elUF.value=(elUF.value===lbl?"":lbl);upd();}});_bindHover(elUFc);}}'
             f'function desenharPiores(F){{if(!elPiores)return;'
             f'var rows=F.filter(function(r){{return r.km!=null&&!isNaN(r.km);}})'
             f'.sort(function(a,b){{return b.km-a.km;}}).slice(0,12);'
             f'var pairs=rows.map(function(r){{return [(r.o||"—")+(r.u?" ("+r.u+")":""),r.km];}});'
-            f'_hbar(elPiores,pairs,"km","#fb7185","#e11d48",12);}}'
+            f'_hbar(elPiores,pairs,"km","#fb7185","#e11d48",12);_bindHover(elPiores);}}'
             f'var SUNPAL=["#2563eb","#16a34a","#dc2626","#d97706","#7c3aed","#0891b2","#db2777","#65a30d",'
             f'"#ea580c","#4f46e5","#0d9488","#be123c"];'
             f'function _lighten(hex,f){{var n=parseInt(hex.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;'
@@ -7562,9 +7862,11 @@ def _painel_interativo_bi_html(df):
             f'if(!tot||!ufs.length){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
             f'ctx.fillText("Sem dados no filtro atual.",10,H/2);return;}}'
             f'var cx=W/2,cy=H/2,rIn=Math.min(W,H)*0.16,rMid=Math.min(W,H)*0.30,rOut=Math.min(W,H)*0.46;'
+            f'elSun._hits={{cx:cx,cy:cy,rIn:rIn,rMid:rMid,rOut:rOut,tot:tot,segU:[],segP:[]}};'
             f'var a0=-Math.PI/2;'  # começa no topo
             f'for(var i=0;i<ufs.length;i++){{var uf=ufs[i],frac=byUF[uf].t/tot,a1=a0+frac*2*Math.PI;'
             f'var col=SUNPAL[i%SUNPAL.length];'
+            f'elSun._hits.segU.push({{a0:a0,a1:a1,uf:uf,val:byUF[uf].t,frac:frac}});'
             f'ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,rMid,a0,a1);ctx.closePath();'
             f'ctx.fillStyle=col;ctx.fill();ctx.strokeStyle="#0f172a";ctx.lineWidth=1;ctx.stroke();'
             # rótulo da UF se a fatia for grande o suficiente
@@ -7574,6 +7876,7 @@ def _painel_interativo_bi_html(df):
             # anel externo: polos dentro da UF
             f'var pol=byUF[uf].pol,pk=Object.keys(pol).sort(function(x,y){{return pol[y]-pol[x];}});'
             f'var pa0=a0;for(var j=0;j<pk.length;j++){{var pf=pol[pk[j]]/byUF[uf].t,pa1=pa0+pf*(a1-a0);'
+            f'elSun._hits.segP.push({{a0:pa0,a1:pa1,uf:uf,polo:pk[j],val:pol[pk[j]]}});'
             f'ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,rOut,pa0,pa1);ctx.closePath();'
             f'ctx.fillStyle=_lighten(col,0.35+0.5*(j/(pk.length||1)));ctx.fill();'
             f'ctx.strokeStyle="#0f172a";ctx.lineWidth=0.6;ctx.stroke();'
@@ -7586,7 +7889,20 @@ def _painel_interativo_bi_html(df):
             f'ctx.beginPath();ctx.arc(cx,cy,rIn,0,2*Math.PI);ctx.fillStyle="#0f172a";ctx.fill();'
             f'ctx.fillStyle="#93c5fd";ctx.font="bold 14px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";'
             f'ctx.fillText(fmt(tot,0),cx,cy-6);ctx.fillStyle="#94a3b8";ctx.font="9px sans-serif";'
-            f'ctx.fillText(TEM_C?"candidatos":"rotas",cx,cy+9);ctx.textAlign="left";ctx.textBaseline="alphabetic";}}'
+            f'ctx.fillText(TEM_C?"candidatos":"rotas",cx,cy+9);ctx.textAlign="left";ctx.textBaseline="alphabetic";_bindHoverSun(elSun);}}'
+            f'function _bindHoverSun(cv){{if(!cv||cv._hovers)return;cv._hovers=true;var tip=document.getElementById("biTip");if(!tip)return;'
+            f'cv.addEventListener("mousemove",function(e){{var hs=cv._hits;if(!hs){{tip.style.opacity=0;return;}}'
+            f'var rect=cv.getBoundingClientRect();var sx=cv.width/rect.width,sy=cv.height/rect.height;'
+            f'var mx=(e.clientX-rect.left)*sx,my=(e.clientY-rect.top)*sy;var dx=mx-hs.cx,dy=my-hs.cy;var dist=Math.sqrt(dx*dx+dy*dy);'
+            f'var ang=Math.atan2(dy,dx);var unidade=TEM_C?" candidatos":" rotas";var txt=null;'
+            f'function inArc(a0,a1,a){{var aa=a;while(aa<a0)aa+=2*Math.PI;while(aa>a1+2*Math.PI)aa-=2*Math.PI;return aa>=a0&&aa<=a1;}}'
+            f'if(dist>=hs.rIn&&dist<=hs.rMid){{for(var i=0;i<hs.segU.length;i++){{if(inArc(hs.segU[i].a0,hs.segU[i].a1,ang)){{'
+            f'var s=hs.segU[i];txt="<b>"+s.uf+"</b><br>"+fmt(s.val,0)+unidade+"<br>"+(s.frac*100).toFixed(1)+"% do total";break;}}}}}}'
+            f'else if(dist>hs.rMid&&dist<=hs.rOut){{for(var j=0;j<hs.segP.length;j++){{if(inArc(hs.segP[j].a0,hs.segP[j].a1,ang)){{'
+            f'var p=hs.segP[j];txt="<b>"+p.uf+" → "+p.polo+"</b><br>"+fmt(p.val,0)+unidade;break;}}}}}}'
+            f'if(txt){{tip.innerHTML=txt;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";tip.style.opacity=1;cv.style.cursor="pointer";}}'
+            f'else{{tip.style.opacity=0;cv.style.cursor="default";}}}});'
+            f'cv.addEventListener("mouseleave",function(){{tip.style.opacity=0;}});}}'
             f'function desenharSank(F){{if(!elSank)return;var ctx=elSank.getContext("2d");if(!ctx)return;'
             f'var W=elSank.clientWidth||600,H=elSank.height;elSank.width=W;ctx.clearRect(0,0,W,H);'
             f'if(!TEM_U||!TEM_D){{ctx.fillStyle="#64748b";ctx.font="12px sans-serif";'
@@ -7674,8 +7990,10 @@ def _painel_interativo_bi_html(df):
             f'var vmin=kms.length?Math.min.apply(null,kms):0,vmax=kms.length?Math.max.apply(null,kms):1;'
             # ordena por candidatos desc p/ os grandes ficarem por baixo
             f'pts.sort(function(a,b){{return (b.c||0)-(a.c||0);}});'
+            f'elMapa._hitp=[];'
             f'pts.forEach(function(r){{var x=PX(r.lo),y=PY(r.la);'
             f'var rad=TEM_C?Math.max(2,Math.sqrt((r.c||1)/cmax)*16):3;'
+            f'elMapa._hitp.push({{x:x,y:y,rad:Math.max(rad,4),o:r.o,u:r.u,km:r.km,c:r.c,d:r.d}});'
             f'ctx.beginPath();ctx.arc(x,y,rad,0,2*Math.PI);ctx.fillStyle=_rgba2(_corDist(r.km,vmin,vmax),0.72);'
             f'ctx.fill();ctx.strokeStyle="rgba(15,23,42,0.5)";ctx.lineWidth=0.5;ctx.stroke();}});'
             # legenda de cor (distância)
@@ -7685,7 +8003,7 @@ def _painel_interativo_bi_html(df):
             f'ctx.fillStyle="#94a3b8";ctx.font="9px sans-serif";ctx.textAlign="left";'
             f'ctx.fillText(Math.round(vmin)+" km",lgX,lgY-3);ctx.textAlign="right";'
             f'ctx.fillText(Math.round(vmax)+" km",lgX+lgW,lgY-3);ctx.textAlign="left";'
-            f'ctx.fillStyle="#94a3b8";ctx.fillText(pts.length+" origens",offX+4,offY+12);}}'
+            f'ctx.fillStyle="#94a3b8";ctx.fillText(pts.length+" origens",offX+4,offY+12);_bindHoverMapa(elMapa);}}'
             f'function _rgba2(rgb,a){{return rgb.replace("rgb(","rgba(").replace(")",","+a+")");}}'
             f'function desenharHist(kms){{if(!elHist)return;var ctx=elHist.getContext("2d");if(!ctx)return;'
             f'var W=elHist.clientWidth||600,H=elHist.height;elHist.width=W;ctx.clearRect(0,0,W,H);'
@@ -7699,7 +8017,11 @@ def _painel_interativo_bi_html(df):
             f'ctx.fillStyle=g;ctx.fillRect(x,y,cw-gap,bh);}}'
             f'ctx.fillStyle="#94a3b8";ctx.font="10px sans-serif";ctx.fillText("0 km",pad,H-4);'
             f'ctx.textAlign="right";ctx.fillText(Math.round(mx)+" km",W-pad,H-4);ctx.textAlign="left";}}'
+            f'var _sortK=null,_sortD=1;'  # coluna e direção da ordenação da tabela (1=asc,-1=desc)
             f'function renderTab(F){{var tb=document.getElementById("biTbody");if(!tb)return;'
+            f'if(_sortK){{var num=(_sortK==="km"||_sortK==="c");F=F.slice().sort(function(a,b){{'
+            f'var va=a[_sortK],vb=b[_sortK];if(num){{va=(va==null||isNaN(va))?-Infinity:va;vb=(vb==null||isNaN(vb))?-Infinity:vb;return (va-vb)*_sortD;}}'
+            f'va=(va==null?"":String(va)).toLowerCase();vb=(vb==null?"":String(vb)).toLowerCase();return (va<vb?-1:va>vb?1:0)*_sortD;}});}}'
             f'var lim=F.slice(0,500),h="";for(var i=0;i<lim.length;i++){{var r=lim[i];h+="<tr><td>"+(r.o||"")+"</td>";'
             f'if(TEM_D)h+="<td>"+(r.d||"")+"</td>";if(TEM_U)h+="<td>"+(r.u||"")+"</td>";'
             f'h+="<td class=num>"+(r.km==null?"—":fmt(r.km,1))+"</td>";'
@@ -7708,6 +8030,17 @@ def _painel_interativo_bi_html(df):
             f'if(F.length>500)h+="<tr><td colspan=8 style=\\"text-align:center;color:#94a3b8\\">… e mais "+'
             f'(F.length-500)+" registros (refine o filtro para ver todos)</td></tr>";tb.innerHTML=h;}}'
             f'[elUF,elF,elB,elKm,elPolo,elCand,elBusca].forEach(function(e){{if(e)e.addEventListener("input",upd);}});'
+            f'function _optExiste(sel,val){{if(!sel)return false;for(var i=0;i<sel.options.length;i++){{if(sel.options[i].value===val)return true;}}return false;}}'
+            f'var _kpisClk=document.querySelectorAll(".pbi-kpi-clk");for(var _q=0;_q<_kpisClk.length;_q++){{(function(kp){{'
+            f'kp.addEventListener("click",function(){{var fk=kp.getAttribute("data-fk");'
+            f'if(fk==="bal"&&elB){{elB.value=(elB.value==="Sim"?"":"Sim");}}'
+            f'else if(fk==="est"&&elF){{if(elF.value==="Estimada"){{elF.value="";}}else if(_optExiste(elF,"Estimada")){{elF.value="Estimada";}}}}'
+            f'upd();}});}})(_kpisClk[_q]);}}'
+            f'var _ths=document.querySelectorAll(".pbi-tab th.sortable");for(var _t=0;_t<_ths.length;_t++){{(function(th){{'
+            f'th.addEventListener("click",function(){{var k=th.getAttribute("data-k");'
+            f'if(_sortK===k){{_sortD=-_sortD;}}else{{_sortK=k;_sortD=1;}}'
+            f'for(var j=0;j<_ths.length;j++){{_ths[j].classList.remove("sort-asc","sort-desc");}}'
+            f'th.classList.add(_sortD===1?"sort-asc":"sort-desc");renderTab(filtrar());}});}})(_ths[_t]);}}'
             f'var vb=document.getElementById("biVer"),tw=document.getElementById("biTabWrap");'
             f'if(vb)vb.addEventListener("click",function(){{tw.classList.toggle("open");'
             f'vb.textContent=tw.classList.contains("open")?"📋 Ocultar registros":"📋 Ver registros do filtro";}});'
@@ -7726,9 +8059,43 @@ def _painel_interativo_bi_html(df):
             f'var url=out.toDataURL("image/png");var a=document.createElement("a");'
             f'a.href=url;a.download="painel_executivo_graficos.png";a.click();'
             f'}}catch(e){{if(window.console&&console.warn)console.warn("[BI] export PNG falhou:",e);}}}});'
+            f'var cb=document.getElementById("biCsv");if(cb)cb.addEventListener("click",function(){{try{{'
+            f'var F=filtrar();var cols=[["Município de origem","o"]];'
+            f'if(TEM_D)cols.push(["Polo (destino)","d"]);if(TEM_U)cols.push(["UF","u"]);'
+            f'cols.push(["Distância (km)","km"]);if(TEM_C)cols.push(["Candidatos","c"]);'
+            f'if(TEM_F)cols.push(["Fonte da rota","f"]);if(TEM_B)cols.push(["Depende de balsa","b"]);'
+            f'function esc(v){{v=(v==null?"":String(v));if(/[";\\n]/.test(v))v=\'"\'+v.replace(/"/g,\'""\')+\'"\';return v;}}'
+            f'var linhas=[cols.map(function(c){{return esc(c[0]);}}).join(";")];'
+            f'for(var i=0;i<F.length;i++){{var r=F[i];linhas.push(cols.map(function(c){{'
+            f'var val=r[c[1]];if(c[1]==="km"&&val!=null)val=fmt(val,1);return esc(val);}}).join(";"));}}'
+            f'var csv="\\ufeff"+linhas.join("\\r\\n");'  # BOM p/ Excel abrir com acentos corretos
+            f'var blob=new Blob([csv],{{type:"text/csv;charset=utf-8;"}});'
+            f'var url=URL.createObjectURL(blob);var a=document.createElement("a");'
+            f'a.href=url;a.download="painel_executivo_dados_filtrados.csv";a.click();'
+            f'setTimeout(function(){{URL.revokeObjectURL(url);}},1500);'
+            f'}}catch(e){{if(window.console&&console.warn)console.warn("[BI] export CSV falhou:",e);}}}});'
             f'window.addEventListener("resize",function(){{var F=filtrar();'
             f'_safe(desenharHist,F.map(function(r){{return r.km;}}).filter(function(x){{return x!=null&&!isNaN(x);}}));'
             f'_safe(desenharPolos,F);_safe(desenharUF,F);_safe(desenharPiores,F);_safe(desenharSun,F);_safe(desenharSank,F);_safe(desenharMapa,F);}});'
+            # [FASE5 item1] Persistência do filtro na URL (hash): compartilhar a visão exata por link.
+            f'var _hashLock=false;'
+            f'function _gravarHash(){{if(_hashLock)return;try{{var P=[];'
+            f'function add(k,el){{if(el&&el.value!==""&&el.value!=null)P.push(k+"="+encodeURIComponent(el.value));}}'
+            f'add("uf",elUF);add("f",elF);add("b",elB);add("polo",elPolo);add("busca",elBusca);'
+            f'if(elCand&&parseFloat(elCand.value)>0)P.push("cand="+encodeURIComponent(elCand.value));'
+            f'if(elKm&&parseFloat(elKm.value)<1000)P.push("km="+encodeURIComponent(elKm.value));'
+            f'var h=P.join("&");if(("#"+h)!==location.hash){{history.replaceState(null,"",h?("#"+h):location.pathname+location.search);}}'
+            f'}}catch(e){{}}}}'
+            f'function _lerHash(){{try{{var h=(location.hash||"").replace(/^#/,"");if(!h)return;_hashLock=true;'
+            f'var partes=h.split("&");for(var i=0;i<partes.length;i++){{var kv=partes[i].split("=");'
+            f'var k=kv[0],v=kv.length>1?decodeURIComponent(kv[1]):"";'
+            f'function setSel(el,val){{if(!el)return;for(var j=0;j<el.options.length;j++){{if(el.options[j].value===val){{el.value=val;return;}}}}}}'
+            f'if(k==="uf")setSel(elUF,v);else if(k==="f")setSel(elF,v);else if(k==="b")setSel(elB,v);'
+            f'else if(k==="polo")setSel(elPolo,v);else if(k==="busca"&&elBusca)elBusca.value=v;'
+            f'else if(k==="cand"&&elCand){{elCand.value=v;if(elCandL)elCandL.textContent=v;}}'
+            f'else if(k==="km"&&elKm){{elKm.value=v;if(elKmL)elKmL.textContent=(parseFloat(v)>=1000?"todas":v);}}}}'
+            f'_hashLock=false;}}catch(e){{_hashLock=false;}}}}'
+            f'_lerHash();'
             f'upd();}})();</script>'
         )
         return _html
@@ -7786,6 +8153,19 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
         _story = _narrativa_storytelling_alocacao(df)
         if _story:
             _sec.append(("historia", "Panorama do Estudo", _story))
+        # [STORYTELLING-DASH - 253ª geração] Leitura analítica complementar (padrões, concentração,
+        # exceções, confiabilidade e oportunidades) — mesma inteligência do Painel Estratégico, agora
+        # também no relatório. Defensiva: só entra se produzir texto.
+        try:
+            _narr_rel = _narrativa_analitica_dashboard(df, uf_col="UF Origem", reg_col="Regiao")
+            if _narr_rel:
+                _sec.append(("leitura_analista", "Leitura do Analista",
+                             "<div style='background:#f8fafc;border-left:4px solid #1e3a8a;padding:14px 18px;"
+                             "border-radius:8px;line-height:1.7'>"
+                             + "".join(f"<p style='margin:0 0 10px'>{_p}</p>" for _p in _narr_rel)
+                             + "</div>"))
+        except Exception:
+            pass
         # [ARTIGO-CIENTIFICO - 218ª geração] Front matter de artigo científico (antes do resumo executivo).
         for _fn_fm, _id_fm, _tit_fm in [
             (lambda: _secao_abstract_html(df), "abstract", "Resumo / Abstract"),
@@ -19366,8 +19746,28 @@ def _diagnostico_divergencias_html(diag):
             _cartoes_html = _html_cartoes(diag, _he)
         except Exception:
             _cartoes_html = ""
+        # [POS-DIAGNOSTICO - 256ª geração] Bloco de reconciliação no topo do relatório — mesmo texto/veredito
+        # que a tela mostra após processar (o que o roteamento fresco revelou vs. o placar original).
+        _recon_html = ""
+        try:
+            _pos_r = _resumo_pos_diagnostico_divergencias(diag)
+            if _pos_r and _pos_r.get("linhas"):
+                _titulo_r = ("🔄 Resultado do reprocessamento — o placar merece um ajuste fino"
+                             if _pos_r.get("houve_ajuste")
+                             else "🔄 Resultado do reprocessamento — o placar do topo se confirma")
+                _linhas_r = ""
+                import re as _re_pos
+                for _lp in _pos_r.get("linhas", []):
+                    _lp_html = _re_pos.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", _lp)
+                    _linhas_r += f"<p style='margin:0 0 8px'>{_lp_html}</p>"
+                _recon_html = (f'<div class="dv-box" style="border-left:4px solid #1e3a8a">'
+                               f'<div class="dv-box-t">{_he.escape(_titulo_r)}</div>'
+                               f'<div class="dv-box-c">{_linhas_r}</div></div>')
+        except Exception:
+            _recon_html = ""
         return (f'<section id="diag-divergencias">{_css}'
                 f'<h2>🔬 Diagnóstico Inteligente das Divergências</h2>'
+                f'{_recon_html}'
                 f'{_kpis}{_box_resumo}'
                 f'{_cartoes_html}'
                 f'{_ins_html}'
@@ -19873,6 +20273,121 @@ def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=No
     except Exception:
         pass
     return _diag
+
+
+def _resumo_pos_diagnostico_divergencias(diag):
+    """[POS-DIAGNOSTICO - 256ª geração] Depois que o usuário PROCESSA as rotas divergentes, o diagnóstico
+    roteia de novo (fresco) a escolha da referência e sabe coisas que o placar do topo (calculado sobre os
+    dados ORIGINAIS) não reflete. Esta função consolida o que o reprocessamento REVELOU num resumo curto e
+    acionável — a ponte entre "o que a tela mostrava" e "o que agora sabemos".
+
+    Lê apenas o dict `diag` já produzido por _reprocessar_rotas_divergentes (não roteia nada, não faz rede).
+    Retorna um dict com:
+      - linhas: lista de frases (strings, podem conter markdown/negrito) resumindo o veredito pós-rota
+      - kpis: lista de (rotulo, valor, ajuda) para st.metric
+      - houve_ajuste: bool — se o roteamento fresco mudou algum vencedor vs. a distância original do estudo
+    PURA e defensiva: diag inválido/vazio → dict com listas vazias e houve_ajuste=False.
+    """
+    vazio = {"linhas": [], "kpis": [], "houve_ajuste": False}
+    try:
+        if not diag or not isinstance(diag, dict):
+            return vazio
+        _n_div = int(diag.get("n_divergencias", 0) or 0)
+        if _n_div <= 0:
+            return vazio
+        _res = diag.get("resumo", {}) or {}
+        _analises = diag.get("analises", []) or []
+        _falhas = int(diag.get("falhas_roteamento", 0) or 0)
+        _roteadas = max(0, _n_div - _falhas)
+
+        _app = int(_res.get("app_superior", 0) or 0)
+        _ref = int(_res.get("ref_superior", 0) or 0)
+        _emp = int(_res.get("empates", 0) or 0)
+        _ins_perda = int(_res.get("inscritos_em_perda", 0) or 0)
+        _ins_benef = int(_res.get("inscritos_beneficiados_app", 0) or 0)
+
+        def _br(x, casas=0):
+            try:
+                s = f"{float(x):,.{casas}f}"
+                return s.replace(",", "§").replace(".", ",").replace("§", ".")
+            except Exception:
+                return "—"
+
+        # Soma da diferença de km fresca (referência − aplicação) ponderada e simples, a partir das análises.
+        _sum_dif = 0.0        # km: positivo = a referência roda MAIS que a aplicação (aplicação melhor)
+        _sum_impacto = 0.0    # km × inscritos
+        _n_ref_vence_rota = 0  # em quantas a referência é mais curta na rota fresca
+        for _a in _analises:
+            if not isinstance(_a, dict):
+                continue
+            try:
+                _dif = _a.get("Diferença (km)", None)
+                if _dif is not None:
+                    _sum_dif += float(_dif)
+            except (TypeError, ValueError):
+                pass
+            try:
+                _imp = _a.get("Impacto (km × inscritos)", None)
+                if _imp is not None:
+                    _sum_impacto += float(_imp)
+            except (TypeError, ValueError):
+                pass
+            try:
+                _da = _a.get("Distância Aplicação (km)", None)
+                _dr = _a.get("Distância Referência (km)", None)
+                if _da is not None and _dr is not None and float(_dr) < float(_da):
+                    _n_ref_vence_rota += 1
+            except (TypeError, ValueError):
+                pass
+
+        houve_ajuste = _ref > 0 or _n_ref_vence_rota > 0
+
+        # ---- KPIs de reconciliação ----
+        kpis = []
+        kpis.append(("Divergências roteadas de novo",
+                     f"{_br(_roteadas)}" + (f" de {_br(_n_div)}" if _falhas else ""),
+                     "Municípios divergentes cuja rota da referência foi recalculada agora, com os mesmos motores."))
+        kpis.append(("Confirmadas a favor da aplicação", f"{_br(_app)}",
+                     "Após rotear de novo, o Índice de Qualidade multicritério ainda favorece a aplicação."))
+        kpis.append(("Onde a referência é melhor", f"{_br(_ref)}",
+                     "Casos que o reprocessamento mostrou serem genuinamente melhores na referência — candidatos a adotar."))
+        if _ins_perda > 0:
+            kpis.append(("Candidatos em rota pior", f"{_br(_ins_perda)}",
+                         "Inscritos nos municípios onde a referência oferece deslocamento menor."))
+
+        # ---- narrativa curta ----
+        linhas = []
+        if _roteadas > 0:
+            _txt = (f"Reroteei **{_br(_roteadas)}** das **{_br(_n_div)}** divergências com os mesmos motores. ")
+            if _ref == 0:
+                _txt += ("Nenhuma se sustentou como vantagem real da referência — **o placar do topo se "
+                         "confirma** e a aplicação segue melhor ou empatada em todos os casos divergentes.")
+            else:
+                _txt += (f"Destas, **{_br(_ref)}** se confirmaram como genuinamente melhores na referência "
+                         f"(afetando **{_br(_ins_perda)}** candidatos), **{_br(_app)}** seguem a favor da "
+                         f"aplicação e **{_br(_emp)}** empataram. **É aqui que o placar do topo merece um "
+                         f"ajuste fino**: adotar essas {_br(_ref)} escolhas encurta o deslocamento desses candidatos.")
+            linhas.append(_txt)
+
+        if _sum_impacto and abs(_sum_impacto) > 0:
+            if _sum_dif > 0:
+                linhas.append(f"No agregado das rotas frescas, a aplicação economiza **{_br(abs(_sum_dif),1)} km** "
+                              f"em relação à referência (impacto ponderado de **{_br(abs(_sum_impacto))} km×candidato**) "
+                              "— ou seja, trocar tudo para a referência PIORARIA o total.")
+            elif _sum_dif < 0:
+                linhas.append(f"No agregado das rotas frescas, a referência seria **{_br(abs(_sum_dif),1)} km** mais "
+                              f"curta na soma dos municípios divergentes (impacto de **{_br(abs(_sum_impacto))} "
+                              "km×candidato**) — vale revisar o plano híbrido para capturar esse ganho onde ela vence.")
+
+        if _falhas > 0:
+            linhas.append(f"Ressalva honesta: **{_br(_falhas)}** rota(s) não obtiveram roteamento fresco "
+                          "(usei a distância que já constava do estudo nesses casos), então os números acima "
+                          "são um piso conservador.")
+
+        return {"linhas": linhas, "kpis": kpis, "houve_ajuste": houve_ajuste}
+    except Exception:
+        return vazio
+
 
 
 # ==============================================================================
@@ -25188,6 +25703,110 @@ def _flush_telemetria_motores():
         except Exception:
             pass
 
+def _agregar_telemetria_por_motor(buf, limite=5000):
+    """[TELEMETRIA-POR-MOTOR - 255ª geração] Agrega o buffer observacional de telemetria de rotas por MOTOR,
+    produzindo uma tabela comparativa (uma linha por motor). Os dados JÁ são coletados por
+    _registrar_telemetria_motores (cada registro tem 'distancias' = {motor: km} de TODOS os motores que
+    responderam, além do vencedor e da mediana do consenso). Aqui só derivamos estatísticas — nada de rede,
+    nada que afete o roteamento.
+
+    Para cada motor calcula:
+      - respostas: em quantas rotas o motor devolveu uma distância válida
+      - vitorias / taxa_vitoria: em quantas foi o vencedor (menor viária válida) e o %
+      - dist_media: distância média que o motor devolveu (km)
+      - concordancia: % de rotas em que ficou dentro de ±10% da mediana do consenso (confirma os demais)
+      - desvio_mediano_pct: viés mediano do motor vs. a mediana (positivo = tende a devolver distâncias
+        maiores que o consenso; negativo = menores). Ajuda a ver se um motor "encurta" ou "alonga".
+
+    Retorna lista de dicts ordenada por respostas (desc). PURA e defensiva: entrada inválida → [].
+    """
+    try:
+        if not buf or not isinstance(buf, (list, tuple)):
+            return []
+        amostra = list(buf)[-limite:]
+        if not amostra:
+            return []
+
+        import statistics as _st
+
+        # acumuladores por motor
+        resp = {}          # motor -> nº de respostas válidas
+        vit = {}           # motor -> nº de vitórias
+        dists = {}         # motor -> lista de distâncias devolvidas
+        dentro = {}        # motor -> nº de vezes dentro de ±10% da mediana
+        com_mediana = {}   # motor -> nº de rotas em que havia mediana p/ comparar
+        desvios = {}       # motor -> lista de (dist/mediana - 1) quando há mediana
+
+        def _norm(nome):
+            # normaliza o rótulo do vencedor ("GOOGLE (agressivo)" -> "GOOGLE") p/ casar com as chaves de distancias
+            return str(nome).split(" ")[0].strip().upper()
+
+        for reg in amostra:
+            if not isinstance(reg, dict):
+                continue
+            _d = reg.get("distancias") or {}
+            if not isinstance(_d, dict):
+                continue
+            _venc = _norm(reg.get("vencedor", ""))
+            _mid = reg.get("mediana_km", None)
+            try:
+                _mid = float(_mid) if _mid not in (None, "") else None
+            except (TypeError, ValueError):
+                _mid = None
+
+            for _mot_raw, _km in _d.items():
+                _mot = str(_mot_raw).strip().upper()
+                try:
+                    _kmf = float(_km)
+                except (TypeError, ValueError):
+                    continue
+                if _kmf <= 0:
+                    continue
+                resp[_mot] = resp.get(_mot, 0) + 1
+                dists.setdefault(_mot, []).append(_kmf)
+                if _mid and _mid > 0:
+                    com_mediana[_mot] = com_mediana.get(_mot, 0) + 1
+                    _rel = _kmf / _mid - 1.0
+                    desvios.setdefault(_mot, []).append(_rel)
+                    if abs(_rel) <= 0.10:
+                        dentro[_mot] = dentro.get(_mot, 0) + 1
+
+            # vitória: casa o vencedor normalizado com um motor presente nas distâncias
+            if _venc:
+                # tenta casar exatamente; se o vencedor for "GOOGLE" e as chaves forem "GOOGLE", casa
+                for _mot in _d.keys():
+                    if str(_mot).strip().upper() == _venc:
+                        vit[_venc] = vit.get(_venc, 0) + 1
+                        break
+                else:
+                    # vencedor não estava no dict de distâncias (ex.: fonte especial) — conta mesmo assim
+                    vit[_venc] = vit.get(_venc, 0) + 1
+
+        linhas = []
+        for _mot in sorted(resp.keys(), key=lambda m: resp[m], reverse=True):
+            _n = resp[_mot]
+            _v = vit.get(_mot, 0)
+            _lista = dists.get(_mot, [])
+            _dm = round(_st.mean(_lista), 1) if _lista else None
+            _cm = com_mediana.get(_mot, 0)
+            _conc = round(100.0 * dentro.get(_mot, 0) / _cm, 1) if _cm else None
+            _desv = desvios.get(_mot, [])
+            _desv_med = round(100.0 * _st.median(_desv), 1) if _desv else None
+            linhas.append({
+                "motor": _mot,
+                "respostas": _n,
+                "vitorias": _v,
+                "taxa_vitoria_pct": round(100.0 * _v / _n, 1) if _n else 0.0,
+                "dist_media_km": _dm,
+                "concordancia_pct": _conc,
+                "desvio_mediano_pct": _desv_med,
+            })
+        return linhas
+    except Exception:
+        return []
+
+
+
 def _registrar_telemetria_motores(vencedor, motores_dict, consenso, dist_linha_reta, km_vencedor):
     """[TELEMETRIA-MOTORES - 195ª geração] Grava um registro por rota decidida: motor vencedor, distância de
     cada motor, confiabilidade, outliers, % de concordância e razão viária/geodésica. Defensiva/observacional:
@@ -28172,11 +28791,11 @@ def executar_pipeline_unificado(origem_cru, destino_cru, runner_up_info=None, mo
             if not res_g_runner:
                 res_g_runner = extrair_dados_reais_google(origem_cru, r_nome, lat_o, lon_o, r_lat, r_lon, dist_v_real, usar_coordenadas=False)
             if res_g_runner:
-                dist_conc = res_g_runner[0]
-                link_conc = res_g_runner[2]
+                dist_conc = _route_val(res_g_runner, 0, default=0.0)
+                link_conc = _route_val(res_g_runner, 2, default="N/A")
                 # [CONC-AUDIT - 77ª geração] tempo do concorrente (res_g_runner[1], mesmo índice do
                 # vencedor) + velocidade média implícita + coordenadas → auditoria completa do 2º colocado.
-                _tempo_conc = res_g_runner[1] if len(res_g_runner) > 1 else "N/A"
+                _tempo_conc = _route_val(res_g_runner, 1, default="N/A")
                 _audit_conc = {
                     'tempo': _tempo_conc,
                     'velocidade_media': _velocidade_media_kmh(dist_conc, _tempo_conc),
@@ -28504,6 +29123,8 @@ def _route_val(res, idx, default=None, minimo=5):
     indexações diretas (res[0], res[1], res[3], res[4]...) que quebravam quando o motor retornava algo fora
     do contrato. Nunca levanta."""
     try:
+        if not isinstance(idx, int) or idx < 0:
+            return default
         if not _route_ok(res, minimo=min(minimo, idx + 1)):
             return default
         if idx >= len(res):
@@ -30957,9 +31578,9 @@ def _segunda_passada_google(df, _max_pares=None):
                                                 usar_coordenadas=True)
             if not _res_g:
                 continue
-            _km_g = _res_g[0]
-            if not _viaria_fisicamente_possivel(_km_g, _reta):
-                continue  # Google veio fisicamente impossível: ignora, mantém o atual
+            _km_g = _route_val(_res_g, 0)
+            if _km_g is None or not _viaria_fisicamente_possivel(_km_g, _reta):
+                continue  # Google veio fisicamente impossível ou inválido: ignora, mantém o atual
             # adota o Google se ele for melhor OU se o atual não era rota real (fallback)
             _km_atual = None
             try:
@@ -32741,7 +33362,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "250"
+_VERSAO_APP = "256"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -39462,6 +40083,31 @@ if _secao == _SECOES[3]:   # tab_comparador
             # painel persistente (renderiza em todo rerun enquanto o diagnóstico existir na sessão)
             _diag_sess = st.session_state.get('cmp_diag_divergencias')
             if _diag_sess:
+                # [POS-DIAGNOSTICO - 256ª geração] Reconciliação: o que o reprocessamento REVELOU vs. o placar
+                # do topo (calculado sobre os dados originais). Aparece a cada rerun enquanto o diagnóstico
+                # existir na sessão — é a "atualização das informações após processar as divergências".
+                try:
+                    _pos = _resumo_pos_diagnostico_divergencias(_diag_sess)
+                    if _pos and (_pos.get("linhas") or _pos.get("kpis")):
+                        with st.container(border=True):
+                            _titulo_pos = ("### 🔄 Resultado do reprocessamento — placar merece ajuste"
+                                           if _pos.get("houve_ajuste")
+                                           else "### 🔄 Resultado do reprocessamento — placar confirmado")
+                            st.markdown(_titulo_pos)
+                            _kpis_pos = _pos.get("kpis", [])
+                            if _kpis_pos:
+                                _cols_pos = st.columns(min(4, len(_kpis_pos)))
+                                for _ip, (_rot, _val, _aju) in enumerate(_kpis_pos[:4]):
+                                    _cols_pos[_ip].metric(_rot, _val, help=_aju)
+                            for _lp in _pos.get("linhas", []):
+                                st.markdown(_lp)
+                            if _pos.get("houve_ajuste"):
+                                st.info("💡 Use a seção **🏆 O plano HÍBRIDO** abaixo para adotar município a "
+                                        "município as escolhas em que a referência se mostrou melhor — é como "
+                                        "capturar esse ganho sem abrir mão de onde a aplicação já vence.")
+                except Exception:
+                    logger.error("[POS-DIAGNOSTICO] Falha ao montar resumo pós-diagnóstico", exc_info=True)
+
                 with st.container(border=True):
                     _painel_divergencias_ui(_diag_sess, st)
                 st.caption("As análises acima também vão para o **relatório HTML** (seção “Diagnóstico "
@@ -39673,6 +40319,27 @@ if _secao == _SECOES[4]:   # tab_analytics
                     col_k11.metric("Taxa de Sucesso (Roteamento)", f"{taxa_sucesso}%")
                     col_k12.metric("Confiança 'Altíssima'", f"{len(df_cf[df_cf['Confianca Destino'] == 'ALTISSIMA'])}")
                 
+                # [STORYTELLING-DASH - 253ª geração] Narrativa analítica AO VIVO do recorte filtrado.
+                # Lê df_cf (o mesmo recorte dos KPIs/gráficos) e conta a história como um analista faria:
+                # padrões, exceções, concentração, pontos de atenção e oportunidades — recalculada a cada
+                # filtro. Aditiva e defensiva (se falhar, devolve [] e nada aparece).
+                try:
+                    _narr = _narrativa_analitica_dashboard(df_cf)
+                    if _narr:
+                        with st.container(border=True):
+                            st.markdown("##### 🧠 Leitura do Analista — o que os dados do recorte estão dizendo")
+                            st.caption("Texto gerado automaticamente a partir do recorte filtrado; "
+                                       "acompanha os filtros e seleções acima.")
+                            st.markdown(
+                                "<div style='background:#f8fafc;border-left:4px solid #1e3a8a;padding:14px 18px;"
+                                "border-radius:8px;line-height:1.7'>"
+                                + "".join(f"<p style='margin:0 0 10px'>{_p}</p>" for _p in _narr)
+                                + "</div>",
+                                unsafe_allow_html=True,
+                            )
+                except Exception:
+                    logger.error("[STORYTELLING-DASH] Falha ao renderizar narrativa no painel", exc_info=True)
+
                 # [ANALISE-EST - 21ª geração] Painel de Estatística Descritiva das Rotas.
                 # Complementa os KPIs (que só traziam média/máximo) com mediana, desvio
                 # padrão e percentis — medidas essenciais para entender a DISTRIBUIÇÃO das
@@ -42208,6 +42875,35 @@ if _secao == _SECOES[10]:   # tab_motores
                        help="Rotas absurdas rejeitadas pelo consenso (ex.: um motor devolveu distância incoerente).")
         st.caption("Participação = em quantas rotas cada motor deu a MENOR distância viária válida. O consenso "
                    "é observacional: mede a qualidade sem alterar a escolha (que é sempre a menor viária válida).")
+
+        # [TELEMETRIA-POR-MOTOR - 255ª geração] Scorecard comparativo por motor — deriva do MESMO buffer
+        # observacional (cada registro tem as distâncias de TODOS os motores, não só do vencedor). Responde:
+        # qual motor responde mais? qual vence mais? quem concorda com o consenso? quem tende a encurtar/alongar?
+        try:
+            _scored = _agregar_telemetria_por_motor(_tm_buf if isinstance(_tm_buf, list) else [])
+            if _scored and len(_scored) >= 1:
+                st.markdown("##### 🔬 Scorecard por Motor — quem responde, quem vence, quem concorda")
+                _rot_mot = {"GOOGLE": "🗺️ Google", "OSRM": "🛣️ OSRM", "OSRM_FOSSGIS": "🧭 OSRM FOSSGIS",
+                            "GRAPHHOPPER": "🚗 GraphHopper", "ORS": "🧭 ORS", "VALHALLA": "🗺️ Valhalla"}
+                _tab = []
+                for _r in _scored:
+                    _tab.append({
+                        "Motor": _rot_mot.get(_r["motor"], _r["motor"]),
+                        "Respostas": _r["respostas"],
+                        "Vitórias": _r["vitorias"],
+                        "Taxa de vitória": f'{_r["taxa_vitoria_pct"]}%',
+                        "Dist. média (km)": _r["dist_media_km"] if _r["dist_media_km"] is not None else "—",
+                        "Concordância (±10%)": f'{_r["concordancia_pct"]}%' if _r["concordancia_pct"] is not None else "—",
+                        "Viés vs. consenso": f'{"+" if (_r["desvio_mediano_pct"] or 0) > 0 else ""}{_r["desvio_mediano_pct"]}%' if _r["desvio_mediano_pct"] is not None else "—",
+                    })
+                st.dataframe(_tornar_arrow_safe(pd.DataFrame(_tab)), use_container_width=True, hide_index=True)
+                st.caption("**Respostas**: rotas em que o motor devolveu distância válida. **Vitórias/Taxa**: quando "
+                           "deu a menor viária. **Concordância**: % de vezes dentro de ±10% da mediana dos motores "
+                           "(alta = confiável). **Viés**: mediana do desvio vs. o consenso — negativo = tende a "
+                           "devolver rotas MAIS CURTAS que os demais; positivo = mais longas. Tudo observacional, "
+                           "derivado do buffer sem afetar nenhuma decisão de roteamento.")
+        except Exception:
+            logger.error("[TELEMETRIA-POR-MOTOR] Falha ao montar scorecard por motor", exc_info=True)
 
     st.markdown("#### 📐 Auditoria do Motor Geodésico Contínuo (Métricas de Integridade Matemática)")
     # [M24] Calcula uptime e taxas por período para observabilidade temporal
