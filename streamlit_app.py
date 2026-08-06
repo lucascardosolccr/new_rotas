@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.25
+# VERSÃO: 3.27
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,70 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.27 (264ª geração) → 🧭 VALHALLA: PARIDADE DE EXIBIÇÃO COMPLETA (Validador Rápido + Diagnóstico & Auditoria)
+#     Fecha a última pendência da 263ª: os DOIS painéis de exibição que faltavam para o Valhalla ficar 100%
+#     idêntico ao GraphHopper também na tela (o dado, a coluna, o consenso, a telemetria, o Monitor e o rótulo
+#     de vencedor já estavam prontos). Ambos leem o campo dados_valhalla (índice 42) via _parsear_dados_valhalla
+#     — a mesma fonte que alimenta as colunas da planilha. Tudo ADITIVO, só aparece quando o Valhalla respondeu.
+#       • VALIDADOR RÁPIDO: novo expander "🧭 Rota do Valhalla (motor sem chave, em paridade)" com métricas
+#         próprias (distância, tempo, balsa), divergência Valhalla × Google (mesmo _metricas_divergencia do
+#         GraphHopper/OSRM) e link de navegação. Espelha a seção do GraphHopper logo acima.
+#       • DIAGNÓSTICO & AUDITORIA: novo bloco dedicado "🧭 Rota do Valhalla" com as métricas próprias + o MAPA
+#         da GEOMETRIA EXATA do Valhalla desenhado no Leaflet autocontido (_gerar_mapa_leaflet_rota, provedor
+#         "Valhalla", cor cyan #0891b2 — distinta do roxo do GraphHopper) + link. Mesmo padrão do bloco do
+#         GraphHopper (que desenha a geometria dele) — o traçado é o do PRÓPRIO Valhalla, não estimado.
+#     Ambos os painéis rotulam o link como navegação por coordenadas (o traçado real do Valhalla é o do mapa
+#     Leaflet, pela geometria); a instância própria participa de toda rota como o OSRM (lembrete no rodapé).
+#     NÃO-REGRESSÃO: quando o Valhalla não respondeu, dados_valhalla vazio → parse None → nenhum painel aparece,
+#     comportamento idêntico ao anterior. Sem mudança de esquema (RotaPipeline segue 43, campo já existia na
+#     263ª). Invariantes: _SECOES 14, balões 1×, sem bare-except, imports idênticos ao baseline, handbook
+#     intacto (123.793 chars, s33), requirements INALTERADO. Diff = apenas os 2 painéis + versão/histórico.
+#     RESSALVA (herdada): o cliente do Valhalla ainda não foi testado contra o endpoint real — valide no seu
+#     ambiente (ligue o toggle ou aponte a instância própria, rode 2–3 rotas conhecidas). Com isto, o Valhalla
+#     está em PARIDADE TOTAL com o GraphHopper em toda a aplicação: dado, coluna, consenso, telemetria, Monitor,
+#     rótulo de vencedor, seção no Validador e bloco no Diagnóstico com mapa próprio.
+#   v3.26 (263ª geração) → 🧭 VALHALLA PEER COMPLETO EM TODA A APLICAÇÃO + PLANILHA HÍBRIDA + STORYTELLING DO LOTE
+#     PEDIDO: (1) que o Valhalla funcione em TODO o âmbito do app, exatamente como Google/OSRM/GraphHopper —
+#     tudo que eles fazem, o Valhalla faz; (2) planilha híbrida por tamanho (auto p/ estudos pequenos, sob
+#     demanda p/ grandes); (3) storytelling no topo do Lote. Tudo ADITIVO, invariantes preservados.
+#     ── 1. VALHALLA PEER COMPLETO ──────────────────────────────────────────────────────────────────────────
+#     ENQUADRAMENTO HONESTO: fazer o Valhalla rodar em TODA rota do lote nacional automaticamente (igual ao
+#     OSRM) só é fisicamente viável apontando VALHALLA_URL para uma INSTÂNCIA PRÓPRIA — na pública o fair-use
+#     ≤1 req/s tornaria o lote lento E seria abuso de um servidor comunitário. Solução: o app agora DETECTA a
+#     instância própria e, nela, o Valhalla vira peer completo SOZINHO (toda rota, paralelo, sem throttle, sem
+#     depender do toggle); na pública, continua opt-in por fair-use. Mudanças:
+#       • _valhalla_instancia_propria() (VALHALLA_URL não é o host público do FOSSGIS) + _valhalla_ativo()
+#         (própria → sempre; pública → toggle). Cliente API_Valhalla_Routing RESTRUTURADO: instância própria →
+#         chamada DIRETA (paralela, sem throttle, como o OSRM); pública → FILA_VALHALLA + _throttle_valhalla
+#         (fair-use). Orquestrador passa a gatilhar por _valhalla_ativo() (não mais só pelo flag).
+#       • RECONHECIMENTO DE VENCEDOR na UI (o mesmo bug que o GraphHopper tinha antes da 220ª): _eh_contendor_ui,
+#         _nome_vencedor_ui e _motor_curto ganharam VALHALLA — sem isso, uma rota vencida pelo Valhalla seria
+#         rotulada/mapeada como Google. Agora o Valhalla vence e é exibido como Valhalla (mapa Leaflet próprio).
+#       • DADOS PRÓPRIOS + PLANILHA (paridade com GraphHopper): novo campo RotaPipeline 'dados_valhalla' (índice
+#         42, default "" — ADITIVO no fim, RotaPipeline 42→43), helpers _montar_/_parsear_dados_valhalla (mesmo
+#         formato '‖' do GraphHopper). O orquestrador captura os dados do PRÓPRIO Valhalla (km/tempo/balsa/
+#         geometria + link de navegação por coordenadas) e os passa nas 2 construções do RotaPipeline. 4 colunas
+#         novas na planilha ('Distancia/Tempo/Balsa/Link Rota Valhalla'), ao lado das de Google/OSRM/GraphHopper
+#         — preservadas pela rede de segurança do reindex (114ª). Consenso, telemetria, Monitor SLA, participação
+#         do vencedor, Scorecard por Motor e _PRIOR já contemplavam o Valhalla desde a 262ª.
+#     ── 2. PLANILHA HÍBRIDA POR TAMANHO ────────────────────────────────────────────────────────────────────
+#       A 261ª tornou a planilha da Alocação 100% sob demanda (blindagem anti-OOM). Agora é HÍBRIDA: estudos
+#       PEQUENOS (≤ _LIMITE_PLANILHA_AUTO = 600 municípios) geram a planilha AUTOMATICAMENTE ao finalizar (a
+#       FASE 3a dispara a FASE 3b já na próxima passada — conveniência sem clique, memória segura nesse porte);
+#       estudos GRANDES/nacionais permanecem SOB DEMANDA (blindagem intacta). Limiar é constante ajustável.
+#     ── 3. STORYTELLING NO TOPO DO LOTE ────────────────────────────────────────────────────────────────────
+#       Novo bloco "📖 A história deste lote" no TOPO do resultado do Lote (antes do Resumo Executivo): conta em
+#       PROSA corrida quantas rotas, distância média/mediana, % medido × estimado, motor que mais venceu,
+#       município mais distante, trajetos com balsa e sinuosidade. Reusa EXATAMENTE as regras métricas do Resumo
+#       Executivo (para nunca contradizê-lo). Cada frase é defensiva (só entra se a coluna existir); erro → some.
+#     RESSALVAS HONESTAS: (a) o cliente do Valhalla foi escrito conforme a API documentada e validado
+#     isoladamente (gating próprio×público, codec, parsing), mas NÃO testado contra o endpoint real (rede do
+#     ambiente de build restrita) — valide no seu ambiente. (b) "peer completo em TODA rota do lote" pressupõe
+#     instância PRÓPRIA (a pública é opt-in/fair-use). (c) FICA PENDENTE (oferecido p/ a próxima) a paridade de
+#     EXIBIÇÃO restante do GraphHopper: seção "Rota do Valhalla" no Validador Rápido + bloco dedicado no
+#     Diagnóstico & Auditoria (o dado/coluna/consenso/telemetria/rótulo de vencedor JÁ estão prontos).
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports idênticos ao baseline,
+#     handbook intacto (123.793 chars, s33), requirements INALTERADO.
 #   v3.25 (262ª geração) → 🧭 VALHALLA COMO 3º MOTOR KEYLESS DO CONSENSO VIÁRIO [VALHALLA]
 #     PEDIDO: recuperar a participação do Google (hoje bloqueado no scraper interno) via VPN/proxy rotativo +
 #     fingerprint, E integrar o Valhalla ao consenso. DECISÃO HONESTA sobre a 1ª parte: NÃO implementada a
@@ -4391,6 +4455,11 @@ class RotaPipeline(NamedTuple):
     # ADITIVO no FIM do NamedTuple: não altera nenhum índice existente; lido sempre por NOME (getattr).
     dados_graphhopper: str = ""
 
+    # [VALHALLA-PARIDADE - 263ª geração] Dados PRÓPRIOS do Valhalla (paridade com Google/OSRM/GraphHopper), no
+    # MESMO formato compacto 'km‖tempo_min‖balsa‖link_maps‖geo_poly'. Vazio quando o Valhalla não respondeu.
+    # ADITIVO no FIM do NamedTuple: não altera nenhum índice existente; lido sempre por NOME (getattr).
+    dados_valhalla: str = ""
+
 def _montar_comparativo_provedores(km_g, tempo_g, km_o, tempo_o, fonte_vencedora):
     """[COMP-PROV - 21ª geração] Codifica os dados de comparação entre Google e OSRM
     num formato compacto e à prova de parsing (sem JSON, sem caracteres problemáticos):
@@ -4436,6 +4505,38 @@ def _montar_dados_graphhopper(km, tempo_min, balsa, link_maps, geo_poly):
 
 def _parsear_dados_graphhopper(s):
     """[GRAPHHOPPER-PARIDADE - 220ª geração] Decodifica os dados do GraphHopper. Retorna dict ou None se
+    indisponível/malformado. Robusto a campos vazios."""
+    if not s or "‖" not in s:
+        return None
+    _p = s.split("‖")
+    if len(_p) < 4:
+        return None
+    try:
+        _km = float(_p[0]) if _p[0] else None
+        if _km is None or _km <= 0:
+            return None
+        return {
+            "km": _km,
+            "tempo_min": _p[1],
+            "balsa": _p[2] if len(_p) > 2 else "",
+            "link_maps": _p[3] if len(_p) > 3 else "",
+            "geo_poly": _p[4] if len(_p) > 4 else "",
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def _montar_dados_valhalla(km, tempo_min, balsa, link_maps, geo_poly):
+    """[VALHALLA-PARIDADE - 263ª geração] Codifica os dados PRÓPRIOS do Valhalla para exibição em paridade com
+    Google/OSRM/GraphHopper. Mesmo separador '‖' e formato dos dados do GraphHopper:
+    'km‖tempo_min‖balsa‖link_maps‖geo_poly'. Campos ausentes viram ''."""
+    def _f(v):
+        return str(v) if v is not None and v != "" else ""
+    return f"{_f(km)}‖{_f(tempo_min)}‖{_f(balsa)}‖{_f(link_maps)}‖{_f(geo_poly)}"
+
+
+def _parsear_dados_valhalla(s):
+    """[VALHALLA-PARIDADE - 263ª geração] Decodifica os dados do Valhalla. Retorna dict ou None se
     indisponível/malformado. Robusto a campos vazios."""
     if not s or "‖" not in s:
         return None
@@ -10273,6 +10374,12 @@ NOVAS_COLUNAS_PADRAO = [
     'Score Final Global', 'Status da Rota'
 ]
 
+# [PLANILHA-HIBRIDA - 263ª geração] Limiar (nº de municípios alocados) abaixo do qual a planilha .xlsx da
+# Alocação é gerada AUTOMATICAMENTE ao finalizar (conveniência para estudos pequenos — o pico de memória do
+# .xlsx é seguro nesse tamanho). Acima do limiar, a planilha permanece 100% SOB DEMANDA (mantém a blindagem
+# anti-OOM da 261ª para estudos grandes/nacionais). Ajustável conforme a memória do ambiente.
+_LIMITE_PLANILHA_AUTO = 600
+
 COLUNAS_NUMERICAS_PADRAO = [
     'Distancia', 'Linha Reta', 'Score da Rota', 'Score Num Origem',
     'Score Num Destino', 'Lat Origem', 'Lon Origem', 'Lat Destino',
@@ -10771,6 +10878,26 @@ def _throttle_valhalla():
     if _espera > 0:
         time.sleep(_espera)
     _VALHALLA_ULTIMO = time.time()
+
+def _valhalla_instancia_propria():
+    """[VALHALLA-PEER - 263ª geração] True se VALHALLA_URL aponta para uma instância PRÓPRIA (não a pública do
+    FOSSGIS). Numa instância própria NÃO há fair-use a respeitar → o Valhalla roda em TODA rota, em paralelo,
+    sem throttle e sem depender do toggle — exatamente como o OSRM/GraphHopper. Na pública, continua opt-in."""
+    try:
+        return "openstreetmap.de" not in VALHALLA_URL.lower()
+    except Exception:
+        return False
+
+def _valhalla_ativo():
+    """[VALHALLA-PEER - 263ª geração] O Valhalla participa do roteamento quando: (a) há instância PRÓPRIA
+    configurada (sempre ligado, peer completo como o OSRM), OU (b) o usuário ligou o toggle 'usar_valhalla'
+    (instância pública — opt-in por causa do fair-use ≤1 req/s). Desligado → None → contendor idêntico."""
+    try:
+        if _valhalla_instancia_propria():
+            return True
+    except Exception:
+        pass
+    return _ler_flag_runtime('usar_valhalla')
 
 # [NOMINATIM-THROTTLE - 33ª geração] Rate limiter DELTA-BASED para o Nominatim.
 # GARGALO: a política do Nominatim exige no máximo 1 req/s. Antes, cada chamada dormia
@@ -19322,6 +19449,8 @@ def _motor_curto(fonte_rota):
         return "Google"
     if "GRAPHHOPPER" in _f:
         return "GraphHopper"
+    if "VALHALLA" in _f:
+        return "Valhalla"
     if "ORS" in _f or "OPENROUTE" in _f:
         return "ORS"
     if "FOSSGIS" in _f:
@@ -26166,8 +26295,7 @@ def API_Valhalla_Routing(lat_o, lon_o, lat_d, lon_d):
         return None
     start_t = time.time()
     try:
-        def _call_valhalla():
-            _throttle_valhalla()   # ≤1 req/s (fair-use FOSSGIS); numa instância própria só serializa
+        def _http_valhalla():
             _payload = {
                 "locations": [{"lat": float(lat_o), "lon": float(lon_o)},
                               {"lat": float(lat_d), "lon": float(lon_d)}],
@@ -26178,7 +26306,13 @@ def API_Valhalla_Routing(lat_o, lon_o, lat_d, lon_d):
                      "X-Client-Id": "motor-logistico-exames"}
             return session.get(f"{VALHALLA_URL}/route", params={"json": json.dumps(_payload)},
                                headers=_hdrs, timeout=(3.05, 10)).json()
-        _j = FILA_VALHALLA.submit(_call_valhalla).result()
+        if _valhalla_instancia_propria():
+            _j = _http_valhalla()          # instância PRÓPRIA: direto, em paralelo, SEM throttle (como o OSRM)
+        else:
+            def _call_pub():
+                _throttle_valhalla()       # instância PÚBLICA: ≤1 req/s serializado (fair-use FOSSGIS)
+                return _http_valhalla()
+            _j = FILA_VALHALLA.submit(_call_pub).result()
         _trip = _j.get("trip") if isinstance(_j, dict) else None
         if not _trip or _trip.get("status") != 0:
             registrar_telemetria("VALHALLA", False, time.time() - start_t)
@@ -28720,6 +28854,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     _motores_resultados = {"OSRM": res_osrm}
     _res_gh = None  # [GRAPHHOPPER-PARIDADE - 220ª] garante escopo mesmo quando o guard de coordenada não entra
     _dados_gh_str = ""  # [GRAPHHOPPER-PARIDADE - 220ª] dados próprios do GraphHopper p/ paridade (default vazio)
+    _res_valhalla = None  # [VALHALLA-PARIDADE - 263ª] garante escopo do resultado do Valhalla fora do guard
+    _dados_vlh_str = ""  # [VALHALLA-PARIDADE - 263ª] dados próprios do Valhalla p/ paridade (default vazio)
     if lat_o != 0.0 and lat_d != 0.0:
         # [AUDITORIA-199-B - revisão crítica] Só consulta motores COM CHAVE se a chave existir. O usuário
         # decidiu NÃO usar chave; sem esta guarda, GraphHopper/ORS eram chamados a cada rota só para retornar
@@ -28758,17 +28894,31 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         # idêntico ao atual (não-regressão). Com VALHALLA_URL apontando p/ instância própria, roda sem throttle.
         _res_valhalla = None
         try:
-            if _ler_flag_runtime('usar_valhalla'):
+            if _valhalla_ativo():
                 _res_valhalla = API_Valhalla_Routing(lat_o, lon_o, lat_d, lon_d)
         except Exception:
             _res_valhalla = None
+        # [VALHALLA-PARIDADE - 263ª geração] Captura os dados PRÓPRIOS do Valhalla (km/tempo/balsa/link/geometria)
+        # para exibir em paridade com Google/OSRM/GraphHopper e na planilha — independe de quem vence. O traçado
+        # real do Valhalla é desenhado no mapa Leaflet do app a partir da geometria; o link é navegação por
+        # coordenadas (padrão já usado no app, sempre válido). Defensivo: qualquer falha → string vazia.
+        try:
+            if _res_valhalla and _res_valhalla[0] and float(_res_valhalla[0]) > 0:
+                _vlh_km = float(_res_valhalla[0])
+                _vlh_tmin = _res_valhalla[1] if len(_res_valhalla) > 1 else None
+                _vlh_bal = _res_valhalla[2] if len(_res_valhalla) > 2 else "Não"
+                _vlh_geo = _res_valhalla[4] if len(_res_valhalla) > 4 else ""
+                _vlh_link = f"https://www.google.com/maps/dir/?api=1&origin={lat_o},{lon_o}&destination={lat_d},{lon_d}"
+                _dados_vlh_str = _montar_dados_valhalla(round(_vlh_km, 2), _vlh_tmin, _vlh_bal, _vlh_link, _vlh_geo)
+        except Exception:
+            _dados_vlh_str = ""
         # só registra motores que REALMENTE foram consultados (evita entradas mortas no consenso/telemetria)
         if _res_gh is not None or GRAPHHOPPER_API_KEY:
             _motores_resultados["GRAPHHOPPER"] = _res_gh
         if _res_ors is not None or ORS_API_KEY:
             _motores_resultados["ORS"] = _res_ors
         _motores_resultados["OSRM_FOSSGIS"] = _res_osrm2
-        if _res_valhalla is not None or _ler_flag_runtime('usar_valhalla'):
+        if _res_valhalla is not None or _valhalla_ativo():
             _motores_resultados["VALHALLA"] = _res_valhalla
         # [CONSENSO-MOTORES - 194ª geração] Consenso/outliers/confiabilidade entre TODOS os motores que
         # responderam (inclui o Google já consultado). Descarta automaticamente o absurdo ("18 km vs 430 km").
@@ -29153,7 +29303,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 link_embed_comparativo=link_embed_comparativo,
                 link_rota_comparativo=link_rota_comparativo,
                 auditoria_motores=auditoria_motores,
-                dados_graphhopper=_dados_gh_str
+                dados_graphhopper=_dados_gh_str,
+                dados_valhalla=_dados_vlh_str
             )
             CACHE_L1_ROTAS[chave_rota_cache] = retorno
             _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
@@ -29211,7 +29362,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         xai_origem=xai_o, xai_destino=xai_d, motivo_roteamento=motivo_fallback,
         link_embed=link_embed_geodesico, status_linha_reta=status_linha_reta,
         auditoria_motores=auditoria_motores,
-        dados_graphhopper=_dados_gh_str
+        dados_graphhopper=_dados_gh_str,
+        dados_valhalla=_dados_vlh_str
     )
     CACHE_L1_ROTAS[chave_rota_cache] = retorno
     _cache_set_seguro(cache_rotas, chave_rota_cache, retorno, expire=2592000)
@@ -31588,6 +31740,26 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
                             linha_dict['Tempo GraphHopper (min)'] = "N/A"
                             linha_dict['Balsa GraphHopper'] = "N/A"
                             linha_dict['Link Rota GraphHopper'] = "N/A"
+                        # [VALHALLA-PARIDADE - 263ª geração] Colunas PRÓPRIAS do Valhalla na planilha, em paridade
+                        # com Google/OSRM/GraphHopper (valores que o Valhalla encontrou para esta rota).
+                        try:
+                            _vlh_row = _parsear_dados_valhalla(res[42]) if len(res) > 42 and res[42] else None
+                        except Exception:
+                            _vlh_row = None
+                        if _vlh_row:
+                            linha_dict['Distancia Valhalla (km)'] = _vlh_row.get('km', "N/A")
+                            _vlhtm = _vlh_row.get('tempo_min', "")
+                            try:
+                                linha_dict['Tempo Valhalla (min)'] = int(float(_vlhtm)) if _vlhtm not in ("", None) else "N/A"
+                            except (ValueError, TypeError):
+                                linha_dict['Tempo Valhalla (min)'] = "N/A"
+                            linha_dict['Balsa Valhalla'] = _vlh_row.get('balsa', "Não") or "Não"
+                            linha_dict['Link Rota Valhalla'] = _vlh_row.get('link_maps', "N/A") or "N/A"
+                        else:
+                            linha_dict['Distancia Valhalla (km)'] = "N/A"
+                            linha_dict['Tempo Valhalla (min)'] = "N/A"
+                            linha_dict['Balsa Valhalla'] = "N/A"
+                            linha_dict['Link Rota Valhalla'] = "N/A"
                         linha_dict['Diferença Absoluta (km)'] = _cons.get('divergencia_km') if _cons.get('divergencia_km') is not None else "N/A"
                         linha_dict['Diferença (%)'] = _cons.get('divergencia_pct') if _cons.get('divergencia_pct') is not None else "N/A"
                         linha_dict['Classificação da Divergência'] = _cons.get('divergencia_classificacao') if _cons.get('divergencia_classificacao') else "N/A"
@@ -33953,7 +34125,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "262"
+_VERSAO_APP = "264"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -35273,6 +35445,46 @@ if _secao == _SECOES[0]:   # tab_individual
                         st.caption("O **GraphHopper** participa da disputa pela menor rota em igualdade com Google e "
                                    "OSRM. Estes são os valores **dele** — medidos, não estimados.")
 
+                # [VALHALLA-PARIDADE-EXIBIÇÃO - 264ª geração] Seção "Rota do Valhalla" no Validador Rápido, em
+                # paridade com Google/OSRM/GraphHopper: lê os dados PRÓPRIOS do Valhalla (campo dados_valhalla,
+                # índice 42). Só aparece quando o Valhalla respondeu. Espelha a seção do GraphHopper acima.
+                try:
+                    _vlh_raw_vr = res_ind[42] if len(res_ind) > 42 and res_ind[42] else None
+                    _vlh_bloco_vr = _parsear_dados_valhalla(_vlh_raw_vr) if _vlh_raw_vr else None
+                except Exception:
+                    _vlh_bloco_vr = None
+                if _vlh_bloco_vr and _vlh_bloco_vr.get("km") is not None:
+                    with st.expander("🧭 Rota do Valhalla (motor sem chave, em paridade)", expanded=False):
+                        _vld_vr = _vlh_bloco_vr.get("km")
+                        _vlt_vr = _vlh_bloco_vr.get("tempo_min")
+                        _vlb_vr = _vlh_bloco_vr.get("balsa")
+                        _vv1, _vv2, _vv3 = st.columns(3)
+                        try:
+                            _vv1.metric("Distância · Valhalla", f"{float(_vld_vr):.2f} km")
+                        except (ValueError, TypeError):
+                            _vv1.metric("Distância · Valhalla", f"{_vld_vr} km")
+                        try:
+                            _vlt_vr_i = int(float(_vlt_vr)) if _vlt_vr not in (None, "") else None
+                            _vv2.metric("Tempo", ("—" if _vlt_vr_i is None else
+                                                  (f"{_vlt_vr_i} min" if _vlt_vr_i < 60 else f"{_vlt_vr_i//60} h {_vlt_vr_i%60} min")))
+                        except (ValueError, TypeError):
+                            _vv2.metric("Tempo", "—")
+                        _vv3.metric("Balsa", _vlb_vr or "Não")
+                        # comparação Valhalla × Google (divergência), como se faz p/ OSRM e GraphHopper
+                        try:
+                            if _comp and _comp.get("km_google") is not None:
+                                _mdv_vr = _metricas_divergencia(_comp["km_google"], float(_vld_vr))
+                                if _mdv_vr:
+                                    st.caption(f"↔️ Divergência Valhalla × Google: **{_mdv_vr['abs_km']:.1f} km** "
+                                               f"({_mdv_vr['pct']:.1f}%).")
+                        except Exception:
+                            pass
+                        if _vlh_bloco_vr.get("link_maps"):
+                            st.markdown(f"🧭 [Abrir o trajeto no mapa (navegação)]({_vlh_bloco_vr['link_maps']})")
+                        st.caption("O **Valhalla** (open-source, dados OSM) participa da disputa pela menor rota em "
+                                   "igualdade com Google, OSRM e GraphHopper. Estes são os valores **dele** — medidos, "
+                                   "não estimados. Numa instância própria, participa de toda rota como o OSRM.")
+
                 # nacional (rodoviária SEDE-a-SEDE) por par de Códigos IBGE. GATED pela flag + base
                 # disponível — não aparece enquanto o DistBrasil não estiver configurado (impacto zero).
 
@@ -35482,12 +35694,14 @@ if _secao == _SECOES[0]:   # tab_individual
                 _fonte_up = str(_fonte_rota_ui).upper()
                 _eh_osrm_ui = "OSRM" in _fonte_up
                 _eh_contendor_ui = (not _eh_geodesico_ui) and any(
-                    _m in _fonte_up for _m in ("OSRM", "GRAPHHOPPER", "ORS"))
+                    _m in _fonte_up for _m in ("OSRM", "GRAPHHOPPER", "ORS", "VALHALLA"))
                 # nome do motor vencedor para rotular corretamente (Google, OSRM, GraphHopper, ...)
                 if _eh_geodesico_ui:
                     _nome_vencedor_ui = "Projeção Geodésica"
                 elif "GRAPHHOPPER" in _fonte_up:
                     _nome_vencedor_ui = "GraphHopper"
+                elif "VALHALLA" in _fonte_up:
+                    _nome_vencedor_ui = "Valhalla"
                 elif "OSRM" in _fonte_up:
                     _nome_vencedor_ui = "OSRM"
                 elif "ORS" in _fonte_up or "OPENROUTE" in _fonte_up:
@@ -35697,6 +35911,58 @@ if _secao == _SECOES[0]:   # tab_individual
                             st.markdown(f"🧭 [Abrir esta rota no mapa do GraphHopper]({_gh['link_maps']})")
                         st.caption("ℹ️ O **GraphHopper** é um motor de roteamento com chave que participa da disputa pela menor rota "
                                    "viária, em igualdade com Google e OSRM. Estes são os valores que **ele** encontrou para esta rota.")
+                # [VALHALLA-PARIDADE-EXIBIÇÃO - 264ª geração] Seção do Valhalla em PARIDADE com Google/OSRM/GraphHopper:
+                # valores próprios (km, tempo, balsa) + mapa da geometria PRÓPRIA (Leaflet autocontido) + link de
+                # navegação. Só aparece quando o Valhalla respondeu. Lê o campo dados_valhalla (índice 42) — o mesmo
+                # que alimenta as colunas da planilha. Aditivo, mesmo padrão do bloco do GraphHopper acima.
+                try:
+                    _vlh_raw = res_ind[42] if len(res_ind) > 42 else ""
+                    _vlh = _parsear_dados_valhalla(_vlh_raw) if _vlh_raw else None
+                except Exception:
+                    _vlh = None
+                if _vlh:
+                    st.write("")
+                    with st.container(border=True):
+                        st.markdown("##### 🧭 Rota do **Valhalla** _(motor sem chave, em paridade)_")
+                        _vlc1, _vlc2, _vlc3 = st.columns(3)
+                        _vl_tmin_txt = _vlh.get("tempo_min", "")
+                        try:
+                            _vl_tmin_i = int(float(_vl_tmin_txt)) if _vl_tmin_txt not in ("", None) else None
+                            _vl_tempo_fmt = ("—" if _vl_tmin_i is None else
+                                             (f"{_vl_tmin_i} min" if _vl_tmin_i < 60 else f"{_vl_tmin_i // 60} h {_vl_tmin_i % 60} min"))
+                        except (ValueError, TypeError):
+                            _vl_tempo_fmt = "—"
+                        _vlc1.metric("Distância (Valhalla)", f"{_vlh['km']:.1f} km",
+                                     help="Distância viária calculada pelo motor Valhalla (open-source, dados OSM) para esta mesma origem e destino.")
+                        _vlc2.metric("Tempo estimado", _vl_tempo_fmt,
+                                     help="Tempo de percurso estimado pelo Valhalla.")
+                        _vlc3.metric("Travessia por balsa", _vlh.get("balsa", "Não") or "Não",
+                                     help="Se a rota do Valhalla envolve travessia fluvial/balsa.")
+                        # mapa da geometria PRÓPRIA do Valhalla (Leaflet autocontido, mesma abordagem do OSRM/GraphHopper)
+                        _vl_geo = _vlh.get("geo_poly", "")
+                        _vl_mapa_ok = False
+                        if _vl_geo:
+                            try:
+                                _vl_html_mapa = _gerar_mapa_leaflet_rota(
+                                    _vl_geo, float(res_ind[19]), float(res_ind[20]),
+                                    float(res_ind[21]), float(res_ind[22]),
+                                    nome_origem=str(res_ind[10]) if len(res_ind) > 10 else "",
+                                    nome_destino=str(res_ind[16]) if len(res_ind) > 16 else "",
+                                    distancia_km=f"{_vlh['km']:.1f}", tempo_str=_vl_tempo_fmt,
+                                    provedor="Valhalla", cor="#0891b2") if "_gerar_mapa_leaflet_rota" in globals() else ""
+                                if _vl_html_mapa:
+                                    components.html(_vl_html_mapa, height=420, scrolling=False)
+                                    _vl_mapa_ok = True
+                                    st.caption("🗺️ Mapa: **geometria exata** da rota calculada pelo Valhalla.")
+                            except Exception:
+                                _vl_mapa_ok = False
+                        if not _vl_mapa_ok:
+                            st.caption("🗺️ O Valhalla retornou distância e tempo; o traçado detalhado pode não estar disponível para esta rota.")
+                        if _vlh.get("link_maps"):
+                            st.markdown(f"🧭 [Abrir o trajeto no mapa (navegação por coordenadas)]({_vlh['link_maps']})")
+                        st.caption("ℹ️ O **Valhalla** é um motor de roteamento sem chave (open-source, dados OSM) que participa da disputa "
+                                   "pela menor rota viária, em igualdade com Google, OSRM e GraphHopper. Numa instância própria, participa "
+                                   "de toda rota como o OSRM. Estes são os valores que **ele** encontrou para esta rota.")
             else:
                 st.error("Falha na validação de consistência geodésica unificada.")
         else:
@@ -36239,6 +36505,67 @@ if _secao == _SECOES[1]:   # tab_processamento
                 _tempo_lote = st.session_state['lote_tempo_total']
                 _df_fin = st.session_state['df_processado']
                 st.success("✨ Processamento em lote concluído com êxito! Todos os registros foram processados automaticamente.")
+                # [STORYTELLING-LOTE - 263ª geração] Narrativa no TOPO do resultado do Lote: conta a "história" do
+                # estudo em prosa corrida (não tabela), antes dos números do Resumo Executivo. Reusa EXATAMENTE as
+                # mesmas regras métricas do Resumo (distância, regra de "medido vs estimado", balsa, sinuosidade)
+                # para nunca contradizê-lo. Cada frase é defensiva (só entra se a coluna existir); qualquer erro →
+                # o bloco inteiro some, sem quebrar a aba. Aditivo e isolado.
+                try:
+                    _st_partes = []
+                    _st_n = len(_df_fin)
+                    _st_dist = pd.to_numeric(_df_fin['Distancia'], errors='coerce') if 'Distancia' in _df_fin.columns else None
+                    _st_reta = pd.to_numeric(_df_fin['Linha Reta'], errors='coerce') if 'Linha Reta' in _df_fin.columns else None
+                    _st_partes.append(f"Este lote consolidou **{_st_n:,} rota(s)** (origem→destino).")
+                    if _st_dist is not None:
+                        _dv = _st_dist.dropna(); _dv = _dv[_dv > 0]
+                        if len(_dv) >= 1:
+                            _st_partes.append(
+                                f"A distância viária média é de **{_dv.mean():.0f} km**"
+                                + (f", com metade das rotas até **{_dv.median():.0f} km**" if len(_dv) >= 3 else "")
+                                + ".")
+                    if 'Fonte da Rota' in _df_fin.columns:
+                        _st_fs = _df_fin['Fonte da Rota'].astype(str).str.strip()
+                        _st_fs = _st_fs[(_st_fs != "") & (_st_fs.str.lower() != "nan")]
+                        _st_nt = len(_st_fs)
+                        if _st_nt:
+                            _st_mask_est = _st_fs.str.lower().str.contains("estima|geodés|geodes|reta", regex=True)
+                            _st_ne = int(_st_mask_est.sum())
+                            _st_partes.append(
+                                f"**{(100.0 * (_st_nt - _st_ne) / _st_nt):.0f}%** das rotas são medidas por estrada "
+                                f"(rota viária real); o restante é estimativa geodésica, usada quando nenhum motor respondeu.")
+                            try:
+                                _st_mot = _st_fs[~_st_mask_est].map(_motor_curto)
+                                if len(_st_mot):
+                                    _st_partes.append(f"O motor que mais venceu rotas foi o **{_st_mot.value_counts().idxmax()}**.")
+                            except Exception:
+                                pass
+                    if _st_dist is not None and _st_dist.notna().any():
+                        try:
+                            _st_idx = _st_dist.idxmax()
+                            _st_col = next((_c for _c in ('Municipio Origem', 'Municipio Destino', 'Municipio') if _c in _df_fin.columns), None)
+                            _st_kmx = float(_st_dist.loc[_st_idx])
+                            if _st_col and _st_kmx > 0:
+                                _st_mx = str(_df_fin.loc[_st_idx, _st_col]).strip()
+                                if _st_mx and _st_mx.lower() != "nan":
+                                    _st_partes.append(f"O deslocamento mais longo é o de **{_st_mx}**, a **{_st_kmx:.0f} km**.")
+                        except Exception:
+                            pass
+                    if 'Balsas' in _df_fin.columns:
+                        _st_nb = int(_df_fin['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1']).sum())
+                        if _st_nb > 0:
+                            _st_partes.append(f"**{_st_nb}** trajeto(s) dependem de **balsa** no percurso.")
+                    if _st_dist is not None and _st_reta is not None and float(_st_reta.sum()) > 0:
+                        _st_partes.append(
+                            f"Na média, as rotas são **{(float(_st_dist.sum()) / float(_st_reta.sum())):.2f}×** "
+                            f"mais longas que a linha reta (sinuosidade viária).")
+                    if len(_st_partes) >= 2:
+                        with st.container(border=True):
+                            st.markdown("#### 📖 A história deste lote")
+                            st.markdown(" ".join(_st_partes))
+                            st.caption("Resumo em linguagem corrida do que o lote revela — os números detalhados e os "
+                                       "gráficos vêm logo abaixo.")
+                except Exception:
+                    pass
                 # [FASE2-RESUMO-LOTE - 184ª geração] RESUMO EXECUTIVO agregado do lote (KPIs do RESULTADO — não
                 # da performance): a resposta em 5 segundos no topo, antes do detalhamento. Defensivo: só mostra
                 # cada métrica se a coluna existir; qualquer erro → silencioso (não quebra a aba). Reusa o
@@ -38152,8 +38479,23 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 # (como o relatório HTML já é). topk/resultados/params/mcda ficam em sessão para a geração sob
                 # demanda — memória modesta (dict de rotas), muito menor que o pico de construção do .xlsx.
                 st.session_state['alo_resultado_pronto'] = True
-                st.session_state['alo_fase'] = 'concluido'
-                st.session_state.pop('alo_em_andamento', None)
+                # [PLANILHA-HIBRIDA - 263ª geração] Estudo PEQUENO (≤ _LIMITE_PLANILHA_AUTO municípios): gera a
+                # planilha automaticamente (dispara a FASE 3b já na próxima passada) — conveniência sem clique, pois
+                # o pico de memória do .xlsx é seguro nesse tamanho. Estudo GRANDE/nacional: mantém 100% sob demanda
+                # (blindagem anti-OOM da 261ª intacta). Defensivo: sem tamanho → sob demanda (caminho seguro).
+                _df_proc_hib = st.session_state.get('df_processado')
+                try:
+                    _n_alo_hib = len(_df_proc_hib) if _df_proc_hib is not None else 0
+                except Exception:
+                    _n_alo_hib = 0
+                if 0 < _n_alo_hib <= _LIMITE_PLANILHA_AUTO:
+                    st.session_state['alo_planilha_auto'] = True     # origem automática (para o texto de exibição)
+                    st.session_state['alo_em_andamento'] = True
+                    st.session_state['alo_fase'] = 'gerar_planilha'  # pequeno → auto-gera (FASE 3b na próxima passada)
+                else:
+                    st.session_state.pop('alo_planilha_auto', None)
+                    st.session_state['alo_fase'] = 'concluido'       # grande → sob demanda (blindagem 261ª)
+                    st.session_state.pop('alo_em_andamento', None)
                 st.rerun()
 
         # ---- FASE 3b: GERAÇÃO DA PLANILHA SOB DEMANDA (só roda quando o usuário pede o arquivo; nunca automático) ----
@@ -39511,6 +39853,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     file_name="matriz_alocacao_competitiva.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True)
+                if st.session_state.get('alo_planilha_auto'):
+                    st.caption("📊 Estudo pequeno: a planilha completa foi gerada **automaticamente** ao finalizar. "
+                               "(Estudos grandes/nacionais permanecem sob demanda, para manter a finalização "
+                               "instantânea e à prova de travamentos.)")
             elif st.session_state.get('alo_planilha_erro'):
                 st.warning("⚠️ A planilha (.xlsx) não pôde ser gerada — mas seus **resultados estão completos "
                            "acima** e o **relatório HTML** continua disponível. Você pode tentar de novo:")
