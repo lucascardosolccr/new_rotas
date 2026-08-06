@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.23
+# VERSÃO: 3.25
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,55 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.25 (262ª geração) → 🧭 VALHALLA COMO 3º MOTOR KEYLESS DO CONSENSO VIÁRIO [VALHALLA]
+#     PEDIDO: recuperar a participação do Google (hoje bloqueado no scraper interno) via VPN/proxy rotativo +
+#     fingerprint, E integrar o Valhalla ao consenso. DECISÃO HONESTA sobre a 1ª parte: NÃO implementada a
+#     camada de evasão (VPN/proxy residencial/spoof de TLS-fingerprint) — seu propósito é contornar o bloqueio
+#     anti-bot do Google (violação de ToS + circunvenção de proteção técnica), é uma corrida armamentista que
+#     se perde, gera custo/risco jurídico às instituições de exame e apoia-se numa fonte adversarial e instável.
+#     O app JÁ raspa o endpoint interno /maps/preview/directions (por isso foi bloqueado); escalar evasão é o
+#     caminho errado. Via LÍCITA do Google já existe no código: API_Google_Directions_Oficial (Routes API — só
+#     precisa de chave gratuita). E o consenso keyless robusto (OSRM+Valhalla+GraphHopper+ORS) torna o Google
+#     dispensável. 2ª parte IMPLEMENTADA: Valhalla (open-source, dados OSM) entra como 3º motor keyless real,
+#     ESPELHANDO o padrão já provado do OSRM_FOSSGIS (motor público keyless opt-in). Mudanças (todas ADITIVAS):
+#       • Config VALHALLA_URL (secret; padrão = instância pública do FOSSGIS). Para escala NACIONAL, aponte-a
+#         para uma instância PRÓPRIA (self-host Docker — receita no docstring de API_Valhalla_Routing) e rode
+#         sem throttle. Fila FILA_VALHALLA (max_workers=1) + _throttle_valhalla (≤1 req/s, fair-use FOSSGIS).
+#       • Cliente API_Valhalla_Routing(lat_o,lon_o,lat_d,lon_d): GET {VALHALLA_URL}/route?json=... (costing auto,
+#         units km), extrai distância/tempo do PRÓPRIO motor (nunca estimados), converte a geometria polyline
+#         P6→P5 (reusa _decodificar_polyline/_codificar_polyline_de_coords do app), detecta balsa nas manobras,
+#         header identificável (X-Client-Id). Falha/timeout/status≠0 → None. Telemetria "VALHALLA".
+#       • Orquestrador: Valhalla vira mais um voto em _motores_resultados/_todos_motores e nos DOIS laços de
+#         _cands_contendor — disputa a MENOR viária válida exatamente como os demais, com outlier/consenso já
+#         existentes. OPT-IN via _ler_flag_runtime('usar_valhalla') pelo MESMO motivo do OSRM_FOSSGIS (a
+#         instância pública tem fair-use ≤1 req/s → no lote nacional só roda ligado). Desligado → None →
+#         contendor idêntico ao atual (NÃO-REGRESSÃO byte-a-byte). Prioridade de consenso _PRIOR["VALHALLA"]=5.
+#       • Monitor APIs: VALHALLA entra na Tabela Mestre de SLA (_apis_sla) e no painel de participação do
+#         vencedor (_rotulos); o Scorecard por Motor e o _normalizar_motor já o rotulavam. Toggle na barra
+#         lateral ("🧭 3º motor de rota sem chave — Valhalla (consenso OSM)"), com aviso de fair-use/self-host.
+#     RESSALVA HONESTA: o cliente foi escrito conforme a API documentada do Valhalla e VALIDADO isoladamente
+#     (codec P6→P5 confere com o exemplo canônico do Google; parsing OK/balsa/sem-balsa/erro/lixo), mas NÃO foi
+#     testado contra o endpoint real (a rede do ambiente de build é restrita) — convém você validar no seu
+#     ambiente. Invariantes preservados; requirements INALTERADO. Diff = apenas adições do Valhalla + versão.
+#   v3.24 (261ª geração) → 🔒 PLANILHA 100% SOB DEMANDA: BLINDAGEM DEFINITIVA CONTRA OOM [PLANILHA-LAZY]
+#     Continuação da 260ª. Na 260ª a planilha .xlsx passou a ser gerada numa FASE dedicada (rerun próprio),
+#     eliminando o loop de travamento e reduzindo memória. Restava um risco: se a construção pesada da
+#     planilha (∼15 abas + gráficos + loop sobre todos os registros) estourasse a RAM do contêiner, ele
+#     morria e o session_state se perdia. SOLUÇÃO DEFINITIVA: a planilha agora é 100% SOB DEMANDA — a
+#     finalização NUNCA a constrói. Mudanças (o construtor de Excel em si ficou byte-a-byte intocado):
+#       • FASE 3a agora vai DIRETO à exibição (marca alo_resultado_pronto, alo_fase='concluido', encerra
+#         alo_em_andamento) — os resultados aparecem na hora, sem nenhuma construção de arquivo.
+#       • A FASE 3b (o construtor .xlsx da 260ª, idêntico) deixa de ser automática e passa a ser disparada
+#         SÓ pelo botão '📊 Gerar planilha completa (.xlsx)' na exibição — exatamente o padrão sob demanda
+#         que o relatório HTML já usava. A construção pesada só roda no clique explícito do usuário.
+#       • Exibição passa a depender de alo_resultado_pronto (não mais da planilha pronta); download vira
+#         3 estados (pronta→baixar / falhou→aviso+retry / ainda não→gerar). Novo estudo limpa os marcadores.
+#     GARANTIA: a construção pesada do .xlsx NUNCA ocorre na finalização automática — logo o OOM não pode
+#     mais travar o encerramento nem derrubar o contêiner sem ação do usuário. Se a geração sob demanda
+#     falhar, os resultados e o relatório HTML seguem intactos e há retry. topk/resultados/params/mcda ficam
+#     em sessão até a geração (memória modesta) e são liberados no sucesso. Invariantes preservados;
+#     construtor Excel byte-a-byte idêntico à 260ª; requirements INALTERADO. Máquina de estados provada por
+#     simulação (finaliza em ≤2 reruns; nunca constrói planilha sozinha; falha/retry corretos).
 #   v3.23 (260ª geração) → 🛡️ FINALIZAÇÃO DESACOPLADA DA ALOCAÇÃO: FIM DO TRAVAMENTO EM 100% [FINALIZACAO-DESACOPLADA]
 #     SINTOMA (produção): a aba 'Locais de Aplicação' chegava a 100% (todos os registros, ETA 0) e FICAVA
 #     PRESA no painel 'Alocação Contínua em Andamento' — sem botão de download da planilha e sem relatório HTML.
@@ -10582,7 +10631,7 @@ def _capturar_flags_runtime():
     dos toggles. Aqui st.session_state é confiável. Defensivo: qualquer falha deixa o snapshot como está."""
     try:
         _snap = {}
-        for _k in ("google_agressivo", "usar_osrm2", "usar_google_geocode"):
+        for _k in ("google_agressivo", "usar_osrm2", "usar_valhalla", "usar_google_geocode"):
             try:
                 _snap[_k] = bool(st.session_state.get(_k, False))
             except Exception:
@@ -10695,6 +10744,33 @@ def _throttle_osrm2():
     if _espera > 0:
         time.sleep(_espera)
     _OSRM2_ULTIMO = time.time()
+
+# [VALHALLA - 262ª geração] 3º motor viário KEYLESS de consenso (open-source, dados OSM). Por padrão usa o
+# endpoint público do FOSSGIS; para escala NACIONAL, aponte VALHALLA_URL (secret) para a SUA instância
+# self-hosted — assim não há throttle nem fair-use a respeitar. Receita self-host (Docker) no comentário do
+# cliente API_Valhalla_Routing. A instância pública tem a MESMA política de fair-use do OSRM/Nominatim demo →
+# serializado + ≤1 req/s + header identificável (X-Client-Id), IGUAL ao OSRM_FOSSGIS. OPT-IN (usar_valhalla)
+# pelo mesmo motivo: no lote nacional só deve rodar quando o usuário liga conscientemente (ou aponta p/ a
+# própria instância). Self-gated: desligado → None → contendor idêntico ao atual (NÃO-REGRESSÃO byte-a-byte).
+try:
+    VALHALLA_URL = str(st.secrets.get("VALHALLA_URL", "https://valhalla1.openstreetmap.de")).rstrip("/")
+except Exception:
+    VALHALLA_URL = "https://valhalla1.openstreetmap.de"
+
+def _obter_fila_valhalla():
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="valhalla")  # ≤1 req/s (fair-use FOSSGIS)
+FILA_VALHALLA = _obter_fila_valhalla()
+_VALHALLA_INTERVALO = 1.1   # segundos entre inícios de chamada (≤1 req/s + 10% de margem)
+_VALHALLA_ULTIMO = 0.0
+
+def _throttle_valhalla():
+    """Mantém ≤1 req/s no Valhalla público (fair-use FOSSGIS). Serializado por FILA_VALHALLA.
+    Numa instância própria (VALHALLA_URL self-hosted) o throttle apenas serializa, sem prejuízo real."""
+    global _VALHALLA_ULTIMO
+    _espera = _VALHALLA_INTERVALO - (time.time() - _VALHALLA_ULTIMO)
+    if _espera > 0:
+        time.sleep(_espera)
+    _VALHALLA_ULTIMO = time.time()
 
 # [NOMINATIM-THROTTLE - 33ª geração] Rate limiter DELTA-BASED para o Nominatim.
 # GARGALO: a política do Nominatim exige no máximo 1 req/s. Antes, cada chamada dormia
@@ -26059,6 +26135,83 @@ def API_OSRM_FOSSGIS_Routing(lat_o, lon_o, lat_d, lon_d):
     return None
 
 
+def _valhalla_maneuver_balsa(_mnv):
+    """[VALHALLA - 262ª geração] True se a manobra do Valhalla usa balsa (ferry). Robusto a variações da API."""
+    try:
+        if str(_mnv.get("travel_type", "")).lower() == "ferry":
+            return True
+        if _mnv.get("type") in (28, 29):   # kFerryEnter / kFerryExit
+            return True
+        _t = str(_mnv.get("instruction", "")).lower()
+        return "ferry" in _t or "balsa" in _t
+    except Exception:
+        return False
+
+
+def API_Valhalla_Routing(lat_o, lon_o, lat_d, lon_d):
+    """[VALHALLA - 262ª geração] Motor viário KEYLESS de consenso via Valhalla (open-source, dados OSM). Dá
+    uma estimativa viária REAL e independente do OSRM/Google — reforça o consenso "menor viária vence". Retorna
+    a MESMA tupla dos outros motores: (km, min, balsa, n_alt, geometria_poly5, snap). Distância e tempo saem do
+    PRÓPRIO Valhalla (NUNCA estimados); a geometria é convertida de polyline P6→P5 p/ o mapa da app desenhar.
+
+    BACKEND: VALHALLA_URL (secret). Padrão = instância PÚBLICA do FOSSGIS → fair-use (serializado + ≤1 req/s +
+    X-Client-Id), por isso é OPT-IN no lote. Para produção NACIONAL, self-host é o caminho robusto (sem throttle):
+        docker run -dt --name valhalla -p 8002:8002 -v $PWD/valhalla:/custom_files \\
+            ghcr.io/gis-ops/docker-valhalla/valhalla:latest
+      (na 1ª subida ele baixa/monta os tiles a partir de um PBF do Brasil de download.geofabrik.de colocado em
+       ./valhalla/; depois sobe instantâneo) — e configure VALHALLA_URL="http://SEU_HOST:8002".
+
+    Qualquer falha/timeout/status≠0 → None (o consenso segue com os demais motores; NÃO-REGRESSÃO)."""
+    if lat_o == 0.0 or lat_d == 0.0:
+        return None
+    start_t = time.time()
+    try:
+        def _call_valhalla():
+            _throttle_valhalla()   # ≤1 req/s (fair-use FOSSGIS); numa instância própria só serializa
+            _payload = {
+                "locations": [{"lat": float(lat_o), "lon": float(lon_o)},
+                              {"lat": float(lat_d), "lon": float(lon_d)}],
+                "costing": "auto",
+                "directions_options": {"units": "kilometers"},
+            }
+            _hdrs = {"User-Agent": "MotorLogisticoExames/1.0 (roteamento institucional; contato via app)",
+                     "X-Client-Id": "motor-logistico-exames"}
+            return session.get(f"{VALHALLA_URL}/route", params={"json": json.dumps(_payload)},
+                               headers=_hdrs, timeout=(3.05, 10)).json()
+        _j = FILA_VALHALLA.submit(_call_valhalla).result()
+        _trip = _j.get("trip") if isinstance(_j, dict) else None
+        if not _trip or _trip.get("status") != 0:
+            registrar_telemetria("VALHALLA", False, time.time() - start_t)
+            return None
+        _sum = _trip.get("summary") or {}
+        _km = round(float(_sum.get("length", 0.0)), 2)   # units=kilometers → já em km
+        if _km <= 0:
+            registrar_telemetria("VALHALLA", False, time.time() - start_t)
+            return None
+        _tmin = round(float(_sum.get("time", 0.0)) / 60.0)
+        _balsa = "Não"
+        _coords_geojson = []
+        for _leg in (_trip.get("legs") or []):
+            _sh = _leg.get("shape") or ""
+            if _sh:
+                # decodifica P6 → (lat,lon) e inverte p/ [lon,lat] (formato do encoder do app)
+                _coords_geojson.extend([(_ln, _la) for (_la, _ln) in _decodificar_polyline(_sh, 6)])
+            for _mnv in (_leg.get("maneuvers") or []):
+                if _valhalla_maneuver_balsa(_mnv):
+                    _balsa = "Sim"
+        _geo5 = ""
+        try:
+            _geo5 = _codificar_polyline_de_coords(_coords_geojson) if _coords_geojson else ""
+        except Exception:
+            _geo5 = ""
+        registrar_telemetria("VALHALLA", True, time.time() - start_t)
+        return (_km, _tmin, _balsa, 1, _geo5, None)
+    except Exception:
+        pass
+    registrar_telemetria("VALHALLA", False, time.time() - start_t)
+    return None
+
+
 # [TELEMETRIA-MOTORES - 195ª geração] Registro observacional multi-motor por rota (para o dashboard de
 # "observabilidade total" pedido). Buffer circular limitado em cache (persiste entre reruns na sessão),
 # thread-safe, memória limitada (máx. 5000 registros). NÃO influencia decisão nenhuma — só mede.
@@ -26358,7 +26511,7 @@ def _selecionar_vencedor_rota(candidatos, dist_linha_reta, tol=0.04):
                 return _b.strip().lower() in ("sim", "yes", "true", "1")
             return bool(_b)
 
-        _PRIOR = {"GOOGLE": 0, "OSRM": 1, "GRAPHHOPPER": 2, "ORS": 3, "OSRM_FOSSGIS": 4}
+        _PRIOR = {"GOOGLE": 0, "OSRM": 1, "GRAPHHOPPER": 2, "ORS": 3, "OSRM_FOSSGIS": 4, "VALHALLA": 5}
 
         # sinuosidade ANÔMALA = desvio relativo da mediana acima de 25% (só demove geometria destoante;
         # entre candidatos plausíveis, quem decide é a MENOR distância — preserva o princípio do app).
@@ -28600,12 +28753,23 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 _res_osrm2 = API_OSRM_FOSSGIS_Routing(lat_o, lon_o, lat_d, lon_d)
         except Exception:
             _res_osrm2 = None
+        # [VALHALLA - 262ª geração] 3º motor keyless de consenso (Valhalla, dados OSM). OPT-IN pelo mesmo
+        # motivo do OSRM_FOSSGIS (fair-use da instância pública / throttle serial). Desligado → None → contendor
+        # idêntico ao atual (não-regressão). Com VALHALLA_URL apontando p/ instância própria, roda sem throttle.
+        _res_valhalla = None
+        try:
+            if _ler_flag_runtime('usar_valhalla'):
+                _res_valhalla = API_Valhalla_Routing(lat_o, lon_o, lat_d, lon_d)
+        except Exception:
+            _res_valhalla = None
         # só registra motores que REALMENTE foram consultados (evita entradas mortas no consenso/telemetria)
         if _res_gh is not None or GRAPHHOPPER_API_KEY:
             _motores_resultados["GRAPHHOPPER"] = _res_gh
         if _res_ors is not None or ORS_API_KEY:
             _motores_resultados["ORS"] = _res_ors
         _motores_resultados["OSRM_FOSSGIS"] = _res_osrm2
+        if _res_valhalla is not None or _ler_flag_runtime('usar_valhalla'):
+            _motores_resultados["VALHALLA"] = _res_valhalla
         # [CONSENSO-MOTORES - 194ª geração] Consenso/outliers/confiabilidade entre TODOS os motores que
         # responderam (inclui o Google já consultado). Descarta automaticamente o absurdo ("18 km vs 430 km").
         _todos_motores = dict(_motores_resultados)
@@ -28618,13 +28782,13 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         _cands_contendor = []
         _criterio_venc = "menor distância"  # [CRITERIO-VENCEDOR - 234ª] default; atualizado se houver desempate
         for _nome, _res in (("OSRM", res_osrm), ("GRAPHHOPPER", _res_gh), ("ORS", _res_ors),
-                            ("OSRM_FOSSGIS", _res_osrm2)):
+                            ("OSRM_FOSSGIS", _res_osrm2), ("VALHALLA", _res_valhalla)):
             if _res and _viaria_fisicamente_possivel(_res[0], dist_linha_reta) and _nome not in _outliers_rota:
                 _cands_contendor.append((_nome, _res))
         if not _cands_contendor:
             # fail-open: se o filtro de outlier zerou tudo, volta aos válidos sem o filtro (nunca perde rota)
             for _nome, _res in (("OSRM", res_osrm), ("GRAPHHOPPER", _res_gh), ("ORS", _res_ors),
-                                ("OSRM_FOSSGIS", _res_osrm2)):
+                                ("OSRM_FOSSGIS", _res_osrm2), ("VALHALLA", _res_valhalla)):
                 if _res and _viaria_fisicamente_possivel(_res[0], dist_linha_reta):
                     _cands_contendor.append((_nome, _res))
         # [PROTEGE-CANDIDATO - 235ª geração] Remove candidatos com distância SUSPEITAMENTE BAIXA (quase reta,
@@ -32719,6 +32883,24 @@ with st.sidebar:
         st.caption("⚠️ **Mais lento em lote.** O servidor FOSSGIS exige ≤1 requisição/segundo e proíbe uso "
                    "pesado — por isso as chamadas são enfileiradas. Ganho: uma 2ª rota viária real, sem chave, "
                    "para consenso. Se o servidor não responder, o estudo segue com o OSRM primário, sem perda.")
+    # [VALHALLA - 262ª geração] OPT-IN: 3º motor de rota SEM chave (Valhalla, dados OSM, independente do OSRM e
+    # do Google). Reforça o consenso "menor viária vence" com uma 3ª medição real. DESLIGADO por padrão porque
+    # a instância PÚBLICA (FOSSGIS) tem fair-use ≤1 req/s — num lote nacional isso deixa o estudo mais lento.
+    # Para produção, aponte o secret VALHALLA_URL para uma instância própria (self-host Docker) e ligue sem
+    # penalidade. Desligado → não consulta → contendor idêntico ao atual (não-regressão).
+    _vlh_on = st.checkbox("🧭 3º motor de rota sem chave — Valhalla (consenso OSM)", value=False,
+                          key="usar_valhalla",
+                          help="Consulta o Valhalla (motor open-source sobre dados do OpenStreetMap) e usa a "
+                               "MENOR rota viária válida no consenso. Voto adicional independente do OSRM e do "
+                               "Google — nunca a palavra final. Na instância pública é limitado a ≤1 req/s "
+                               "(deixa lotes grandes mais lentos); para produção nacional, configure o secret "
+                               "VALHALLA_URL com a sua própria instância (self-host) e rode sem esse limite.")
+    if _vlh_on:
+        st.caption("⚠️ **Instância pública é limitada.** O Valhalla do FOSSGIS pede ≤1 req/s (chamadas "
+                   "enfileiradas) — bom para estudos menores ou conferência de casos. Ganho: uma rota viária "
+                   "real e independente, sem chave, no consenso. Se não responder, o estudo segue com os "
+                   "demais motores, sem perda. Para lote nacional, use o secret `VALHALLA_URL` apontando à sua "
+                   "instância própria. Acompanhe a participação em **Monitor APIs → linha VALHALLA**.")
     # [GOOGLE-REGRESSAO-FIX - 193ª geração] OPT-IN: restaura a PACIÊNCIA do Google pré-184ª. A 184ª cortou o
     # timeout (15s→4s) e as tentativas (3→1-2) e adicionou o disjuntor — ótimo p/ velocidade, mas foi o que
     # derrubou a participação do Google quando ele está lento/intermitente. Ligado: timeout 12s, 3 tentativas,
@@ -33771,7 +33953,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "260"
+_VERSAO_APP = "262"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -37128,6 +37310,11 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # do st.rerun()). Passa a ser uma FASE time-boxed própria ('geo_destinos'), com
                     # mini-lotes de ~8s + rerun. Os hubs (geralmente poucos) já foram geocodificados.
                     _prep_bar.empty(); _prep_status.empty()
+                    # [PLANILHA-LAZY - 261ª geração] Novo estudo: limpa os marcadores de resultado/planilha da
+                    # rodada anterior para a exibição não mostrar resultados/arquivos antigos enquanto processa.
+                    for _k in ['alo_resultado_pronto', 'alo_planilha_pronta', 'alo_planilha_erro',
+                               'alo_comparacao_estrategias']:
+                        st.session_state.pop(_k, None)
                     st.session_state['alo_em_andamento'] = True
                     st.session_state['alo_fase'] = 'geo_destinos'
                     st.session_state['alo_dests_unicos'] = dests_unicos
@@ -37938,10 +38125,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     ordem_finais_alo.append(c)
                 df_final_alo = df_final_alo.reindex(columns=ordem_finais_alo)
 
-                # [FINALIZACAO-DESACOPLADA - 260ª geração] O DF final está pronto e enriquecido. COMMIT dos
-                # RESULTADOS agora — antes de qualquer geração de arquivo — para que nunca se percam por falha
-                # ou lentidão na planilha. A geração da planilha vira a FASE 3b (rerun dedicado), o que ainda
-                # reduz o pico de memória (os intermediários do enriquecimento são liberados entre reruns).
+                # [FINALIZACAO-DESACOPLADA - 260ª/261ª geração] O DF final está pronto e enriquecido. COMMIT dos
+                # RESULTADOS agora — antes de qualquer geração de arquivo — para que nunca se percam. A geração da
+                # planilha é 100% SOB DEMANDA (FASE 3b, só no clique), o que elimina de vez o risco de OOM na
+                # finalização: a construção pesada do .xlsx nunca roda automaticamente.
                 st.session_state['df_processado'] = df_final_alo
                 st.session_state['alo_tempo_total'] = tempo_alo_segundos
                 st.session_state['alo_linhas'] = len(df_final_alo)
@@ -37960,10 +38147,16 @@ if _secao == _SECOES[2]:   # tab_alocacao
                            'alo_df_dest_cols', 'alo_novas_colunas', 'alo_dests_unicos', 'alo_hubs_validos',
                            'alo_dest_col_name', 'alo_df_dest', 'alo_dest_geo_acc', 'alo_dest_geo_idx']:
                     st.session_state.pop(_k, None)
-                st.session_state['alo_fase'] = 'gerar_planilha'
+                # [PLANILHA-LAZY - 261ª geração] Blindagem definitiva contra OOM: a finalização NUNCA constrói a
+                # planilha. Vamos DIRETO à exibição; a planilha pesada (.xlsx) só é montada sob demanda, no clique
+                # (como o relatório HTML já é). topk/resultados/params/mcda ficam em sessão para a geração sob
+                # demanda — memória modesta (dict de rotas), muito menor que o pico de construção do .xlsx.
+                st.session_state['alo_resultado_pronto'] = True
+                st.session_state['alo_fase'] = 'concluido'
+                st.session_state.pop('alo_em_andamento', None)
                 st.rerun()
 
-        # ---- FASE 3b: GERAÇÃO DA PLANILHA (rerun dedicado — resultados já commitados; falha aqui NÃO trava) ----
+        # ---- FASE 3b: GERAÇÃO DA PLANILHA SOB DEMANDA (só roda quando o usuário pede o arquivo; nunca automático) ----
         if st.session_state.get('alo_em_andamento', False) and st.session_state.get('alo_fase') == 'gerar_planilha':
             with st.container(border=True):
                 st.markdown("#### ✅ Alocação concluída — preparando os arquivos")
@@ -38088,7 +38281,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
             st.session_state['alo_fase'] = 'concluido'
             st.rerun()
         # ---- EXIBIÇÃO DO RESULTADO (após finalização) ----
-        if 'alo_planilha_pronta' in st.session_state and 'df_processado' in st.session_state:
+        # [PLANILHA-LAZY - 261ª geração] Passa a depender de 'alo_resultado_pronto' (marcado na FASE 3a), não
+        # mais da planilha estar pronta — os resultados aparecem na hora; o .xlsx é gerado sob demanda.
+        if st.session_state.get('alo_resultado_pronto') and 'df_processado' in st.session_state:
             if 'alo_tempo_total' in st.session_state:
                 st.success(f"✨ Alocação concluída automaticamente! {st.session_state.get('alo_linhas', 0)} linhas processadas em {_formatar_duracao(st.session_state['alo_tempo_total'])}.")
                 st.session_state.pop('alo_tempo_total', None)
@@ -39304,9 +39499,11 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 st.download_button("⬇️ Baixar relatório HTML (.html)", data=st.session_state['relatorio_html_loc'],
                                    file_name="relatorio_locais_aplicacao.html", mime="text/html",
                                    use_container_width=True, key="dl_relatorio_html_loc")
-            # [FINALIZACAO-DESACOPLADA - 260ª geração] Só oferece o download quando a planilha realmente existe.
-            # Se a geração falhou (sentinela b''), os RESULTADOS acima e o relatório HTML seguem disponíveis —
-            # nada de arquivo vazio — e o usuário pode tentar gerar a planilha de novo sem reprocessar o estudo.
+            # [PLANILHA-LAZY - 261ª geração] A planilha é 100% sob demanda. Três estados possíveis:
+            #  • já gerada  → botão de download direto;
+            #  • falhou     → aviso (resultados/relatório seguem disponíveis) + tentar de novo;
+            #  • ainda não  → botão "Gerar planilha" (a construção pesada só roda aqui, no clique do usuário).
+            # Em todos os casos a geração dispara a FASE 3b (sob demanda), sem reprocessar o estudo.
             if st.session_state.get('alo_planilha_pronta'):
                 st.download_button(
                     label="📥 Baixar Planilha de Alocação Competitiva (.xlsx)",
@@ -39314,15 +39511,26 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     file_name="matriz_alocacao_competitiva.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True)
-            else:
-                st.warning("⚠️ A planilha (.xlsx) não pôde ser gerada nesta execução — mas seus **resultados "
-                           "estão completos acima** e o **relatório HTML** continua disponível. Você pode tentar "
-                           "gerar a planilha novamente (sem reprocessar o estudo):")
+            elif st.session_state.get('alo_planilha_erro'):
+                st.warning("⚠️ A planilha (.xlsx) não pôde ser gerada — mas seus **resultados estão completos "
+                           "acima** e o **relatório HTML** continua disponível. Você pode tentar de novo:")
                 if st.button("🔄 Tentar gerar a planilha novamente", use_container_width=True,
                              key="retry_planilha_alo"):
                     st.session_state['alo_em_andamento'] = True
                     st.session_state['alo_fase'] = 'gerar_planilha'
                     st.rerun()
+            else:
+                if st.button("📊 Gerar planilha completa (.xlsx)", use_container_width=True,
+                             key="gerar_planilha_alo",
+                             help="Monta a planilha competitiva completa (todas as abas analíticas, gráficos "
+                                  "nativos e o índice navegável). A construção pesada roda só agora, quando você "
+                                  "pede o arquivo — por isso os resultados apareceram na hora."):
+                    st.session_state['alo_em_andamento'] = True
+                    st.session_state['alo_fase'] = 'gerar_planilha'
+                    st.rerun()
+                st.caption("📊 A planilha completa é montada **sob demanda**: os resultados e o relatório HTML já "
+                           "estão prontos acima; o .xlsx (pesado) só é gerado quando você clicar — o que mantém a "
+                           "finalização instantânea e à prova de travamentos.")
 
             # [DUPLO-CENARIO-COMPARADOR - 221ª geração] Export do ESTUDO 2 (Puramente Viário) como planilha
             # INDEPENDENTE — recarregável no Comparador de Estudos como base de referência. Só aparece quando
@@ -43416,7 +43624,7 @@ if _secao == _SECOES[10]:   # tab_motores
     st.markdown("#### 📡 Tabela Mestre de SLA e Latência em Tempo Real")
     health_data = []
     
-    _apis_sla = ["GOOGLE_MAPS", "GOOGLE_GEO", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM", "OSRM_FOSSGIS"]
+    _apis_sla = ["GOOGLE_MAPS", "GOOGLE_GEO", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM", "OSRM_FOSSGIS", "VALHALLA"]
     if GRAPHHOPPER_API_KEY:  # [AUDITORIA-199-B] só mostra motores com chave se a chave existir (sem ruído)
         _apis_sla.append("GRAPHHOPPER")
     if ORS_API_KEY:
@@ -43479,7 +43687,7 @@ if _secao == _SECOES[10]:   # tab_motores
         _part_cols = st.columns(max(2, min(5, len(_venc_agg))))
         _ordem = sorted(_venc_agg.items(), key=lambda kv: kv[1], reverse=True)
         _rotulos = {"GOOGLE": "🗺️ Google", "OSRM": "🛣️ OSRM", "OSRM_FOSSGIS": "🧭 OSRM FOSSGIS",
-                    "GRAPHHOPPER": "🚗 GraphHopper", "ORS": "🧭 ORS"}
+                    "GRAPHHOPPER": "🚗 GraphHopper", "ORS": "🧭 ORS", "VALHALLA": "🗺️ Valhalla"}
         for _i, (_mot, _qtd) in enumerate(_ordem):
             _pct = round(100.0 * _qtd / _tot_v, 1)
             _part_cols[_i % len(_part_cols)].metric(_rotulos.get(_mot, _mot), f"{_pct}%", help=f"{_qtd} rotas vencidas")
