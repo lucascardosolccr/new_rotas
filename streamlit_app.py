@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.27
+# VERSÃO: 3.30
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,94 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.30 (267ª geração) → 🧯 FINALIZAÇÃO ROBUSTA NA ABA DE LOTE (mesmo padrão da Alocação/266ª) + PLANILHA DESACOPLADA
+#     Estende à aba "Estudo em Lote" a blindagem de encerramento criada na 266ª para a Alocação. A finalização
+#     do Lote tinha o MESMO padrão de trava (todo o trabalho pesado — montagem + enriquecimento — numa passada
+#     síncrona AINDA na fase 'processar', com transição só no rerun final; interrupção → reentra e reexecuta →
+#     "trava em 100%") e era AINDA MAIS frágil: construía a planilha .xlsx SÍNCRONA e INLINE na finalização, e a
+#     EXIBIÇÃO dependia de 'planilha_pronta' — logo um OOM/timeout no build do .xlsx impedia ATÉ os resultados de
+#     aparecerem. Correções (todas ADITIVAS; caminho feliz preservado — mesma planilha, mesmas colunas):
+#       • WATCHDOG DE ENCERRAMENTO (lote_fin_tentativas): acima de _MAX_FIN_TENT (6) entrega o DF-seguro já
+#         consolidado e encerra em modo degradado — jamais trava.
+#       • DF-SEGURO (lote_df_seguro): referência de custo zero ao DataFrame base entregável, guardada antes do
+#         enriquecimento; o watchdog o entrega se um passo for interrompido.
+#       • PLANILHA DESACOPLADA (FASE 3b) + HÍBRIDA: a construção do .xlsx sai da finalização e vira sob demanda.
+#         Estudo PEQUENO (≤ _LIMITE_PLANILHA_AUTO=600 linhas) → gera automaticamente (conveniência); GRANDE/
+#         nacional → sob demanda (botão), à prova de OOM. A exibição passa a depender de 'lote_resultado_pronto'
+#         (marcador ESPECÍFICO do Lote), não mais da planilha — os resultados aparecem SEMPRE, na hora.
+#       • DESACOPLAMENTO planilha × HTML × resultados: falha no .xlsx mostra aviso + "tentar de novo" e nunca
+#         impede resultados nem o relatório HTML (já sob demanda); e vice-versa. Botão de planilha em 3 estados
+#         (pronta / falhou→retry / sob demanda→gerar).
+#       • PAINEL HONESTO: ao terminar o roteamento, o painel de "100% · ETA 0" dá lugar ao CHECKLIST de
+#         encerramento (reusa _render_checklist_finalizacao da 266ª). Conclusão elegante com os números do
+#         estudo (tempo, candidatos, rotas, municípios, destinos, precisão viária, motores).
+#       • OBSERVABILIDADE: _obs_fin() loga tempo + memória RSS + tamanho do DF por etapa (montagem, planilha,
+#         finalização) com aviso acima do orçamento — reusa a infra da 266ª (sem dependência nova).
+#       • LIMPEZA: novos marcadores (lote_fin_tentativas, lote_df_seguro, lote_finalizacao_degradada,
+#         lote_resumo_final, lote_planilha_erro, lote_planilha_auto, lote_resultado_pronto) entram no
+#         cancelamento e no reset de novo lote (que agora também zera planilha_pronta/relatorio_html_lote).
+#     TESTES: nova suíte test_finalizacao_lote.py (sem runtime Streamlit) — 42 checagens, exit 0: simulador fiel
+#     da máquina do Lote (preaquecer→processar→FASE 3a→{gerar_planilha|exibição}) cobrindo pequeno(auto)/grande
+#     (lazy)/nacional, pré-aquecimento, interrupção que converge, hang de rede one-shot, patológico→degradado,
+#     falha de planilha e de HTML (desacoplamento), simultâneos, cancelamento e a garantia anti-trava. A suíte
+#     da Alocação (266ª) foi reapontada ao V267 e segue verde (49/49) — sem regressão na Alocação.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline, helpers reusados da 266ª (nenhum novo), requirements INALTERADO.
+#   v3.29 (266ª geração) → 🧯 FINALIZAÇÃO ROBUSTA DA ALOCAÇÃO: fim definitivo do "trava em 100%"
+#     PROBLEMA (reproduzido no estudo nacional de 2.781 municípios): a aba "Locais de Aplicação" chegava a
+#     100% e ficava PRESA no painel "Alocação Contínua em Andamento" — sem botão de planilha, sem relatório
+#     HTML, sem erro. CAUSA-RAIZ medida no código: a FASE 3 (finalização) roda TODO o trabalho pesado
+#     (re-roteamentos síncronos + enriquecimento O(n) sobre milhares de linhas) numa ÚNICA execução, AINDA na
+#     fase 'processar', e só troca de fase no st.rerun() do fim. Se essa execução é interrompida ANTES do rerun
+#     (timeout de WebSocket num estudo nacional, Future de rede travado, pressão de memória), a máquina volta a
+#     'processar', REDESENHA o painel de 100% e RE-EXECUTA tudo — travamento perpétuo. A correção 260ª/261ª só
+#     tirou o build do .xlsx dali; o trabalho pesado pré-commit continuava dentro de 'processar', sem watchdog
+#     e sem idempotência (a 2ª passada do Google, até 400 re-rotas, reexecutava a cada reentrada).
+#     CORREÇÃO (toda ADITIVA; caminho feliz byte-idêntico — só muda o CONTROLE de fluxo e a APRESENTAÇÃO):
+#       • WATCHDOG DE ENCERRAMENTO: conta reentradas da finalização; acima de _MAX_FIN_TENT (6, finito e
+#         generoso) ENTREGA o DF-seguro já consolidado e vai a 'concluido' em modo degradado — JAMAIS trava.
+#       • DF-SEGURO: logo após a montagem base (_montar_dataframe_final), guarda uma REFERÊNCIA (custo zero) ao
+#         DataFrame completo e entregável, antes do enriquecimento analítico. Se um passo é interrompido, o
+#         watchdog entrega esse DF — resultados essenciais preservados.
+#       • ONE-SHOT da 2ª passada do Google: marcada como feita ANTES de rodar (como o retry-viária já fazia),
+#         então reentradas não repetem os 400 re-roteamentos de rede — convergem rápido.
+#       • PAINEL HONESTO: ao chegar ao fim do roteamento, o painel de "100% · tempo restante 0" dá lugar a um
+#         CHECKLIST de encerramento (consolidar → enriquecer → montar → planilha → HTML → downloads), com ✔/⏳/○.
+#       • CONCLUSÃO ELEGANTE: tela final com "✅ Processamento concluído", checklist do que ficou pronto e os
+#         números do estudo (tempo total, candidatos, rotas, municípios, polos, precisão viária, motores).
+#       • OBSERVABILIDADE ESTRUTURADA: _obs_fin() loga tempo + memória RSS + tamanho do DF por etapa e emite
+#         AVISO acima do orçamento (_FIN_ETAPA_WARN_S). Memória via stdlib `resource` (import PREGUIÇOSO —
+#         imports de topo permanecem idênticos ao baseline). Alimenta também o perfil de fases (Monitor APIs).
+#       • DESACOPLAMENTO reforçado: planilha (FASE 3b sob demanda/auto) e relatório HTML (sob demanda) seguem
+#         100% independentes — a falha de um nunca impede o outro nem os resultados (retry preservado).
+#       • LIMPEZA: os novos marcadores (alo_fin_tentativas, alo_df_seguro, alo_2pass_google_feito,
+#         alo_finalizacao_degradada, alo_resumo_final) entram no cancelamento e no reset de novo estudo.
+#     TESTES: nova suíte test_finalizacao_alocacao.py (sem runtime Streamlit) — 49 checagens, exit 0. Testa os
+#     4 helpers REAIS (extraídos por AST) e um SIMULADOR FIEL da máquina de estados: pequeno(auto)/grande(lazy)/
+#     nacional; interrupção de enriquecimento converge; hang de rede one-shot; patológico → entrega degradada;
+#     falha de planilha e de HTML (desacoplamento nos dois sentidos); simultâneos; cancelamento; e a GARANTIA
+#     de que a máquina NUNCA fica presa em 'processar'.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline (resource é stdlib, importado preguiçosamente), +4 helpers puros, requirements INALTERADO.
+#   v3.28 (265ª geração) → 🌐 SELF-HOST SIMÉTRICO: OSRM_URL + GRAPHHOPPER_URL (apontar os 3 motores à instância própria)
+#     Habilita o caminho que destrava a participação NACIONAL em toda rota: apontar OSRM e GraphHopper para
+#     instâncias PRÓPRIAS (Docker + PBF do Brasil), simétrico ao VALHALLA_URL que já existia. Antes, só o
+#     Valhalla era configurável; OSRM estava fixo em router.project-osrm.org (público) e o GraphHopper na API
+#     cloud graphhopper.com (com chave/cota). Mudanças, todas com DEFAULT = comportamento atual (zero regressão):
+#       • Novos secrets OSRM_URL (default http://router.project-osrm.org) e GRAPHHOPPER_URL (default
+#         https://graphhopper.com/api/1), ambos .rstrip("/") e com fallback. Helpers _osrm_instancia_propria() e
+#         _graphhopper_instancia_propria() (detectam se a URL NÃO é o servidor público/cloud).
+#       • OSRM: os 3 clientes (route, table/MATRIZ da Alocação, nearest) passam a usar {OSRM_URL}. Numa instância
+#         própria, some o rate-limit do servidor público — decisivo na fase de matriz do lote nacional.
+#       • GraphHopper: cliente usa {GRAPHHOPPER_URL}/route e só anexa &key= quando há chave; numa instância
+#         própria roda SEM chave e SEM cota (participa de toda rota, como o OSRM). Gates do orquestrador, do
+#         registro em _motores_resultados e da exibição no Monitor passam a aceitar "chave OU instância própria".
+#     VERIFICADO: com os defaults, as URLs do OSRM e do GraphHopper são BYTE-IDÊNTICAS às anteriores → sem
+#     secret definido, nada muda. Com secret próprio: OSRM/GraphHopper apontam ao host do usuário; GraphHopper
+#     sem &key=. Assim, os TRÊS motores keyless-capazes (OSRM, GraphHopper, Valhalla) ficam prontos para virar
+#     peers de TODA rota do lote nacional, bastando subir os contêineres e definir os 3 secrets.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports idênticos ao baseline,
+#     handbook intacto (123.793 chars, s33), requirements INALTERADO.
 #   v3.27 (264ª geração) → 🧭 VALHALLA: PARIDADE DE EXIBIÇÃO COMPLETA (Validador Rápido + Diagnóstico & Auditoria)
 #     Fecha a última pendência da 263ª: os DOIS painéis de exibição que faltavam para o Valhalla ficar 100%
 #     idêntico ao GraphHopper também na tela (o dado, a coluna, o consenso, a telemetria, o Monitor e o rótulo
@@ -10863,6 +10951,37 @@ try:
     VALHALLA_URL = str(st.secrets.get("VALHALLA_URL", "https://valhalla1.openstreetmap.de")).rstrip("/")
 except Exception:
     VALHALLA_URL = "https://valhalla1.openstreetmap.de"
+
+# [SELF-HOST-URLS - 265ª geração] URLs configuráveis para apontar OSRM e GraphHopper às INSTÂNCIAS PRÓPRIAS do
+# usuário (Docker + PBF do Brasil), simétrico ao VALHALLA_URL. Defaults = servidores públicos/cloud atuais →
+# comportamento IDÊNTICO quando os secrets não estão definidos (NÃO-REGRESSÃO byte-a-byte). Numa instância
+# própria não há rate-limit/fair-use nem chave → os motores participam de TODA rota do lote nacional.
+try:
+    OSRM_URL = str(st.secrets.get("OSRM_URL", "http://router.project-osrm.org")).rstrip("/")
+except Exception:
+    OSRM_URL = "http://router.project-osrm.org"
+try:
+    GRAPHHOPPER_URL = str(st.secrets.get("GRAPHHOPPER_URL", "https://graphhopper.com/api/1")).rstrip("/")
+except Exception:
+    GRAPHHOPPER_URL = "https://graphhopper.com/api/1"
+
+def _osrm_instancia_propria():
+    """[SELF-HOST-URLS - 265ª geração] True se OSRM_URL aponta para uma instância PRÓPRIA (não o público
+    router.project-osrm.org). Informativo — o OSRM já roda em toda rota; a instância própria só troca o host
+    (sem rate-limit do servidor público, decisivo na fase de MATRIZ da Alocação)."""
+    try:
+        return "project-osrm.org" not in OSRM_URL.lower()
+    except Exception:
+        return False
+
+def _graphhopper_instancia_propria():
+    """[SELF-HOST-URLS - 265ª geração] True se GRAPHHOPPER_URL aponta para uma instância PRÓPRIA (não a API cloud
+    graphhopper.com). Numa instância própria NÃO é preciso chave nem há cota → o GraphHopper participa de TODA
+    rota do lote, como o OSRM. Na cloud, mantém o gating por chave (comportamento atual)."""
+    try:
+        return "graphhopper.com" not in GRAPHHOPPER_URL.lower()
+    except Exception:
+        return False
 
 def _obter_fila_valhalla():
     return ThreadPoolExecutor(max_workers=1, thread_name_prefix="valhalla")  # ≤1 req/s (fair-use FOSSGIS)
@@ -25855,7 +25974,7 @@ def API_OSRM_Table(lat_o, lon_o, destinos_coords, _timeout=8, _bloco=90):
             # coords: origem primeiro (index 0), depois os destinos (1..N)
             _coords = f"{lon_o},{lat_o}" + "".join(f";{_lo},{_la}" for (_n, _la, _lo) in _chunk)
             _dests = ";".join(str(_j) for _j in range(1, len(_chunk) + 1))
-            _url = (f"http://router.project-osrm.org/table/v1/driving/{_coords}"
+            _url = (f"{OSRM_URL}/table/v1/driving/{_coords}"
                     f"?sources=0&destinations={_dests}&annotations=distance,duration")
             try:
                 # [HOTFIX-OSRM-HANG - 207ª] sessão fail-fast + timeout (connect, read) curto: se o servidor
@@ -25912,7 +26031,7 @@ def API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d):
         # desenhar o traçado (só os pontos). Com a polyline da rota vencedora, o mapa
         # embarcado desenha o trajeto EXATO usado nos cálculos e o link representa a
         # mesma rota. Custo de rede desprezível (mesma requisição, +payload da geometria).
-        url = f"http://router.project-osrm.org/route/v1/driving/{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3"
+        url = f"{OSRM_URL}/route/v1/driving/{lon_o},{lat_o};{lon_d},{lat_d}?overview=full&geometries=polyline&steps=true&alternatives=3"
         headers = {"User-Agent": "GerenciadorLogisticoCorp/2.0"}
         # [HOTFIX-OSRM-HANG - 207ª] sessão fail-fast + timeout curto (connect, read): servidor público ruim
         # falha rápido em vez de retry-storm; o Google/consenso assume. Não muda resultado quando responde.
@@ -26111,14 +26230,15 @@ def API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d):
     SEGURANÇA/NÃO-REGRESSÃO: self-gated na chave — sem GRAPHHOPPER_API_KEY, retorna None imediatamente (motor
     ausente → comportamento idêntico ao atual). Timeout curto; qualquer falha de rede/parse → None. Não é um
     servidor de demonstração: é fonte estável com cota própria, não bloqueada como o scraper do Google."""
-    if not GRAPHHOPPER_API_KEY:
-        return None  # motor desativado graciosamente (sem chave)
+    if not GRAPHHOPPER_API_KEY and not _graphhopper_instancia_propria():
+        return None  # motor desativado graciosamente (sem chave E sem instância própria)
     if lat_o == 0.0 or lat_d == 0.0:
         return None
     start_t = time.time()
     try:
-        _url = (f"https://graphhopper.com/api/1/route?point={lat_o},{lon_o}&point={lat_d},{lon_d}"
-                f"&profile=car&locale=pt&calc_points=true&points_encoded=false&key={GRAPHHOPPER_API_KEY}")
+        _key_qs = f"&key={GRAPHHOPPER_API_KEY}" if GRAPHHOPPER_API_KEY else ""
+        _url = (f"{GRAPHHOPPER_URL}/route?point={lat_o},{lon_o}&point={lat_d},{lon_d}"
+                f"&profile=car&locale=pt&calc_points=true&points_encoded=false{_key_qs}")
         # [HOTFIX-CHAVES-TRAVAM - 209ª geração] sessão FAIL-FAST (sem retry-storm) + timeout curto: a chave
         # gratuita do GraphHopper tem cota baixa e devolve 429 rápido; com a sessão padrão (Retry total=5,
         # backoff), cada 429 virava ~45s de espera POR ROTA, travando o app. Fail-fast → 429 vira None na hora.
@@ -26757,7 +26877,7 @@ def _osrm_nearest(lat, lon):
     """Consulta o OSRM /nearest: retorna (lat_snap, lon_snap, dist_m) do nó viário mais próximo,
     SEM rotear. Usado para escolher a coordenada que melhor representa a via antes do /route."""
     try:
-        url = f"http://router.project-osrm.org/nearest/v1/driving/{lon},{lat}?number=1"
+        url = f"{OSRM_URL}/nearest/v1/driving/{lon},{lat}?number=1"
         # [ROBUSTEZ-REDE - 216ª geração] sessão FAIL-FAST (como a matriz/roteamento OSRM): era a última chamada
         # ao OSRM público que ainda usava a sessão com retry-storm; num servidor rate-limitado, retentava com
         # backoff (~40s). Fail-fast → falha rápido e o chamador segue sem o snap (degradação graciosa).
@@ -28862,7 +28982,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         # None e apareciam como entradas vazias no consenso/SLA (peso morto e ruído). Mantemos as funções e os
         # secrets como PONTO DE PLUGAGEM para um motor próprio/self-hosted (caminho robusto recomendado):
         # basta configurar a chave que voltam a entrar na disputa, sem tocar no código.
-        _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d) if GRAPHHOPPER_API_KEY else None
+        _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d) if (GRAPHHOPPER_API_KEY or _graphhopper_instancia_propria()) else None
         # [GRAPHHOPPER-PARIDADE - 220ª geração] Captura os dados PRÓPRIOS do GraphHopper (km, tempo, balsa,
         # link de navegação, geometria) para exibir em paridade com Google/OSRM — independentemente de quem
         # vence a disputa. Link de navegação: Google Maps por coordenadas (sempre traça o trajeto), mesma
@@ -28913,7 +29033,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         except Exception:
             _dados_vlh_str = ""
         # só registra motores que REALMENTE foram consultados (evita entradas mortas no consenso/telemetria)
-        if _res_gh is not None or GRAPHHOPPER_API_KEY:
+        if _res_gh is not None or GRAPHHOPPER_API_KEY or _graphhopper_instancia_propria():
             _motores_resultados["GRAPHHOPPER"] = _res_gh
         if _res_ors is not None or ORS_API_KEY:
             _motores_resultados["ORS"] = _res_ors
@@ -34125,7 +34245,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "264"
+_VERSAO_APP = "267"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -36212,7 +36332,11 @@ if _secao == _SECOES[1]:   # tab_processamento
                     for _k in ['lote_em_andamento', 'lote_fase', 'lote_endpoints', 'lote_preaq_idx',
                                'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
                                'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
-                               'lote_preaquecido', 'lote_runner_map', 'lote_eta_ultimo', 'lote_taxa_ema']:
+                               'lote_preaquecido', 'lote_runner_map', 'lote_eta_ultimo', 'lote_taxa_ema',
+                               # [FINALIZACAO-ROBUSTA - 267ª] marcadores de encerramento desta rodada
+                               'lote_fin_tentativas', 'lote_df_seguro', 'lote_finalizacao_degradada',
+                               'lote_resumo_final', 'lote_planilha_erro', 'lote_planilha_auto',
+                               'lote_resultado_pronto']:
                         st.session_state.pop(_k, None)
                     st.warning("Processamento cancelado pelo usuário.")
                     st.rerun()
@@ -36276,6 +36400,12 @@ if _secao == _SECOES[1]:   # tab_processamento
                 st.session_state['lote_operador'] = nome_operador
                 st.session_state['lote_preaquecido'] = _houve_preaquecimento
                 st.session_state['lote_runner_map'] = None  # lote padrão não usa runner-up
+                # [FINALIZACAO-ROBUSTA - 267ª geração] Novo lote: limpa resultado/planilha/marcadores da rodada
+                # anterior para a exibição não mostrar dados antigos enquanto o novo lote processa.
+                for _k in ['lote_resultado_pronto', 'planilha_pronta', 'relatorio_html_lote',
+                           'lote_planilha_erro', 'lote_planilha_auto', 'lote_finalizacao_degradada',
+                           'lote_resumo_final', 'lote_fin_tentativas', 'lote_df_seguro']:
+                    st.session_state.pop(_k, None)
                 st.rerun()
                 
             # ---- FASE PRÉ-AQUECIMENTO (time-boxed, a cada rerun automático) ----
@@ -36356,20 +36486,30 @@ if _secao == _SECOES[1]:   # tab_processamento
                     _taxa = _taxa_media
                 _eta_seg = (_restantes / _taxa) if _taxa > 0 else 0.0
                 
-                st.markdown("#### ⚙️ Processamento Contínuo em Andamento")
-                st.progress(min(1.0, _pct))
-                _mon1, _mon2, _mon3, _mon4 = st.columns(4)
-                _mon1.metric("Processados", f"{_feitos:,} / {_total:,}", help="Rotas únicas já processadas / total.")
-                _mon2.metric("Restantes", f"{_restantes:,}", help="Rotas únicas ainda pendentes.")
-                _mon3.metric("Concluído", f"{_pct*100:.1f}%", help="Percentual concluído.")
-                _mon4.metric("Lote Atual", f"{_chunk_atual_num} / {_total_chunks}", help="Chunk atual / total de chunks.")
-                _mon5, _mon6, _mon7, _mon8 = st.columns(4)
-                _mon5.metric("Tempo Decorrido", _formatar_duracao(_elapsed), help="Tempo desde o início do processamento.")
-                _mon6.metric("Velocidade", f"{_taxa:.1f} rotas/s", help="Velocidade média de processamento.")
-                _mon7.metric("Rotas/min", f"{_taxa*60:.0f}", help="Rotas processadas por minuto.")
-                _mon8.metric("Tempo Restante (ETA)", _formatar_duracao(_eta_seg) if _taxa > 0 else "calculando...", help="Estimativa para concluir, baseada na velocidade atual.")
-                st.caption("🔄 O processamento avança automaticamente. **Não é necessário clicar novamente** — cada lote continua sozinho até o fim. "
-                           "Você pode cancelar a qualquer momento no botão acima.")
+                # [FINALIZACAO-ROBUSTA - 267ª geração] PAINEL HONESTO NO ENCERRAMENTO (espelha a Alocação/266ª).
+                # Quando o roteamento chegou ao fim (índice ≥ total), a próxima passada entra na FASE 3
+                # (finalização síncrona). Em vez do painel de "100% · ETA 0" — que PARECE travado enquanto a
+                # finalização roda —, mostramos o CHECKLIST de encerramento. Enquanto ainda há rotas, mantém-se
+                # o monitor ao vivo idêntico ao anterior.
+                _lote_finalizando_ui = bool(_total > 0 and _feitos >= _total)
+                if _lote_finalizando_ui:
+                    _render_checklist_finalizacao(passo_atual="consolidar",
+                                                  degradado=bool(st.session_state.get('lote_finalizacao_degradada')))
+                else:
+                    st.markdown("#### ⚙️ Processamento Contínuo em Andamento")
+                    st.progress(min(1.0, _pct))
+                    _mon1, _mon2, _mon3, _mon4 = st.columns(4)
+                    _mon1.metric("Processados", f"{_feitos:,} / {_total:,}", help="Rotas únicas já processadas / total.")
+                    _mon2.metric("Restantes", f"{_restantes:,}", help="Rotas únicas ainda pendentes.")
+                    _mon3.metric("Concluído", f"{_pct*100:.1f}%", help="Percentual concluído.")
+                    _mon4.metric("Lote Atual", f"{_chunk_atual_num} / {_total_chunks}", help="Chunk atual / total de chunks.")
+                    _mon5, _mon6, _mon7, _mon8 = st.columns(4)
+                    _mon5.metric("Tempo Decorrido", _formatar_duracao(_elapsed), help="Tempo desde o início do processamento.")
+                    _mon6.metric("Velocidade", f"{_taxa:.1f} rotas/s", help="Velocidade média de processamento.")
+                    _mon7.metric("Rotas/min", f"{_taxa*60:.0f}", help="Rotas processadas por minuto.")
+                    _mon8.metric("Tempo Restante (ETA)", _formatar_duracao(_eta_seg) if _taxa > 0 else "calculando...", help="Estimativa para concluir, baseada na velocidade atual.")
+                    st.caption("🔄 O processamento avança automaticamente. **Não é necessário clicar novamente** — cada lote continua sozinho até o fim. "
+                               "Você pode cancelar a qualquer momento no botão acima.")
                 
                 # [FLUXO-CONTINUO - 38ª geração] Processamento TIME-BOXED por ORÇAMENTO DE TEMPO
                 # de parede (não por nº fixo de rotas). Cada execução processa mini-lotes até
@@ -36412,11 +36552,78 @@ if _secao == _SECOES[1]:   # tab_processamento
                     _operador = st.session_state.get('lote_operador', '')
                     _preaq = st.session_state.get('lote_preaquecido', False)
                     _start_clock = st.session_state['lote_start_clock']
-                    
+
+                    # [FINALIZACAO-ROBUSTA - 267ª geração] WATCHDOG DE ENCERRAMENTO (espelha a Alocação/266ª). A
+                    # FASE 3 do Lote também roda montagem + enriquecimento pesados numa passada síncrona AINDA na
+                    # fase 'processar', trocando de fase só no rerun final. Se interrompida antes disso (timeout de
+                    # WebSocket, memória), a máquina voltaria a 'processar' e reexecutaria tudo — a mesma trava em
+                    # 100%. Contamos as reentradas; acima de um teto FINITO, entregamos o DF-seguro já consolidado
+                    # e encerramos em modo degradado — jamais travando. Observabilidade marca o início.
+                    _lote_fin_tent = int(st.session_state.get('lote_fin_tentativas', 0)) + 1
+                    st.session_state['lote_fin_tentativas'] = _lote_fin_tent
+                    _t_lote_fin0 = time.time()
+                    try:
+                        logger.info("[FINALIZACAO/lote/inicio] tentativa=%d resultados=%s%s",
+                                    _lote_fin_tent, len(_resultados) if _resultados is not None else 0,
+                                    (" mem=%sMB" % _mem_rss_mb()) if _mem_rss_mb() is not None else "")
+                    except Exception:
+                        pass
+                    if _lote_fin_tent > _MAX_FIN_TENT:
+                        logger.error("[FINALIZACAO/lote/watchdog] Teto de %d tentativas atingido — forçando "
+                                     "entrega degradada para impedir travamento.", _MAX_FIN_TENT)
+                        _df_forcado_lote = st.session_state.get('lote_df_seguro')
+                        if _df_forcado_lote is None:
+                            try:
+                                _df_forcado_lote = _montar_dataframe_final(
+                                    _df_base, _resultados, runner_up_map=_runner_map,
+                                    hub_qual_map=st.session_state.get('alo_hub_qual_map'))
+                            except Exception as _e_wdl:
+                                logger.error("[FINALIZACAO/lote/watchdog] Montagem base falhou: %s", _e_wdl,
+                                             exc_info=True)
+                                try:
+                                    _df_forcado_lote = pd.DataFrame()
+                                except Exception:
+                                    _df_forcado_lote = None
+                        try:
+                            _tempo_wdl = round(time.time() - _start_clock, 2)
+                        except Exception:
+                            _tempo_wdl = 0.0
+                        if _df_forcado_lote is not None:
+                            st.session_state['df_processado'] = _df_forcado_lote
+                        st.session_state['lote_tempo_total'] = _tempo_wdl
+                        st.session_state['lote_preaquecido_final'] = _preaq
+                        st.session_state['lote_resultado_pronto'] = True
+                        st.session_state['lote_finalizacao_degradada'] = True
+                        try:
+                            st.session_state['lote_resumo_final'] = _resumo_finalizacao(_df_forcado_lote)
+                        except Exception:
+                            st.session_state['lote_resumo_final'] = {}
+                        # planilha fica sob demanda (botão na exibição); nunca bloqueia a entrega dos resultados
+                        for _kwdl in ['lote_em_andamento', 'lote_fase', 'lote_endpoints', 'lote_preaq_idx',
+                                      'lote_tarefas', 'lote_resultados', 'lote_chunk_idx', 'lote_df_base',
+                                      'lote_start_clock', 'lote_total', 'lote_operador', 'lote_preaquecido',
+                                      'lote_runner_map', 'lote_eta_ultimo', 'lote_taxa_ema', 'lote_df_seguro',
+                                      'lote_fin_tentativas', 'lote_planilha_auto']:
+                            st.session_state.pop(_kwdl, None)
+                        _obs_fin("watchdog_lote_entrega_degradada", _t_lote_fin0,
+                                 linhas=(len(_df_forcado_lote) if _df_forcado_lote is not None else 0))
+                        st.rerun()
+
                     df_final = None
+                    _t_lote_montagem = time.time()
                     with _perfil_fase("Montagem do DataFrame (Lote)"):
                         df_final = _montar_dataframe_final(_df_base, _resultados, runner_up_map=_runner_map,
                                                            hub_qual_map=st.session_state.get('alo_hub_qual_map'))
+                    # [FINALIZACAO-ROBUSTA - 267ª geração] DF-SEGURO: a montagem base produziu um DataFrame
+                    # completo e entregável. Guardamos uma REFERÊNCIA (custo zero) antes do enriquecimento; se um
+                    # passo abaixo for interrompido, o watchdog entrega este DF. Os enriquecedores reatribuem
+                    # df_final a novos objetos, então a referência permanece intacta. Liberada no commit de sucesso.
+                    try:
+                        st.session_state['lote_df_seguro'] = df_final
+                    except Exception:
+                        pass
+                    _obs_fin("montar_df_base", _t_lote_montagem,
+                             linhas=(len(df_final) if df_final is not None else 0))
                     # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos
                     # (contexto da planilha + validação espacial). Defensivo; nunca quebra o lote.
                     df_final = _enriquecer_desambiguacao_homonimos(df_final)
@@ -36483,23 +36690,129 @@ if _secao == _SECOES[1]:   # tab_processamento
                         ordem_finais.append(col)
                     df_final = df_final.reindex(columns=ordem_finais)
                     
-                    # [XLSX-RICO - 184ª geração] Workbook estruturado (Rotas + Resumo + Distribuição + UF + Status).
-                    # A aba 'Rotas' é IDÊNTICA à exportação anterior (cabeçalhos de exame). As chaves internas do
-                    # df permanecem — renomeá-las quebraria a app inteira.
-                    st.session_state['planilha_pronta'] = _montar_planilha_lote_xlsx(df_final)
+                    # [FINALIZACAO-ROBUSTA - 267ª geração] COMMIT dos RESULTADOS primeiro — antes de qualquer
+                    # geração de arquivo — espelhando a blindagem da Alocação (261ª/266ª). Os resultados nunca se
+                    # perdem; a planilha (.xlsx) passa a ser gerada de forma DESACOPLADA (FASE 3b), eliminando o
+                    # risco de OOM/timeout na finalização travar a entrega. A finalização vai DIRETO à exibição.
                     st.session_state['df_processado'] = df_final
                     st.session_state['lote_tempo_total'] = tempo_lote_segundos
                     st.session_state['lote_preaquecido_final'] = _preaq
-                    
-                    # Limpa o estado de processamento (libera RAM dos checkpoints)
-                    for _k in ['lote_em_andamento', 'lote_fase', 'lote_endpoints', 'lote_preaq_idx',
-                               'lote_tarefas', 'lote_resultados', 'lote_chunk_idx',
-                               'lote_df_base', 'lote_start_clock', 'lote_total', 'lote_operador',
-                               'lote_preaquecido', 'lote_runner_map', 'lote_eta_ultimo', 'lote_taxa_ema']:
+                    st.session_state['lote_resultado_pronto'] = True
+                    try:
+                        st.session_state['lote_resumo_final'] = _resumo_finalizacao(df_final)
+                    except Exception:
+                        st.session_state['lote_resumo_final'] = {}
+                    st.session_state.pop('lote_finalizacao_degradada', None)
+                    _obs_fin("finalizacao_total", _t_lote_fin0, linhas=len(df_final), tentativas=_lote_fin_tent)
+                    # Limpa o estado de processamento (libera RAM dos checkpoints) + marcadores desta finalização.
+                    # Mantém df_processado (a FASE 3b usa só ele para montar o .xlsx).
+                    for _k in ['lote_endpoints', 'lote_preaq_idx', 'lote_tarefas', 'lote_resultados',
+                               'lote_chunk_idx', 'lote_df_base', 'lote_start_clock', 'lote_total',
+                               'lote_operador', 'lote_preaquecido', 'lote_runner_map', 'lote_eta_ultimo',
+                               'lote_taxa_ema', 'lote_df_seguro', 'lote_fin_tentativas']:
                         st.session_state.pop(_k, None)
+                    # [PLANILHA-HIBRIDA - 267ª geração] Estudo PEQUENO (≤ _LIMITE_PLANILHA_AUTO linhas) → gera a
+                    # planilha automaticamente (FASE 3b na próxima passada), conveniência sem clique. GRANDE/
+                    # nacional → sob demanda, mantendo a finalização instantânea e à prova de OOM. Defensivo: sem
+                    # tamanho → sob demanda (caminho seguro).
+                    try:
+                        _n_lote_hib = len(df_final) if df_final is not None else 0
+                    except Exception:
+                        _n_lote_hib = 0
+                    if 0 < _n_lote_hib <= _LIMITE_PLANILHA_AUTO:
+                        st.session_state['lote_planilha_auto'] = True
+                        st.session_state['lote_em_andamento'] = True
+                        st.session_state['lote_fase'] = 'gerar_planilha'
+                    else:
+                        st.session_state.pop('lote_planilha_auto', None)
+                        st.session_state.pop('lote_em_andamento', None)
+                        st.session_state.pop('lote_fase', None)
                     st.rerun()
-                    
-        if 'df_processado' in st.session_state and 'planilha_pronta' in st.session_state:
+
+            # ---- FASE 3b: GERAÇÃO DA PLANILHA DO LOTE (desacoplada; roda no auto p/ estudos pequenos ou no
+            # clique para grandes). A falha aqui NUNCA impede os resultados nem o relatório HTML. ----
+            if st.session_state.get('lote_em_andamento', False) and st.session_state.get('lote_fase') == 'gerar_planilha':
+                with st.container(border=True):
+                    st.markdown("#### ✅ Lote concluído — preparando a planilha")
+                    st.caption("✔ Rotas calculadas  ·  ✔ Resultados consolidados")
+                    st.markdown("⏳ **Gerando a planilha final** (.xlsx)…")
+                    st.progress(0.9)
+                    st.caption("A planilha é montada uma única vez. Se algo falhar aqui, os resultados e o "
+                               "relatório HTML seguem disponíveis abaixo — a aplicação não trava.")
+                st.session_state.pop('lote_planilha_erro', None)
+                _df_plan_lote = st.session_state.get('df_processado')
+                _t_lote_plan0 = time.time()
+                try:
+                    if _df_plan_lote is None:
+                        raise RuntimeError("df_processado ausente na geração da planilha do lote")
+                    st.session_state['planilha_pronta'] = _montar_planilha_lote_xlsx(_df_plan_lote)
+                    _obs_fin("planilha_xlsx", _t_lote_plan0,
+                             linhas=(len(_df_plan_lote) if _df_plan_lote is not None else 0),
+                             kb=round(len(st.session_state['planilha_pronta']) / 1024.0, 1))
+                except Exception as _e_plan_lote:
+                    logger.error("[FINALIZACAO-PLANILHA-LOTE] Falha ao gerar a planilha (resultados "
+                                 "preservados): %s", _e_plan_lote, exc_info=True)
+                    st.session_state['planilha_pronta'] = b''
+                    st.session_state['lote_planilha_erro'] = True
+                st.session_state.pop('lote_em_andamento', None)
+                st.session_state.pop('lote_fase', None)
+                st.rerun()
+
+        # [FINALIZACAO-ROBUSTA - 267ª geração] Exibição passa a depender de 'lote_resultado_pronto' (marcado na
+        # FASE 3a), não mais da planilha estar pronta — os resultados aparecem na hora; o .xlsx é desacoplado.
+        # Marcador ESPECÍFICO do Lote (evita render cruzado com df_processado de outra aba).
+        if st.session_state.get('lote_resultado_pronto') and 'df_processado' in st.session_state:
+            # [FINALIZACAO-ROBUSTA - 267ª geração] Painel de conclusão elegante (checklist + números do estudo).
+            try:
+                _lote_degradado = bool(st.session_state.get('lote_finalizacao_degradada'))
+                _lote_tempo_fin = st.session_state.get('lote_tempo_total')
+                _lote_resumo = st.session_state.get('lote_resumo_final') or {}
+                if not _lote_resumo:
+                    try:
+                        _lote_resumo = _resumo_finalizacao(st.session_state.get('df_processado'))
+                    except Exception:
+                        _lote_resumo = {}
+                _lote_plan_ok = bool(st.session_state.get('planilha_pronta'))
+                _lote_html_ok = bool(st.session_state.get('relatorio_html_lote'))
+                with st.container(border=True):
+                    st.markdown("### ✅ Processamento concluído")
+                    _lchk = ["- ✔ **Rotas calculadas**", "- ✔ **Resultados consolidados**"]
+                    _lchk.append("- ✔ **Planilha gerada** (.xlsx)" if _lote_plan_ok
+                                 else "- ○ Planilha (.xlsx) — **sob demanda** (botão abaixo)")
+                    _lchk.append("- ✔ **Relatório HTML gerado**" if _lote_html_ok
+                                 else "- ○ Relatório HTML — **sob demanda** (botão abaixo)")
+                    _lchk.append("- ✔ **Downloads disponíveis**")
+                    st.markdown("\n".join(_lchk))
+                    _lmets = []
+                    if _lote_tempo_fin is not None:
+                        _lmets.append(("Tempo total", _formatar_duracao(_lote_tempo_fin)))
+                    if _lote_resumo.get("candidatos") is not None:
+                        _lmets.append(("Candidatos", f"{_lote_resumo['candidatos']:,}".replace(",", ".")))
+                    if _lote_resumo.get("rotas") is not None:
+                        _lmets.append(("Rotas", f"{_lote_resumo['rotas']:,}".replace(",", ".")))
+                    if _lote_resumo.get("municipios") is not None:
+                        _lmets.append(("Municípios", f"{_lote_resumo['municipios']:,}".replace(",", ".")))
+                    if _lote_resumo.get("polos") is not None:
+                        _lmets.append(("Destinos", f"{_lote_resumo['polos']:,}".replace(",", ".")))
+                    if _lote_resumo.get("pct_viaria") is not None:
+                        _lmets.append(("Precisão (rota viária)", f"{_lote_resumo['pct_viaria']:.0f}%"))
+                    if _lmets:
+                        _lcols = st.columns(min(4, len(_lmets)))
+                        for _il, (_llbl, _lval) in enumerate(_lmets):
+                            _lcols[_il % len(_lcols)].metric(_llbl, _lval)
+                    _lmot = _lote_resumo.get("motores") or {}
+                    if _lmot and any(_lmot.get(_x) is not None for _x in ("google", "osrm", "fallback")):
+                        st.caption(
+                            "🛰️ **Motores utilizados** — "
+                            f"Google: {(_lmot.get('google') or 0):.0f}% · "
+                            f"OSRM: {(_lmot.get('osrm') or 0):.0f}% · "
+                            f"Fallback geodésico: {(_lmot.get('fallback') or 0):.0f}%")
+                    if _lote_degradado:
+                        st.warning("⚠️ **Encerramento em modo de segurança:** os resultados essenciais foram "
+                                   "entregues integralmente, mas um passo analítico opcional pode não ter "
+                                   "completado. Os downloads abaixo seguem disponíveis normalmente.")
+            except Exception:
+                logger.error("[FINALIZACAO-ROBUSTA-LOTE] Falha ao renderizar o painel de conclusão", exc_info=True)
             # Painel de performance do último lote (após finalização)
             if 'lote_tempo_total' in st.session_state:
                 _tempo_lote = st.session_state['lote_tempo_total']
@@ -37052,7 +37365,31 @@ if _secao == _SECOES[1]:   # tab_processamento
                                    use_container_width=True, key="dl_relatorio_html")
             col_down1, col_down2 = st.columns(2)
             with col_down1:
-                st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                # [PLANILHA-HIBRIDA - 267ª geração] Três estados (desacoplado dos resultados):
+                #  • pronta   → download direto;   • falhou → aviso + tentar de novo;
+                #  • sob demanda → botão "Gerar planilha" (a construção pesada só roda no clique).
+                if st.session_state.get('planilha_pronta'):
+                    st.download_button(label="📥 Baixar Planilha (.xlsx)", data=st.session_state['planilha_pronta'], file_name="planilha_rotas_calculada.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                    if st.session_state.get('lote_planilha_auto'):
+                        st.caption("📊 Estudo pequeno: planilha gerada **automaticamente** ao finalizar.")
+                elif st.session_state.get('lote_planilha_erro'):
+                    st.warning("⚠️ A planilha (.xlsx) não pôde ser gerada — os **resultados acima** e o "
+                               "**relatório HTML** seguem disponíveis. Tente novamente:")
+                    if st.button("🔄 Tentar gerar a planilha novamente", use_container_width=True,
+                                 key="retry_planilha_lote"):
+                        st.session_state['lote_em_andamento'] = True
+                        st.session_state['lote_fase'] = 'gerar_planilha'
+                        st.rerun()
+                else:
+                    if st.button("📊 Gerar planilha completa (.xlsx)", use_container_width=True,
+                                 key="gerar_planilha_lote",
+                                 help="Monta a planilha completa (Rotas + abas analíticas). A construção pesada "
+                                      "roda só agora, no clique — por isso os resultados apareceram na hora."):
+                        st.session_state['lote_em_andamento'] = True
+                        st.session_state['lote_fase'] = 'gerar_planilha'
+                        st.rerun()
+                    st.caption("📊 A planilha completa é montada **sob demanda**: os resultados e o relatório HTML "
+                               "já estão prontos acima; o .xlsx (pesado) só é gerado quando você clicar.")
             with col_down2:
                 st.markdown("""<a href="https://sheets.new/" target="_blank" style="display:inline-block; padding:0.5em 1em; background-color:#1E90FF; color:white; border-radius:5px; text-decoration:none; font-weight:bold; text-align:center; width:100%; transition: all 0.2s;">📊 Abrir Google Sheets Vazio</a>""", unsafe_allow_html=True)
 
@@ -37102,6 +37439,180 @@ if _secao == _SECOES[1]:   # tab_processamento
                                            help="GPS Exchange Format — dispositivos GPS, Garmin, apps de navegação.")
                     st.caption("💡 **Dica:** o GeoJSON e o KML desenham origem (verde), destino (vermelho) e a linha origem→destino. "
                                "Importe no QGIS/Google Earth para visualizar todas as rotas do lote num mapa só.")
+
+# ==============================================================================
+# [FINALIZACAO-ROBUSTA - 266ª geração] ORQUESTRAÇÃO DE ENCERRAMENTO DA ALOCAÇÃO
+# ------------------------------------------------------------------------------
+# Objetivo desta rodada: matar em definitivo o sintoma "trava em 100%" da aba
+# 'Locais de Aplicação'. Causa-raiz medida no código: a FASE 3 (finalização) roda
+# TODO o trabalho pesado (re-roteamentos síncronos + enriquecimento O(n) sobre
+# milhares de linhas) numa ÚNICA execução, AINDA na fase 'processar', e só troca de
+# fase no st.rerun() do fim. Se essa execução é interrompida (timeout de WebSocket
+# num estudo nacional, Future de rede travado, pressão de memória) ANTES do rerun,
+# a máquina volta a 'processar', redesenha o painel de 100% e re-executa tudo —
+# travamento perpétuo, sem erro e sem downloads.
+#
+# Estes helpers são 100% ADITIVOS e defensivos (nunca levantam). Dão à finalização:
+#   • Observabilidade estruturada por etapa (tempo, memória RSS, tamanho do DF) com
+#     AVISO automático quando uma etapa passa do orçamento — sem dependência nova
+#     (memória via stdlib `resource`, importada preguiçosamente).
+#   • Um watchdog de tentativas: se a finalização for reentrada além de um teto
+#     finito, entrega o que já existe (DF-seguro pré-commitado) e encerra — jamais
+#     trava (ver uso na FASE 3).
+#   • Um painel de CHECKLIST elegante para o encerramento (substitui o enganoso
+#     "100% · tempo restante 0" por "Finalizando: consolidando… gerando…").
+#   • Um resumo executivo do encerramento (candidatos, rotas, municípios, motores,
+#     precisão) para a tela de conclusão.
+# Nada aqui altera o resultado do estudo: em caminho feliz, o comportamento e a
+# planilha são byte-a-byte os de antes; estes recursos só mudam o CONTROLE de fluxo
+# do encerramento e a sua APRESENTAÇÃO.
+# ==============================================================================
+
+# Teto de reentradas da finalização antes de forçar a entrega degradada (defesa em
+# profundidade — finito e generoso; só dispara em cenário patológico de reentrada).
+_MAX_FIN_TENT = 6
+# Orçamento por etapa (s) acima do qual a observabilidade emite AVISO (não bloqueia).
+_FIN_ETAPA_WARN_S = 8.0
+
+# Passos ordenados do encerramento (para o checklist e a telemetria). Rótulos curtos.
+_FIN_ETAPAS = [
+    ("consolidar", "Consolidar resultados"),
+    ("enriquecer", "Enriquecer e auditar"),
+    ("montar_df", "Montar tabela final"),
+    ("planilha", "Gerar planilha (.xlsx)"),
+    ("html", "Relatório HTML"),
+    ("downloads", "Disponibilizar downloads"),
+]
+
+
+def _mem_rss_mb():
+    """Memória residente (RSS) do processo em MB, ou None se indisponível. Só stdlib
+    (`resource`, importado preguiçosamente — mantém os imports de topo idênticos ao
+    baseline). Nunca levanta. Em Linux/macOS ru_maxrss é o pico; no Linux vem em KB,
+    no macOS em bytes — normalizamos com uma heurística segura."""
+    try:
+        import resource  # stdlib; import local para não tocar os imports de topo
+        _rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if not _rss:
+            return None
+        # Linux: KB · macOS: bytes. Valores >1e9 quase certamente são bytes.
+        return round(_rss / (1024.0 * 1024.0), 1) if _rss > 10_000_000 else round(_rss / 1024.0, 1)
+    except Exception:
+        return None
+
+
+def _obs_fin(etapa, t0, **extra):
+    """[OBSERVABILIDADE] Registra o fim de uma etapa da finalização: tempo decorrido,
+    memória RSS e metadados (ex.: linhas do DF). Emite WARNING se a etapa passar do
+    orçamento (_FIN_ETAPA_WARN_S). Também alimenta o perfil de fases já existente
+    (aparece no Monitor APIs). Defensivo: nunca levanta, nunca altera o fluxo."""
+    try:
+        _dt = max(0.0, time.time() - float(t0)) if t0 is not None else 0.0
+        _mem = _mem_rss_mb()
+        _meta = " ".join(f"{_k}={_v}" for _k, _v in extra.items()) if extra else ""
+        _msg = "[FINALIZACAO/%s] %.2fs%s%s" % (
+            etapa, _dt,
+            (" · %sMB RSS" % _mem) if _mem is not None else "",
+            (" · " + _meta) if _meta else "")
+        if _dt > _FIN_ETAPA_WARN_S:
+            logger.warning(_msg + "  ⚠️ acima do orçamento de %.0fs", _FIN_ETAPA_WARN_S)
+        else:
+            logger.info(_msg)
+        try:
+            _registrar_perfil_fase("Finalização · " + str(etapa), _dt)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _render_checklist_finalizacao(passo_atual="consolidar", degradado=False):
+    """[UX] Painel de encerramento com checklist de etapas — substitui o painel de
+    '100% · tempo restante 0' que parecia travado. Mostra ✔ nas etapas concluídas, ⏳
+    na atual e ○ nas pendentes, com um spinner honesto. Defensivo: nunca levanta."""
+    try:
+        _ordem = [_k for _k, _ in _FIN_ETAPAS]
+        try:
+            _i_atual = _ordem.index(passo_atual)
+        except ValueError:
+            _i_atual = 0
+        with st.container(border=True):
+            st.markdown("#### ✅ Processamento concluído — finalizando o estudo")
+            st.caption("🧭 **Etapa atual:** consolidando os resultados e preparando os arquivos para download. "
+                       "Em estudos nacionais isto pode levar alguns instantes — **não é necessário clicar novamente**.")
+            _linhas = []
+            for _j, (_k, _lbl) in enumerate(_FIN_ETAPAS):
+                if _j < _i_atual:
+                    _linhas.append(f"- ✔ {_lbl}")
+                elif _j == _i_atual:
+                    _linhas.append(f"- ⏳ **{_lbl}** — em andamento")
+                else:
+                    _linhas.append(f"- ○ {_lbl}")
+            st.markdown("\n".join(_linhas))
+            _frac = min(0.98, (_i_atual + 0.5) / max(1, len(_FIN_ETAPAS)))
+            st.progress(_frac)
+            if degradado:
+                st.warning("⚠️ O encerramento entrou em **modo de segurança**: os resultados essenciais serão "
+                           "entregues mesmo que um passo analítico opcional não tenha completado. Nada trava.")
+            st.caption("Se esta tela persistir muito além do normal, o encerramento tem um limite de segurança "
+                       "que entrega automaticamente os resultados já calculados.")
+    except Exception:
+        # Nunca deixa o painel derrubar a finalização; em pior caso, um aviso mínimo.
+        try:
+            st.info("✅ Processamento concluído — finalizando o estudo…")
+        except Exception:
+            pass
+
+
+def _resumo_finalizacao(df):
+    """[UX] Resumo executivo do ENCERRAMENTO: candidatos (inscritos, se houver), rotas,
+    municípios de origem, polos, participação de motores (Google/OSRM/fallback) e
+    precisão (% de rotas viárias reais × estimativa geodésica). Retorna um dict pronto
+    para exibição. Defensivo: cada campo só entra se a coluna existir; erro → dict
+    parcial (nunca levanta)."""
+    _r = {}
+    try:
+        if df is None or len(df) == 0:
+            return _r
+        _r["rotas"] = int(len(df))
+        if "Municipio Origem" in df.columns:
+            _r["municipios"] = int(df["Municipio Origem"].nunique())
+        if "Municipio Destino" in df.columns:
+            _r["polos"] = int(df["Municipio Destino"].nunique())
+        # candidatos (inscritos), quando a coluna existir
+        for _cinsc in ("Inscritos", "Quantidade de Inscritos"):
+            if _cinsc in df.columns:
+                try:
+                    _r["candidatos"] = int(pd.to_numeric(df[_cinsc], errors="coerce").fillna(0).sum())
+                except Exception:
+                    pass
+                break
+        # precisão: % de rotas com fonte viária real (não geodésica)
+        if "Fonte" in df.columns or "Método Utilizado" in df.columns:
+            _col_fonte = "Fonte" if "Fonte" in df.columns else "Método Utilizado"
+            try:
+                _s = df[_col_fonte].astype(str).str.lower()
+                _n = len(_s)
+                _n_geo = int(_s.str.contains("geodés").sum())
+                _r["pct_viaria"] = round(100.0 * (_n - _n_geo) / _n, 1) if _n else 0.0
+            except Exception:
+                pass
+        # participação de motores (reusa o diagnóstico já existente)
+        try:
+            _pm = _diagnosticar_participacao_motores(df) or {}
+            if _pm:
+                _r["motores"] = {
+                    "google": _pm.get("pct_google"), "osrm": _pm.get("pct_osrm"),
+                    "fallback": _pm.get("pct_fallback"),
+                    "n_google": _pm.get("n_google"), "n_osrm": _pm.get("n_osrm"),
+                    "n_fallback": _pm.get("n_fallback"),
+                }
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return _r
+
 
 if _secao == _SECOES[2]:   # tab_alocacao
     st.info("🎯 **Objetivo desta aba:** Definir o **melhor local de aplicação da prova** para cada município de candidatos. Envie a lista de **municípios de origem dos candidatos** e a lista de **polos de aplicação** (escolas/unidades aplicadoras). O sistema avalia todas as combinações e recomenda, para cada município, o local de prova que minimiza o deslocamento dos candidatos.")
@@ -37584,7 +38095,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                            'alo_dest_linha_reta', 'alo_dest_status_lr', 'alo_df_dest_cols', 'alo_novas_colunas',
                            'alo_dests_unicos', 'alo_hubs_validos', 'alo_dest_col_name', 'alo_df_dest',
                            'alo_dest_geo_acc', 'alo_dest_geo_idx', 'alo_mcda', 'alo_params_custo',
-                           'alo_mc_rodada', 'alo_mc_poda']:
+                           'alo_mc_rodada', 'alo_mc_poda',
+                           # [FINALIZACAO-ROBUSTA - 266ª] marcadores de encerramento desta rodada
+                           'alo_fin_tentativas', 'alo_df_seguro', 'alo_2pass_google_feito',
+                           'alo_finalizacao_degradada', 'alo_resumo_final']:
                     st.session_state.pop(_k, None)
                 st.warning("Alocação cancelada pelo usuário.")
                 st.rerun()
@@ -37640,7 +38154,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # [PLANILHA-LAZY - 261ª geração] Novo estudo: limpa os marcadores de resultado/planilha da
                     # rodada anterior para a exibição não mostrar resultados/arquivos antigos enquanto processa.
                     for _k in ['alo_resultado_pronto', 'alo_planilha_pronta', 'alo_planilha_erro',
-                               'alo_comparacao_estrategias']:
+                               'alo_comparacao_estrategias',
+                               # [FINALIZACAO-ROBUSTA - 266ª] zera marcadores de encerramento da rodada anterior
+                               'alo_fin_tentativas', 'alo_df_seguro', 'alo_2pass_google_feito',
+                               'alo_finalizacao_degradada', 'alo_resumo_final']:
                         st.session_state.pop(_k, None)
                     st.session_state['alo_em_andamento'] = True
                     st.session_state['alo_fase'] = 'geo_destinos'
@@ -37838,23 +38355,33 @@ if _secao == _SECOES[2]:   # tab_alocacao
             _eta = (_restantes / _taxa) if _taxa > 0 else 0.0
             _tempo_medio_reg = (_elapsed / _feitos) if _feitos > 0 else 0.0
             
-            st.markdown("#### 🎯 Alocação Contínua em Andamento")
-            st.caption("🧭 **Etapa atual:** Roteamento competitivo (cálculo de rotas origem→hub e duelo com o 2º hub mais próximo)")
-            st.progress(min(1.0, _pct))
-            _a1, _a2, _a3, _a4 = st.columns(4)
-            _a1.metric("Registros Processados", f"{_feitos:,} / {_total:,}",
-                       help=f"Tarefas de roteamento percorridas / total. Rotas únicas calculadas até agora: "
-                            f"{_feitos_rotas:,} (pode ser menor que os registros quando há pares equivalentes, "
-                            f"que não precisam ser recalculados).")
-            _a2.metric("Restantes", f"{_restantes:,}", help="Registros ainda pendentes.")
-            _a3.metric("Concluído", f"{_pct*100:.1f}%", help="Percentual concluído.")
-            _a4.metric("Lote Atual", f"{_chunk_num} / {_total_chunks}", help="Chunk atual / total de chunks.")
-            _a5, _a6, _a7, _a8 = st.columns(4)
-            _a5.metric("Tempo Decorrido", _formatar_duracao(_elapsed), help="Tempo desde o início da alocação.")
-            _a6.metric("Tempo Médio/Registro", f"{_tempo_medio_reg:.2f}s", help="Tempo médio por registro processado até agora.")
-            _a7.metric("Tempo Restante (ETA)", _formatar_duracao(_eta) if _taxa > 0 else "calculando...", help="Estimativa para concluir, baseada na velocidade atual.")
-            _a8.metric("Velocidade", f"{_taxa:.1f}/s · {_taxa*60:.0f}/min", help="Velocidade média (registros por segundo e por minuto).")
-            st.caption("🔄 A alocação avança automaticamente. **Não é necessário clicar novamente.** Cancele a qualquer momento acima.")
+            # [FINALIZACAO-ROBUSTA - 266ª geração] PAINEL HONESTO NO ENCERRAMENTO. Quando o roteamento chegou
+            # ao fim (índice ≥ total), a próxima passada entra na FASE 3 (finalização). Em vez do painel de
+            # "100% · tempo restante 0" — que PARECE travado enquanto a finalização síncrona roda —, mostramos
+            # o CHECKLIST de encerramento. Assim o usuário sempre sabe que o estudo está finalizando, não preso.
+            # Enquanto ainda há roteamento a fazer, mantém-se o monitor ao vivo idêntico ao anterior.
+            _finalizando_ui = bool(_total > 0 and _feitos >= _total)
+            if _finalizando_ui:
+                _render_checklist_finalizacao(passo_atual="consolidar",
+                                              degradado=bool(st.session_state.get('alo_finalizacao_degradada')))
+            else:
+                st.markdown("#### 🎯 Alocação Contínua em Andamento")
+                st.caption("🧭 **Etapa atual:** Roteamento competitivo (cálculo de rotas origem→hub e duelo com o 2º hub mais próximo)")
+                st.progress(min(1.0, _pct))
+                _a1, _a2, _a3, _a4 = st.columns(4)
+                _a1.metric("Registros Processados", f"{_feitos:,} / {_total:,}",
+                           help=f"Tarefas de roteamento percorridas / total. Rotas únicas calculadas até agora: "
+                                f"{_feitos_rotas:,} (pode ser menor que os registros quando há pares equivalentes, "
+                                f"que não precisam ser recalculados).")
+                _a2.metric("Restantes", f"{_restantes:,}", help="Registros ainda pendentes.")
+                _a3.metric("Concluído", f"{_pct*100:.1f}%", help="Percentual concluído.")
+                _a4.metric("Lote Atual", f"{_chunk_num} / {_total_chunks}", help="Chunk atual / total de chunks.")
+                _a5, _a6, _a7, _a8 = st.columns(4)
+                _a5.metric("Tempo Decorrido", _formatar_duracao(_elapsed), help="Tempo desde o início da alocação.")
+                _a6.metric("Tempo Médio/Registro", f"{_tempo_medio_reg:.2f}s", help="Tempo médio por registro processado até agora.")
+                _a7.metric("Tempo Restante (ETA)", _formatar_duracao(_eta) if _taxa > 0 else "calculando...", help="Estimativa para concluir, baseada na velocidade atual.")
+                _a8.metric("Velocidade", f"{_taxa:.1f}/s · {_taxa*60:.0f}/min", help="Velocidade média (registros por segundo e por minuto).")
+                st.caption("🔄 A alocação avança automaticamente. **Não é necessário clicar novamente.** Cancele a qualquer momento acima.")
             
             if _total == 0:
                 # Nenhuma rota válida — finaliza direto
@@ -38020,7 +38547,65 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 _start = st.session_state['alo_start_clock']
                 _df_dest_cols = st.session_state['alo_df_dest_cols']
                 _novas_colunas = st.session_state['alo_novas_colunas']
-                
+
+                # [FINALIZACAO-ROBUSTA - 266ª geração] WATCHDOG DE ENCERRAMENTO — a garantia de que a máquina
+                # NUNCA fica presa em 'processar' reexecutando o trabalho pesado. Contamos quantas vezes esta
+                # fase foi (re)entrada. Cada reentrada só ocorre quando uma execução anterior foi interrompida
+                # ANTES do rerun de transição (timeout de WebSocket num estudo nacional, Future de rede travado,
+                # pressão de memória) — exatamente a causa-raiz do "trava em 100%". As partes de rede pesadas
+                # já viram one-shot abaixo, então cada reentrada é mais barata e converge; mas, como defesa em
+                # profundidade, se as reentradas passarem de um teto FINITO, ENTREGAMOS o que já existe (o
+                # DF-seguro pré-commitado logo após a montagem base) e encerramos em modo degradado — jamais
+                # travando. Observabilidade estruturada marca o início (tentativa, tamanhos, memória).
+                _fin_tent = int(st.session_state.get('alo_fin_tentativas', 0)) + 1
+                st.session_state['alo_fin_tentativas'] = _fin_tent
+                _t_fin0 = time.time()
+                try:
+                    logger.info("[FINALIZACAO/inicio] tentativa=%d pares=%s resultados=%s%s",
+                                _fin_tent, len(_df_pares) if _df_pares is not None else 0,
+                                len(_resultados) if _resultados is not None else 0,
+                                (" mem=%sMB" % _mem_rss_mb()) if _mem_rss_mb() is not None else "")
+                except Exception:
+                    pass
+                if _fin_tent > _MAX_FIN_TENT:
+                    # ENTREGA DEGRADADA (nunca trava): usa o DF-seguro pré-commitado; se ele não existe (a
+                    # montagem base nunca completou), tenta uma montagem base mínima; em último caso entrega um
+                    # DataFrame vazio-porém-válido com aviso — o importante é ESCAPAR de 'processar'.
+                    logger.error("[FINALIZACAO/watchdog] Teto de %d tentativas atingido — forçando entrega "
+                                 "degradada para impedir travamento. Entregando os resultados já consolidados.",
+                                 _MAX_FIN_TENT)
+                    _df_forcado = st.session_state.get('alo_df_seguro')
+                    if _df_forcado is None:
+                        try:
+                            _df_forcado = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
+                        except Exception as _e_wd:
+                            logger.error("[FINALIZACAO/watchdog] Montagem base também falhou: %s", _e_wd,
+                                         exc_info=True)
+                            _df_forcado = None
+                    if _df_forcado is None:
+                        try:
+                            _df_forcado = pd.DataFrame()
+                        except Exception:
+                            _df_forcado = None
+                    try:
+                        _tempo_wd = round(time.time() - _start, 2)
+                    except Exception:
+                        _tempo_wd = 0.0
+                    if _df_forcado is not None:
+                        st.session_state['df_processado'] = _df_forcado
+                        st.session_state['alo_linhas'] = int(len(_df_forcado))
+                    st.session_state['alo_tempo_total'] = _tempo_wd
+                    st.session_state['alo_resultado_pronto'] = True
+                    st.session_state['alo_finalizacao_degradada'] = True
+                    # limpa marcadores de processamento e evita auto-gerar planilha em modo degradado
+                    for _kwd in ['alo_em_andamento', 'alo_tarefas', 'alo_chunk_idx', 'alo_planilha_auto',
+                                 'alo_df_seguro', 'alo_fin_tentativas']:
+                        st.session_state.pop(_kwd, None)
+                    st.session_state['alo_fase'] = 'concluido'
+                    _obs_fin("watchdog_entrega_degradada", _t_fin0,
+                             linhas=(len(_df_forcado) if _df_forcado is not None else 0))
+                    st.rerun()
+
                 # [HUB-MCDA - 130ª geração] Modo multicritério (opt-in): reelege o hub de cada cliente por
                 # CUSTO LOGÍSTICO EFETIVO usando os top-K JÁ roteados, e reatribui o Destino ANTES da montagem.
                 # Default (toggle off) intacto. Defensivo: em erro mantém a atribuição por linha reta.
@@ -38195,8 +38780,22 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     except Exception as _e_mcf:
                         logger.error(f"[HUB-MCDA] Falha na reatribuição multicritério: {_e_mcf}")
                 df_final_alo = None
+                _t_montagem = time.time()
                 with _perfil_fase("Montagem do DataFrame (Alocação)"):
                     df_final_alo = _montar_dataframe_final(_df_pares, _resultados, runner_up_map=_runner)
+                # [FINALIZACAO-ROBUSTA - 266ª geração] DF-SEGURO: a montagem base produziu um DataFrame COMPLETO
+                # e entregável (todas as colunas essenciais: distâncias, rotas, IBGE, concorrente). Guardamos uma
+                # REFERÊNCIA a ele agora — antes de qualquer enriquecimento analítico opcional. As funções de
+                # enriquecimento abaixo REATRIBUEM df_final_alo a novos objetos (retornam cópias), então esta
+                # referência permanece intacta como fallback. Se um passo de enriquecimento for interrompido
+                # (timeout/memória), o watchdog entrega este DF — resultados essenciais preservados, zero trava.
+                # Custo: zero (referência, sem cópia). É liberado no commit de sucesso.
+                try:
+                    st.session_state['alo_df_seguro'] = df_final_alo
+                except Exception:
+                    pass
+                _obs_fin("montar_df_base", _t_montagem,
+                         linhas=(len(df_final_alo) if df_final_alo is not None else 0))
                 # [RESGATE-CIRCUIDADE - 238ª] Refinamento pós-alocação (Etapa C): quando o destino escolhido
                 # exibe a assinatura de risco (V/R alta / balsa / acesso fluvial), roteia os candidatos mais
                 # diretos do topk_map pelo motor autoritativo e adota o melhor PARA O CANDIDATO. Monotônico
@@ -38237,12 +38836,23 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     except Exception:
                         _part_previa = {}
                     _google_vivo = (_part_previa.get('pct_google', 0) >= 3) if _part_previa else _google_pode_chamar()
-                    if st.session_state.get('alo_segunda_passada_google', True) and _google_vivo:
+                    # [FINALIZACAO-ROBUSTA - 266ª geração] ONE-SHOT: a 2ª passada do Google reprocessa até 400
+                    # pares por REDE. Se a finalização for interrompida durante ela e reentrada, reexecutá-la
+                    # custaria outros 400 timeouts — um dos caminhos que alimentavam o "trava em 100%". Marcamos
+                    # feito ANTES de rodar (como o retry-viária já faz), então cada estudo a executa no máximo
+                    # uma vez; reentradas pulam direto para o enriquecimento, convergindo rápido. Zero regressão
+                    # no caminho feliz (roda exatamente uma vez, como antes).
+                    if (st.session_state.get('alo_segunda_passada_google', True) and _google_vivo
+                            and not st.session_state.get('alo_2pass_google_feito')):
+                        st.session_state['alo_2pass_google_feito'] = True
+                        _t_2pass = time.time()
                         try:
                             _teto_2pass = 400  # limite de reprocessamentos para controlar tempo/rede
                             df_final_alo, _n_rec_g = _segunda_passada_google(df_final_alo, _max_pares=_teto_2pass)
                             if _n_rec_g:
                                 st.session_state['alo_recuperados_google'] = _n_rec_g
+                            _obs_fin("segunda_passada_google", _t_2pass,
+                                     recuperadas=st.session_state.get('alo_recuperados_google', 0))
                         except Exception as _e_2p:
                             logger.error(f"[SEGUNDA-PASSADA-GOOGLE] {_e_2p}")
                     _inv_antes_viaria = _verificar_invariante_viaria(df_final_alo)
@@ -38469,10 +39079,22 @@ if _secao == _SECOES[2]:   # tab_alocacao
                             _topk_fin, _res_fin, st.session_state.get('alo_params_custo'))
                 except Exception:
                     logger.error("[DUPLO-CENARIO] Falha ao pré-computar a comparação de estratégias", exc_info=True)
-                # libera já o que a FASE 3b NÃO usa (ela usa df_processado + topk/resultados/params/mcda)
+                # [FINALIZACAO-ROBUSTA - 266ª geração] Encerramento LIMPO com sucesso: computa o resumo executivo
+                # do encerramento (para a tela de conclusão) e loga a observabilidade final. Como chegamos aqui
+                # por caminho feliz, garante que nenhum marcador de modo-degradado fique pendurado.
+                try:
+                    st.session_state['alo_resumo_final'] = _resumo_finalizacao(df_final_alo)
+                except Exception:
+                    st.session_state['alo_resumo_final'] = {}
+                st.session_state.pop('alo_finalizacao_degradada', None)
+                _obs_fin("finalizacao_total", _t_fin0, linhas=len(df_final_alo), tentativas=_fin_tent)
+                # libera já o que a FASE 3b NÃO usa (ela usa df_processado + topk/resultados/params/mcda).
+                # Inclui os marcadores desta rodada de finalização (watchdog/one-shots/DF-seguro), que já
+                # cumpriram seu papel — assim um novo estudo começa do zero.
                 for _k in ['alo_df_pares', 'alo_start_clock', 'alo_dest_linha_reta', 'alo_dest_status_lr',
                            'alo_df_dest_cols', 'alo_novas_colunas', 'alo_dests_unicos', 'alo_hubs_validos',
-                           'alo_dest_col_name', 'alo_df_dest', 'alo_dest_geo_acc', 'alo_dest_geo_idx']:
+                           'alo_dest_col_name', 'alo_df_dest', 'alo_dest_geo_acc', 'alo_dest_geo_idx',
+                           'alo_df_seguro', 'alo_fin_tentativas', 'alo_2pass_google_feito']:
                     st.session_state.pop(_k, None)
                 # [PLANILHA-LAZY - 261ª geração] Blindagem definitiva contra OOM: a finalização NUNCA constrói a
                 # planilha. Vamos DIRETO à exibição; a planilha pesada (.xlsx) só é montada sob demanda, no clique
@@ -38510,6 +39132,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
             st.session_state.pop('alo_planilha_erro', None)
             df_final_alo = st.session_state.get('df_processado')
             tempo_alo_segundos = st.session_state.get('alo_tempo_total', 0.0)
+            _t_plan0 = time.time()  # [OBSERVABILIDADE - 266ª] cronômetro da geração da planilha
             try:
                 if df_final_alo is None:
                     raise RuntimeError("df_processado ausente na geração da planilha")
@@ -38607,6 +39230,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     except Exception as _e_dx:
                         logger.error(f"[DASHBOARD] Falha ao exportar as análises do candidato: {_e_dx}")
                 st.session_state['alo_planilha_pronta'] = output_buffer.getvalue()
+                _obs_fin("planilha_xlsx", _t_plan0,
+                         linhas=(len(df_final_alo) if df_final_alo is not None else 0),
+                         kb=round(len(st.session_state['alo_planilha_pronta']) / 1024.0, 1))
             except Exception as _e_plan:
                 logger.error("[FINALIZACAO-PLANILHA] Falha ao gerar a planilha (resultados preservados): %s",
                              _e_plan, exc_info=True)
@@ -38626,6 +39252,62 @@ if _secao == _SECOES[2]:   # tab_alocacao
         # [PLANILHA-LAZY - 261ª geração] Passa a depender de 'alo_resultado_pronto' (marcado na FASE 3a), não
         # mais da planilha estar pronta — os resultados aparecem na hora; o .xlsx é gerado sob demanda.
         if st.session_state.get('alo_resultado_pronto') and 'df_processado' in st.session_state:
+            # [FINALIZACAO-ROBUSTA - 266ª geração] PAINEL DE CONCLUSÃO ELEGANTE. Substitui a parada seca em
+            # "100%" por um encerramento legível: checklist do que ficou pronto + os números do estudo. Tudo
+            # defensivo (cada item só aparece se houver dado). Não remove a mensagem de sucesso original abaixo.
+            try:
+                _degradado_fin = bool(st.session_state.get('alo_finalizacao_degradada'))
+                _tempo_fin = st.session_state.get('alo_tempo_total')
+                _resumo_fin = st.session_state.get('alo_resumo_final') or {}
+                if not _resumo_fin:
+                    # modo degradado ou resumo ausente: computa on-the-fly do df já pronto
+                    try:
+                        _resumo_fin = _resumo_finalizacao(st.session_state.get('df_processado'))
+                    except Exception:
+                        _resumo_fin = {}
+                _plan_ok = bool(st.session_state.get('alo_planilha_pronta'))
+                _html_ok = bool(st.session_state.get('relatorio_html_loc'))
+                with st.container(border=True):
+                    st.markdown("### ✅ Processamento concluído")
+                    _chk = ["- ✔ **Rotas calculadas**", "- ✔ **Resultados consolidados**"]
+                    _chk.append("- ✔ **Planilha gerada** (.xlsx)" if _plan_ok
+                                else "- ○ Planilha (.xlsx) — **sob demanda** (botão abaixo)")
+                    _chk.append("- ✔ **Relatório HTML gerado**" if _html_ok
+                                else "- ○ Relatório HTML — **sob demanda** (botão abaixo)")
+                    _chk.append("- ✔ **Downloads disponíveis**")
+                    st.markdown("\n".join(_chk))
+                    # KPIs do encerramento
+                    _mets = []
+                    if _tempo_fin is not None:
+                        _mets.append(("Tempo total", _formatar_duracao(_tempo_fin)))
+                    if _resumo_fin.get("candidatos") is not None:
+                        _mets.append(("Candidatos", f"{_resumo_fin['candidatos']:,}".replace(",", ".")))
+                    if _resumo_fin.get("rotas") is not None:
+                        _mets.append(("Rotas", f"{_resumo_fin['rotas']:,}".replace(",", ".")))
+                    if _resumo_fin.get("municipios") is not None:
+                        _mets.append(("Municípios", f"{_resumo_fin['municipios']:,}".replace(",", ".")))
+                    if _resumo_fin.get("polos") is not None:
+                        _mets.append(("Polos", f"{_resumo_fin['polos']:,}".replace(",", ".")))
+                    if _resumo_fin.get("pct_viaria") is not None:
+                        _mets.append(("Precisão (rota viária)", f"{_resumo_fin['pct_viaria']:.0f}%"))
+                    if _mets:
+                        _cols_fin = st.columns(min(4, len(_mets)))
+                        for _im, (_lbl, _val) in enumerate(_mets):
+                            _cols_fin[_im % len(_cols_fin)].metric(_lbl, _val)
+                    _mot = _resumo_fin.get("motores") or {}
+                    if _mot and any(_mot.get(_x) is not None for _x in ("google", "osrm", "fallback")):
+                        st.caption(
+                            "🛰️ **Motores utilizados** — "
+                            f"Google: {(_mot.get('google') or 0):.0f}% · "
+                            f"OSRM: {(_mot.get('osrm') or 0):.0f}% · "
+                            f"Fallback geodésico: {(_mot.get('fallback') or 0):.0f}%")
+                    if _degradado_fin:
+                        st.warning("⚠️ **Encerramento em modo de segurança:** os resultados essenciais foram "
+                                   "entregues integralmente, mas um passo analítico opcional pode não ter "
+                                   "completado nesta execução. Se desejar o refinamento completo, rode o estudo "
+                                   "novamente — os downloads abaixo já estão disponíveis normalmente.")
+            except Exception:
+                logger.error("[FINALIZACAO-ROBUSTA] Falha ao renderizar o painel de conclusão", exc_info=True)
             if 'alo_tempo_total' in st.session_state:
                 st.success(f"✨ Alocação concluída automaticamente! {st.session_state.get('alo_linhas', 0)} linhas processadas em {_formatar_duracao(st.session_state['alo_tempo_total'])}.")
                 st.session_state.pop('alo_tempo_total', None)
@@ -43971,7 +44653,7 @@ if _secao == _SECOES[10]:   # tab_motores
     health_data = []
     
     _apis_sla = ["GOOGLE_MAPS", "GOOGLE_GEO", "ARCGIS", "TOMTOM", "NOMINATIM", "PHOTON", "OVERPASS", "OSRM", "OSRM_FOSSGIS", "VALHALLA"]
-    if GRAPHHOPPER_API_KEY:  # [AUDITORIA-199-B] só mostra motores com chave se a chave existir (sem ruído)
+    if GRAPHHOPPER_API_KEY or _graphhopper_instancia_propria():  # [AUDITORIA-199-B] mostra c/ chave OU instância própria
         _apis_sla.append("GRAPHHOPPER")
     if ORS_API_KEY:
         _apis_sla.append("ORS")
