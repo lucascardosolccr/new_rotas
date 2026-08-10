@@ -1,5 +1,5 @@
 # ==============================================================================
-# VERSÃO: 3.30
+# VERSÃO: 3.37
 # DATA: 2026-08
 # DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
 #            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
@@ -63,6 +63,213 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.40 (277a geracao) -> LINGUAGEM DO DOMINIO EM TEXTOS VISIVEIS + AUDITORIA UX/UI (rodada de UX, SEGURA)
+#     Rodada de UX pedida no brief. HONESTIDADE DE ESCOPO: o app ja e MUITO didatico (renderizar_guia_aba entrega,
+#     em cada aba, um guia "Como usar" completo; ha glossario, enciclopedia e auditoria XAI). E ha uma restricao
+#     real: este ambiente NAO renderiza Streamlit, entao uma reforma visual/navegacao as cegas violaria a regra
+#     no 1 (zero regressao) -- o proprio historico registra que mudancas de HTML/nav causaram o removeChild. Por
+#     isso esta leva NAO mexe em CSS/navegacao/componentes; entrega o que e SEGURO e VERIFICAVEL:
+#       - LINGUAGEM DO DOMINIO (secao 3 do brief): a app usava vocabulario de LOGISTICA COMERCIAL em textos
+#         visiveis (entregas, deposito, centros de distribuicao/CD, frete, mercadoria, "porta do cliente").
+#         Corrigidos 11 textos de PROSE PURA (guias + narrativas + help/labels) para a linguagem correta:
+#         candidato, municipio de origem, local de aplicacao da prova, deslocamento. SEGURANCA: so literais de
+#         exibicao, sem tocar placeholders de f-string, chaves de dict, nomes de coluna exportados nem
+#         session_state. Verificado por contagem: chaves de dict "hub", colunas "UF Cliente"/"UF Hub"/"IGQ Hub"/
+#         "Justificativa Hub" e chaves alo_hub* INALTERADAS.
+#       - NAO FEITO DE PROPOSITO (documentado na auditoria): o rename coordenado de hub->polo/local e das COLUNAS
+#         "UF Cliente"/"UF Hub" etc. e alto valor mas alto risco (quebra exportacoes e logica de alocacao) e EXIGE
+#         o loop de renderizacao/exportacao do dono. Recomendado, nao executado as cegas.
+#     ENTREGA PARALELA: AUDITORIA_UXUI_V277.md -- auditoria de UX/UI completa (problemas + roteiro do trabalho
+#     visual/nav que precisa de renderizacao), como o brief pede no resumo final.
+#     Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports de topo identicos, 0 funcao
+#     nova/removida, requirements INALTERADO. Suite test_linguagem_dominio.py (exit 0).
+#   v3.39 (276ª geração) → 📒 LIVRO-RAZÃO DE RASTREABILIDADE + RODADA 3 (PERFORMANCE) MEDIDA E HONESTA\n#     RODADA 3 (performance): perfilei os candidatos reais e a conclusão honesta é que o caminho QUENTE já está\n#     otimizado — _regex_palavra já é @lru_cache (203ª), MotorEnderecoCanônico é singleton de módulo (regex no\n#     import), .apply/closures restantes rodam 1×/estudo ou em caminho frio. O único desperdício medido (chave\n#     do cache da aba Analytics via to_json, ~56ms/rerun em 50k linhas) foi DESCARTADO com transparência: o\n#     conserto guardaria ~15MB de JSON em session_state permanentemente — e o requirements documenta que a\n#     pressão de memória no Streamlit Cloud alimenta o removeChild/restart. Trocar 42ms/rerun por 15MB fixos\n#     FERE "jamais sacrifique memória/confiabilidade por velocidade". Zero mudança de performance nesta leva.\n#     ENTREGA DE VALOR (Oportunidade 1 da auditoria R1): LIVRO-RAZÃO DE RASTREABILIDADE — nova exportação\n#     auditável, 1 linha por rota, consolidando motor que respondeu, motores consultados, divergência entre\n#     motores, motivo, confiança, tempos por etapa e status. É PROJEÇÃO READ-ONLY do df final (mesma filosofia\n#     da coluna Situação do Cálculo): não recalcula nada, não acessa rede, deriva só de colunas já existentes.\n#     Aditivo e defensivo (df None/vazio/colunas ausentes -> nunca levanta). UI contida na aba Auditoria\n#     (expander + preview + download .csv utf-8-sig). +2 funções puras, +2 constantes, +1 bloco de UI.\n#     TESTES: nova suíte test_livro_razao.py (pandas real, sem runtime Streamlit) — deriva livro-razão de um df\n#     sintético e valida colunas, motores consultados, níveis de confiança, defensividade e CSV. Invariantes:\n#     RotaPipeline 43, _SECOES 14, balões 1×, bare-except 0, imports de topo idênticos, requirements INALTERADO.\n#   v3.38 (275ª geração) → 🔊 OBSERVABILIDADE DOS SILÊNCIOS DE TELEMETRIA (R2 do plano de evolução)
+#     Rodada 2 do brief de auditoria — correções de MAIOR valor e MENOR risco, 100% ADITIVAS. A auditoria R1
+#     (AUDITORIA_R1_V274.md) concluiu, com honestidade, que o app já é maduro: 0 except nu, 0 API Streamlit
+#     descontinuada, 0 chave hardcoded, 0 função morta, iterrows só em caminho frio, e já tem correção auto
+#     de lat/lon trocada + detecção de rota suspeita (Tukey). Portanto R2 NÃO reescreve nada — fecha 3 lacunas:
+#       • ACHADO A (observabilidade): dos 219 `except: pass`, a MAIORIA é fallback de rede LEGÍTIMO (logar seria
+#         ruído — mantidos). Só os 4 que engoliam ESCRITAS DE OBSERVABILIDADE passaram a `logger.debug(exc_info)`:
+#         reset e registro de _TELEMETRIA (latência por rota), concordância GOOGLE_GEO e telemetria multi-motor.
+#         Fluxo BYTE-IDÊNTICO (o except ainda engole a exceção e segue); só o painel de auditoria deixa de
+#         subnotificar em silêncio. `except: pass` 219 → 215. bare-except segue 0.
+#       • ACHADO C (documentação): comentário explicando que "componente == 0.0 = coordenada ausente" é
+#         suposição deliberada e SEGURA para a bbox do Brasil. NENHUMA mudança de comportamento.
+#       • ACHADO B (requirements): cabeçalho re-datado ("auditado até a 275ª; inalterado desde a 142ª").
+#         DEPENDÊNCIAS INALTERADAS — nenhuma inclusão/remoção/atualização.
+#     Invariantes preservados: RotaPipeline 43, _SECOES 14, balões 1×, bare-except 0, imports de topo
+#     idênticos ao baseline, nenhuma função nova, nenhuma função removida.
+#   v3.37 (274ª geração) → 🔎 AUDITORIA (R1) + OBSERVABILIDADE DOS SILÊNCIOS (R2) + INTEGRAÇÃO DADO→EXPORT
+#     Rodada 1 (auditoria estratégica pedida no brief): mapeei as ~45,7k linhas e concluí, com honestidade, que
+#     o app já é MADURO e fortemente defendido — 55 funções de validação/consenso, detecção de troca lat/lon,
+#     consistência IBGE, disjuntores por motor, exportações profissionais, retomada em disco, etc. O entregável
+#     da auditoria é o documento AUDITORIA_R1_V273.md (backlog priorizado por valor×segurança, com recomendação
+#     EXPLÍCITA contra rewrites arriscados sem ganho medido — Polars/DuckDB/refatoração de funções grandes).
+#     Rodada 2 (correções de maior valor e menor risco):
+#       • OBSERVABILIDADE DOS SILÊNCIOS: triagem dos 223 `except: pass`. Achado honesto — a maioria é defensiva
+#         LEGÍTIMA (ex.: a cascata geodésica GeographicLib→Geopy→Haversine, onde logar seria ruído). Só os que
+#         escondiam uma verificação/aviso REAL foram tratados: o portão geográfico do consenso (fail-open) e 3
+#         diagnósticos de validação da planilha comparativa agora registram em `logger.debug` (exc_info) — sem
+#         mudar o fluxo. Erros que sumiam agora são rastreáveis.
+#       • LIMITAÇÃO declarada: um teste end-to-end que suba o app inteiro exige o runtime do Streamlit, que não
+#         instala neste ambiente. Entreguei o melhor teste de INTEGRAÇÃO DE COMPONENTE viável e real.
+#     TESTES: nova suíte test_integracao_export.py (15 checagens, exit 0) que liga a coluna de qualidade da 273ª
+#     ('Situação do Cálculo') ao styler institucional da 272ª e gera um .xlsx REAL (xlsxwriter), verificando com
+#     openpyxl que a coluna auditável chega à planilha legível, como TEXTO, sem mascarar zero, sem perder colunas
+#     e com o padrão institucional aplicado. As oito suítes anteriores (266ª–273ª) foram reapontadas ao V274 e
+#     seguem verdes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline, nenhuma função nova, requirements INALTERADO.
+#   v3.36 (273ª geração) → 🚦 "ZERO NUNCA É AUSÊNCIA SILENCIOSA": coluna 'Situação do Cálculo' nas planilhas
+#     Continuação do aprimoramento das planilhas, atacando o item mais crítico de CORREÇÃO do brief (#28/#29):
+#     uma rota não calculada virava Distancia=0.0 — indistinguível de um 0 REAL (origem = destino, prova na
+#     própria cidade). Mudar o número armazenado seria regressão grave (agregações, ordenação, cadeia de
+#     enriquecimento e abas de estatística assumem float). Solução SEGURA e ADITIVA: uma coluna nova, VETORIZADA
+#     e derivada só de colunas já existentes (Distancia, Fonte da Rota, Status da Rota, Municipio Origem/Destino),
+#     que rotula cada linha de forma auditável — SEM tocar em nenhum número:
+#       • ✓ Rota viária calculada
+#       • ≈ Estimativa em linha reta (sem rota viária disponível)   ← distingue estimada de efetivamente calculada
+#       • ✓ 0 km — mesmo município (prova na própria cidade)         ← 0 REAL, explicitamente marcado como válido
+#       • ⚠️ Distância não calculada — verificar (não é 0 real)      ← ausência NUNCA mascarada como 0
+#       • ⚠️ Não calculada (erro de processamento)
+#     Aplicada no builder COMPARTILHADO (_montar_dataframe_final) → cobre Lote e Alocação de uma vez, antes do
+#     downcast de dtypes (vira categórica de baixa cardinalidade). Defensiva: sem colunas/df vazio/None → não
+#     levanta. A coluna é auto-explicativa (o próprio texto explica), então aparece já legível na planilha.
+#     TESTES: nova suíte test_situacao_calculo.py (16 checagens, exit 0) com pandas real: os 5 casos rotulados
+#     corretamente; NÃO-REGRESSÃO (só 1 coluna nova, nenhum valor existente alterado, 0.0 continua 0.0);
+#     defensividade (colunas ausentes/vazio/None); e a fiação no builder. As sete suítes anteriores (266ª–272ª)
+#     foram reapontadas ao V273 e seguem verdes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline, +1 helper puro, requirements INALTERADO.
+#   v3.35 (272ª geração) → 📊 PLANILHAS EXCEL: FORMATAÇÃO NUMÉRICA INSTITUCIONAL + CONSISTÊNCIA NAS ABAS SECUNDÁRIAS
+#     Revisão do padrão das planilhas exportáveis. HONESTIDADE DE ESCOPO: a arquitetura de Excel já era madura
+#     (styler central _estilizar_tabela_xlsx com cabeçalho destacado, largura automática, congelamento,
+#     autofiltro, zebra e setup de impressão; capa; resumo executivo; metodologia; referências ABNT; glossário;
+#     dicionário de dados; painel executivo; gráficos nativos; estatísticas descritivas). Esta rodada NÃO
+#     reconstruiu isso — fez melhorias ADITIVAS e SEGURAS que faltavam, guiadas pela regra "zero não é falha" e
+#     não-regressão:
+#       • FORMATOS NUMÉRICOS COM UNIDADE na fábrica central (_fmt_institucional): 'km' (#,##0.0" km" →
+#         "187,4 km") e 'pct' (#,##0.0"%" → "32,0%"), somados aos já existentes 'int'/'num'. Valor inalterado —
+#         só a exibição (separadores conforme a localidade do Excel do usuário).
+#       • _estilizar_tabela_xlsx ganhou parâmetro OPT-IN `formatos_col`: aplica o formato numérico por coluna às
+#         células de dado. SEM ele, comportamento byte-idêntico ao anterior (não-regressão comprovada em teste).
+#       • _num_formatos_por_coluna: heurística CONSERVADORA (nome + dtype numérico) que só marca colunas de
+#         MEDIDA reconhecidas (distância→km, percentual→%, contagem→milhar) e IGNORA códigos/identificadores
+#         (IBGE, CEP, lat/lon) e numéricos ambíguos (ano, razão, score, sinuosidade) — evita "2.024,0" ou
+#         mascarar um código como "3.550.308".
+#       • CONSISTÊNCIA: as abas analíticas SECUNDÁRIAS do Lote (Resumo Executivo, Distribuição de Distâncias,
+#         Síntese por UF, Status das Rotas) — antes escritas como DataFrame CRU — passaram pelo MESMO styler
+#         institucional, com os formatos numéricos por coluna. As abas principais (Rotas do Lote, Locais da
+#         Alocação) e o helper reutilizável _escrever_aba_estilizada (Comparador + abas científicas) também
+#         passaram a aplicar os formatos numéricos automaticamente e de forma conservadora.
+#     TESTES: nova suíte test_excel_estilo.py (25 checagens, exit 0) que GERA um .xlsx real com o xlsxwriter (a
+#     partir do styler REAL extraído) e verifica com openpyxl: cabeçalho estilizado, congelamento, autofiltro,
+#     formatos km/%/milhar nas colunas certas, códigos IBGE preservados sem separador, valores íntegros, nº de
+#     colunas/linhas preservado, e a NÃO-REGRESSÃO (sem opt-in, nenhuma formatação numérica extra). As seis
+#     suítes anteriores (266ª–271ª) foram reapontadas ao V272 e seguem verdes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline, +1 helper puro, requirements INALTERADO.
+#   v3.34 (271ª geração) → ⚡ OTIMIZAÇÃO DE PERFORMANCE/MEMÓRIA DA FINALIZAÇÃO (guiada por medição, não por chute)
+#     Profilei a cadeia de encerramento antes de mexer. Achado honesto: ela já estava bem otimizada (normalizador
+#     memoizado, 14 enriquecedores vetorizados, itertuples consciente de RAM), então persegui só ganhos SEGUROS e
+#     MEDIDOS — e, no caminho, um BUG LATENTE de memória amplificado pelo próprio watchdog da 266ª:
+#       • LOG DE AUDITORIA (memória + correção): st.session_state['logs_auditoria'] era lazy-init e NUNCA
+#         limpo. Numa REENTRADA da finalização (o watchdog permite algumas tentativas) ou em vários estudos na
+#         mesma sessão, ele DUPLICAVA todas as N linhas (auditoria com cada linha repetida 2–6× e memória
+#         crescendo ~12MB por reentrada num estudo nacional). Agora é RESETADO a cada (re)construção do
+#         DataFrame — reflete exatamente o estudo atual, sem duplicatas, memória limitada a 1 estudo. Correção
+#         de bug + economia de dezenas de MB nos casos de reentrada/multi-estudo. (Tab Individual não usa a
+#         chave; o processador legado tem reset próprio — sem regressão.)
+#       • _grau_ambiguidade_homonimos (CPU): o cálculo IBGE + ordenação passou a ser MEMOIZADO por nome
+#         DISTINTO (núcleo _core que devolve TUPLA IMUTÁVEL — seguro p/ cache; a função pública devolve um dict
+#         NOVO a cada chamada). Chamado 2× por linha na finalização, com municípios repetindo muito → passa a
+#         computar 1× por nome. Saída BYTE-IDÊNTICA (verificado contra implementação de referência).
+#       • MEDIÇÕES QUE DESCARTEI (transparência): cachear _info_municipio_ibge ficou MAIS LENTO (0,52×) — não
+#         aplicado; eliminar as 11 cópias da cadeia de enriquecimento renderia ~0,23s/~11MB, mas exigiria mutar
+#         in-place com risco de regressão em outros chamadores (Lote/Individual) — NÃO aplicado sob a regra de
+#         não-regressão absoluta. Preferi honestidade a um ganho arriscado.
+#     TESTES: nova suíte test_perf_finalizacao.py (sem runtime Streamlit) — 11 checagens, exit 0: saída idêntica
+#     à referência; segurança do cache (dict sempre novo — mutar um não contamina o próximo); eficácia (1000×2
+#     chamadas → só 2 consultas à base); e a guarda de regressão do reset do log. As cinco suítes anteriores
+#     (266ª–270ª) foram reapontadas ao V271 e seguem verdes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline, +1 helper puro (núcleo memoizado), requirements INALTERADO.
+#   v3.33 (270ª geração) → 🔌 CIRCUIT BREAKER (DISJUNTOR) PARA TODOS OS MOTORES — corta lentidão/timeout na origem
+#     Ataque a MONTANTE das redes de segurança das rodadas anteriores: em vez de só absorver a lentidão, evita
+#     que ela aconteça. O Google já tinha disjuntor; os demais motores (OSRM primário, GraphHopper, ORS,
+#     OSRM/FOSSGIS, Valhalla) NÃO — então, quando um deles saía do ar ou degradava, CADA rota do lote pagava o
+#     timeout inteiro dele, injetando a lentidão que alimentava os timeouts de WebSocket e os pulos de janela.
+#       • DISJUNTOR GENÉRICO reusando a MÁQUINA DE ESTADOS CONSAGRADA do Google (_circuit_breaker_google — pura,
+#         padrão Nygard "Release It!"), uma instância por motor, protegida por lock (chamadas vêm de várias
+#         threads do pool). Falhas em série → ABRE → o motor é PULADO por um cooldown (~45s), enquanto os demais
+#         motores + fallback geodésico assumem; após o cooldown, uma chamada de teste (meio-aberto) o recupera
+#         automaticamente. Limiar 5 falhas seguidas; sucesso zera o contador.
+#       • FIAÇÃO no dispatch multi-motor: OSRM primário (guarda no submit ao pool + no fallback serial, com
+#         registro do resultado) e GraphHopper/ORS/OSRM_FOSSGIS/Valhalla via _chamar_motor_cb (pula se aberto,
+#         registra sucesso/falha, isola exceção → None). Helpers novos: _motor_pode_chamar, _motor_registrar,
+#         _chamar_motor_cb, _motor_sucesso_rota, _motor_cb_status_resumo (telemetria de status/skips).
+#       • OBSERVABILIDADE: log WARNING quando um motor ABRE (começa a ser pulado) e INFO quando RECUPERA;
+#         contador de chamadas puladas por motor (para um futuro painel de telemetria).
+#       • NÃO-REGRESSÃO byte-a-byte quando os motores estão saudáveis: disjuntor fechado é 100% transparente;
+#         sem falhas em série, nada é pulado. Motores opcionais desligados continuam None como antes.
+#     TESTES: nova suíte test_disjuntor_motores.py (sem runtime Streamlit) — 31 checagens, exit 0: _motor_sucesso_
+#     rota; a máquina completa (fecha→abre em 5 falhas→cooldown→meio-aberto→recupera; sucesso intercalado zera o
+#     contador); _chamar_motor_cb (pula quando aberto sem chamar a func, registra quando fechado, isola exceção);
+#     isolamento por motor; smoke de concorrência (8 threads); e a fiação no dispatch. As quatro suítes anteriores
+#     (266ª–269ª) foram reapontadas ao V270 e seguem verdes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline, +5 helpers puros, requirements INALTERADO.
+#   v3.32 (269ª geração) → 💾 CHECKPOINT EM DISCO + RETOMADA DE ESTUDO (sobrevive a refresh/queda/restart)
+#     Último grande gap de confiabilidade: o estado do estudo vivia só em st.session_state — POR SESSÃO e POR
+#     PROCESSO. Um refresh do navegador, uma queda de conexão longa ou um restart do servidor (deploy, OOM)
+#     PERDIAM um estudo nacional inteiro em andamento, obrigando a recomeçar o roteamento do zero (minutos de
+#     chamadas de rede jogados fora). Agora o progresso é PERSISTIDO em disco de forma incremental e a app
+#     oferece RETOMAR de onde parou. Tudo aditivo e defensivo (rede de segurança, nunca caminho crítico):
+#       • 7 helpers de checkpoint (_ckpt_dir/_salvar/_snapshot/_carregar/_apagar/_restaurar/_info_retomavel),
+#         definidos ANTES de todas as abas. Persistem via diskcache.Cache (dependência JÁ existente — zero dep
+#         nova) num diretório PERSISTENTE (./cache_checkpoints, padrão dos caches do app; /tmp seria apagado no
+#         próprio restart que queremos cobrir).
+#       • SNAPSHOT incremental e THROTTLED (~15s) do progresso a cada passada de roteamento, nas DUAS abas
+#         (Lote: prefixo 'lote_'; Alocação: prefixo 'alo_', na fase cara de roteamento). Captura tudo que a
+#         retomada precisa (resultados já calculados, índice, tarefas, insumos, fase).
+#       • CARTÃO DE RETOMADA no topo de cada aba: se houver estudo interrompido compatível, mostra
+#         "X/Y rotas (Z%), interrompido há …" com botões ▶️ Retomar de onde parou / 🗑️ Descartar.
+#       • COMPATIBILIDADE POR VERSÃO: só retoma checkpoint gravado pela MESMA _VERSAO_APP (evita restaurar
+#         estado incompatível após um deploy). Checkpoint APAGADO em conclusão, cancelamento e novo estudo.
+#     TESTES: nova suíte test_checkpoint_retomada.py (sem runtime Streamlit; Cache falso) — 30 checagens, exit 0:
+#     round-trip salvar→carregar→restaurar, snapshot só do prefixo certo, rejeição por versão incompatível,
+#     throttle, recusa de estudo vazio/concluído, defensividade e a fiação no app (snapshot/deleção/cartões).
+#     As três suítes anteriores (266ª/267ª/268ª) foram reapontadas ao V269 e seguem verdes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline (Cache já era importado; tempfile/os locais), +7 helpers puros, requirements INALTERADO.
+#   v3.31 (268ª geração) → 🛡️ BLINDAGEM ANTI-TRAVA DO PROCESSAMENTO (não só do encerramento) + FIX CRÍTICO DE ORDEM
+#     As rodadas 266ª/267ª mataram a trava na FINALIZAÇÃO das duas abas. Esta fecha os vetores de trava que
+#     restavam DURANTE o processamento — para que o problema jamais volte, venha de onde vier:
+#       • ESPERA DE CHUNK COM ORÇAMENTO DE TEMPO: processar_chunk_rotas passou a aguardar os Futures com
+#         as_completed(timeout=...). Cada rota já tinha timeout de HTTP, mas um Future que nunca completa
+#         (worker saturado, fila de motor presa) fazia a espera ser INFINITA — travando a execução, derrubando
+#         o WebSocket e reentrando no mesmo chunk a cada reconexão (a "trava no meio do processamento"). Agora a
+#         função SEMPRE retorna em tempo limitado; o que não concluir é adiado (fallback geodésico + 2ª passada
+#         de recuperação na finalização). Orçamento generoso (_CHUNK_WAIT_*): nunca abandona chunk saudável.
+#       • WATCHDOG DE ESTAGNAÇÃO (_watchdog_progresso): detector por parede aplicado aos laços do Lote
+#         (processamento e pré-aquecimento). Se o índice fica preso além do orçamento (execuções mortas pelo
+#         WebSocket na mesma janela), PULA a janela travada e DURABILIZA o avanço na hora — garante progresso
+#         mesmo que a execução seguinte também seja interrompida. Rotas puladas caem no fallback; um aviso de
+#         resiliência informa quantas. (A aba de Alocação já tinha proteção equivalente por contagem — mantida.)
+#       • PRÉ-AQUECIMENTO do Lote: a onda de geocodificação também passou a esperar com orçamento — geocode
+#         preso não segura mais a etapa (pendências reprocessam na próxima passada, idempotente).
+#       • FIX CRÍTICO DE ORDEM (NameError latente): os helpers de finalização (usados pela aba de Lote desde a
+#         267ª) estavam definidos DEPOIS da aba de Lote no arquivo. Como o Streamlit executa de cima para baixo,
+#         um Lote em finalização chamaria _obs_fin/_resumo_finalizacao/_render_checklist_finalizacao antes de
+#         existirem → NameError em produção. Realocados para ANTES de TODAS as abas. Nova checagem de regressão
+#         de ORDEM na suíte garante que isso nunca mais aconteça.
+#     TESTES: nova suíte test_antitrava_processamento.py (sem runtime Streamlit) — 35 checagens, exit 0: testa o
+#     _watchdog_progresso real (avanço normal, estagnação curta×longa, pulo com teto, novo estudo sem pulo falso,
+#     fases independentes, defensivo), a semântica da espera com orçamento (chunk saudável, com preso, todo
+#     preso → jamais infinito), a presença dos timeouts no código e a ORDEM de definição dos helpers. As três
+#     suítes anteriores (Alocação 266ª, Lote 267ª) foram reapontadas ao V268 e seguem verdes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
+#     baseline (TimeoutError de futures importado LOCALMENTE), +1 helper puro, requirements INALTERADO.
 #   v3.30 (267ª geração) → 🧯 FINALIZAÇÃO ROBUSTA NA ABA DE LOTE (mesmo padrão da Alocação/266ª) + PLANILHA DESACOPLADA
 #     Estende à aba "Estudo em Lote" a blindagem de encerramento criada na 266ª para a Alocação. A finalização
 #     do Lote tinha o MESMO padrão de trava (todo o trabalho pesado — montagem + enriquecimento — numa passada
@@ -5504,7 +5711,7 @@ _GUIA_ABAS = {
         "preenchimento": "1. Clique em **Selecionar Arquivo Excel** e escolha sua planilha.\n        2. Confira a mensagem de validação (verde = pronto).\n        3. (Opcional) Informe seu nome/matrícula.\n        4. Clique **uma única vez** em **Iniciar Processamento em Lote** e acompanhe a barra de progresso.",
         "apos_executar": "O processamento é **contínuo e automático**: após um único clique, o sistema pré-aquece a geocodificação e processa todas as rotas até o fim **sem precisar clicar de novo**. Ele extrai apenas as rotas **únicas** (evita recalcular repetidas), processa várias em paralelo em execuções curtas (para nunca cair a conexão) e reaproveita o cache. Ao terminar, mostra um Scorecard de Qualidade.",
         "interpretar": "Cada linha vira um deslocamento auditado: distância do candidato ao local de prova, tempo estimado, travessia por balsa, e a **Integridade Geográfica** (100 = identificação confiável). Confira o painel de homônimos antes de usar os números.",
-        "exemplos": "Uma planilha com 2.000 linhas de entregas: coluna Origem = endereço do depósito, coluna Destino = endereço do cliente.",
+        "exemplos": "Uma planilha: coluna Origem = município de origem dos candidatos, coluna Destino = local de aplicação da prova. O sistema calcula o deslocamento de cada origem até seu local de prova.",
         "erros_comuns": "Planilha sem a sigla do estado nos municípios (risco de homônimo); coluna errada selecionada; municípios escritos só pela primeira palavra (“São Miguel” em vez de “São Miguel do Araguaia”).",
         "dicas": "Você **não precisa** ficar clicando: o lote continua sozinho até concluir, mesmo com dezenas de milhares de linhas. Rotas repetidas entre lotes são reaproveitadas automaticamente. Limite atual: 100.000 linhas por arquivo.",
     },
@@ -5513,11 +5720,11 @@ _GUIA_ABAS = {
         "quando_usar": "Quando você precisa decidir **onde aplicar a prova**: você tem os municípios onde moram os candidatos e uma lista de polos possíveis (escolas/unidades aplicadoras), e quer saber qual polo atende melhor cada município.",
         "dados": "Duas planilhas: (1) os **municípios de origem dos candidatos**; (2) os **polos de aplicação** candidatos (municípios, escolas ou unidades aplicadoras). Cada um pode ser nome, coordenadas ou Código IBGE.",
         "preenchimento": "1. Envie a planilha de **municípios de candidatos** no primeiro campo.\n        2. Envie a planilha de **polos de aplicação** no segundo.\n        3. Selecione a coluna correta de cada arquivo.\n        4. Se quiser a decisão pelo deslocamento REAL (e não só linha reta), marque **multicritério**.\n        5. Clique em **Definir Melhores Locais de Aplicação**.",
-        "apos_executar": "Para cada cliente, o sistema mede a distância até todas as bases, escolhe a mais próxima (vizinho mais próximo geográfico) e ainda mostra qual seria a segunda opção, com a justificativa da escolha.",
+        "apos_executar": "Para cada município de origem, o sistema mede a distância até todos os locais de prova candidatos, escolhe o mais próximo (vizinho mais próximo geográfico) e ainda mostra qual seria a segunda opção, com a justificativa da escolha.",
         "interpretar": "Para cada município de candidatos, o sistema recomenda um **local de aplicação** e mostra a **alternativa** (2º melhor). A justificativa explica sob a ótica do candidato: menor tempo de deslocamento, sem travessia por balsa, melhor acessibilidade viária.",
-        "exemplos": "10 centros de distribuição × 500 clientes → o sistema descobre o CD ideal para cada um dos 500.",
+        "exemplos": "10 locais de prova candidatos × 500 municípios de origem → o sistema descobre o local de aplicação ideal para cada um dos 500.",
         "erros_comuns": "Trocar as planilhas de lugar (candidatos no campo dos polos); esquecer a UF dos municípios; usar só linha reta quando há balsa na região — um polo “mais perto” pode exigir travessia e ser pior para o candidato.",
-        "dicas": "Use nomes de cidade com a sigla do estado nas bases para máxima precisão. O número de combinações cresce rápido (clientes × bases) — comece com listas menores para testar.",
+        "dicas": "Use nomes de cidade com a sigla do estado nos locais de prova para máxima precisão. O número de combinações cresce rápido (municípios de origem × locais de prova) — comece com listas menores para testar.",
     },
     "comparador": {
         "o_que_faz": "Compara, com rigor de auditoria, a distribuição de candidatos que a **sua aplicação** produziu (aba Locais de Aplicação) com uma **base de referência externa** — e mostra, município a município, qual das duas leva o candidato mais perto do local de prova.",
@@ -5550,11 +5757,11 @@ _GUIA_ABAS = {
         "interpretar": "A tabela mostra o resultado por grupo; o gráfico ilustra visualmente. Você pode baixar tudo em Excel (inclusive com o gráfico embutido).",
         "exemplos": "Agrupar por 'Regiao_Sintetica_Origem' + Média de 'Distancia' = distância média de cada região.",
         "erros_comuns": "Aplicar operações numéricas (Soma/Média) em colunas de texto; esquecer de processar um lote antes.",
-        "dicas": "Use 'Contagem Distinta' para descobrir quantos municípios/clientes únicos existem em cada grupo. Exporte a 'Multi-Abas' para entregar à chefia.",
+        "dicas": "Use 'Contagem Distinta' para descobrir quantos municípios de origem únicos existem em cada grupo. Exporte a 'Multi-Abas' para apresentar à chefia.",
     },
     "classificacao": {
         "o_que_faz": "Tem **duas ferramentas**: (1) agrupa municípios em **faixas personalizadas** (ex: 'Cidades Críticas', 'Normais') por distância ou volume, gerando uma tabela mestre de segmentação; e (2) um **Ranking Multi-Indicador por Rota** que ordena e filtra rota a rota por dezenas de indicadores logísticos derivados (sinuosidade, tempo/km, velocidade média, diferença viária−reta, scores...).",
-        "quando_usar": "Use as **faixas** para criar regras de frete por distância/volume. Use o **Ranking Multi-Indicador** para achar gargalos, rotas anômalas (muito sinuosas, muito lentas) e comparar desempenho entre motores.",
+        "quando_usar": "Use as **faixas de distância** para agrupar os municípios de origem por quanto o candidato precisa se deslocar. Use o **Ranking Multi-Indicador** para achar gargalos, rotas anômalas (muito sinuosas, muito lentas) e comparar desempenho entre motores.",
         "dados": "Usa o último lote processado. Nas faixas você define os limites; no ranking você escolhe o indicador de ordenação, o critério de desempate e os filtros.",
         "preenchimento": "1. Escolha a base da classificação (Distância ou Volume) e edite as faixas (limites, rótulos, cores).\n        2. Role até o **Ranking Multi-Indicador por Rota**: escolha o critério principal (ex: Índice de Sinuosidade), um desempate opcional, a ordem (crescente/decrescente) e filtre por motor vencedor / UF / top N.",
         "apos_executar": "As faixas geram mapa temático + tabela de segmentação. O ranking gera uma tabela ordenável com todos os indicadores derivados e **botões de download (CSV e XLSX)** dos dados que originaram o ranking.",
@@ -6343,7 +6550,7 @@ def _narrativa_storytelling_alocacao(df):
         _rec.append("Consultar o <b>Dashboard BI</b> no topo deste relatório para filtrar por estado, faixa "
                     "de distância ou qualidade da rota e investigar qualquer recorte de interesse.")
         _rec.append("Usar o <b>Comparador de Estudos</b> para medir este resultado contra estudos de "
-                    "referência e confirmar onde a aplicação já entrega o menor deslocamento.")
+                    "referência e confirmar onde a aplicação já oferece o menor deslocamento.")
 
         def _lista(itens):
             return "<ul style='margin:6px 0 0;padding-left:20px'>" + "".join(
@@ -10293,7 +10500,7 @@ def renderizar_scorecard_qualidade(df_resultado):
               help="Percentual de rotas em que origem E destino foram localizados com sucesso na malha geográfica.")
     c2.metric("Alta Confiança (≥80)", f"{excelente + boa}",
               delta=f"{round(100*(excelente+boa)/total,1)}% do total" if total else "0%",
-              help="Rotas com score de confiança igual ou superior a 80 — mercadoria chega à porta correta.")
+              help="Rotas com score de confiança igual ou superior a 80 — o candidato chega ao local de aplicação correto.")
     c3.metric("Requerem Revisão (<70)", f"{revisar}",
               delta=f"-{round(100*revisar/total,1)}%" if total else "0%", delta_color="inverse",
               help="Rotas com baixa confiança que merecem checagem manual do endereço.")
@@ -10494,6 +10701,92 @@ COLUNAS_NUMERICAS_ALOCACAO = COLUNAS_NUMERICAS_PADRAO + [
     'Divergencia Motores Concorrente (km)', 'Divergencia Motores Concorrente (%)',
     'Score Geo Concorrente', 'Snap Concorrente (m)'
 ]
+
+# ==============================================================================
+# [LIVRO-RAZAO-R3 276ª geração] LIVRO-RAZÃO DE RASTREABILIDADE
+# ------------------------------------------------------------------------------
+# Consolida, em UMA tabela auditável, a proveniência de CADA rota: motor que
+# respondeu, motores consultados, divergência entre motores, método/motivo,
+# confiança, tempos por etapa e status. É uma PROJEÇÃO READ-ONLY do df final —
+# NÃO recalcula nada, NÃO acessa rede (mesma filosofia da coluna 'Situação do
+# Cálculo'). Aditivo e defensivo: df None/vazio ou colunas ausentes nunca levantam.
+# ==============================================================================
+_LIVRO_RAZAO_COLS = [
+    ("Município Origem", ["Municipio Origem", "Endereco Oficial Origem"]),
+    ("Município Destino", ["Municipio Destino", "Endereco Oficial Destino"]),
+    ("Distância Viária (km)", ["Distancia"]),
+    ("Linha Reta (km)", ["Linha Reta"]),
+    ("Tempo", ["Tempo"]),
+    ("Motor que Respondeu", ["Fonte da Rota"]),
+    ("Motivo do Roteamento", ["Motivo Roteamento"]),
+    ("Distância Google (km)", ["Distancia Google (km)"]),
+    ("Distância OSRM (km)", ["Distancia OSRM (km)"]),
+    ("Distância GraphHopper (km)", ["Distancia GraphHopper (km)"]),
+    ("Distância Valhalla (km)", ["Distancia Valhalla (km)"]),
+    ("Divergência entre Motores (km)", ["Diferenca Motores (km)"]),
+    ("Divergência entre Motores (%)", ["Diferenca Motores (%)"]),
+    ("Score da Rota", ["Score da Rota", "Score Final Global"]),
+    ("Confiança Geo Origem", ["Confianca Origem"]),
+    ("Confiança Geo Destino", ["Confianca Destino"]),
+    ("Fonte Geo Origem", ["Fonte Geocoding Origem"]),
+    ("Fonte Geo Destino", ["Fonte Geocoding Destino"]),
+    ("Tempo Geocodificação (s)", ["Tempo Geocoding (s)"]),
+    ("Tempo Roteamento (s)", ["Tempo Roteamento (s)"]),
+    ("Tempo Total (s)", ["Tempo Total (s)"]),
+    ("Balsa", ["Balsas"]),
+    ("Status da Rota", ["Status da Rota"]),
+    ("Status Linha Reta", ["Status Linha Reta"]),
+    ("Situação do Cálculo", ["Situação do Cálculo"]),
+]
+_LIVRO_RAZAO_MOTORES = [
+    ("Google", "Distancia Google (km)"), ("OSRM", "Distancia OSRM (km)"),
+    ("GraphHopper", "Distancia GraphHopper (km)"), ("Valhalla", "Distancia Valhalla (km)"),
+]
+
+
+def _montar_livro_razao_rastreabilidade(df):
+    """Projeção READ-ONLY do df final -> livro-razão de rastreabilidade por rota.
+    Não recalcula nada, não acessa rede. Defensivo: nunca levanta (retorna df vazio em erro)."""
+    _cols_saida = [c[0] for c in _LIVRO_RAZAO_COLS] + ["Motores Consultados", "Nível de Confiança"]
+    try:
+        if df is None or len(df) == 0:
+            return pd.DataFrame(columns=_cols_saida)
+        _presentes_cols = set(df.columns)
+        _lr = pd.DataFrame(index=df.index)
+        for _destino, _origens in _LIVRO_RAZAO_COLS:
+            _src = next((c for c in _origens if c in _presentes_cols), None)
+            if _src is not None:
+                _lr[_destino] = df[_src].values
+        # Motores consultados: motores cuja coluna de distância tem valor > 0 nesta rota (vetorizado, sem apply).
+        _mot = [(nm, col) for nm, col in _LIVRO_RAZAO_MOTORES if col in _presentes_cols]
+        if _mot:
+            _cols_txt = []
+            for _nm, _col in _mot:
+                _m = pd.to_numeric(df[_col], errors="coerce").fillna(0.0).values > 0
+                _cols_txt.append(np.where(_m, _nm, ""))
+            _stack = list(zip(*_cols_txt)) if _cols_txt else []
+            _lr["Motores Consultados"] = [", ".join(x for x in _row if x) for _row in _stack]
+        # Nível de confiança a partir do score (vetorizado).
+        _score_col = next((c for c in ("Score da Rota", "Score Final Global") if c in _presentes_cols), None)
+        if _score_col is not None:
+            _s = pd.to_numeric(df[_score_col], errors="coerce")
+            _niv = np.select([_s >= 80, _s >= 50], ["Alta", "Média"], default="Baixa").astype(object)
+            _niv[_s.isna().values] = "—"
+            _lr["Nível de Confiança"] = _niv
+        return _lr.reset_index(drop=True)
+    except Exception:
+        logger.error("[LIVRO-RAZAO] Falha ao montar livro-razão (isolada, df preservado).", exc_info=True)
+        return pd.DataFrame(columns=_cols_saida)
+
+
+def _livro_razao_csv_bytes(ledger):
+    """CSV utf-8-sig (abre limpo no Excel BR). Defensivo: retorna b'' em erro."""
+    try:
+        return ledger.to_csv(index=False).encode("utf-8-sig")
+    except Exception:
+        logger.error("[LIVRO-RAZAO] Falha ao serializar CSV (isolada).", exc_info=True)
+        return b""
+
 
 def _df_para_geojson(df):
     """[EXPORT-GIS - 24ª geração] Converte o DataFrame de rotas processadas em GeoJSON
@@ -13573,6 +13866,11 @@ def calcular_distancia_linha_reta(lat1, lon1, lat2, lon2, contexto=""):
         dist_final = 0.0
         status_final = ""
         
+        # [DOC-R2 275ª] SUPOSICAO DELIBERADA (nao alterar): tratamos qualquer componente == 0.0 como
+        # "coordenada nao preenchida". Globalmente lat/lon 0 sao validos, MAS nenhuma coordenada do
+        # territorio brasileiro (bbox lat -35..+6, lon -75..-28) e exatamente 0.0 — logo, no dominio
+        # desta app, 0.0 sinaliza valor ausente com seguranca. Trocar por sentinela None/NaN exigiria
+        # varrer todos os produtores de coordenada: risco desproporcional ao ganho. Documentado, mantido.
         if lat1 == 0.0 or lon1 == 0.0 or lat2 == 0.0 or lon2 == 0.0:
              return 0.0, "Falha Operacional (Coordenadas Ausentes)"
              
@@ -13799,21 +14097,34 @@ def _info_municipio_ibge(mun_nome, uf_nome):
     return None, None
 
 
+@_lru_cache(maxsize=16384)
+def _grau_ambiguidade_homonimos_core(_mun_normalizado):
+    """[PERF-FINALIZACAO - 271ª geração] Núcleo MEMOIZADO do grau de ambiguidade. Recebe o nome JÁ
+    normalizado e retorna uma TUPLA IMUTÁVEL (n_ufs, tupla_de_ufs) — imutável de propósito, para poder ser
+    cacheada com segurança (nenhum chamador pode mutá-la). O cálculo IBGE + ordenação passa a rodar uma única
+    vez por nome DISTINTO, em vez de a cada linha do estudo (na finalização nacional, milhares de linhas
+    repetem os mesmos municípios). PURO e OFFLINE."""
+    if not _mun_normalizado or _mun_normalizado in ("—", "N/A"):
+        return (0, ())
+    itens = IBGE_MUNICIPIOS.get(_mun_normalizado, [])
+    ufs = tuple(sorted({str(it.get("uf")).upper() for it in itens if it.get("uf")}))
+    return (len(ufs), ufs)
+
+
 def _grau_ambiguidade_homonimos(municipio):
     """[AMBIGUIDADE-HOMONIMOS - 63ª geração / item #3] Grau de ambiguidade de homônimos: em quantas
     UFs DISTINTAS o mesmo nome de município aparece na base IBGE (em memória). Puro e OFFLINE (sem
     rede). A chave da base é normalizada como semantica.normalizar (unidecode+MAIÚSCULAS), então a
     consulta usa a MESMA normalização — coerente com _info_municipio_ibge. Retorna
-    {'n_ufs': int, 'ufs': [siglas ordenadas]}. Nome vazio/desconhecido → {'n_ufs': 0, 'ufs': []}."""
+    {'n_ufs': int, 'ufs': [siglas ordenadas]}. Nome vazio/desconhecido → {'n_ufs': 0, 'ufs': []}.
+    [PERF-FINALIZACAO - 271ª geração] O cálculo pesado é memoizado por nome normalizado (ver _core); esta
+    função devolve um dict NOVO a cada chamada (nunca compartilha o objeto do cache) — saída byte-idêntica."""
     try:
         _mun = semantica.normalizar(municipio) if municipio else ""
     except Exception:
         _mun = ""
-    if not _mun or _mun in ("—", "N/A"):
-        return {"n_ufs": 0, "ufs": []}
-    itens = IBGE_MUNICIPIOS.get(_mun, [])
-    ufs = sorted({str(it.get("uf")).upper() for it in itens if it.get("uf")})
-    return {"n_ufs": len(ufs), "ufs": ufs}
+    _n, _ufs = _grau_ambiguidade_homonimos_core(_mun)
+    return {"n_ufs": _n, "ufs": list(_ufs)}
 
 
 def _perfil_uf_planilha(ufs_confiaveis):
@@ -14661,7 +14972,8 @@ def _montar_planilha_lote_xlsx(df_final):
             _wb_lt = getattr(_w, "book", None)
             if _wb_lt is not None and hasattr(_wb_lt, "add_format"):
                 _fmts_lt = _fmt_institucional(_wb_lt)
-                _estilizar_tabela_xlsx(_w.sheets.get("Rotas"), _wb_lt, _df_rotas_lote, _fmts_lt)
+                _estilizar_tabela_xlsx(_w.sheets.get("Rotas"), _wb_lt, _df_rotas_lote, _fmts_lt,
+                                       formatos_col=_num_formatos_por_coluna(_df_rotas_lote))
         except Exception:
             logger.error("[EXPORT-PADRAO] Falha ao estilizar aba Rotas do Lote", exc_info=True)
         try:
@@ -14711,7 +15023,9 @@ def _montar_planilha_lote_xlsx(df_final):
             if 'Balsas' in df_final.columns:
                 _nb = int(df_final['Balsas'].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1']).sum())
                 _res.append(("Rotas que cruzam balsa", _nb))
-            pd.DataFrame(_res, columns=["Indicador", "Valor"]).to_excel(_w, index=False, sheet_name="Resumo Executivo")
+            _re_df = pd.DataFrame(_res, columns=["Indicador", "Valor"])
+            _re_df.to_excel(_w, index=False, sheet_name="Resumo Executivo")
+            _dd = _g = _s = None
             if _dist is not None and _dist.notna().any():
                 _labs = ["0–50", "50–100", "100–150", "150–200", "200–300", "300–500", "500+"]
                 _cat = pd.cut(_dist.dropna(), bins=[0, 50, 100, 150, 200, 300, 500, 10**9], labels=_labs, right=False)
@@ -14732,6 +15046,22 @@ def _montar_planilha_lote_xlsx(df_final):
                 _s.columns = ['Status', 'Rotas']
                 _s['% do total'] = (_s['Rotas'] / max(1, int(_s['Rotas'].sum())) * 100).round(1)
                 _s.to_excel(_w, index=False, sheet_name="Status das Rotas")
+            # [EXPORT-PADRAO - 272ª geração] CONSISTÊNCIA: aplica o MESMO padrão institucional (cabeçalho,
+            # largura automática, congelamento, autofiltro, zebra, formatos numéricos e impressão) às abas
+            # analíticas secundárias — antes escritas como DataFrame cru. Uma passada só, reusando o styler
+            # central da 184ª + os formatos numéricos por coluna da 272ª. Isolado: falha aqui não afeta as abas.
+            try:
+                _wb_sec = getattr(_w, "book", None)
+                if _wb_sec is not None and hasattr(_wb_sec, "add_format"):
+                    _fmts_sec = _fmt_institucional(_wb_sec)
+                    for _nm_sec, _df_sec in (("Resumo Executivo", _re_df),
+                                             ("Distribuição de Distâncias", _dd),
+                                             ("Síntese por UF", _g), ("Status das Rotas", _s)):
+                        if _df_sec is not None and _nm_sec in _w.sheets:
+                            _estilizar_tabela_xlsx(_w.sheets[_nm_sec], _wb_sec, _df_sec, _fmts_sec,
+                                                   formatos_col=_num_formatos_por_coluna(_df_sec))
+            except Exception:
+                logger.error("[EXPORT-PADRAO] Falha ao estilizar abas secundárias do Lote", exc_info=True)
         except Exception:
             logger.error("[XLSX-RICO] Falha nas abas extras do Lote (aba 'Rotas' preservada)", exc_info=True)
         # [EXPORT-DASHBOARD-LOTE - 227ª geração] Leva ao LOTE as MESMAS abas analíticas da planilha de Locais —
@@ -16728,7 +17058,7 @@ def _validar_planilha_comparativa(df_ref, mapa, base_ibge=None, idx_ibge=None):
                  "Em logística comercial isso seria bug; aqui é o **melhor resultado possível**.",
                  "Nada a corrigir.")
     except Exception:
-        pass
+        logger.debug("[VALID-COMPARATIVA] diagnóstico opcional de entrada não pôde ser computado", exc_info=True)
 
     # ---------- 5. LINHAS DUPLICADAS (inflam a ponderação!) ----------
     try:
@@ -16740,7 +17070,7 @@ def _validar_planilha_comparativa(df_ref, mapa, base_ibge=None, idx_ibge=None):
                  "PRIMEIRA — as demais são ignoradas, e os inscritos delas NÃO entram no cômputo.",
                  "Consolide as linhas repetidas (some os inscritos) antes de subir.")
     except Exception:
-        pass
+        logger.debug("[VALID-COMPARATIVA] diagnóstico opcional de entrada não pôde ser computado", exc_info=True)
 
     # ---------- 6. CÓDIGO IBGE ----------
     if _c_ib and _c_ib in _cols:
@@ -16838,7 +17168,7 @@ def _validar_planilha_comparativa(df_ref, mapa, base_ibge=None, idx_ibge=None):
                  "encoding** (planilha salva em Latin-1 e lida como UTF-8).",
                  "Reabra a planilha e salve como **.xlsx** (ou CSV UTF-8). Se aparecem 'Ã§' ou 'Ã£', é encoding.")
     except Exception:
-        pass
+        logger.debug("[VALID-COMPARATIVA] diagnóstico opcional de entrada não pôde ser computado", exc_info=True)
 
     # ---------- NOTA ----------
     _nota = 100 - 40 * len(_bloq) - 8 * len(_avi)
@@ -20907,7 +21237,9 @@ def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=No
     try:
         _TELEMETRIA.reset()
     except Exception:
-        pass
+        # [OBS-R2 275ª] antes: 'pass' silencioso. Se o reset falha, a latência do diagnóstico sai
+        # poluída com dados de uma execução anterior — sem ninguém saber. Fluxo inalterado; só rastreável.
+        logger.debug("[OBS] Falha ao resetar _TELEMETRIA no diagnostico de divergencias (isolada).", exc_info=True)
     _divergentes = [l for l in (linhas or []) if l.get("Mesmo Destino") == "Não"
                     and str(l.get("Destino Referencia") or "").strip()
                     and str(l.get("Destino Aplicacao") or "").strip()]
@@ -20937,7 +21269,8 @@ def _reprocessar_rotas_divergentes(linhas, limiar_empate_km=1.0, cb_progresso=No
                     _TELEMETRIA.registrar(getattr(_rp, "fonte_rota", ""), time.perf_counter() - _t0_rt,
                                           sucesso=(getattr(_rp, "distancia", None) is not None))
                 except Exception:
-                    pass
+                    # [OBS-R2 275ª] antes: 'pass'. Falha aqui = latência da rota some do painel sem aviso.
+                    logger.debug("[OBS] Falha ao registrar latencia de rota em _TELEMETRIA (isolada).", exc_info=True)
                 _campos_ref = _rp_para_dict(_rp)
                 # o nome do destino da referência prevalece sobre o resolvido pelo geocoder
                 _campos_ref["destino"] = str(_l.get("Destino Referencia") or _campos_ref.get("destino") or "")
@@ -24573,6 +24906,15 @@ def _fmt_institucional(wb):
             "int": wb.add_format(dict(_base, valign="vcenter", num_format="#,##0")),
             "int_zebra": wb.add_format(dict(_base, valign="vcenter", num_format="#,##0",
                                             bg_color=P["cinza_zebra"])),
+            # [EXPORT-NUMERICO - 272ª geração] Formatos numéricos com UNIDADE, para as células de dado das
+            # colunas de medida (distância em km e percentuais). Renderizam com os separadores da localidade do
+            # Excel do usuário (pt-BR: "1.234,5 km" / "32,0%"). O valor armazenado é inalterado — só a exibição.
+            "km": wb.add_format(dict(_base, valign="vcenter", num_format='#,##0.0" km"')),
+            "km_zebra": wb.add_format(dict(_base, valign="vcenter", num_format='#,##0.0" km"',
+                                           bg_color=P["cinza_zebra"])),
+            "pct": wb.add_format(dict(_base, valign="vcenter", num_format='#,##0.0"%"')),
+            "pct_zebra": wb.add_format(dict(_base, valign="vcenter", num_format='#,##0.0"%"',
+                                            bg_color=P["cinza_zebra"])),
             "kpi_rotulo": wb.add_format({"font_name": "Calibri", "font_size": 10, "font_color": P["muted"],
                                          "border": 1, "border_color": P["linha"], "valign": "vcenter"}),
             "kpi_valor": wb.add_format({"font_name": "Calibri", "bold": True, "font_size": 13,
@@ -24592,8 +24934,42 @@ def _fmt_institucional(wb):
         return {}
 
 
+def _num_formatos_por_coluna(df):
+    """[EXPORT-NUMERICO - 272ª geração] Sugere, por NOME de coluna + dtype numérico, a chave de formato
+    numérico institucional a aplicar às células de dado ('km' para distâncias, 'pct' para percentuais, 'int'
+    para contagens, 'num' para demais medidas decimais). Colunas de TEXTO ou de código/identificador ficam de
+    fora (retornam sem chave) — evita transformar códigos IBGE/telefones em '12.345.678'. PURO e defensivo:
+    só marca uma coluna cujo dtype é numérico. Retorna {nome_coluna: chave_formato}."""
+    _mapa = {}
+    try:
+        for _c in df.columns:
+            try:
+                if not pd.api.types.is_numeric_dtype(df[_c]):
+                    continue
+            except Exception:
+                continue
+            _n = str(_c).lower()
+            # códigos/identificadores numéricos NÃO recebem separador de milhar (ficam como estão)
+            if any(_t in _n for _t in ("ibge", "cód", "cod ", "código", "codigo", "cep", "telefone",
+                                       "id ", "latitude", "longitude", "lat ", "lon ", "lat)", "lon)")):
+                continue
+            if "%" in _n or "percent" in _n or "percentual" in _n:
+                _mapa[_c] = "pct"
+            elif any(_t in _n for _t in ("km", "distância", "distancia", "reta", "deslocamento")):
+                _mapa[_c] = "km"
+            elif any(_t in _n for _t in ("rotas", "candidatos", "inscritos", "quantidade", "registros",
+                                         "municípios", "municipios", "polos", "nº", "qtd", "contagem")):
+                _mapa[_c] = "int"
+            # Conservador de propósito: colunas numéricas que NÃO casam com um padrão de medida conhecido
+            # (anos, razões, scores, índices, coordenadas já excluídas acima) ficam SEM formato — evita
+            # transformar "2024" em "2.024,0" ou mascarar uma métrica com unidade errada. Não-regressão.
+    except Exception:
+        return {}
+    return _mapa
+
+
 def _estilizar_tabela_xlsx(ws, wb, df, fmts, primeira_linha=0, congelar=True, autofiltro=True, zebra=True,
-                           titulo_impressao=None):
+                           titulo_impressao=None, formatos_col=None):
     """[EXPORT-PADRAO - 184ª geração] Aplica o padrão institucional a uma aba de TABELA já escrita pelo
     pandas: reescreve o cabeçalho com estilo destacado, aplica congelamento do cabeçalho, autofiltro,
     zebra striping e largura automática por coluna (limitada). `primeira_linha` é a linha 0-based onde o
@@ -24618,8 +24994,20 @@ def _estilizar_tabela_xlsx(ws, wb, df, fmts, primeira_linha=0, congelar=True, au
         # zebra + bordas nas células de dado
         if zebra:
             _n = len(df)
+            # [EXPORT-NUMERICO - 272ª geração] Resolve, por coluna, o par de formatos (normal, zebra). Quando
+            # formatos_col indica uma medida ('km'/'pct'/'int'/'num'), as células daquela coluna ganham o
+            # formato numérico institucional; as demais mantêm o formato de célula padrão. Opt-in: sem
+            # formatos_col, o comportamento é idêntico ao anterior (todas as células com 'celula'/'celula_zebra').
+            _fc = formatos_col or {}
+            _par_fmt = []
+            for _c in _cols:
+                _chave = _fc.get(_c)
+                if _chave and fmts.get(_chave) is not None:
+                    _par_fmt.append((fmts.get(_chave), fmts.get(_chave + "_zebra") or fmts.get("celula_zebra")))
+                else:
+                    _par_fmt.append((fmts.get("celula"), fmts.get("celula_zebra")))
             for _i in range(_n):
-                _fmt_lin = fmts.get("celula_zebra") if (_i % 2) else fmts.get("celula")
+                _zeb = bool(_i % 2)
                 for _j, _c in enumerate(_cols):
                     _val = df.iloc[_i, _j]
                     try:
@@ -24627,7 +25015,8 @@ def _estilizar_tabela_xlsx(ws, wb, df, fmts, primeira_linha=0, congelar=True, au
                             _val = ""
                     except Exception:
                         pass
-                    ws.write(_hlin + 1 + _i, _j, _val, _fmt_lin)
+                    _fmt_cell = _par_fmt[_j][1] if _zeb else _par_fmt[_j][0]
+                    ws.write(_hlin + 1 + _i, _j, _val, _fmt_cell)
         if congelar:
             ws.freeze_panes(_hlin + 1, 0)
         if autofiltro and _cols:
@@ -24700,7 +25089,12 @@ def _escrever_aba_estilizada(writer, df, sheet_name, fmts=None):
         _wb = getattr(writer, "book", None)
         if _wb is not None and hasattr(_wb, "add_format"):
             _f = fmts or _fmt_institucional(_wb)
-            _estilizar_tabela_xlsx(writer.sheets.get(sheet_name), _wb, df, _f)
+            # [EXPORT-NUMERICO - 272ª geração] Formatos numéricos por coluna (km/%/contagem) aplicados
+            # automaticamente e de forma CONSERVADORA (só colunas de medida reconhecidas; ver heurística).
+            # Uniformiza a formatação de números em TODAS as abas que passam por este helper (Comparador,
+            # abas analíticas), sem tocar em colunas de texto/código.
+            _estilizar_tabela_xlsx(writer.sheets.get(sheet_name), _wb, df, _f,
+                                   formatos_col=_num_formatos_por_coluna(df))
     except Exception:
         logger.error("[EXPORT-PADRAO] Falha ao escrever aba estilizada '%s'", str(sheet_name), exc_info=True)
 
@@ -27086,7 +27480,10 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
                 logger.warning("[PORTAO-GEO] todos os candidatos de '%s' cairiam fora do município IBGE %s — "
                                "mantidos por fail-open (consenso decide).", texto_cru, _cod_mun_esp)
     except Exception:
-        pass
+        # [OBSERVABILIDADE - 274ª geração] O portão geográfico é fail-open: se ele mesmo falha, os candidatos
+        # seguem (o consenso decide). Antes o erro sumia; agora fica visível (debug) para diagnóstico — sem
+        # mudar o fluxo (a execução continua exatamente como antes).
+        logger.debug("[PORTAO-GEO] filtro geográfico ignorado por erro (fail-open preservado)", exc_info=True)
 
     PESO_FONTES = {}
     DEFAULT_WEIGHTS = {"ARCGIS": 0.95, "TOMTOM": 0.90, "OVERPASS": 0.85, "NOMINATIM": 0.80, "PHOTON": 0.75, "GOOGLE_GEO": 0.80}
@@ -27224,7 +27621,8 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
                 _conc["diverge"] += 1
             cache_api_health.set("GOOGLE_GEO_CONCORDANCIA", _conc, expire=None)
     except Exception:
-        pass
+        # [OBS-R2 275ª] antes: 'pass'. Falha aqui subnotifica a concordancia do consenso no Monitor APIs.
+        logger.debug("[OBS] Falha ao contabilizar concordancia GOOGLE_GEO (isolada).", exc_info=True)
 
     score_consenso = min(int(vencedor["score_final"]), 100)
     m = {
@@ -27283,7 +27681,7 @@ def processar_consenso_dinamico(candidatos, tipo_entrada, texto_cru):
     if xd["mun"]: explicacoes_humanas.append("Município validado na malha de referência oficial IBGE.")
     if xd["uf"]: explicacoes_humanas.append("Correspondência administrativa de Estado confirmada.")
     if xd["cep"]: explicacoes_humanas.append("Código Postal cruzado e confirmado por cascades.")
-    if xd["num"]: explicacoes_humanas.append("Assinatura de número predial reconhecida na porta do cliente.")
+    if xd["num"]: explicacoes_humanas.append("Assinatura de número predial reconhecida no endereço de origem informado.")
     if xd["fuzz"] >= 80.0: explicacoes_humanas.append(f"Similaridade léxica de logradouro em {xd['fuzz']}% de aprovação.")
     
     match_logr = fuzz.token_set_ratio(texto_norm, m.get("logradouro", "").upper(), processor=None)
@@ -27856,6 +28254,110 @@ def _circuit_breaker_google(estado, sucesso, agora, _limiar_falhas=5, _cooldown_
     except Exception:
         logger.error("[CIRCUIT-BREAKER] Falha na máquina de estados do disjuntor do Google", exc_info=True)
         return (estado or {"status": "fechado", "falhas_seguidas": 0, "aberto_ate": 0.0}), True
+
+
+# ==============================================================================
+# [DISJUNTOR-MOTORES - 270ª geração] CIRCUIT BREAKER GENÉRICO PARA OS DEMAIS MOTORES
+# ------------------------------------------------------------------------------
+# O Google já tinha disjuntor (acima). Os outros motores (OSRM primário, GraphHopper,
+# ORS, OSRM/FOSSGIS, Valhalla) não — então, quando um deles saía do ar ou degradava,
+# CADA rota do lote pagava o timeout inteiro dele, injetando lentidão que alimentava
+# justamente os timeouts de WebSocket e os pulos de janela. Este disjuntor genérico
+# REUSA a mesma máquina de estados pura e consagrada do Google (_circuit_breaker_google),
+# uma instância por motor, protegida por lock (as chamadas vêm de várias threads do pool).
+# Quando um motor falha em série, o disjuntor ABRE e o motor é PULADO por um cooldown
+# curto (os demais motores + fallback geodésico assumem), reduzindo a lentidão na ORIGEM;
+# após o cooldown, uma chamada de teste (meio-aberto) o recupera automaticamente. Quando
+# os motores estão saudáveis, o disjuntor fica fechado e é 100% transparente (não-regressão
+# byte-a-byte: sem falhas em série, nada é pulado).
+# ==============================================================================
+_LOCK_MOTOR_CB = threading.Lock()
+_MOTOR_CB_ESTADO = {}   # nome_motor -> {status, falhas_seguidas, aberto_ate}
+_MOTOR_CB_SKIPS = {}    # nome_motor -> nº de chamadas puladas (telemetria/observabilidade)
+
+
+def _motor_sucesso_rota(res):
+    """True se o resultado de um motor de rota conta como sucesso (tupla com km>0). Defensivo."""
+    try:
+        return bool(res) and res[0] is not None and float(res[0]) > 0
+    except Exception:
+        return bool(res)
+
+
+def _motor_pode_chamar(nome, agora=None):
+    """Thread-safe: o disjuntor do motor `nome` permite chamá-lo agora? Aplica transições por tempo
+    (aberto→meio_aberto após o cooldown). Em dúvida, PERMITE (nunca bloqueia um motor por erro do breaker)."""
+    _now = agora if agora is not None else time.time()
+    try:
+        with _LOCK_MOTOR_CB:
+            _e = _MOTOR_CB_ESTADO.get(nome) or {"status": "fechado", "falhas_seguidas": 0, "aberto_ate": 0.0}
+            _e, _pode = _circuit_breaker_google(_e, None, _now)
+            _MOTOR_CB_ESTADO[nome] = _e
+            return bool(_pode)
+    except Exception:
+        return True
+
+
+def _motor_registrar(nome, sucesso, agora=None):
+    """Thread-safe: registra o resultado de uma chamada ao motor `nome` (True/False), atualizando seu
+    disjuntor. Loga a transição aberto/fechado (observabilidade). Defensivo: nunca levanta."""
+    _now = agora if agora is not None else time.time()
+    try:
+        with _LOCK_MOTOR_CB:
+            _e = _MOTOR_CB_ESTADO.get(nome) or {"status": "fechado", "falhas_seguidas": 0, "aberto_ate": 0.0}
+            _antes = _e.get("status", "fechado")
+            _e, _ = _circuit_breaker_google(_e, bool(sucesso), _now)
+            _MOTOR_CB_ESTADO[nome] = _e
+            _depois = _e.get("status", "fechado")
+        if _antes != _depois:
+            if _depois == "aberto":
+                logger.warning("[DISJUNTOR-MOTORES] '%s' ABRIU (falhas em série) — pulando por ~cooldown; "
+                               "os demais motores/fallback assumem.", nome)
+            elif _depois == "fechado":
+                logger.info("[DISJUNTOR-MOTORES] '%s' recuperou — disjuntor fechado, motor reativado.", nome)
+    except Exception:
+        pass
+
+
+def _chamar_motor_cb(nome, func, *args, _ok=None, **kwargs):
+    """Chama o motor `func` sob o disjuntor `nome`. Se o disjuntor estiver ABERTO, PULA (retorna None) —
+    é isto que corta a lentidão de martelar uma API fora do ar. Caso contrário chama, registra sucesso/falha
+    e retorna o resultado (None em erro). `_ok`: função opcional que decide sucesso (default: _motor_sucesso_rota)."""
+    try:
+        if not _motor_pode_chamar(nome):
+            try:
+                with _LOCK_MOTOR_CB:
+                    _MOTOR_CB_SKIPS[nome] = int(_MOTOR_CB_SKIPS.get(nome, 0)) + 1
+            except Exception:
+                pass
+            return None
+    except Exception:
+        pass
+    try:
+        _res = func(*args, **kwargs)
+    except Exception:
+        _motor_registrar(nome, False)
+        return None
+    _chk = _ok if _ok is not None else _motor_sucesso_rota
+    try:
+        _sucesso = bool(_chk(_res))
+    except Exception:
+        _sucesso = bool(_res)
+    _motor_registrar(nome, _sucesso)
+    return _res
+
+
+def _motor_cb_status_resumo():
+    """Retorna um dict {nome: {status, skips}} dos disjuntores de motores (para telemetria/UI). Defensivo."""
+    try:
+        with _LOCK_MOTOR_CB:
+            _out = {}
+            for _n, _e in _MOTOR_CB_ESTADO.items():
+                _out[_n] = {"status": _e.get("status", "fechado"),
+                            "skips": int(_MOTOR_CB_SKIPS.get(_n, 0))}
+            return _out
+    except Exception:
+        return {}
 
 
 def _headers_google_rotativo(_tentativa):
@@ -28920,7 +29422,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
     # do OSRM é capturada e vira None (mesmo efeito do try/except serial anterior). O disjuntor do Google é
     # thread-safe (_LOCK_GOOGLE_CB). O caso cache-hit continua instantâneo (o future resolve na hora).
     _fut_osrm = None
-    if lat_o != 0.0 and lat_d != 0.0:
+    if lat_o != 0.0 and lat_d != 0.0 and _motor_pode_chamar('OSRM'):
         try:
             _fut_osrm = EXECUTOR_APIS.submit(API_OSRM_Routing, lat_o, lon_o, lat_d, lon_d)
         except Exception:
@@ -28955,12 +29457,16 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
             res_osrm = _fut_osrm.result()
         except Exception:
             res_osrm = None  # falha do OSRM → None (idêntico ao comportamento serial com try/except)
-    elif lat_o != 0.0 and lat_d != 0.0:
-        # fallback serial: se o submit ao pool falhou, roda direto (garante que o OSRM não seja pulado)
+        # [DISJUNTOR-MOTORES - 270ª] registra sucesso/falha do OSRM para abrir/fechar seu disjuntor
+        _motor_registrar('OSRM', _motor_sucesso_rota(res_osrm))
+    elif lat_o != 0.0 and lat_d != 0.0 and _motor_pode_chamar('OSRM'):
+        # fallback serial: se o submit ao pool falhou, roda direto (garante que o OSRM não seja pulado),
+        # ainda respeitando o disjuntor (se aberto, pula e deixa os demais motores/fallback assumirem).
         try:
             res_osrm = API_OSRM_Routing(lat_o, lon_o, lat_d, lon_d)
         except Exception:
             res_osrm = None
+        _motor_registrar('OSRM', _motor_sucesso_rota(res_osrm))
 
     # [MOTOR-KEYED - 191ª geração] COMPETIÇÃO MULTI-MOTOR pela MENOR ROTA VIÁRIA (foco da rodada).
     # Além do OSRM, rodam os motores COM CHAVE disponíveis (GraphHopper/ORS). Entre OSRM + esses, escolhe-se
@@ -28982,7 +29488,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         # None e apareciam como entradas vazias no consenso/SLA (peso morto e ruído). Mantemos as funções e os
         # secrets como PONTO DE PLUGAGEM para um motor próprio/self-hosted (caminho robusto recomendado):
         # basta configurar a chave que voltam a entrar na disputa, sem tocar no código.
-        _res_gh = API_GraphHopper_Routing(lat_o, lon_o, lat_d, lon_d) if (GRAPHHOPPER_API_KEY or _graphhopper_instancia_propria()) else None
+        _res_gh = (_chamar_motor_cb('GraphHopper', API_GraphHopper_Routing, lat_o, lon_o, lat_d, lon_d)
+                   if (GRAPHHOPPER_API_KEY or _graphhopper_instancia_propria()) else None)
         # [GRAPHHOPPER-PARIDADE - 220ª geração] Captura os dados PRÓPRIOS do GraphHopper (km, tempo, balsa,
         # link de navegação, geometria) para exibir em paridade com Google/OSRM — independentemente de quem
         # vence a disputa. Link de navegação: Google Maps por coordenadas (sempre traça o trajeto), mesma
@@ -28998,7 +29505,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 _dados_gh_str = _montar_dados_graphhopper(round(_gh_km, 2), _gh_tmin, _gh_bal, _gh_link, _gh_geo)
         except Exception:
             _dados_gh_str = ""
-        _res_ors = API_ORS_Routing(lat_o, lon_o, lat_d, lon_d) if ORS_API_KEY else None
+        _res_ors = _chamar_motor_cb('ORS', API_ORS_Routing, lat_o, lon_o, lat_d, lon_d) if ORS_API_KEY else None
         # [OSRM-CONSENSO - 192ª geração] 2º backend OSRM (FOSSGIS) — SEM chave — como fonte de consenso.
         # OPT-IN (st.session_state['usar_osrm2']) porque a política do FOSSGIS proíbe uso pesado: no lote
         # nacional, só deve rodar quando o usuário conscientemente liga. Self-gated: desligado → None → o
@@ -29006,7 +29513,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         _res_osrm2 = None
         try:
             if _ler_flag_runtime('usar_osrm2'):
-                _res_osrm2 = API_OSRM_FOSSGIS_Routing(lat_o, lon_o, lat_d, lon_d)
+                _res_osrm2 = _chamar_motor_cb('OSRM_FOSSGIS', API_OSRM_FOSSGIS_Routing, lat_o, lon_o, lat_d, lon_d)
         except Exception:
             _res_osrm2 = None
         # [VALHALLA - 262ª geração] 3º motor keyless de consenso (Valhalla, dados OSM). OPT-IN pelo mesmo
@@ -29015,7 +29522,7 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
         _res_valhalla = None
         try:
             if _valhalla_ativo():
-                _res_valhalla = API_Valhalla_Routing(lat_o, lon_o, lat_d, lon_d)
+                _res_valhalla = _chamar_motor_cb('Valhalla', API_Valhalla_Routing, lat_o, lon_o, lat_d, lon_d)
         except Exception:
             _res_valhalla = None
         # [VALHALLA-PARIDADE - 263ª geração] Captura os dados PRÓPRIOS do Valhalla (km/tempo/balsa/link/geometria)
@@ -29381,7 +29888,8 @@ def calcular_pipeline_logistico(origem, destino, perfil_rota="shortest"):
                 if _tm_motores:
                     _registrar_telemetria_motores(fonte_rota, _tm_motores, _tm_consenso, dist_linha_reta, km_rota)
             except Exception:
-                pass
+                # [OBS-R2 275ª] antes: 'pass'. Falha aqui = a rota nao aparece na telemetria por motor (dashboard).
+                logger.debug("[OBS] Falha ao registrar telemetria multi-motor (isolada).", exc_info=True)
             # [AUDIT-MOTORES] Rastro das consultas aos motores (mesma geocodificação validada p/ todos)
             # [GRAPHHOPPER-PARIDADE-FIX - 221ª] extrai o OSRM REAL (não o contendor vencedor) e os dados próprios
             # do GraphHopper, para o comparativo/auditoria distinguir OSRM de GraphHopper corretamente.
@@ -31453,11 +31961,28 @@ def _simulacao_hub_indisponivel(hub_venc, conc, dist_v, dist_c):
             "delta_km": _dkm, "delta_pct": _dpct, "impacto": _imp, "texto": _texto}
 
 
+# [ANTI-TRAVA - 268ª geração] Orçamento de espera de UM chunk de roteamento. Cada rota já tem timeout de
+# HTTP por motor, mas um Future que nunca completa (worker saturado, fila de um motor presa) faria
+# as_completed() esperar PARA SEMPRE — travando a execução inteira, derrubando o WebSocket e reentrando no
+# mesmo chunk a cada reconexão (a trava "no meio do processamento", irmã da trava em 100%). Estes limites
+# tornam CADA chamada de processar_chunk_rotas limitada no tempo: coletamos o que concluir dentro do
+# orçamento; o que não concluir é adiado (cai no fallback geodésico e ainda ganha a 2ª passada de
+# recuperação na finalização). Generosos o bastante para NUNCA abandonar um chunk saudável — só disparam
+# em cenário patológico de Future preso.
+_CHUNK_WAIT_BASE_S = 25.0        # base fixa por chunk
+_CHUNK_WAIT_POR_TAREFA_S = 1.5   # folga adicional por tarefa no chunk
+_CHUNK_WAIT_MAX_S = 90.0         # teto absoluto (mesmo em chunks grandes)
+
+
 def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
     """[FIX-LOTE - 13ª geração] Processa UM chunk de rotas e retorna o dict de
     resultados {par_id: res}. Usado pelo motor de processamento contínuo em chunks.
     Cada chunk é curto o suficiente para caber numa única execução do Streamlit,
     evitando o timeout de WebSocket que causava a interrupção do lote.
+
+    [ANTI-TRAVA - 268ª geração] A espera pelos Futures passou a ter ORÇAMENTO DE TEMPO
+    (as_completed com timeout). Assim a função SEMPRE retorna em tempo limitado, mesmo
+    que algum Future nunca conclua — o que garante o avanço contínuo do processamento.
     """
     if runner_up_map:
         tarefas_unicas = [(t[1], t[1][0], t[1][1], runner_up_map.get(t[1][0])) for t in tarefas_chunk]
@@ -31467,12 +31992,27 @@ def processar_chunk_rotas(tarefas_chunk, runner_up_map=None):
     resultados = {}
     _pref_of = _pref_modo_oficial()   # capturado na THREAD PRINCIPAL (aqui session_state funciona)
     futuros = {EXECUTOR_GLOBAL.submit(embrulhar_task_paralela, t, _pref_of): t for t in tarefas_unicas}
-    for f in as_completed(futuros):
-        try:
-            par_id, res = f.result()
-            resultados[par_id] = res
-        except Exception as e:
-            logger.error(f"[FIX-LOTE] Falha isolada em chunk: {e}")
+    # Espera limitada por orçamento de tempo (ver _CHUNK_WAIT_* acima). Import local do TimeoutError de
+    # futures para NÃO alterar os imports de topo (em 3.11+ é o TimeoutError embutido; local cobre <3.11).
+    from concurrent.futures import TimeoutError as _FuturesTimeout
+    _n_fut = len(futuros)
+    _deadline = min(_CHUNK_WAIT_MAX_S, _CHUNK_WAIT_BASE_S + _CHUNK_WAIT_POR_TAREFA_S * _n_fut)
+    _concluidos = 0
+    try:
+        for f in as_completed(futuros, timeout=_deadline):
+            try:
+                par_id, res = f.result()
+                resultados[par_id] = res
+                _concluidos += 1
+            except Exception as e:
+                logger.error(f"[FIX-LOTE] Falha isolada em chunk: {e}")
+    except (_FuturesTimeout, TimeoutError):
+        # Orçamento estourado: entrega o que concluiu; o restante é adiado (fallback + 2ª passada).
+        _pend = _n_fut - _concluidos
+        logger.warning("[ANTI-TRAVA] Chunk excedeu %.0fs: %d/%d rotas concluídas, %d adiadas para "
+                       "fallback/2ª passada (evita travamento).", _deadline, _concluidos, _n_fut, _pend)
+    except Exception as _e_chunk:
+        logger.error("[ANTI-TRAVA] Erro inesperado ao aguardar o chunk (isolado): %s", _e_chunk)
     return resultados
 
 
@@ -31682,6 +32222,56 @@ def _instalar_guarda_arrow_global():
 _instalar_guarda_arrow_global()
 
 
+def _enriquecer_situacao_calculo(df):
+    """[EXPORT-QUALIDADE - 273ª geração] Coluna EXPLÍCITA que distingue os casos que o número sozinho não
+    revela — cumpre a regra do brief "zero nunca pode significar silenciosamente ausência/falha". VETORIZADA e
+    PURA: derivada SÓ de colunas já existentes (Distancia, Fonte da Rota, Status da Rota, Municipio
+    Origem/Destino); nenhum dado inventado, nenhum valor numérico alterado. Rótulos possíveis:
+      • ✓ Rota viária calculada
+      • ≈ Estimativa em linha reta (sem rota viária disponível)
+      • ✓ 0 km — mesmo município (prova na própria cidade)  ← 0 REAL, não falha
+      • ⚠️ Distância não calculada — verificar (não é 0 real)
+      • ⚠️ Não calculada (erro de processamento)
+    Defensivo: se faltarem colunas, degrada e não levanta. Retorna o df (com a coluna anexada quando possível)."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return df
+        _n = len(df)
+        _idx = df.index
+
+        def _col_txt(nome):
+            return (df[nome].astype(str).str.strip().str.lower() if nome in df.columns
+                    else pd.Series([""] * _n, index=_idx))
+
+        _dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns \
+            else pd.Series([float("nan")] * _n, index=_idx)
+        _fonte = _col_txt("Fonte da Rota")
+        _statusr = _col_txt("Status da Rota")
+        _mo = _col_txt("Municipio Origem")
+        _md = _col_txt("Municipio Destino")
+
+        _erro = _statusr.str.contains("erro", na=False)
+        _geo = _fonte.str.contains("geod", na=False)
+        _tem_dist = _dist.fillna(0) > 0
+        _mo_valido = (_mo != "") & (~_mo.isin(["nan", "none", "n/a", "não identificado", "nao identificado"]))
+        _mesma = _mo_valido & (_mo == _md)
+
+        # Condições mutuamente exclusivas (a ordem não altera o resultado). Default '—' (nunca '0').
+        _situ = pd.Series(["—"] * _n, index=_idx, dtype=object)
+        _situ = _situ.mask(_erro, "⚠️ Não calculada (erro de processamento)")
+        _situ = _situ.mask((~_erro) & _geo, "≈ Estimativa em linha reta (sem rota viária disponível)")
+        _situ = _situ.mask((~_erro) & (~_geo) & _tem_dist, "✓ Rota viária calculada")
+        _situ = _situ.mask((~_erro) & (~_geo) & (~_tem_dist) & _mesma,
+                           "✓ 0 km — mesmo município (prova na própria cidade)")
+        _situ = _situ.mask((~_erro) & (~_geo) & (~_tem_dist) & (~_mesma),
+                           "⚠️ Distância não calculada — verificar (não é 0 real)")
+        df["Situação do Cálculo"] = _situ.values
+    except Exception:
+        logger.error("[EXPORT-QUALIDADE] Falha ao anexar 'Situação do Cálculo' (ignorada, df preservado)",
+                     exc_info=True)
+    return df
+
+
 def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_map=None):
     """[FIX-LOTE] Monta o DataFrame final a partir do dict acumulado de resultados.
     Extraído de rodar_pipeline_lote para ser reutilizado pelo motor em chunks após
@@ -31702,8 +32292,14 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
     origens_arr  = df['Origem'].fillna('').astype(str).str.strip().values
     destinos_arr = df['Destino'].fillna('').astype(str).str.strip().values
     
-    if 'logs_auditoria' not in st.session_state:
-        st.session_state['logs_auditoria'] = []
+    # [PERF-FINALIZACAO - 271ª geração] RESET do log de auditoria a cada (re)construção do DataFrame. Antes
+    # era lazy-init (só criava se ausente) e NUNCA era limpo — então, numa REENTRADA da finalização (o
+    # watchdog da 266ª permite até algumas tentativas) ou em vários estudos na mesma sessão, o log ACUMULAVA
+    # e DUPLICAVA todas as N linhas (auditoria com cada linha repetida 2–6× e memória crescendo dezenas de MB
+    # por reentrada). Como este log reflete o estudo ATUAL sendo montado, reconstruí-lo do zero é o correto:
+    # elimina as duplicatas e limita a memória a um estudo. (O tab Individual não usa esta chave; o processador
+    # legado tem seu próprio reset — sem regressão.)
+    st.session_state['logs_auditoria'] = []
     
     for i, row in enumerate(df.itertuples(index=False, name=None)):
         # [FIX-COLUNAS-FANTASMA - 117ª geração] name=None → tuplas puras (sem namedtuple): mantém o baixo
@@ -32051,6 +32647,11 @@ def _montar_dataframe_final(df, resultados_unicos, runner_up_map=None, hub_qual_
         novos_dados.append(linha_dict)
         
     df_final = pd.DataFrame(novos_dados)
+    # [EXPORT-QUALIDADE - 273ª geração] Coluna 'Situação do Cálculo' — distingue explicitamente 0-real
+    # (mesmo município) de 0-ausente/estimativa/erro, atendendo à regra "zero nunca é falha silenciosa".
+    # Vetorizada, derivada de colunas existentes, sem alterar nenhum número. Cobre Lote e Alocação (builder
+    # compartilhado). Aplicada ANTES do downcast de dtypes (a coluna de baixa cardinalidade vira categórica).
+    df_final = _enriquecer_situacao_calculo(df_final)
     # [M14] Flush forçado do buffer de telemetria ao final do lote
     _flush_telemetria_forcado()
     _flush_telemetria_motores()  # [PERF-TELEMETRIA - 196ª geração] persiste o buffer multi-motor em RAM
@@ -34245,7 +34846,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "267"
+_VERSAO_APP = "277"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -34931,6 +35532,341 @@ with st.container():
           <b>5 estados</b>. Sem a UF, o estudo inteiro pode sair errado sem nenhum aviso.</p>
         </div>
         """, unsafe_allow_html=True)
+
+# ==============================================================================
+# [FINALIZACAO-ROBUSTA - 266ª geração] ORQUESTRAÇÃO DE ENCERRAMENTO DA ALOCAÇÃO
+# ------------------------------------------------------------------------------
+# Objetivo desta rodada: matar em definitivo o sintoma "trava em 100%" da aba
+# 'Locais de Aplicação'. Causa-raiz medida no código: a FASE 3 (finalização) roda
+# TODO o trabalho pesado (re-roteamentos síncronos + enriquecimento O(n) sobre
+# milhares de linhas) numa ÚNICA execução, AINDA na fase 'processar', e só troca de
+# fase no st.rerun() do fim. Se essa execução é interrompida (timeout de WebSocket
+# num estudo nacional, Future de rede travado, pressão de memória) ANTES do rerun,
+# a máquina volta a 'processar', redesenha o painel de 100% e re-executa tudo —
+# travamento perpétuo, sem erro e sem downloads.
+#
+# Estes helpers são 100% ADITIVOS e defensivos (nunca levantam). Dão à finalização:
+#   • Observabilidade estruturada por etapa (tempo, memória RSS, tamanho do DF) com
+#     AVISO automático quando uma etapa passa do orçamento — sem dependência nova
+#     (memória via stdlib `resource`, importada preguiçosamente).
+#   • Um watchdog de tentativas: se a finalização for reentrada além de um teto
+#     finito, entrega o que já existe (DF-seguro pré-commitado) e encerra — jamais
+#     trava (ver uso na FASE 3).
+#   • Um painel de CHECKLIST elegante para o encerramento (substitui o enganoso
+#     "100% · tempo restante 0" por "Finalizando: consolidando… gerando…").
+#   • Um resumo executivo do encerramento (candidatos, rotas, municípios, motores,
+#     precisão) para a tela de conclusão.
+# Nada aqui altera o resultado do estudo: em caminho feliz, o comportamento e a
+# planilha são byte-a-byte os de antes; estes recursos só mudam o CONTROLE de fluxo
+# do encerramento e a sua APRESENTAÇÃO.
+# ==============================================================================
+
+# Teto de reentradas da finalização antes de forçar a entrega degradada (defesa em
+# profundidade — finito e generoso; só dispara em cenário patológico de reentrada).
+_MAX_FIN_TENT = 6
+# Orçamento por etapa (s) acima do qual a observabilidade emite AVISO (não bloqueia).
+_FIN_ETAPA_WARN_S = 8.0
+
+# Passos ordenados do encerramento (para o checklist e a telemetria). Rótulos curtos.
+_FIN_ETAPAS = [
+    ("consolidar", "Consolidar resultados"),
+    ("enriquecer", "Enriquecer e auditar"),
+    ("montar_df", "Montar tabela final"),
+    ("planilha", "Gerar planilha (.xlsx)"),
+    ("html", "Relatório HTML"),
+    ("downloads", "Disponibilizar downloads"),
+]
+
+
+def _mem_rss_mb():
+    """Memória residente (RSS) do processo em MB, ou None se indisponível. Só stdlib
+    (`resource`, importado preguiçosamente — mantém os imports de topo idênticos ao
+    baseline). Nunca levanta. Em Linux/macOS ru_maxrss é o pico; no Linux vem em KB,
+    no macOS em bytes — normalizamos com uma heurística segura."""
+    try:
+        import resource  # stdlib; import local para não tocar os imports de topo
+        _rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if not _rss:
+            return None
+        # Linux: KB · macOS: bytes. Valores >1e9 quase certamente são bytes.
+        return round(_rss / (1024.0 * 1024.0), 1) if _rss > 10_000_000 else round(_rss / 1024.0, 1)
+    except Exception:
+        return None
+
+
+def _obs_fin(etapa, t0, **extra):
+    """[OBSERVABILIDADE] Registra o fim de uma etapa da finalização: tempo decorrido,
+    memória RSS e metadados (ex.: linhas do DF). Emite WARNING se a etapa passar do
+    orçamento (_FIN_ETAPA_WARN_S). Também alimenta o perfil de fases já existente
+    (aparece no Monitor APIs). Defensivo: nunca levanta, nunca altera o fluxo."""
+    try:
+        _dt = max(0.0, time.time() - float(t0)) if t0 is not None else 0.0
+        _mem = _mem_rss_mb()
+        _meta = " ".join(f"{_k}={_v}" for _k, _v in extra.items()) if extra else ""
+        _msg = "[FINALIZACAO/%s] %.2fs%s%s" % (
+            etapa, _dt,
+            (" · %sMB RSS" % _mem) if _mem is not None else "",
+            (" · " + _meta) if _meta else "")
+        if _dt > _FIN_ETAPA_WARN_S:
+            logger.warning(_msg + "  ⚠️ acima do orçamento de %.0fs", _FIN_ETAPA_WARN_S)
+        else:
+            logger.info(_msg)
+        try:
+            _registrar_perfil_fase("Finalização · " + str(etapa), _dt)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _render_checklist_finalizacao(passo_atual="consolidar", degradado=False):
+    """[UX] Painel de encerramento com checklist de etapas — substitui o painel de
+    '100% · tempo restante 0' que parecia travado. Mostra ✔ nas etapas concluídas, ⏳
+    na atual e ○ nas pendentes, com um spinner honesto. Defensivo: nunca levanta."""
+    try:
+        _ordem = [_k for _k, _ in _FIN_ETAPAS]
+        try:
+            _i_atual = _ordem.index(passo_atual)
+        except ValueError:
+            _i_atual = 0
+        with st.container(border=True):
+            st.markdown("#### ✅ Processamento concluído — finalizando o estudo")
+            st.caption("🧭 **Etapa atual:** consolidando os resultados e preparando os arquivos para download. "
+                       "Em estudos nacionais isto pode levar alguns instantes — **não é necessário clicar novamente**.")
+            _linhas = []
+            for _j, (_k, _lbl) in enumerate(_FIN_ETAPAS):
+                if _j < _i_atual:
+                    _linhas.append(f"- ✔ {_lbl}")
+                elif _j == _i_atual:
+                    _linhas.append(f"- ⏳ **{_lbl}** — em andamento")
+                else:
+                    _linhas.append(f"- ○ {_lbl}")
+            st.markdown("\n".join(_linhas))
+            _frac = min(0.98, (_i_atual + 0.5) / max(1, len(_FIN_ETAPAS)))
+            st.progress(_frac)
+            if degradado:
+                st.warning("⚠️ O encerramento entrou em **modo de segurança**: os resultados essenciais serão "
+                           "entregues mesmo que um passo analítico opcional não tenha completado. Nada trava.")
+            st.caption("Se esta tela persistir muito além do normal, o encerramento tem um limite de segurança "
+                       "que disponibiliza automaticamente os resultados já calculados.")
+    except Exception:
+        # Nunca deixa o painel derrubar a finalização; em pior caso, um aviso mínimo.
+        try:
+            st.info("✅ Processamento concluído — finalizando o estudo…")
+        except Exception:
+            pass
+
+
+def _resumo_finalizacao(df):
+    """[UX] Resumo executivo do ENCERRAMENTO: candidatos (inscritos, se houver), rotas,
+    municípios de origem, polos, participação de motores (Google/OSRM/fallback) e
+    precisão (% de rotas viárias reais × estimativa geodésica). Retorna um dict pronto
+    para exibição. Defensivo: cada campo só entra se a coluna existir; erro → dict
+    parcial (nunca levanta)."""
+    _r = {}
+    try:
+        if df is None or len(df) == 0:
+            return _r
+        _r["rotas"] = int(len(df))
+        if "Municipio Origem" in df.columns:
+            _r["municipios"] = int(df["Municipio Origem"].nunique())
+        if "Municipio Destino" in df.columns:
+            _r["polos"] = int(df["Municipio Destino"].nunique())
+        # candidatos (inscritos), quando a coluna existir
+        for _cinsc in ("Inscritos", "Quantidade de Inscritos"):
+            if _cinsc in df.columns:
+                try:
+                    _r["candidatos"] = int(pd.to_numeric(df[_cinsc], errors="coerce").fillna(0).sum())
+                except Exception:
+                    pass
+                break
+        # precisão: % de rotas com fonte viária real (não geodésica)
+        if "Fonte" in df.columns or "Método Utilizado" in df.columns:
+            _col_fonte = "Fonte" if "Fonte" in df.columns else "Método Utilizado"
+            try:
+                _s = df[_col_fonte].astype(str).str.lower()
+                _n = len(_s)
+                _n_geo = int(_s.str.contains("geodés").sum())
+                _r["pct_viaria"] = round(100.0 * (_n - _n_geo) / _n, 1) if _n else 0.0
+            except Exception:
+                pass
+        # participação de motores (reusa o diagnóstico já existente)
+        try:
+            _pm = _diagnosticar_participacao_motores(df) or {}
+            if _pm:
+                _r["motores"] = {
+                    "google": _pm.get("pct_google"), "osrm": _pm.get("pct_osrm"),
+                    "fallback": _pm.get("pct_fallback"),
+                    "n_google": _pm.get("n_google"), "n_osrm": _pm.get("n_osrm"),
+                    "n_fallback": _pm.get("n_fallback"),
+                }
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return _r
+
+
+
+# [ANTI-TRAVA - 268ª geração] Detector de ESTAGNAÇÃO do processamento. Os laços de roteamento avançam por
+# índice e dão st.rerun() para continuar. Se uma execução trava (Future preso, rede) e é morta pelo timeout
+# do WebSocket, a reconexão reentra NO MESMO índice — e, sem rede de segurança, repetiria a janela travada
+# eternamente ("trava no meio do processamento", irmã da trava em 100%). Este watchdog registra, por fase,
+# (último índice, hora). Se o índice não avança dentro de um orçamento GENEROSO de parede, PULA a janela
+# travada (avança o índice além dela) para garantir progresso — as rotas puladas caem no fallback/2ª passada.
+# Robusto a reinício de estudo: qualquer MUDANÇA de índice (inclusive voltar a 0) reinicia o relógio; só a
+# estagnação REAL (mesmo índice por muito tempo) dispara o pulo.
+_STALL_LIMITE_S = 120.0
+
+
+def _watchdog_progresso(prefixo, idx, total, passo, limite_s=_STALL_LIMITE_S):
+    """Retorna o índice (possivelmente avançado além de uma janela estagnada) e registra a estagnação para
+    aviso na UI. Só age enquanto idx < total. Defensivo: qualquer erro devolve o índice original."""
+    try:
+        idx = int(idx); total = int(total); passo = max(1, int(passo))
+        if idx >= total:
+            return idx
+        _chave = f"_progresso_wd_{prefixo}"
+        _ult = st.session_state.get(_chave)
+        _agora = time.time()
+        if (not _ult) or idx != _ult[0]:
+            # avançou, recuou (novo estudo) ou primeira vez → reinicia o relógio de estagnação
+            st.session_state[_chave] = (idx, _agora, (_ult[2] if _ult else 0))
+            return idx
+        # mesmo índice: há quanto tempo está parado?
+        if (_agora - float(_ult[1])) > float(limite_s):
+            _novo = min(total, idx + passo)
+            st.session_state[_chave] = (_novo, _agora, int(_ult[2]) + 1)
+            _mk = f"{prefixo}_janelas_puladas"
+            st.session_state[_mk] = int(st.session_state.get(_mk, 0)) + max(1, _novo - idx)
+            logger.warning("[ANTI-TRAVA/estagnacao] Fase '%s' sem avanço há %.0fs no índice %d/%d — pulando "
+                           "para %d (garante progresso; rotas puladas caem no fallback/2ª passada).",
+                           prefixo, _agora - float(_ult[1]), idx, total, _novo)
+            return _novo
+        return idx
+    except Exception:
+        return idx
+
+
+# ==============================================================================
+# [CHECKPOINT-DISCO - 269ª geração] PERSISTÊNCIA DO ESTUDO EM DISCO + RETOMADA.
+# ------------------------------------------------------------------------------
+# Até aqui, todo o estado do estudo vivia só em st.session_state — que é POR SESSÃO
+# e POR PROCESSO. Um refresh do navegador, uma queda de conexão longa ou um restart
+# do servidor (deploy, OOM) faziam PERDER um estudo nacional inteiro em andamento,
+# obrigando a recomeçar do zero (minutos de roteamento por rede jogados fora).
+# Estes helpers persistem, de forma incremental e DEFENSIVA, o progresso do estudo
+# num diskcache (dependência já existente). Ao reabrir a app, se houver um estudo
+# interrompido compatível, a interface oferece RETOMAR de onde parou. Tudo é aditivo:
+# se o disco falhar por qualquer motivo, a app se comporta exatamente como antes
+# (em memória) — o checkpoint é uma REDE DE SEGURANÇA, nunca um caminho crítico.
+# Só se aceita retomar um checkpoint gravado pela MESMA versão do app (_VERSAO_APP),
+# evitando incompatibilidades após um deploy.
+# ==============================================================================
+_CKPT_THROTTLE_S = 15.0   # não grava mais que a cada ~15s (protege o disco/CPU)
+
+
+def _ckpt_dir():
+    # Diretório PERSISTENTE (padrão dos caches do app: ./cache_*), para o checkpoint sobreviver a um restart
+    # do servidor — que é justamente o cenário que queremos cobrir. /tmp seria apagado em muitas plataformas.
+    # Fallback para /tmp só se o diretório do app não puder ser criado (melhor ter algo que nada).
+    import os
+    _d = "./cache_checkpoints"
+    try:
+        os.makedirs(_d, exist_ok=True)
+        return _d
+    except Exception:
+        try:
+            import tempfile
+            _t = os.path.join(tempfile.gettempdir(), "rotas_checkpoints")
+            os.makedirs(_t, exist_ok=True)
+            return _t
+        except Exception:
+            return _d
+
+
+def _ckpt_salvar(slot, chaves, forcar=False):
+    """Snapshot (throttled) das `chaves` de session_state presentes → disco. Defensivo: nunca levanta."""
+    try:
+        _agora = time.time()
+        _tk = f"_ckpt_ult_{slot}"
+        if (not forcar) and (_agora - float(st.session_state.get(_tk, 0.0))) < _CKPT_THROTTLE_S:
+            return
+        _bundle = {"_versao": _VERSAO_APP, "_ts": _agora, "_dados": {}}
+        for k in chaves:
+            if k in st.session_state:
+                _bundle["_dados"][k] = st.session_state[k]
+        with Cache(_ckpt_dir(), size_limit=int(512 * 1024 * 1024)) as _c:
+            _c.set(slot, _bundle)
+        st.session_state[_tk] = _agora
+    except Exception as _e_ck:
+        logger.error("[CHECKPOINT] Falha ao salvar (ignorada, segue em memória): %s", _e_ck)
+
+
+def _ckpt_snapshot(slot, prefixo, forcar=False):
+    """Persiste TODAS as chaves de session_state com dado prefixo (ex.: 'lote_'/'alo_'), exceto as de
+    controle do próprio checkpoint. Garante que nada necessário à retomada fique de fora."""
+    try:
+        _chaves = [k for k in list(st.session_state.keys())
+                   if isinstance(k, str) and k.startswith(prefixo) and not k.startswith("_ckpt_")]
+        _ckpt_salvar(slot, _chaves, forcar=forcar)
+    except Exception:
+        pass
+
+
+def _ckpt_carregar(slot):
+    """Retorna o bundle salvo (ou None). Só aceita se a versão do app confere. Defensivo."""
+    try:
+        with Cache(_ckpt_dir(), size_limit=int(512 * 1024 * 1024)) as _c:
+            _b = _c.get(slot)
+        if not _b or _b.get("_versao") != _VERSAO_APP:
+            return None
+        return _b
+    except Exception:
+        return None
+
+
+def _ckpt_apagar(slot):
+    """Remove o checkpoint (estudo concluído/cancelado/descartado). Defensivo."""
+    try:
+        with Cache(_ckpt_dir(), size_limit=int(512 * 1024 * 1024)) as _c:
+            _c.delete(slot)
+    except Exception:
+        pass
+    st.session_state.pop(f"_ckpt_ult_{slot}", None)
+
+
+def _ckpt_restaurar(slot):
+    """Restaura em session_state as chaves salvas no slot. Retorna o dict de metadados (ou None)."""
+    try:
+        _b = _ckpt_carregar(slot)
+        if not _b:
+            return None
+        for k, v in (_b.get("_dados") or {}).items():
+            st.session_state[k] = v
+        return {"_ts": _b.get("_ts"), "n_chaves": len(_b.get("_dados") or {})}
+    except Exception:
+        return None
+
+
+def _ckpt_info_retomavel(slot, chave_total, chave_idx):
+    """Se houver um checkpoint interrompido e compatível, retorna (pct, feitos, total, idade_s); senão None.
+    Usado para decidir se mostra o cartão de RETOMAR. Defensivo."""
+    try:
+        _b = _ckpt_carregar(slot)
+        if not _b:
+            return None
+        _d = _b.get("_dados") or {}
+        _tot = int(_d.get(chave_total, 0) or 0)
+        _idx = int(_d.get(chave_idx, 0) or 0)
+        if _tot <= 0 or _idx >= _tot:
+            return None  # nada útil a retomar (vazio ou já terminado)
+        _pct = max(0.0, min(1.0, _idx / _tot))
+        _idade = max(0.0, time.time() - float(_b.get("_ts", time.time())))
+        return (_pct, _idx, _tot, _idade)
+    except Exception:
+        return None
+
 
 if _secao == _SECOES[0]:   # tab_individual
     st.info("🎯 **Objetivo desta aba:** Analisar o deslocamento de UM candidato até seu local de prova. Informe o **município de origem do candidato** e o **local de aplicação** para obter a distância viária oficial, a distância geodésica rigorosa e a explicabilidade da identificação territorial.")
@@ -36091,6 +37027,36 @@ if _secao == _SECOES[0]:   # tab_individual
 if _secao == _SECOES[1]:   # tab_processamento
     st.info("⚙️ **Objetivo desta aba:** Estudo de deslocamento em massa. Envie uma planilha com milhares de **municípios de origem dos candidatos** e seus **locais de aplicação**. O sistema calcula todos os deslocamentos simultaneamente e devolve a planilha preenchida e auditável.")
     renderizar_guia_aba("processamento")
+    # [CHECKPOINT-DISCO - 269ª geração] Cartão de RETOMADA. Se houver um estudo interrompido compatível (e não
+    # houver um rodando ou concluído nesta sessão), oferece retomar de onde parou — sem refazer o roteiro do
+    # zero após um refresh/queda de conexão/restart do servidor.
+    if (not st.session_state.get('lote_em_andamento')) and (not st.session_state.get('lote_resultado_pronto')):
+        _ck_info_lote = _ckpt_info_retomavel('estudo_lote', 'lote_total', 'lote_chunk_idx')
+        if _ck_info_lote:
+            _pct_ck, _idx_ck, _tot_ck, _idade_ck = _ck_info_lote
+            _idx_fmt = f"{_idx_ck:,}".replace(",", ".")
+            _tot_fmt = f"{_tot_ck:,}".replace(",", ".")
+            with st.container(border=True):
+                st.warning(f"🔄 **Estudo interrompido encontrado** — {_idx_fmt}/{_tot_fmt} rotas "
+                           f"({_pct_ck*100:.0f}%) já processadas, interrompido há {_formatar_duracao(_idade_ck)}. "
+                           "O servidor pode ter reiniciado ou a conexão caído. Você pode retomar de onde parou.")
+                _cr1, _cr2 = st.columns(2)
+                with _cr1:
+                    if st.button("▶️ Retomar de onde parou", use_container_width=True, type="primary",
+                                 key="retomar_lote"):
+                        if _ckpt_restaurar('estudo_lote'):
+                            st.session_state['lote_em_andamento'] = True
+                            st.session_state.setdefault('lote_fase', 'processar')
+                            st.toast("Estudo retomado do checkpoint em disco.", icon="✅")
+                            st.rerun()
+                        else:
+                            _ckpt_apagar('estudo_lote')
+                            st.error("Não foi possível restaurar o checkpoint (pode estar corrompido). "
+                                     "Inicie um novo estudo.")
+                with _cr2:
+                    if st.button("🗑️ Descartar e começar novo", use_container_width=True, key="descartar_lote"):
+                        _ckpt_apagar('estudo_lote')
+                        st.rerun()
     # [GUIA-DESEMPENHO - 45ª geração] Recomendações práticas para máxima velocidade e acerto.
     with st.expander("🚀 Como obter o MÁXIMO desempenho e precisão (recomendações)", expanded=False):
         st.markdown("""
@@ -36336,8 +37302,12 @@ if _secao == _SECOES[1]:   # tab_processamento
                                # [FINALIZACAO-ROBUSTA - 267ª] marcadores de encerramento desta rodada
                                'lote_fin_tentativas', 'lote_df_seguro', 'lote_finalizacao_degradada',
                                'lote_resumo_final', 'lote_planilha_erro', 'lote_planilha_auto',
-                               'lote_resultado_pronto']:
+                               'lote_resultado_pronto',
+                               # [ANTI-TRAVA - 268ª] estado do watchdog de estagnação
+                               '_progresso_wd_lote', '_progresso_wd_lote_preaq',
+                               'lote_janelas_puladas', 'lote_preaq_janelas_puladas']:
                         st.session_state.pop(_k, None)
+                    _ckpt_apagar('estudo_lote')  # [CHECKPOINT-DISCO - 269ª] cancelado: remove o checkpoint
                     st.warning("Processamento cancelado pelo usuário.")
                     st.rerun()
             
@@ -36404,8 +37374,12 @@ if _secao == _SECOES[1]:   # tab_processamento
                 # anterior para a exibição não mostrar dados antigos enquanto o novo lote processa.
                 for _k in ['lote_resultado_pronto', 'planilha_pronta', 'relatorio_html_lote',
                            'lote_planilha_erro', 'lote_planilha_auto', 'lote_finalizacao_degradada',
-                           'lote_resumo_final', 'lote_fin_tentativas', 'lote_df_seguro']:
+                           'lote_resumo_final', 'lote_fin_tentativas', 'lote_df_seguro',
+                           # [ANTI-TRAVA - 268ª] estado do watchdog de estagnação
+                           '_progresso_wd_lote', '_progresso_wd_lote_preaq',
+                           'lote_janelas_puladas', 'lote_preaq_janelas_puladas']:
                     st.session_state.pop(_k, None)
+                _ckpt_apagar('estudo_lote')  # [CHECKPOINT-DISCO - 269ª] novo estudo: descarta checkpoint anterior
                 st.rerun()
                 
             # ---- FASE PRÉ-AQUECIMENTO (time-boxed, a cada rerun automático) ----
@@ -36424,17 +37398,30 @@ if _secao == _SECOES[1]:   # tab_processamento
                 _BUDGET_PRE = 8.0
                 _MINI_PRE = max(8, WORKERS_DISPONIVEIS)  # uma onda do pool por mini-lote
                 _t_pre = time.time()
+                # [ANTI-TRAVA - 268ª geração] Watchdog de estagnação também no pré-aquecimento (geocodificação):
+                # uma onda de geocode presa não trava mais a etapa — pula e durabiliza o avanço.
+                _pidx = _watchdog_progresso('lote_preaq', _pidx, _ptotal, _MINI_PRE)
+                st.session_state['lote_preaq_idx'] = _pidx
                 _pidx_local = _pidx
                 while _pidx_local < _ptotal:
                     _lote_ep = _eps[_pidx_local:_pidx_local + _MINI_PRE]
                     if not _lote_ep:
                         break
                     _fut_ep = {EXECUTOR_GLOBAL.submit(obter_coordenadas_e_endereco_oficial, ep): ep for ep in _lote_ep}
-                    for _f in as_completed(_fut_ep):
-                        try:
-                            _f.result()
-                        except Exception:
-                            pass
+                    # [ANTI-TRAVA - 268ª geração] Espera da onda com orçamento de tempo (import local p/ não
+                    # tocar imports de topo): um geocode preso não segura a onda inteira; o pendente é reprocessado
+                    # na próxima passada (é idempotente — só popula cache).
+                    from concurrent.futures import TimeoutError as _FutTimeoutPre
+                    try:
+                        for _f in as_completed(_fut_ep, timeout=min(_CHUNK_WAIT_MAX_S,
+                                                                    _CHUNK_WAIT_BASE_S + _CHUNK_WAIT_POR_TAREFA_S * len(_fut_ep))):
+                            try:
+                                _f.result()
+                            except Exception:
+                                pass
+                    except (_FutTimeoutPre, TimeoutError):
+                        logger.warning("[ANTI-TRAVA] Onda de pré-aquecimento excedeu o orçamento; pendências "
+                                       "seguem para a próxima passada (idempotente).")
                     _pidx_local += _MINI_PRE
                     if (time.time() - _t_pre) >= _BUDGET_PRE:
                         break
@@ -36522,6 +37509,11 @@ if _secao == _SECOES[1]:   # tab_processamento
                 _BUDGET_SEG = 8.0
                 _MINI = max(8, WORKERS_DISPONIVEIS)  # uma onda do pool por mini-lote
                 _t_run = time.time()
+                # [ANTI-TRAVA - 268ª geração] Watchdog de estagnação (parede): se o índice ficou preso além do
+                # orçamento (execuções mortas pelo WebSocket na mesma janela), pula a janela e durabiliza o
+                # avanço já — garante progresso mesmo que ESTA execução também seja interrompida.
+                _idx = _watchdog_progresso('lote', _idx, _total, _MINI)
+                st.session_state['lote_chunk_idx'] = _idx
                 _idx_local = _idx
                 _processou_algo = False
                 while _idx_local < _total:
@@ -36541,6 +37533,11 @@ if _secao == _SECOES[1]:   # tab_processamento
                 if _processou_algo:
                     st.session_state['lote_resultados'] = _resultados
                 st.session_state['lote_chunk_idx'] = min(_idx_local, _total)
+
+                # [CHECKPOINT-DISCO - 269ª geração] Persiste o progresso do estudo (throttled). Se o servidor
+                # reiniciar ou a sessão cair, a app oferecerá RETOMAR daqui — nada de recomeçar o roteiro do
+                # zero. Defensivo: se o disco falhar, apenas segue em memória (comportamento anterior).
+                _ckpt_snapshot('estudo_lote', 'lote_')
 
                 # Mais rotas? Continua automaticamente. Senão, finaliza.
                 if st.session_state['lote_chunk_idx'] < _total:
@@ -36570,7 +37567,7 @@ if _secao == _SECOES[1]:   # tab_processamento
                         pass
                     if _lote_fin_tent > _MAX_FIN_TENT:
                         logger.error("[FINALIZACAO/lote/watchdog] Teto de %d tentativas atingido — forçando "
-                                     "entrega degradada para impedir travamento.", _MAX_FIN_TENT)
+                                     "resposta degradada para impedir travamento.", _MAX_FIN_TENT)
                         _df_forcado_lote = st.session_state.get('lote_df_seguro')
                         if _df_forcado_lote is None:
                             try:
@@ -36594,6 +37591,7 @@ if _secao == _SECOES[1]:   # tab_processamento
                         st.session_state['lote_preaquecido_final'] = _preaq
                         st.session_state['lote_resultado_pronto'] = True
                         st.session_state['lote_finalizacao_degradada'] = True
+                        _ckpt_apagar('estudo_lote')  # estudo encerrado (degradado): remove o checkpoint
                         try:
                             st.session_state['lote_resumo_final'] = _resumo_finalizacao(_df_forcado_lote)
                         except Exception:
@@ -36698,6 +37696,7 @@ if _secao == _SECOES[1]:   # tab_processamento
                     st.session_state['lote_tempo_total'] = tempo_lote_segundos
                     st.session_state['lote_preaquecido_final'] = _preaq
                     st.session_state['lote_resultado_pronto'] = True
+                    _ckpt_apagar('estudo_lote')  # [CHECKPOINT-DISCO - 269ª] estudo concluído: remove o checkpoint
                     try:
                         st.session_state['lote_resumo_final'] = _resumo_finalizacao(df_final)
                     except Exception:
@@ -36811,6 +37810,11 @@ if _secao == _SECOES[1]:   # tab_processamento
                         st.warning("⚠️ **Encerramento em modo de segurança:** os resultados essenciais foram "
                                    "entregues integralmente, mas um passo analítico opcional pode não ter "
                                    "completado. Os downloads abaixo seguem disponíveis normalmente.")
+                    _lote_puladas = int(st.session_state.get('lote_janelas_puladas', 0) or 0)
+                    if _lote_puladas > 0:
+                        st.caption(f"🛡️ **Resiliência:** {_lote_puladas} rota(s) foram adiadas por lentidão de rede "
+                                   f"durante o processamento e tratadas por estimativa geodésica (fallback), "
+                                   f"garantindo que o estudo nunca travasse. O restante manteve a rota viária real.")
             except Exception:
                 logger.error("[FINALIZACAO-ROBUSTA-LOTE] Falha ao renderizar o painel de conclusão", exc_info=True)
             # Painel de performance do último lote (após finalização)
@@ -37440,183 +38444,38 @@ if _secao == _SECOES[1]:   # tab_processamento
                     st.caption("💡 **Dica:** o GeoJSON e o KML desenham origem (verde), destino (vermelho) e a linha origem→destino. "
                                "Importe no QGIS/Google Earth para visualizar todas as rotas do lote num mapa só.")
 
-# ==============================================================================
-# [FINALIZACAO-ROBUSTA - 266ª geração] ORQUESTRAÇÃO DE ENCERRAMENTO DA ALOCAÇÃO
-# ------------------------------------------------------------------------------
-# Objetivo desta rodada: matar em definitivo o sintoma "trava em 100%" da aba
-# 'Locais de Aplicação'. Causa-raiz medida no código: a FASE 3 (finalização) roda
-# TODO o trabalho pesado (re-roteamentos síncronos + enriquecimento O(n) sobre
-# milhares de linhas) numa ÚNICA execução, AINDA na fase 'processar', e só troca de
-# fase no st.rerun() do fim. Se essa execução é interrompida (timeout de WebSocket
-# num estudo nacional, Future de rede travado, pressão de memória) ANTES do rerun,
-# a máquina volta a 'processar', redesenha o painel de 100% e re-executa tudo —
-# travamento perpétuo, sem erro e sem downloads.
-#
-# Estes helpers são 100% ADITIVOS e defensivos (nunca levantam). Dão à finalização:
-#   • Observabilidade estruturada por etapa (tempo, memória RSS, tamanho do DF) com
-#     AVISO automático quando uma etapa passa do orçamento — sem dependência nova
-#     (memória via stdlib `resource`, importada preguiçosamente).
-#   • Um watchdog de tentativas: se a finalização for reentrada além de um teto
-#     finito, entrega o que já existe (DF-seguro pré-commitado) e encerra — jamais
-#     trava (ver uso na FASE 3).
-#   • Um painel de CHECKLIST elegante para o encerramento (substitui o enganoso
-#     "100% · tempo restante 0" por "Finalizando: consolidando… gerando…").
-#   • Um resumo executivo do encerramento (candidatos, rotas, municípios, motores,
-#     precisão) para a tela de conclusão.
-# Nada aqui altera o resultado do estudo: em caminho feliz, o comportamento e a
-# planilha são byte-a-byte os de antes; estes recursos só mudam o CONTROLE de fluxo
-# do encerramento e a sua APRESENTAÇÃO.
-# ==============================================================================
-
-# Teto de reentradas da finalização antes de forçar a entrega degradada (defesa em
-# profundidade — finito e generoso; só dispara em cenário patológico de reentrada).
-_MAX_FIN_TENT = 6
-# Orçamento por etapa (s) acima do qual a observabilidade emite AVISO (não bloqueia).
-_FIN_ETAPA_WARN_S = 8.0
-
-# Passos ordenados do encerramento (para o checklist e a telemetria). Rótulos curtos.
-_FIN_ETAPAS = [
-    ("consolidar", "Consolidar resultados"),
-    ("enriquecer", "Enriquecer e auditar"),
-    ("montar_df", "Montar tabela final"),
-    ("planilha", "Gerar planilha (.xlsx)"),
-    ("html", "Relatório HTML"),
-    ("downloads", "Disponibilizar downloads"),
-]
-
-
-def _mem_rss_mb():
-    """Memória residente (RSS) do processo em MB, ou None se indisponível. Só stdlib
-    (`resource`, importado preguiçosamente — mantém os imports de topo idênticos ao
-    baseline). Nunca levanta. Em Linux/macOS ru_maxrss é o pico; no Linux vem em KB,
-    no macOS em bytes — normalizamos com uma heurística segura."""
-    try:
-        import resource  # stdlib; import local para não tocar os imports de topo
-        _rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        if not _rss:
-            return None
-        # Linux: KB · macOS: bytes. Valores >1e9 quase certamente são bytes.
-        return round(_rss / (1024.0 * 1024.0), 1) if _rss > 10_000_000 else round(_rss / 1024.0, 1)
-    except Exception:
-        return None
-
-
-def _obs_fin(etapa, t0, **extra):
-    """[OBSERVABILIDADE] Registra o fim de uma etapa da finalização: tempo decorrido,
-    memória RSS e metadados (ex.: linhas do DF). Emite WARNING se a etapa passar do
-    orçamento (_FIN_ETAPA_WARN_S). Também alimenta o perfil de fases já existente
-    (aparece no Monitor APIs). Defensivo: nunca levanta, nunca altera o fluxo."""
-    try:
-        _dt = max(0.0, time.time() - float(t0)) if t0 is not None else 0.0
-        _mem = _mem_rss_mb()
-        _meta = " ".join(f"{_k}={_v}" for _k, _v in extra.items()) if extra else ""
-        _msg = "[FINALIZACAO/%s] %.2fs%s%s" % (
-            etapa, _dt,
-            (" · %sMB RSS" % _mem) if _mem is not None else "",
-            (" · " + _meta) if _meta else "")
-        if _dt > _FIN_ETAPA_WARN_S:
-            logger.warning(_msg + "  ⚠️ acima do orçamento de %.0fs", _FIN_ETAPA_WARN_S)
-        else:
-            logger.info(_msg)
-        try:
-            _registrar_perfil_fase("Finalização · " + str(etapa), _dt)
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
-def _render_checklist_finalizacao(passo_atual="consolidar", degradado=False):
-    """[UX] Painel de encerramento com checklist de etapas — substitui o painel de
-    '100% · tempo restante 0' que parecia travado. Mostra ✔ nas etapas concluídas, ⏳
-    na atual e ○ nas pendentes, com um spinner honesto. Defensivo: nunca levanta."""
-    try:
-        _ordem = [_k for _k, _ in _FIN_ETAPAS]
-        try:
-            _i_atual = _ordem.index(passo_atual)
-        except ValueError:
-            _i_atual = 0
-        with st.container(border=True):
-            st.markdown("#### ✅ Processamento concluído — finalizando o estudo")
-            st.caption("🧭 **Etapa atual:** consolidando os resultados e preparando os arquivos para download. "
-                       "Em estudos nacionais isto pode levar alguns instantes — **não é necessário clicar novamente**.")
-            _linhas = []
-            for _j, (_k, _lbl) in enumerate(_FIN_ETAPAS):
-                if _j < _i_atual:
-                    _linhas.append(f"- ✔ {_lbl}")
-                elif _j == _i_atual:
-                    _linhas.append(f"- ⏳ **{_lbl}** — em andamento")
-                else:
-                    _linhas.append(f"- ○ {_lbl}")
-            st.markdown("\n".join(_linhas))
-            _frac = min(0.98, (_i_atual + 0.5) / max(1, len(_FIN_ETAPAS)))
-            st.progress(_frac)
-            if degradado:
-                st.warning("⚠️ O encerramento entrou em **modo de segurança**: os resultados essenciais serão "
-                           "entregues mesmo que um passo analítico opcional não tenha completado. Nada trava.")
-            st.caption("Se esta tela persistir muito além do normal, o encerramento tem um limite de segurança "
-                       "que entrega automaticamente os resultados já calculados.")
-    except Exception:
-        # Nunca deixa o painel derrubar a finalização; em pior caso, um aviso mínimo.
-        try:
-            st.info("✅ Processamento concluído — finalizando o estudo…")
-        except Exception:
-            pass
-
-
-def _resumo_finalizacao(df):
-    """[UX] Resumo executivo do ENCERRAMENTO: candidatos (inscritos, se houver), rotas,
-    municípios de origem, polos, participação de motores (Google/OSRM/fallback) e
-    precisão (% de rotas viárias reais × estimativa geodésica). Retorna um dict pronto
-    para exibição. Defensivo: cada campo só entra se a coluna existir; erro → dict
-    parcial (nunca levanta)."""
-    _r = {}
-    try:
-        if df is None or len(df) == 0:
-            return _r
-        _r["rotas"] = int(len(df))
-        if "Municipio Origem" in df.columns:
-            _r["municipios"] = int(df["Municipio Origem"].nunique())
-        if "Municipio Destino" in df.columns:
-            _r["polos"] = int(df["Municipio Destino"].nunique())
-        # candidatos (inscritos), quando a coluna existir
-        for _cinsc in ("Inscritos", "Quantidade de Inscritos"):
-            if _cinsc in df.columns:
-                try:
-                    _r["candidatos"] = int(pd.to_numeric(df[_cinsc], errors="coerce").fillna(0).sum())
-                except Exception:
-                    pass
-                break
-        # precisão: % de rotas com fonte viária real (não geodésica)
-        if "Fonte" in df.columns or "Método Utilizado" in df.columns:
-            _col_fonte = "Fonte" if "Fonte" in df.columns else "Método Utilizado"
-            try:
-                _s = df[_col_fonte].astype(str).str.lower()
-                _n = len(_s)
-                _n_geo = int(_s.str.contains("geodés").sum())
-                _r["pct_viaria"] = round(100.0 * (_n - _n_geo) / _n, 1) if _n else 0.0
-            except Exception:
-                pass
-        # participação de motores (reusa o diagnóstico já existente)
-        try:
-            _pm = _diagnosticar_participacao_motores(df) or {}
-            if _pm:
-                _r["motores"] = {
-                    "google": _pm.get("pct_google"), "osrm": _pm.get("pct_osrm"),
-                    "fallback": _pm.get("pct_fallback"),
-                    "n_google": _pm.get("n_google"), "n_osrm": _pm.get("n_osrm"),
-                    "n_fallback": _pm.get("n_fallback"),
-                }
-        except Exception:
-            pass
-    except Exception:
-        pass
-    return _r
-
-
 if _secao == _SECOES[2]:   # tab_alocacao
     st.info("🎯 **Objetivo desta aba:** Definir o **melhor local de aplicação da prova** para cada município de candidatos. Envie a lista de **municípios de origem dos candidatos** e a lista de **polos de aplicação** (escolas/unidades aplicadoras). O sistema avalia todas as combinações e recomenda, para cada município, o local de prova que minimiza o deslocamento dos candidatos.")
     renderizar_guia_aba("alocacao")
+    # [CHECKPOINT-DISCO - 269ª geração] Cartão de RETOMADA da Alocação. Se houver um estudo interrompido
+    # compatível na fase de roteamento (a cara), oferece retomar de onde parou após refresh/queda/restart.
+    if (not st.session_state.get('alo_em_andamento')) and (not st.session_state.get('alo_resultado_pronto')):
+        _ck_info_alo = _ckpt_info_retomavel('estudo_alocacao', 'alo_total', 'alo_chunk_idx')
+        if _ck_info_alo:
+            _pct_cka, _idx_cka, _tot_cka, _idade_cka = _ck_info_alo
+            _idxa_fmt = f"{_idx_cka:,}".replace(",", ".")
+            _tota_fmt = f"{_tot_cka:,}".replace(",", ".")
+            with st.container(border=True):
+                st.warning(f"🔄 **Alocação interrompida encontrada** — {_idxa_fmt}/{_tota_fmt} rotas "
+                           f"({_pct_cka*100:.0f}%) já processadas, interrompida há {_formatar_duracao(_idade_cka)}. "
+                           "O servidor pode ter reiniciado ou a conexão caído. Você pode retomar de onde parou.")
+                _cra1, _cra2 = st.columns(2)
+                with _cra1:
+                    if st.button("▶️ Retomar de onde parou", use_container_width=True, type="primary",
+                                 key="retomar_alo"):
+                        if _ckpt_restaurar('estudo_alocacao'):
+                            st.session_state['alo_em_andamento'] = True
+                            st.session_state.setdefault('alo_fase', 'processar')
+                            st.toast("Alocação retomada do checkpoint em disco.", icon="✅")
+                            st.rerun()
+                        else:
+                            _ckpt_apagar('estudo_alocacao')
+                            st.error("Não foi possível restaurar o checkpoint (pode estar corrompido). "
+                                     "Inicie um novo estudo.")
+                with _cra2:
+                    if st.button("🗑️ Descartar e começar novo", use_container_width=True, key="descartar_alo"):
+                        _ckpt_apagar('estudo_alocacao')
+                        st.rerun()
     # [PLANEJAMENTO - 184ª geração] SEÇÃO NOVA (Fase 2, peça 1: entrada + ranking). Ferramenta EXPLORATÓRIA,
     # decolada da alocação: a partir da distribuição de candidatos, rankeia quais municípios têm maior
     # POTENCIAL de sediar provas (catchment). Resolve OFFLINE pela base IBGE embarcada (corrigida). Aditivo,
@@ -38100,6 +38959,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                            'alo_fin_tentativas', 'alo_df_seguro', 'alo_2pass_google_feito',
                            'alo_finalizacao_degradada', 'alo_resumo_final']:
                     st.session_state.pop(_k, None)
+                _ckpt_apagar('estudo_alocacao')  # [CHECKPOINT-DISCO - 269ª] cancelada: remove o checkpoint
                 st.warning("Alocação cancelada pelo usuário.")
                 st.rerun()
         
@@ -38159,6 +39019,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                'alo_fin_tentativas', 'alo_df_seguro', 'alo_2pass_google_feito',
                                'alo_finalizacao_degradada', 'alo_resumo_final']:
                         st.session_state.pop(_k, None)
+                    _ckpt_apagar('estudo_alocacao')  # [CHECKPOINT-DISCO - 269ª] novo estudo: descarta anterior
                     st.session_state['alo_em_andamento'] = True
                     st.session_state['alo_fase'] = 'geo_destinos'
                     st.session_state['alo_dests_unicos'] = dests_unicos
@@ -38472,6 +39333,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     _paradas = 0
                 st.session_state['alo_idx_fim_anterior'] = _idx_local
                 st.session_state['alo_paradas_consecutivas'] = _paradas
+                # [CHECKPOINT-DISCO - 269ª geração] Persiste o progresso do estudo de Alocação (throttled). Se o
+                # servidor reiniciar ou a sessão cair durante o roteamento (a fase cara), a app oferece RETOMAR
+                # daqui. Defensivo: falha de disco → segue em memória (comportamento anterior).
+                _ckpt_snapshot('estudo_alocacao', 'alo_')
                 _ir_finalizar = st.session_state['alo_chunk_idx'] >= _total
             
             # [PODA - 143ª geração] 2ª RODADA (só no modo multicritério): agora que o polo mais próximo
@@ -38597,6 +39462,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     st.session_state['alo_tempo_total'] = _tempo_wd
                     st.session_state['alo_resultado_pronto'] = True
                     st.session_state['alo_finalizacao_degradada'] = True
+                    _ckpt_apagar('estudo_alocacao')  # [CHECKPOINT-DISCO - 269ª] encerrado (degradado)
                     # limpa marcadores de processamento e evita auto-gerar planilha em modo degradado
                     for _kwd in ['alo_em_andamento', 'alo_tarefas', 'alo_chunk_idx', 'alo_planilha_auto',
                                  'alo_df_seguro', 'alo_fin_tentativas']:
@@ -39101,6 +39967,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 # (como o relatório HTML já é). topk/resultados/params/mcda ficam em sessão para a geração sob
                 # demanda — memória modesta (dict de rotas), muito menor que o pico de construção do .xlsx.
                 st.session_state['alo_resultado_pronto'] = True
+                _ckpt_apagar('estudo_alocacao')  # [CHECKPOINT-DISCO - 269ª] estudo concluído: remove o checkpoint
                 # [PLANILHA-HIBRIDA - 263ª geração] Estudo PEQUENO (≤ _LIMITE_PLANILHA_AUTO municípios): gera a
                 # planilha automaticamente (dispara a FASE 3b já na próxima passada) — conveniência sem clique, pois
                 # o pico de memória do .xlsx é seguro nesse tamanho. Estudo GRANDE/nacional: mantém 100% sob demanda
@@ -39171,7 +40038,8 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         if _wb_loc is not None and hasattr(_wb_loc, "add_format"):
                             _fmts_loc = _fmt_institucional(_wb_loc)
                             _ws_loc = writer.sheets.get("Locais de Aplicacao")
-                            _estilizar_tabela_xlsx(_ws_loc, _wb_loc, _df_export_locais, _fmts_loc)
+                            _estilizar_tabela_xlsx(_ws_loc, _wb_loc, _df_export_locais, _fmts_loc,
+                                                   formatos_col=_num_formatos_por_coluna(_df_export_locais))
                     except Exception:
                         logger.error("[EXPORT-PADRAO] Falha ao estilizar aba principal de Locais", exc_info=True)
                     # [EXPORT-ANALITICO - 184ª geração] Camada ANALÍTICA sempre presente: Resumo Executivo,
@@ -44804,6 +45672,30 @@ if _secao == _SECOES[11]:   # tab_auditoria
     st.info("🔍 **Objetivo desta aba:** Auditoria da aplicação — transparência total e explicabilidade (XAI). Verifique em detalhes como cada município de origem e cada local de prova foi identificado, e por que o sistema descartou as demais alternativas.")
     renderizar_guia_aba("auditoria")
     st.markdown("### 🔍 Dossiê Investigativo de Auditoria Viária e Espacial")
+
+    # [LIVRO-RAZAO-R3 276ª] Livro-Razão de Rastreabilidade — download auditável (aditivo, read-only).
+    with st.expander("📒 Livro-Razão de Rastreabilidade (1 linha por rota: motor, divergência, confiança, tempos)", expanded=False):
+        st.caption("Projeção **read-only** dos dados já calculados do último Estudo em Lote — sem rede, sem recálculo. "
+                   "Consolida a proveniência de cada rota para auditoria e prestação de contas.")
+        _df_lr_base = st.session_state.get("df_processado")
+        if _df_lr_base is None or len(_df_lr_base) == 0:
+            st.info("Processe um Estudo em Lote para gerar o livro-razão de rastreabilidade.")
+        else:
+            try:
+                _ledger = _montar_livro_razao_rastreabilidade(_df_lr_base)
+                if _ledger is None or _ledger.empty:
+                    st.info("Sem dados de rastreabilidade disponíveis para este estudo.")
+                else:
+                    _n = len(_ledger)
+                    st.caption(f"{_n:,} rotas no livro-razao.".replace(",", "."))
+                    st.dataframe(_ledger.head(50), use_container_width=True)
+                    st.download_button("📥 Baixar Livro-Razão (.csv)", data=_livro_razao_csv_bytes(_ledger),
+                                       file_name="livro_razao_rastreabilidade.csv", mime="text/csv",
+                                       key="dl_livro_razao_rastreabilidade")
+            except Exception:
+                st.warning("Não foi possível montar o livro-razão nesta sessão (a auditoria segue disponível abaixo).")
+                logger.error("[LIVRO-RAZAO-UI] Falha ao renderizar (isolada).", exc_info=True)
+
     
     tab_aud_lote, tab_aud_hub, tab_aud_amb = st.tabs(["⚙️ Logs do Lote de Roteamento Padrão", " Logs do Motor de Alocação (Hubs Competitive)", "🧭 Base de Ambiguidade Municipal"])
     
