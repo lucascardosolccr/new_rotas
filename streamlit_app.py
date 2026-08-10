@@ -63,6 +63,14 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.41 (278a geracao) -> IDENTIDADE VISUAL (.mnil) + HEADER DE KPIs DO LOTE (fase visual, incremento 1 do caminho b)
+#     Incremento visual VALIDADO NA TELA (preview via Chromium, aprovado antes da fiacao). Tokens .mnil
+#     (petroleo+teal, Space Grotesk+Inter tabular, assinatura de contorno) + _render_kpi_header_lote() ADITIVO
+#     e READ-ONLY (deriva do df + _lote_resumo). Helpers com prefixo _mnil_ (sem colisao com o _kpi aninhado
+#     existente). CSS namespaced em .mnil. Uma unica chamada apos 'Processamento concluido'; st.metric/captions
+#     antigos intactos abaixo. Defensivo: df vazio/erro -> ''. +3 funcoes (_mnil_fmt_int,_mnil_kpi,
+#     _render_kpi_header_lote) +1 constante _MNIL_CSS. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x,
+#     bare-except 0, imports de topo identicos, requirements INALTERADO. Suite test_kpi_header.py (exit 0).
 #   v3.40 (277a geracao) -> LINGUAGEM DO DOMINIO EM TEXTOS VISIVEIS + AUDITORIA UX/UI (rodada de UX, SEGURA)
 #     Rodada de UX pedida no brief. HONESTIDADE DE ESCOPO: o app ja e MUITO didatico (renderizar_guia_aba entrega,
 #     em cada aba, um guia "Como usar" completo; ha glossario, enciclopedia e auditoria XAI). E ha uma restricao
@@ -10786,6 +10794,113 @@ def _livro_razao_csv_bytes(ledger):
     except Exception:
         logger.error("[LIVRO-RAZAO] Falha ao serializar CSV (isolada).", exc_info=True)
         return b""
+
+
+# ==============================================================================
+# [KPI-HEADER-R(UI) 278a geracao] Identidade visual (.mnil) + header de KPIs do Lote.
+# ADITIVO e READ-ONLY (deriva do df + resumo ja calculados). CSS namespaced em .mnil.
+# Helpers com prefixo _mnil_ para nao colidir com nada existente. Validado via Chromium.
+# ==============================================================================
+# Builder do header de KPIs do Lote — porta o design aprovado para HTML gerado em Python.
+# Read-only, derivado do df final + resumo já calculado. Defensivo: nunca levanta.
+
+_MNIL_CSS = """
+<style>
+.mnil{--ink:#0E2A3B;--surface:#F6F8F9;--card:#FFFFFF;--slate:#5B6B76;--line:#E3E9EC;
+--route:#1F8A70;--route-soft:#E7F3EF;--attention:#E8A33D;--attention-soft:#FBF1DF;--alert:#C6553F;--alert-soft:#F7E7E3;
+--r:14px;--shadow:0 1px 2px rgba(14,42,59,.04),0 6px 20px rgba(14,42,59,.06);color:var(--ink);font-family:'Inter',system-ui,sans-serif}
+.mnil *{box-sizing:border-box}
+.mnil .eyebrow{display:flex;align-items:center;gap:10px;margin:6px 2px 12px}
+.mnil .eyebrow .tick{width:26px;height:3px;background:var(--route);border-radius:2px;position:relative}
+.mnil .eyebrow .tick::after{content:"";position:absolute;right:-1px;top:-2px;width:7px;height:7px;border:2px solid var(--route);border-radius:50%;background:var(--surface)}
+.mnil .eyebrow h2{font-family:'Space Grotesk','Inter',sans-serif;font-weight:600;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--slate);margin:0}
+.mnil .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.mnil .grid.sec{margin-top:14px}
+.mnil .kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 16px 14px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.mnil .kpi::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:0 3px 3px 0;background:var(--route)}
+.mnil .kpi.attention::before{background:var(--attention)}
+.mnil .kpi.alert::before{background:var(--alert)}
+.mnil .kpi .lbl{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--slate);font-weight:500;margin-bottom:10px}
+.mnil .kpi .val{font-family:'Space Grotesk','Inter',sans-serif;font-weight:700;font-size:30px;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.mnil .kpi.compact .val{font-size:23px}
+.mnil .kpi .val small{font-size:15px;font-weight:600;color:var(--slate);margin-left:3px}
+.mnil .kpi .sub{margin-top:9px;font-size:11.5px;color:var(--slate)}
+.mnil .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;font-variant-numeric:tabular-nums}
+.mnil .chip.ok{background:var(--route-soft);color:#14624e}
+.mnil .chip.att{background:var(--attention-soft);color:#8a5a12}
+@media (max-width:760px){.mnil .grid,.mnil .grid.sec{grid-template-columns:repeat(2,1fr)}}
+</style>
+"""
+
+def _mnil_fmt_int(n):
+    try: return f"{int(round(float(n))):,}".replace(",", ".")
+    except Exception: return "—"
+
+def _mnil_kpi(lbl, val, sub="", cls=""):
+    return (f'<div class="kpi {cls}"><div class="lbl">{lbl}</div>'
+            f'<div class="val">{val}</div>'
+            f'{f"<div class=\"sub\">{sub}</div>" if sub else ""}</div>')
+
+def _render_kpi_header_lote(df, resumo=None):
+    """Header de KPIs do Lote (read-only). Retorna '' se não houver dados — nunca levanta."""
+    try:
+        resumo = resumo or {}
+        if df is None or len(df) == 0:
+            return ""
+        cols = set(df.columns)
+        n = len(df)
+        # sucesso: % de rotas com distância válida (>0)
+        if "Distancia" in cols:
+            dist = pd.to_numeric(df["Distancia"], errors="coerce")
+            pct_ok = 100.0 * (dist > 0).mean()
+            dist_media = float(dist[dist > 0].mean()) if (dist > 0).any() else 0.0
+            dist_total = float(dist[dist > 0].sum())
+        else:
+            pct_ok = dist_media = dist_total = None
+        # fallback: rota resolvida por linha reta / geodésico
+        fb = None
+        if "Fonte da Rota" in cols:
+            fb = int(df["Fonte da Rota"].astype(str).str.contains("linha reta|geod", case=False, regex=True).sum())
+        # balsa (mesmo padrão já usado no app)
+        balsa = int(df["Balsas"].astype(str).str.strip().str.lower().isin(["sim","yes","true","1"]).sum()) if "Balsas" in cols else None
+
+        munis = resumo.get("municipios")
+        cands = resumo.get("candidatos")
+        rotas = resumo.get("rotas") or n
+
+        # ---- linha primária ----
+        prim = []
+        prim.append(_mnil_kpi("◍ Municípios de origem", _mnil_fmt_int(munis) if munis is not None else _mnil_fmt_int(n),
+                         "origens de candidatos analisadas"))
+        if cands is not None:
+            prim.append(_mnil_kpi("◍ Candidatos considerados", _mnil_fmt_int(cands), "deslocamentos avaliados"))
+        prim.append(_mnil_kpi("◍ Rotas calculadas", _mnil_fmt_int(rotas),
+                         (f'<span class="chip ok">{pct_ok:.1f}% com sucesso</span>' if pct_ok is not None else "")))
+        if fb is not None:
+            prim.append(_mnil_kpi("◍ Recuperadas por reserva", _mnil_fmt_int(fb),
+                             '<span class="chip att">motor de reserva acionado</span>', "attention"))
+
+        # ---- linha secundária ----
+        sec = []
+        if balsa is not None:
+            sec.append(_mnil_kpi("⛴ Rotas com balsa", _mnil_fmt_int(balsa), "travessia fluvial no trajeto", "compact alert"))
+        if dist_media is not None:
+            sec.append(_mnil_kpi("↔ Deslocamento médio", f"{dist_media:.1f}<small>km</small>",
+                            "candidato → local de prova", "compact"))
+        if dist_total is not None:
+            _dt = (f"{_mnil_fmt_int(dist_total/1000)}<small>mil km</small>" if dist_total >= 1000 else f"{_mnil_fmt_int(dist_total)}<small>km</small>")
+            sec.append(_mnil_kpi("Σ Deslocamento total", _dt, "somatório de todas as rotas", "compact"))
+
+        html = ['<div class="mnil">',
+                '<div class="eyebrow"><span class="tick"></span><h2>Panorama do estudo</h2></div>',
+                '<div class="grid">', *prim, '</div>']
+        if sec:
+            html += ['<div class="grid sec">', *sec, '</div>']
+        html += ['</div>']
+        return _MNIL_CSS + "".join(html)
+    except Exception:
+        logger.error("[KPI-HEADER] Falha ao montar header de KPIs (isolada).", exc_info=True)
+        return ""
 
 
 def _df_para_geojson(df):
@@ -34846,7 +34961,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "277"
+_VERSAO_APP = "278"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -37775,6 +37890,13 @@ if _secao == _SECOES[1]:   # tab_processamento
                 _lote_html_ok = bool(st.session_state.get('relatorio_html_lote'))
                 with st.container(border=True):
                     st.markdown("### ✅ Processamento concluído")
+                    # [KPI-HEADER-R(UI) 278a] Header de KPIs (aditivo, read-only, isolado).
+                    try:
+                        _kpi_html = _render_kpi_header_lote(st.session_state.get("df_processado"), _lote_resumo)
+                        if _kpi_html:
+                            st.markdown(_kpi_html, unsafe_allow_html=True)
+                    except Exception:
+                        logger.error("[KPI-HEADER-UI] Falha ao renderizar header de KPIs (isolada).", exc_info=True)
                     _lchk = ["- ✔ **Rotas calculadas**", "- ✔ **Resultados consolidados**"]
                     _lchk.append("- ✔ **Planilha gerada** (.xlsx)" if _lote_plan_ok
                                  else "- ○ Planilha (.xlsx) — **sob demanda** (botão abaixo)")
