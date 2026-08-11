@@ -63,6 +63,90 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.51 (288a geracao) -> 3 ANALISES: PERCENTIS §13 + SELO DE CONFIANCA §12 + DIAGNOSTICO CAUSAL §18
+#     Tres analises READ-ONLY na aba Auditoria, aditivas e defensivas: (1) §13 PERCENTIS de distancia (P50/P90/
+#     P95/Max) com versao PONDERADA POR CANDIDATO (dimensiona a cauda real); (2) §12 SELO DE CONFIANCA
+#     consolidado por rota (Alta/Media/Baixa/Critica/Nao avaliavel) com REGRAS EXPLICITAS e configuraveis,
+#     unificando validacoes que ja existiam espalhadas; (3) §18 DIAGNOSTICO CAUSAL (classifica cada rota pela
+#     causa que a tornaria vulneravel: estimada/fallback/balsa/divergencia/viaria-confirmada). Derivam so de
+#     colunas existentes (Distancia, Fonte da Rota, Diferenca Motores %, Score, Balsas, coluna de candidatos).
+#     +7 funcoes (_a3_col,_pct_ponderado,_percentis_distancia,_selo_confianca_serie,_resumo_selo_confianca,
+#     _diagnostico_causal + const _A3_CAND_COLS). Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x,
+#     bare-except 0, imports identicos, requirements INALTERADO. Suite test_analises3.py.
+#   v3.50 (287a geracao) -> ANALISE PONDERADA KM-CANDIDATO (§13) (nova analise segura e aditiva, alto valor decisorio)
+#     Nova analise READ-ONLY na aba Auditoria: pondera a distancia pela QUANTIDADE de candidatos por origem.
+#     Mostra deslocamento medio POR CANDIDATO (ponderado) vs POR MUNICIPIO (simples), o km-candidato TOTAL, um
+#     insight interpretando a diferenca, e o RANKING de origens por km-candidato (onde a carga real se
+#     concentra) com download CSV. Insight central: 300km com 2 candidatos << 80km com 500 candidatos. Deriva
+#     so de colunas ja existentes (Distancia + coluna de candidatos resolvida como o resto da app: Inscritos/
+#     Candidatos/QT_INSCRITOS/Qtd Candidatos). DEGRADA com aviso quando nao ha coluna de candidatos. +4 funcoes
+#     (_kmc_col,_resumo_km_candidato,_ranking_km_candidato + const _KMC_*). Invariantes: RotaPipeline 43,
+#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_km_candidato.py.
+#   v3.49 (286a geracao) -> TABELA DE PERFORMANCE POR MOTOR (§17) (nova analise segura e aditiva)
+#     Nova analise READ-ONLY na aba Auditoria: por motor (Google/OSRM/GraphHopper/Valhalla) mostra quantas
+#     rotas RESPONDEU, quantas VENCEU (menor rota viaria valida) e %, quantas vezes deu a MENOR rota, e a
+#     distancia media das que venceu -- mais o total de DIVERGENCIAS CRITICAS (>=50% entre motores). Responde
+#     objetivamente ao §17 (algum motor deixando de participar/vencer?) e complementa a observabilidade dos
+#     disjuntores (285a). Tabela nativa ordenavel + download CSV + nota didatica §21. Deriva so de colunas ja
+#     existentes (Distancia X (km), Fonte da Rota, Diferenca Motores (%)). +2 funcoes (_montar_performance_
+#     motores,_divergencias_criticas_motores) +1 const _PERF_MOTORES. Invariantes: RotaPipeline 43, _SECOES 14,
+#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_perf_motores.py.
+#   v3.48 (285a geracao) -> OBSERVABILIDADE DOS DISJUNTORES (passo 1 seguro da auditoria de resiliencia; §4/§17)
+#     Painel READ-ONLY na aba Auditoria que expoe o estado ATUAL dos disjuntores dos motores (Google + OSRM/
+#     GraphHopper/ORS/Valhalla): estado (ativo/testando/suspenso), chamadas puladas por motor, falhas seguidas
+#     do Google. Le o estado que JA existe (_GOOGLE_CB_ESTADO, _motor_cb_status_resumo) -- NAO muda NENHUMA
+#     decisao de disjuntor/roteamento. Responde objetivamente ao §4 ('algum motor deixando de participar?') e
+#     §17 (performance por motor) e prepara a correcao guiada por dados do Achado A (timeout vs bloqueio), que
+#     exige o app rodando. Nota didatica §21. +2 funcoes (_mnil_cb_pill,_render_disjuntores_status) +1 const
+#     _MNIL_CSS_CB. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos,
+#     requirements INALTERADO. Suite test_cb_panel.py.
+#   v3.47 (284a geracao) -> DE-DUPLICACAO SEGURA DOS st.metric (agora que o header cobre tudo)
+#     Fecha o item 'trocar st.metric por cards' SEM risco de regressao. Em vez de REMOVER os st.metric antigos
+#     (arriscado as cegas -- se o header falhasse, ficaria sem metrica), eles passam a ser FALLBACK: so aparecem
+#     se o header de KPIs NAO renderizar (_kpi_html vazio). No caso normal some a redundancia; no caso de falha
+#     do header, as metricas nativas reaparecem -> ZERO perda possivel. Reversivel. Aplicado no painel de
+#     conclusao do Lote e da Alocacao. _kpi_html/_kpi_html_alo inicializados como '' antes do try (evita
+#     NameError). Sem funcao nova/removida. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0,
+#     imports identicos, requirements INALTERADO.
+#   v3.46 (283a geracao) -> HEADER DE KPIs COMPLETO (Tempo, Polos, Precisao viaria) — habilita remocao segura dos st.metric
+#     Enriquecimento ADITIVO do header de KPIs .mnil: +3 cards (Locais de aplicacao/Polos, Precisao viaria %,
+#     Tempo total) derivados do resumo ja passado + tempo via session_state. Novo param OPCIONAL tempo_seg
+#     (default None -> retrocompativel). Agora o header cobre TUDO que os st.metric antigos mostravam
+#     (Candidatos/Rotas/Municipios/Polos/Precisao/Tempo), tornando-os redundantes — a remocao deles pode ser
+#     feita com seguranca APOS validacao na tela. Layout validado via Chromium (3 linhas, responsivo). +1 funcao
+#     (_mnil_dur). 2 call sites atualizados (kwarg tempo_seg). Invariantes: RotaPipeline 43, _SECOES 14, baloes
+#     1x, bare-except 0, imports identicos, requirements INALTERADO.
+#   v3.45 (282a geracao) -> STATUS RICO NA RESILIENCIA (§15) + RODAPE/SELO .mnil (fase visual, incremento 6)
+#     Dois incrementos aditivos e validados: (1) a caption de resiliencia ('N rotas adiadas por lentidao de
+#     rede') passa a um bloco de status RICO 'att' com estrutura o-que-aconteceu/o-que-a-app-fez/o-que-voce-
+#     pode-fazer -- com a caption original como FALLBACK (else+except). (2) rodape/selo .mnil sempre ao fim da
+#     pagina (marca + geracao + dominio). SOBRE O ITEM 'trocar st.metric por cards': os cards padronizados JA
+#     existem (header de KPIs, 278a/280a); a REMOCAO dos st.metric antigos NAO foi feita as cegas porque eles
+#     ainda carregam Tempo/Polos/Precisao que o header nao tem -- apagar perderia info sem validacao na tela.
+#     +1 funcao (_render_rodape_mnil). Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0,
+#     imports identicos, requirements INALTERADO.
+#   v3.44 (281a geracao) -> MENSAGENS DE STATUS RICAS (§15) (fase visual, incremento 5 do caminho b)
+#     Componente reutilizavel _render_status_rico (variantes ok/att/err) com metricas + estrutura 'o que
+#     aconteceu / o que a app fez / o que voce pode fazer'. Variantes VALIDADAS via Chromium antes da fiacao.
+#     Primeira aplicacao: o st.success generico da conclusao do Lote passa a um banner RICO com as metricas
+#     reais (municipios/candidatos/rotas/% conciliadas). SEGURANCA: a mensagem original permanece como
+#     FALLBACK (try/except e ramo else) -> se o banner falhar ou faltar dado, o sucesso antigo aparece. +4
+#     funcoes (_mnil_int,_render_status_rico,_status_sucesso_lote) namespaced. Invariantes: RotaPipeline 43,
+#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_status_rico.py.
+#   v3.43 (280a geracao) -> HEADER DE KPIs TAMBEM NA ALOCACAO (fase visual, incremento 4 do caminho b; §18)
+#     Estende o header de KPIs .mnil (validado na 278a) ao topo dos resultados da ALOCACAO, reusando o MESMO
+#     componente _render_kpi_header_lote com o _resumo_fin ja computado ali. Consistencia visual entre Lote e
+#     Alocacao (§18). ADITIVO: uma unica chamada apos 'Processamento concluido' do bloco de alocacao; os
+#     st.metric/captions existentes seguem intactos abaixo. Sem funcao nova (reuso puro). Defensivo. Invariantes:
+#     RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO.
+#   v3.42 (279a geracao) -> CARTAO DE VEREDITO DE ALOCACAO (fase visual, incremento 3 do caminho b; §10/§11)
+#     Incremento VALIDADO NA TELA (render via Chromium). Responde 'por que ESTE local / por que NAO o 2o / e
+#     se usassemos o 2o': cartao read-only que projeta UMA decisao ja calculada. Reusa tokens .mnil (§18) e o
+#     vocabulario de exame. ADITIVO: expander na aba Auditoria com seletor de municipio, GUARDADO (so com
+#     colunas de alocacao) e defensivo. Helpers com prefixo _mnil_ (sem colisao com _col/_kpi aninhados).
+#     +4 funcoes (_mnil_num,_mnil_col,_extrair_decisao_alocacao,_render_veredito_card) +1 const _MNIL_CSS_VEREDITO.
+#     Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements
+#     INALTERADO. Suite test_veredito.py (exit 0).
 #   v3.41 (278a geracao) -> IDENTIDADE VISUAL (.mnil) + HEADER DE KPIs DO LOTE (fase visual, incremento 1 do caminho b)
 #     Incremento visual VALIDADO NA TELA (preview via Chromium, aprovado antes da fiacao). Tokens .mnil
 #     (petroleo+teal, Space Grotesk+Inter tabular, assinatura de contorno) + _render_kpi_header_lote() ADITIVO
@@ -10836,12 +10920,24 @@ def _mnil_fmt_int(n):
     try: return f"{int(round(float(n))):,}".replace(",", ".")
     except Exception: return "—"
 
+def _mnil_dur(seg):
+    try:
+        s = int(round(float(seg)))
+        if s < 60: return f"{s}s"
+        m, s = divmod(s, 60)
+        if m < 60: return f"{m}min"
+        h, m = divmod(m, 60)
+        return f"{h}h{m:02d}"
+    except Exception:
+        return None
+
+
 def _mnil_kpi(lbl, val, sub="", cls=""):
     return (f'<div class="kpi {cls}"><div class="lbl">{lbl}</div>'
             f'<div class="val">{val}</div>'
             f'{f"<div class=\"sub\">{sub}</div>" if sub else ""}</div>')
 
-def _render_kpi_header_lote(df, resumo=None):
+def _render_kpi_header_lote(df, resumo=None, tempo_seg=None):
     """Header de KPIs do Lote (read-only). Retorna '' se não houver dados — nunca levanta."""
     try:
         resumo = resumo or {}
@@ -10890,6 +10986,18 @@ def _render_kpi_header_lote(df, resumo=None):
         if dist_total is not None:
             _dt = (f"{_mnil_fmt_int(dist_total/1000)}<small>mil km</small>" if dist_total >= 1000 else f"{_mnil_fmt_int(dist_total)}<small>km</small>")
             sec.append(_mnil_kpi("Σ Deslocamento total", _dt, "somatório de todas as rotas", "compact"))
+        _polos = resumo.get("polos")
+        if _polos is not None:
+            sec.append(_mnil_kpi("◍ Locais de aplicação", _mnil_fmt_int(_polos), "polos candidatos avaliados", "compact"))
+        _pctv = resumo.get("pct_viaria")
+        if _pctv is not None:
+            try:
+                sec.append(_mnil_kpi("◷ Precisão viária", f"{float(_pctv):.0f}<small>%</small>", "rotas com trajeto viário real", "compact"))
+            except Exception:
+                pass
+        _dur = _mnil_dur(tempo_seg) if tempo_seg is not None else None
+        if _dur:
+            sec.append(_mnil_kpi("◷ Tempo total", _dur, "duração do processamento", "compact"))
 
         html = ['<div class="mnil">',
                 '<div class="eyebrow"><span class="tick"></span><h2>Panorama do estudo</h2></div>',
@@ -10901,6 +11009,580 @@ def _render_kpi_header_lote(df, resumo=None):
     except Exception:
         logger.error("[KPI-HEADER] Falha ao montar header de KPIs (isolada).", exc_info=True)
         return ""
+
+
+# ==============================================================================
+# [VEREDITO-R(UI) 279a geracao] Cartao de veredito de alocacao (§10/§11). Projecao
+# READ-ONLY de UMA decisao ja calculada. Helpers com prefixo _mnil_ (sem colisao).
+# Reusa tokens .mnil. Defensivo. Validado via Chromium antes da fiacao.
+# ==============================================================================
+# Cartão de veredito de alocação — projeção READ-ONLY de UMA decisão (§10/§11).
+# Deriva de colunas internas já existentes; defensivo (nunca levanta). Reusa tokens .mnil.
+
+_MNIL_CSS_VEREDITO = """
+<style>
+.mnil .verdict{margin-top:8px;background:var(--card,#fff);border:1px solid var(--line,#E3E9EC);border-radius:14px;
+box-shadow:0 1px 2px rgba(14,42,59,.04),0 6px 20px rgba(14,42,59,.06);display:grid;grid-template-columns:1.25fr 1fr;overflow:hidden}
+.mnil .verdict .win{padding:20px 22px;background:linear-gradient(180deg,#fff,#f4faf8);border-right:1px solid var(--line,#E3E9EC);position:relative}
+.mnil .verdict .win::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--route,#1F8A70)}
+.mnil .verdict .tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#14624e;background:var(--route-soft,#E7F3EF);padding:4px 9px;border-radius:999px}
+.mnil .verdict h3{font-family:'Space Grotesk','Inter',sans-serif;font-weight:700;font-size:24px;margin:12px 0 2px;color:var(--ink,#0E2A3B)}
+.mnil .verdict .meta{font-size:12.5px;color:var(--slate,#5B6B76);line-height:1.5}
+.mnil .verdict .cmp{padding:18px 22px;display:flex;flex-direction:column;justify-content:center;gap:9px}
+.mnil .verdict .cmp .row{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.mnil .verdict .cmp .k{font-size:12px;color:var(--slate,#5B6B76)}
+.mnil .verdict .cmp .v{font-family:'Space Grotesk','Inter',sans-serif;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink,#0E2A3B);text-align:right}
+.mnil .verdict .whatif{margin-top:10px;padding:10px 12px;background:var(--attention-soft,#FBF1DF);border-radius:10px;font-size:12px;color:#8a5a12}
+@media (max-width:760px){.mnil .verdict{grid-template-columns:1fr}.mnil .verdict .win{border-right:none;border-bottom:1px solid var(--line,#E3E9EC)}}
+</style>
+"""
+
+def _mnil_num(v, suf="", casas=1):
+    try:
+        f = float(v)
+        if np.isnan(f): return None
+        return f"{f:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".") + suf
+    except Exception:
+        return None
+
+def _mnil_col(df_row, *cands):
+    for c in cands:
+        if c in df_row and pd.notna(df_row[c]) and str(df_row[c]).strip() not in ("", "—", "nan"):
+            return df_row[c]
+    return None
+
+def _extrair_decisao_alocacao(df, origem):
+    """Resolve UMA linha de alocação -> dict de decisão. Defensivo (flexível a nomes de coluna)."""
+    try:
+        if df is None or len(df) == 0 or "Origem" not in df.columns:
+            return None
+        sub = df[df["Origem"].astype(str) == str(origem)]
+        if len(sub) == 0:
+            return None
+        r = sub.iloc[0].to_dict()
+        dist_v = _mnil_col(r, "Distancia")
+        dist_c = _mnil_col(r, "Distancia Concorrente")
+        try:
+            dif = float(dist_c) - float(dist_v) if (dist_c is not None and dist_v is not None) else None
+        except Exception:
+            dif = None
+        return {
+            "origem": str(origem),
+            "vencedor": _mnil_col(r, "Município Hub", "Municipio Destino", "Destino") or "—",
+            "dist_v": dist_v,
+            "concorrente": _mnil_col(r, "Municipio Concorrente", "Concorrente Analisado") or None,
+            "dist_c": dist_c,
+            "dif_km": dif,
+            "vantagem_pct": _mnil_col(r, "Diferenca Custo p/ 2o (%)", "Diferença (%)", "Diferenca Pct (%)"),
+            "justificativa": _mnil_col(r, "Justificativa Hub (XAI)", "Justificativa Hub"),
+            "balsa": _mnil_col(r, "Balsas"),
+        }
+    except Exception:
+        logger.error("[VEREDITO] Falha ao extrair decisão (isolada).", exc_info=True)
+        return None
+
+def _render_veredito_card(d):
+    """HTML do cartão de veredito a partir do dict de decisão. Retorna '' se vazio. Nunca levanta."""
+    try:
+        if not d or not d.get("vencedor"):
+            return ""
+        dv = _mnil_num(d.get("dist_v"), " km")
+        meta = d.get("justificativa") or "Menor deslocamento viário do candidato até um local de aplicação válido."
+        meta = str(meta)
+        if len(meta) > 180: meta = meta[:177] + "…"
+        rows = []
+        if d.get("origem"):
+            rows.append(("Município de origem", str(d["origem"])))
+        if dv:
+            rows.append(("Deslocamento do candidato", dv))
+        if d.get("concorrente"):
+            rows.append(("2º colocado (alternativa)", str(d["concorrente"])))
+        dif = d.get("dif_km")
+        if dif is not None:
+            _s = _mnil_num(abs(dif), " km")
+            rows.append(("Diferença para o 2º", ("+ " + _s) if dif >= 0 else ("− " + _s)))
+        vp = _mnil_num(d.get("vantagem_pct"), "%")
+        if vp:
+            rows.append(("Vantagem sobre a alternativa", vp))
+        rows_html = "".join(f'<div class="row"><span class="k">{k}</span><span class="v">{v}</span></div>' for k, v in rows)
+        # "e se usássemos o 2º?" (§11)
+        whatif = ""
+        if dif is not None and dif > 0:
+            whatif = (f'<div class="whatif">↔ Se a alternativa fosse usada, o candidato percorreria '
+                      f'<b>+{_mnil_num(dif, " km")}</b> a mais até o local de prova.</div>')
+        html = (f'<div class="mnil"><div class="verdict">'
+                f'<div class="win"><span class="tag">✓ Local indicado</span>'
+                f'<h3>{d["vencedor"]}</h3><div class="meta">{meta}</div>{whatif}</div>'
+                f'<div class="cmp">{rows_html}</div></div></div>')
+        return _MNIL_CSS_VEREDITO + html
+    except Exception:
+        logger.error("[VEREDITO] Falha ao montar cartão (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [STATUS-RICO-R(UI) 281a geracao] Status rico (§15): banner .mnil com metricas +
+# estrutura 'o que aconteceu / o que a app fez / o que voce pode fazer'. READ-ONLY,
+# defensivo. Helpers namespaced. Variantes ok/att/err validadas via Chromium.
+# ==============================================================================
+# Status rico (§15): banner .mnil com metricas + estrutura "o que aconteceu / o que a app fez /
+# o que voce pode fazer". READ-ONLY, defensivo (retorna '' em erro). Reusa tokens .mnil.
+
+_MNIL_CSS_STATUS = """
+<style>
+.mnil .status{border-radius:14px;padding:16px 18px;border:1px solid var(--line,#E3E9EC);
+box-shadow:0 1px 2px rgba(14,42,59,.04),0 6px 20px rgba(14,42,59,.06);position:relative;overflow:hidden;background:var(--card,#fff)}
+.mnil .status::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px}
+.mnil .status.ok::before{background:var(--route,#1F8A70)}
+.mnil .status.att::before{background:var(--attention,#E8A33D)}
+.mnil .status.err::before{background:var(--alert,#C6553F)}
+.mnil .status .hd{display:flex;align-items:center;gap:9px;font-family:'Space Grotesk','Inter',sans-serif;font-weight:600;font-size:16px;color:var(--ink,#0E2A3B)}
+.mnil .status .badge{font-size:15px}
+.mnil .status .mets{margin-top:10px;display:flex;flex-wrap:wrap;gap:8px}
+.mnil .status .met{font-size:12.5px;color:var(--ink,#0E2A3B);background:var(--surface,#F6F8F9);border:1px solid var(--line,#E3E9EC);
+padding:4px 10px;border-radius:999px;font-variant-numeric:tabular-nums}
+.mnil .status .met b{font-weight:600}
+.mnil .status .blocos{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.mnil .status .bloco{font-size:12.5px;color:var(--slate,#5B6B76);line-height:1.5}
+.mnil .status .bloco b{color:var(--ink,#0E2A3B);font-weight:600;display:block;margin-bottom:1px}
+</style>
+"""
+
+def _mnil_int(n):
+    try: return f"{int(round(float(n))):,}".replace(",", ".")
+    except Exception: return str(n)
+
+def _render_status_rico(tipo, titulo, metricas=None, blocos=None, badge=None):
+    """Banner de status rico. tipo: 'ok'|'att'|'err'. metricas: [(rot,val)]. blocos: [(titulo,texto)]."""
+    try:
+        cls = {"ok": "ok", "sucesso": "ok", "att": "att", "atencao": "att",
+               "err": "err", "erro": "err"}.get(str(tipo).lower(), "ok")
+        badge = badge or {"ok": "✅", "att": "⚠️", "err": "❌"}[cls]
+        mets = ""
+        if metricas:
+            itens = "".join(f'<span class="met">{r}: <b>{v}</b></span>' for r, v in metricas if v is not None)
+            if itens: mets = f'<div class="mets">{itens}</div>'
+        bl = ""
+        if blocos:
+            itens = "".join(f'<div class="bloco"><b>{h}</b>{t}</div>' for h, t in blocos if t)
+            if itens: bl = f'<div class="blocos">{itens}</div>'
+        return (f'{_MNIL_CSS_STATUS}<div class="mnil"><div class="status {cls}">'
+                f'<div class="hd"><span class="badge">{badge}</span>{titulo}</div>{mets}{bl}</div></div>')
+    except Exception:
+        logger.error("[STATUS-RICO] Falha ao montar status (isolada).", exc_info=True)
+        return ""
+
+def _status_sucesso_lote(df, resumo=None):
+    """Banner de sucesso do Lote (§15) com metricas reais. '' se sem dados."""
+    try:
+        resumo = resumo or {}
+        if df is None or len(df) == 0:
+            return ""
+        mets = []
+        if resumo.get("municipios") is not None:
+            mets.append(("Municípios de origem", _mnil_int(resumo["municipios"])))
+        if resumo.get("candidatos") is not None:
+            mets.append(("Candidatos", _mnil_int(resumo["candidatos"])))
+        mets.append(("Rotas", _mnil_int(resumo.get("rotas") or len(df))))
+        if "Distancia" in df.columns:
+            d = pd.to_numeric(df["Distancia"], errors="coerce")
+            if len(d):
+                mets.append(("Conciliadas", f"{100.0*(d>0).mean():.1f}%".replace(".", ",")))
+        return _render_status_rico("ok", "Processamento em lote concluído", metricas=mets)
+    except Exception:
+        logger.error("[STATUS-RICO] Falha no banner de sucesso do lote (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [RODAPE-MNIL 282a geracao] Rodape/selo de versao .mnil, sempre ao fim da pagina.
+# Aditivo, defensivo. Validado via Chromium.
+# ==============================================================================
+# Rodapé/selo de versão .mnil — sempre visível ao fim da página. Defensivo.
+
+def _render_rodape_mnil(versao="", geracao=""):
+    try:
+        ver = f"v3.44" if not versao else str(versao)
+        ger = f" · {geracao}ª geração" if geracao else ""
+        return (
+        "<style>"
+        ".mnil-foot{--ink:#0E2A3B;--slate:#5B6B76;--route:#1F8A70;--line:#E3E9EC;font-family:'Inter',system-ui,sans-serif;"
+        "display:flex;align-items:center;justify-content:center;gap:10px;margin:26px auto 6px;padding:12px 16px;"
+        "max-width:1080px;border-top:1px solid var(--line);color:var(--slate);font-size:11.5px;text-align:center;flex-wrap:wrap}"
+        ".mnil-foot .g{width:22px;height:22px;border-radius:6px;background:linear-gradient(150deg,var(--route),#15607e);"
+        "display:inline-flex;align-items:center;justify-content:center;flex:none}"
+        ".mnil-foot .g svg{width:14px;height:14px}"
+        ".mnil-foot b{color:var(--ink);font-weight:600;font-family:'Space Grotesk','Inter',sans-serif}"
+        ".mnil-foot .sep{color:var(--line)}"
+        "</style>"
+        "<div class='mnil-foot'>"
+        "<span class='g'><svg viewBox='0 0 24 24' fill='none' stroke='#fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>"
+        "<circle cx='5' cy='18.5' r='2.1' fill='#fff' stroke='none'/>"
+        "<path d='M5 16.2 C 9 10, 13 14, 17 8' stroke-dasharray='2 2.4'/>"
+        "<path d='M11.7 2.8 c 2.5 0 4 2 4 4.1 0 2.8-4 6-4 6 s -4-3.2-4-6 c 0-2.1 1.5-4.1 4-4.1 z'/>"
+        "<circle cx='11.7' cy='6.9' r='1.15' fill='#fff' stroke='none'/></svg></span>"
+        f"<span><b>Motor Nacional de Inteligência Logística</b>{ger} · <b>{ver}</b></span>"
+        "<span class='sep'>|</span>"
+        "<span>Planejamento de locais de aplicação de exames · reduzir o deslocamento do candidato</span>"
+        "</div>")
+    except Exception:
+        logger.error("[RODAPE] Falha ao montar rodapé (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [CB-PANEL-R(UI) 285a geracao] Observabilidade dos disjuntores (§4/§17). READ-ONLY:
+# le o estado que JA existe (_GOOGLE_CB_ESTADO, _motor_cb_status_resumo), NAO muda
+# nenhuma decisao de disjuntor. Defensivo. Validado via Chromium.
+# ==============================================================================
+# Painel de observabilidade dos disjuntores (§4/§17). READ-ONLY: lê o estado que já existe,
+# NÃO muda nenhuma decisão de disjuntor. Defensivo. Reusa tokens .mnil.
+
+_MNIL_CSS_CB = """
+<style>
+.mnil .cbp{background:var(--card,#fff);border:1px solid var(--line,#E3E9EC);border-radius:14px;padding:16px 18px;
+box-shadow:0 1px 2px rgba(14,42,59,.04),0 6px 20px rgba(14,42,59,.06)}
+.mnil .cbp .hd{font-family:'Space Grotesk','Inter',sans-serif;font-weight:600;font-size:15px;color:var(--ink,#0E2A3B);margin-bottom:10px}
+.mnil .cbp table{width:100%;border-collapse:collapse;font-size:13px}
+.mnil .cbp th{text-align:left;color:var(--slate,#5B6B76);font-weight:500;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;padding:6px 8px;border-bottom:1px solid var(--line,#E3E9EC)}
+.mnil .cbp td{padding:8px;border-bottom:1px solid var(--line,#E3E9EC);color:var(--ink,#0E2A3B);font-variant-numeric:tabular-nums}
+.mnil .cbp tr:last-child td{border-bottom:none}
+.mnil .cbp .pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:999px}
+.mnil .cbp .pill.ok{background:var(--route-soft,#E7F3EF);color:#14624e}
+.mnil .cbp .pill.att{background:var(--attention-soft,#FBF1DF);color:#8a5a12}
+.mnil .cbp .pill.err{background:var(--alert-soft,#F7E7E3);color:#8f3626}
+.mnil .cbp .skips{font-weight:600}
+.mnil .cbp .note{margin-top:11px;font-size:12px;color:var(--slate,#5B6B76);line-height:1.5}
+.mnil .cbp .note b{color:var(--ink,#0E2A3B)}
+</style>
+"""
+
+def _mnil_cb_pill(status):
+    m = {"fechado": ("🟢", "Ativo", "ok"),
+         "meio_aberto": ("🟠", "Testando recuperação", "att"),
+         "aberto": ("🔴", "Suspenso (cooldown)", "err")}
+    ic, txt, cls = m.get(str(status), ("⚪", str(status or "—"), "att"))
+    return f'<span class="pill {cls}">{ic} {txt}</span>'
+
+def _render_disjuntores_status(google_estado=None, motores_resumo=None):
+    """Painel read-only dos disjuntores. Recebe o estado (para ser testável). '' se sem dados. Nunca levanta."""
+    try:
+        google_estado = google_estado or {}
+        motores_resumo = motores_resumo or {}
+        linhas = []
+        # Google primeiro
+        _gst = google_estado.get("status", "fechado")
+        _gfs = int(google_estado.get("falhas_seguidas", 0))
+        linhas.append(("Google", _gst, "—", _gfs))
+        for _n in sorted(motores_resumo.keys()):
+            _d = motores_resumo[_n] or {}
+            linhas.append((_n, _d.get("status", "fechado"), int(_d.get("skips", 0)), None))
+        if not linhas:
+            return ""
+        rows = ""
+        _algum_aberto = False
+        for _nome, _status, _skips, _fs in linhas:
+            if _status in ("aberto", "meio_aberto"):
+                _algum_aberto = True
+            _sk = "—" if _skips == "—" or _skips is None else f'<span class="skips">{_skips}</span>'
+            _fscol = "—" if _fs is None else f"{_fs}"
+            rows += (f'<tr><td><b>{_nome}</b></td><td>{_mnil_cb_pill(_status)}</td>'
+                     f'<td>{_sk}</td><td>{_fscol}</td></tr>')
+        estado_geral = ("Todos os motores estão <b>ativos</b> — nenhum disjuntor aberto no momento."
+                        if not _algum_aberto else
+                        "Há motor(es) <b>suspenso(s)</b>. Skips altos podem indicar timeouts de rede sendo "
+                        "contados como falha (ver Achado A da auditoria de disjuntores).")
+        return (_MNIL_CSS_CB + '<div class="mnil"><div class="cbp">'
+                '<div class="hd">🔌 Disjuntores dos motores de rota</div>'
+                '<table><thead><tr><th>Motor</th><th>Estado do disjuntor</th>'
+                '<th>Chamadas puladas</th><th>Falhas seguidas</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table>'
+                f'<div class="note">📖 <b>Como ler:</b> 🟢 Ativo = disjuntor fechado (motor participando normalmente); '
+                '🟠 Testando = meio-aberto (testando recuperação); 🔴 Suspenso = aberto (motor pausado por um curto '
+                f'cooldown após falhas seguidas). <b>Chamadas puladas</b> = quantas vezes o motor foi ignorado por estar '
+                f'suspenso. {estado_geral}</div></div></div>')
+    except Exception:
+        logger.error("[CB-PANEL] Falha ao montar painel de disjuntores (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [PERF-MOTORES-R(UI) 286a geracao] Tabela de performance por motor (§17). Projecao
+# READ-ONLY do df final (respondeu/venceu/%/menor rota/dist media + divergencias
+# criticas). Aditivo, defensivo. Validado com df sintetico.
+# ==============================================================================
+# Tabela de performance por motor (§17). Projeção READ-ONLY do df final. Defensivo.
+
+_PERF_MOTORES = [("Google", "Distancia Google (km)"), ("OSRM", "Distancia OSRM (km)"),
+                 ("GraphHopper", "Distancia GraphHopper (km)"), ("Valhalla", "Distancia Valhalla (km)")]
+
+def _montar_performance_motores(df):
+    """Retorna um DataFrame de performance por motor (respondeu/venceu/%/menor rota/dist média).
+    Read-only, derivado do df final. Nunca levanta (retorna df vazio em erro)."""
+    cols_saida = ["Motor", "Respondeu", "Venceu", "Venceu (%)", "Deu a menor rota", "Dist. média venc. (km)"]
+    try:
+        if df is None or len(df) == 0:
+            return pd.DataFrame(columns=cols_saida)
+        presentes = [(nm, c) for nm, c in _PERF_MOTORES if c in df.columns]
+        if not presentes:
+            return pd.DataFrame(columns=cols_saida)
+        n = len(df)
+        # distâncias por motor (numérico), NaN onde não respondeu
+        dist = {nm: pd.to_numeric(df[c], errors="coerce") for nm, c in presentes}
+        respondeu = {nm: int((dist[nm] > 0).sum()) for nm in dist}
+        # "deu a menor rota": entre os motores que responderam (>0) em cada linha, quem teve o mínimo
+        _mat = pd.DataFrame({nm: dist[nm].where(dist[nm] > 0) for nm in dist})
+        _min_motor = _mat.idxmin(axis=1)  # nome do motor com menor dist (NaN se nenhum respondeu)
+        menor = {nm: int((_min_motor == nm).sum()) for nm in dist}
+        # "venceu": Fonte da Rota contém o nome do motor (case-insensitive)
+        venceu = {nm: 0 for nm in dist}
+        dist_venc = {nm: [] for nm in dist}
+        if "Fonte da Rota" in df.columns:
+            fonte = df["Fonte da Rota"].astype(str).str.lower()
+            dviaria = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else None
+            for nm in dist:
+                mask = fonte.str.contains(nm.lower(), na=False, regex=False)
+                venceu[nm] = int(mask.sum())
+                if dviaria is not None:
+                    _vals = dviaria[mask & (dviaria > 0)]
+                    dist_venc[nm] = _vals
+        linhas = []
+        for nm in dist:
+            vv = venceu[nm]
+            media = float(dist_venc[nm].mean()) if (len(dist_venc.get(nm, [])) > 0) else None
+            linhas.append({
+                "Motor": nm,
+                "Respondeu": respondeu[nm],
+                "Venceu": vv,
+                "Venceu (%)": round(100.0 * vv / n, 1) if n else 0.0,
+                "Deu a menor rota": menor[nm],
+                "Dist. média venc. (km)": round(media, 1) if media is not None else None,
+            })
+        out = pd.DataFrame(linhas, columns=cols_saida).sort_values("Venceu", ascending=False).reset_index(drop=True)
+        return out
+    except Exception:
+        logger.error("[PERF-MOTORES] Falha ao montar performance por motor (isolada).", exc_info=True)
+        return pd.DataFrame(columns=cols_saida)
+
+def _divergencias_criticas_motores(df, limiar_pct=50.0):
+    """Nº de rotas com divergência entre motores acima do limiar (%). Read-only, defensivo."""
+    try:
+        if df is None or "Diferenca Motores (%)" not in df.columns:
+            return None
+        d = pd.to_numeric(df["Diferenca Motores (%)"], errors="coerce")
+        return int((d >= float(limiar_pct)).sum())
+    except Exception:
+        return None
+
+
+# ==============================================================================
+# [KM-CAND-R(UI) 287a geracao] Analise ponderada km-candidato (§13). READ-ONLY do df
+# final. Pondera distancia pela QUANTIDADE de candidatos afetados. Defensivo
+# (degrada quando nao ha coluna de candidatos). Validado com df sintetico.
+# ==============================================================================
+# Análise ponderada km-candidato / tempo-candidato (§13). READ-ONLY do df final. Defensivo.
+# Insight central: pondera a distância pela QUANTIDADE de candidatos afetados — o número que
+# realmente importa para decidir (300km com 2 candidatos << 80km com 500 candidatos).
+
+_KMC_CAND_COLS = ["Inscritos", "Candidatos", "QT_INSCRITOS", "Qtd Candidatos", "Quantidade de Inscritos"]
+_KMC_ORIG_COLS = ["Origem", "Municipio Origem", "Município Origem", "Municipio de Origem"]
+_KMC_UF_COLS = ["UF", "UF Origem", "UF de Origem", "SG_UF", "UF Cliente"]
+
+def _kmc_col(df, cands):
+    for c in cands:
+        if c in df.columns:
+            return c
+    return None
+
+def _resumo_km_candidato(df):
+    """KPIs ponderados por candidato. Retorna dict (ou None se faltarem dados). Nunca levanta."""
+    try:
+        if df is None or len(df) == 0 or "Distancia" not in df.columns:
+            return None
+        ccol = _kmc_col(df, _KMC_CAND_COLS)
+        if ccol is None:
+            return {"tem_candidatos": False}
+        dist = pd.to_numeric(df["Distancia"], errors="coerce")
+        cand = pd.to_numeric(df[ccol], errors="coerce")
+        m = (dist > 0) & (cand > 0)
+        if not m.any():
+            return {"tem_candidatos": False}
+        d, c = dist[m], cand[m]
+        total_cand = float(c.sum())
+        km_cand = float((d * c).sum())
+        media_pond = km_cand / total_cand if total_cand else 0.0
+        media_simples = float(d.mean())
+        out = {"tem_candidatos": True, "coluna_candidatos": ccol,
+               "total_candidatos": total_cand, "km_candidato_total": km_cand,
+               "media_ponderada": media_pond, "media_simples": media_simples,
+               "rotas": int(m.sum())}
+        if "Tempo Total (s)" in df.columns:
+            t = pd.to_numeric(df["Tempo Total (s)"], errors="coerce")
+        else:
+            t = None
+        # tempo-candidato só se houver tempo de viagem numérico dedicado; senão omite
+        return out
+    except Exception:
+        logger.error("[KM-CAND] Falha no resumo km-candidato (isolada).", exc_info=True)
+        return None
+
+def _ranking_km_candidato(df, top=20):
+    """Ranking de origens por km-candidato (maior carga de deslocamento agregada). df ou vazio. Defensivo."""
+    cols = ["Município de origem", "Candidatos", "Deslocamento médio (km)", "km-candidato"]
+    try:
+        if df is None or len(df) == 0 or "Distancia" not in df.columns:
+            return pd.DataFrame(columns=cols)
+        ccol = _kmc_col(df, _KMC_CAND_COLS)
+        ocol = _kmc_col(df, _KMC_ORIG_COLS)
+        if ccol is None or ocol is None:
+            return pd.DataFrame(columns=cols)
+        d = pd.to_numeric(df["Distancia"], errors="coerce")
+        c = pd.to_numeric(df[ccol], errors="coerce")
+        base = pd.DataFrame({"orig": df[ocol].astype(str), "d": d, "c": c})
+        base = base[(base["d"] > 0) & (base["c"] > 0)]
+        if base.empty:
+            return pd.DataFrame(columns=cols)
+        base["kmc"] = base["d"] * base["c"]
+        g = base.groupby("orig").agg(cand=("c", "sum"), kmc=("kmc", "sum"),
+                                     dmed=("d", "mean")).reset_index()
+        g = g.sort_values("kmc", ascending=False).head(int(top))
+        out = pd.DataFrame({
+            "Município de origem": g["orig"].values,
+            "Candidatos": g["cand"].round(0).astype("Int64").values,
+            "Deslocamento médio (km)": g["dmed"].round(1).values,
+            "km-candidato": g["kmc"].round(0).astype("Int64").values,
+        })
+        return out
+    except Exception:
+        logger.error("[KM-CAND] Falha no ranking km-candidato (isolada).", exc_info=True)
+        return pd.DataFrame(columns=cols)
+
+
+# ==============================================================================
+# [ANALISES3-R(UI) 288a geracao] Tres analises read-only: §13 percentis de distancia
+# (com opcao ponderada por candidato), §12 selo de confianca consolidado por rota, e
+# §18 diagnostico causal. Derivam so de colunas existentes. Defensivas.
+# ==============================================================================
+# Três análises read-only (§18 causal, §13 percentis, §12 selo de confiança). Defensivas.
+
+_A3_CAND_COLS = ["Inscritos", "Candidatos", "QT_INSCRITOS", "Qtd Candidatos", "Quantidade de Inscritos"]
+def _a3_col(df, cands):
+    for c in cands:
+        if c in df.columns: return c
+    return None
+
+# ---------- §13: Percentis de distância (com opção ponderada por candidato) ----------
+def _pct_ponderado(valores, pesos, q):
+    """Percentil q (0..100) de `valores` ponderado por `pesos`. Defensivo."""
+    try:
+        v = np.asarray(valores, float); w = np.asarray(pesos, float)
+        ok = np.isfinite(v) & np.isfinite(w) & (w > 0)
+        v, w = v[ok], w[ok]
+        if v.size == 0: return None
+        idx = np.argsort(v); v, w = v[idx], w[idx]
+        cw = np.cumsum(w); cutoff = q / 100.0 * cw[-1]
+        return float(v[np.searchsorted(cw, cutoff)])
+    except Exception:
+        return None
+
+def _percentis_distancia(df):
+    """Percentis P50/P90/P95/P99 + min/max/média/desvio da distância (>0). Ponderado se houver candidatos."""
+    try:
+        if df is None or len(df) == 0 or "Distancia" not in df.columns:
+            return None
+        d = pd.to_numeric(df["Distancia"], errors="coerce")
+        d = d[d > 0]
+        if d.empty: return None
+        out = {"n": int(d.size), "min": float(d.min()), "max": float(d.max()),
+               "media": float(d.mean()), "desvio": float(d.std(ddof=0)),
+               "p50": float(d.quantile(.50)), "p90": float(d.quantile(.90)),
+               "p95": float(d.quantile(.95)), "p99": float(d.quantile(.99)),
+               "ponderado": False}
+        ccol = _a3_col(df, _A3_CAND_COLS)
+        if ccol is not None:
+            c = pd.to_numeric(df[ccol], errors="coerce")
+            base = pd.DataFrame({"d": pd.to_numeric(df["Distancia"], errors="coerce"), "c": c})
+            base = base[(base["d"] > 0) & (base["c"] > 0)]
+            if not base.empty:
+                out["ponderado"] = True
+                out["p90_cand"] = _pct_ponderado(base["d"], base["c"], 90)
+                out["p95_cand"] = _pct_ponderado(base["d"], base["c"], 95)
+        return out
+    except Exception:
+        logger.error("[PERCENTIS] Falha (isolada).", exc_info=True); return None
+
+# ---------- §12: Selo de confiança consolidado por rota ----------
+def _selo_confianca_serie(df, limiar_baixa=30.0, limiar_critica=100.0):
+    """Série de selo por rota: Alta/Média/Baixa/Crítica/Não avaliável. Regras EXPLÍCITAS e configuráveis."""
+    n = len(df)
+    selo = np.array(["Média"] * n, dtype=object)
+    dist = pd.to_numeric(df["Distancia"], errors="coerce") if "Distancia" in df.columns else pd.Series([np.nan]*n)
+    fonte = df["Fonte da Rota"].astype(str).str.lower() if "Fonte da Rota" in df.columns else pd.Series([""]*n)
+    difp = pd.to_numeric(df["Diferenca Motores (%)"], errors="coerce") if "Diferenca Motores (%)" in df.columns else pd.Series([np.nan]*n)
+    score = pd.to_numeric(df["Score da Rota"], errors="coerce") if "Score da Rota" in df.columns else (
+            pd.to_numeric(df["Score Final Global"], errors="coerce") if "Score Final Global" in df.columns else pd.Series([np.nan]*n))
+    d = dist.values; f = fonte.values; dp = difp.values; sc = score.values
+    for i in range(n):
+        if not np.isfinite(d[i]) or d[i] <= 0:
+            selo[i] = "Não avaliável"; continue
+        est = ("linha reta" in str(f[i]) or "geod" in str(f[i]) or "estimat" in str(f[i]))
+        div = dp[i] if np.isfinite(dp[i]) else None
+        if div is not None and div >= limiar_critica:
+            selo[i] = "Crítica"
+        elif est or (div is not None and div >= limiar_baixa):
+            selo[i] = "Baixa"
+        elif np.isfinite(sc[i]) and sc[i] >= 80 and (div is None or div < limiar_baixa):
+            selo[i] = "Alta"
+        elif (div is not None and div < limiar_baixa):
+            selo[i] = "Alta"
+        else:
+            selo[i] = "Média"
+    return selo
+
+def _resumo_selo_confianca(df):
+    """Distribuição do selo de confiança. dict {selo: n} + total. Defensivo."""
+    try:
+        if df is None or len(df) == 0 or "Distancia" not in df.columns:
+            return None
+        selo = _selo_confianca_serie(df)
+        vc = pd.Series(selo).value_counts()
+        ordem = ["Alta", "Média", "Baixa", "Crítica", "Não avaliável"]
+        return {"total": int(len(selo)),
+                "dist": {k: int(vc.get(k, 0)) for k in ordem if vc.get(k, 0) > 0}}
+    except Exception:
+        logger.error("[SELO] Falha (isolada).", exc_info=True); return None
+
+# ---------- §18: Diagnóstico causal "por que uma rota é vulnerável" ----------
+def _diagnostico_causal(df):
+    """Classifica cada rota pela CAUSA que a tornaria vulnerável a perder p/ uma referência.
+    Retorna dict {causa: n}. Read-only, das colunas existentes. Defensivo."""
+    try:
+        if df is None or len(df) == 0 or "Distancia" not in df.columns:
+            return None
+        n = len(df)
+        dist = pd.to_numeric(df["Distancia"], errors="coerce")
+        fonte = df["Fonte da Rota"].astype(str).str.lower() if "Fonte da Rota" in df.columns else pd.Series([""]*n)
+        balsa = df["Balsas"].astype(str).str.strip().str.lower().isin(["sim","yes","true","1"]) if "Balsas" in df.columns else pd.Series([False]*n)
+        difp = pd.to_numeric(df["Diferenca Motores (%)"], errors="coerce") if "Diferenca Motores (%)" in df.columns else pd.Series([np.nan]*n)
+        causas = []
+        for i in range(n):
+            if not (np.isfinite(dist.iloc[i]) and dist.iloc[i] > 0):
+                causas.append("Rota não calculada"); continue
+            f = str(fonte.iloc[i])
+            if "linha reta" in f or "geod" in f or "estimat" in f:
+                causas.append("Rota estimada (linha reta)")
+            elif "fossgis" in f or "fallback" in f or "reserva" in f:
+                causas.append("Recuperada por fallback")
+            elif bool(balsa.iloc[i]):
+                causas.append("Envolve balsa")
+            elif np.isfinite(difp.iloc[i]) and difp.iloc[i] >= 30.0:
+                causas.append("Divergência entre motores")
+            else:
+                causas.append("Rota viária confirmada")
+        vc = pd.Series(causas).value_counts()
+        return {"total": n, "dist": {k: int(v) for k, v in vc.items()}}
+    except Exception:
+        logger.error("[CAUSAL] Falha (isolada).", exc_info=True); return None
 
 
 def _df_para_geojson(df):
@@ -34961,7 +35643,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "278"
+_VERSAO_APP = "288"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -37891,8 +38573,9 @@ if _secao == _SECOES[1]:   # tab_processamento
                 with st.container(border=True):
                     st.markdown("### ✅ Processamento concluído")
                     # [KPI-HEADER-R(UI) 278a] Header de KPIs (aditivo, read-only, isolado).
+                    _kpi_html = ""
                     try:
-                        _kpi_html = _render_kpi_header_lote(st.session_state.get("df_processado"), _lote_resumo)
+                        _kpi_html = _render_kpi_header_lote(st.session_state.get("df_processado"), _lote_resumo, tempo_seg=st.session_state.get("lote_tempo_total"))
                         if _kpi_html:
                             st.markdown(_kpi_html, unsafe_allow_html=True)
                     except Exception:
@@ -37917,7 +38600,8 @@ if _secao == _SECOES[1]:   # tab_processamento
                         _lmets.append(("Destinos", f"{_lote_resumo['polos']:,}".replace(",", ".")))
                     if _lote_resumo.get("pct_viaria") is not None:
                         _lmets.append(("Precisão (rota viária)", f"{_lote_resumo['pct_viaria']:.0f}%"))
-                    if _lmets:
+                    # [DEDUP-284a] st.metric antigos só como FALLBACK: aparecem apenas se o header de KPIs não renderizou.
+                    if _lmets and not _kpi_html:
                         _lcols = st.columns(min(4, len(_lmets)))
                         for _il, (_llbl, _lval) in enumerate(_lmets):
                             _lcols[_il % len(_lcols)].metric(_llbl, _lval)
@@ -37934,7 +38618,19 @@ if _secao == _SECOES[1]:   # tab_processamento
                                    "completado. Os downloads abaixo seguem disponíveis normalmente.")
                     _lote_puladas = int(st.session_state.get('lote_janelas_puladas', 0) or 0)
                     if _lote_puladas > 0:
-                        st.caption(f"🛡️ **Resiliência:** {_lote_puladas} rota(s) foram adiadas por lentidão de rede "
+                        try:
+                            _sr_res = _render_status_rico("att", f"{_lote_puladas} rota(s) ajustadas por resiliência",
+                                blocos=[("O que aconteceu?", "Essas rotas sofreram lentidão de rede durante o cálculo."),
+                                        ("O que a aplicação fez?", "Tratou-as por estimativa em linha reta para o estudo nunca travar; todo o restante manteve a rota viária real."),
+                                        ("O que você pode fazer?", "Os resultados já são utilizáveis. Se precisar da rota viária exata dessas rotas, reprocesse o estudo em horário de menor tráfego de rede.")])
+                            if _sr_res:
+                                st.markdown(_sr_res, unsafe_allow_html=True)
+                            else:
+                                st.caption(f"🛡️ **Resiliência:** {_lote_puladas} rota(s) foram adiadas por lentidão de rede "
+                                   f"durante o processamento e tratadas por estimativa geodésica (fallback), "
+                                   f"garantindo que o estudo nunca travasse. O restante manteve a rota viária real.")
+                        except Exception:
+                            st.caption(f"🛡️ **Resiliência:** {_lote_puladas} rota(s) foram adiadas por lentidão de rede "
                                    f"durante o processamento e tratadas por estimativa geodésica (fallback), "
                                    f"garantindo que o estudo nunca travasse. O restante manteve a rota viária real.")
             except Exception:
@@ -37943,7 +38639,14 @@ if _secao == _SECOES[1]:   # tab_processamento
             if 'lote_tempo_total' in st.session_state:
                 _tempo_lote = st.session_state['lote_tempo_total']
                 _df_fin = st.session_state['df_processado']
-                st.success("✨ Processamento em lote concluído com êxito! Todos os registros foram processados automaticamente.")
+                try:
+                    _sr_lote = _status_sucesso_lote(_df_fin, st.session_state.get("lote_resumo_final"))
+                    if _sr_lote:
+                        st.markdown(_sr_lote, unsafe_allow_html=True)
+                    else:
+                        st.success("✨ Processamento em lote concluído com êxito! Todos os registros foram processados automaticamente.")
+                except Exception:
+                    st.success("✨ Processamento em lote concluído com êxito! Todos os registros foram processados automaticamente.")
                 # [STORYTELLING-LOTE - 263ª geração] Narrativa no TOPO do resultado do Lote: conta a "história" do
                 # estudo em prosa corrida (não tabela), antes dos números do Resumo Executivo. Reusa EXATAMENTE as
                 # mesmas regras métricas do Resumo (distância, regra de "medido vs estimado", balsa, sinuosidade)
@@ -40259,6 +40962,14 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 _html_ok = bool(st.session_state.get('relatorio_html_loc'))
                 with st.container(border=True):
                     st.markdown("### ✅ Processamento concluído")
+                    # [KPI-HEADER-R(UI) 280a] Header de KPIs tambem na Alocacao (reusa o componente validado; §18).
+                    _kpi_html_alo = ""
+                    try:
+                        _kpi_html_alo = _render_kpi_header_lote(st.session_state.get("df_processado"), _resumo_fin, tempo_seg=st.session_state.get("alo_tempo_total"))
+                        if _kpi_html_alo:
+                            st.markdown(_kpi_html_alo, unsafe_allow_html=True)
+                    except Exception:
+                        logger.error("[KPI-HEADER-ALO-UI] Falha ao renderizar header de KPIs da alocacao (isolada).", exc_info=True)
                     _chk = ["- ✔ **Rotas calculadas**", "- ✔ **Resultados consolidados**"]
                     _chk.append("- ✔ **Planilha gerada** (.xlsx)" if _plan_ok
                                 else "- ○ Planilha (.xlsx) — **sob demanda** (botão abaixo)")
@@ -40280,7 +40991,8 @@ if _secao == _SECOES[2]:   # tab_alocacao
                         _mets.append(("Polos", f"{_resumo_fin['polos']:,}".replace(",", ".")))
                     if _resumo_fin.get("pct_viaria") is not None:
                         _mets.append(("Precisão (rota viária)", f"{_resumo_fin['pct_viaria']:.0f}%"))
-                    if _mets:
+                    # [DEDUP-284a] st.metric antigos só como FALLBACK do header de KPIs.
+                    if _mets and not _kpi_html_alo:
                         _cols_fin = st.columns(min(4, len(_mets)))
                         for _im, (_lbl, _val) in enumerate(_mets):
                             _cols_fin[_im % len(_cols_fin)].metric(_lbl, _val)
@@ -45795,6 +46507,143 @@ if _secao == _SECOES[11]:   # tab_auditoria
     renderizar_guia_aba("auditoria")
     st.markdown("### 🔍 Dossiê Investigativo de Auditoria Viária e Espacial")
 
+    # [CB-PANEL-R(UI) 285a] Observabilidade dos disjuntores — read-only (§4/§17). Aditivo, isolado.
+    try:
+        with st.expander("🔌 Estado dos disjuntores dos motores de rota", expanded=False):
+            st.caption("Leitura **read-only** do estado atual dos disjuntores — não altera nenhuma decisão de roteamento. "
+                       "Responde: algum motor está sendo suspenso (deixando de participar) e com que frequência?")
+            _cb_html = _render_disjuntores_status(_GOOGLE_CB_ESTADO, _motor_cb_status_resumo())
+            if _cb_html:
+                st.markdown(_cb_html, unsafe_allow_html=True)
+            else:
+                st.info("Sem dados de disjuntores nesta sessão.")
+    except Exception:
+        logger.error("[CB-PANEL-UI] Falha ao renderizar painel de disjuntores (isolada).", exc_info=True)
+
+    # [PERF-MOTORES-R(UI) 286a] Performance dos motores de rota (§17) — read-only. Aditivo, isolado.
+    try:
+        _df_perf = st.session_state.get("df_processado")
+        if _df_perf is not None and len(_df_perf) > 0 and \
+           any(_c in _df_perf.columns for _c in ("Distancia Google (km)", "Distancia OSRM (km)", "Distancia Valhalla (km)", "Distancia GraphHopper (km)")):
+            with st.expander("📈 Performance dos motores de rota (quem respondeu, quem venceu, divergências)", expanded=False):
+                st.caption("Projeção **read-only** do estudo atual — quantas rotas cada motor respondeu, quantas venceu "
+                           "(forneceu a menor rota viária válida) e a divergência entre motores.")
+                _perf = _montar_performance_motores(_df_perf)
+                if _perf is not None and not _perf.empty:
+                    st.dataframe(_perf, use_container_width=True, hide_index=True)
+                    _divc = _divergencias_criticas_motores(_df_perf)
+                    if _divc is not None:
+                        st.caption(f"🚨 **Divergências críticas** (≥50% entre motores): {_divc} rota(s) — casos a investigar (coordenadas, balsa, malha).")
+                    st.caption("📖 **Como ler:** *Respondeu* = o motor retornou uma rota válida; *Venceu* = forneceu a menor "
+                               "rota viária escolhida; *Deu a menor rota* = teve a menor distância entre os que responderam "
+                               "(pode não ter vencido por regra de desempate); *Dist. média venc.* = média das rotas que venceu.")
+                    try:
+                        st.download_button("📥 Baixar performance por motor (.csv)", data=_perf.to_csv(index=False).encode("utf-8-sig"),
+                                           file_name="performance_motores.csv", mime="text/csv", key="dl_perf_motores")
+                    except Exception:
+                        logger.error("[PERF-MOTORES-UI] Falha no download (isolada).", exc_info=True)
+                else:
+                    st.info("Sem dados de performance por motor para este estudo.")
+    except Exception:
+        logger.error("[PERF-MOTORES-UI] Falha ao renderizar performance por motor (isolada).", exc_info=True)
+
+    # [KM-CAND-R(UI) 287a] Análise ponderada km-candidato (§13) — read-only. Aditivo, isolado.
+    try:
+        _df_kmc = st.session_state.get("df_processado")
+        _r_kmc = _resumo_km_candidato(_df_kmc)
+        if _r_kmc is not None:
+            with st.expander("⚖️ Deslocamento ponderado por candidato (km-candidato — a carga real)", expanded=False):
+                if not _r_kmc.get("tem_candidatos"):
+                    st.info("Esta análise pondera a distância pelo nº de candidatos por origem. "
+                            "Ela aparece quando o estudo inclui uma coluna de candidatos/inscritos (ex.: 'Inscritos', 'Candidatos', 'QT_INSCRITOS').")
+                else:
+                    _mp = _r_kmc["media_ponderada"]; _ms = _r_kmc["media_simples"]
+                    _ck1, _ck2, _ck3 = st.columns(3)
+                    _ck1.metric("Deslocamento médio por candidato", f"{_mp:,.1f} km".replace(",", "."))
+                    _ck2.metric("Deslocamento médio por município", f"{_ms:,.1f} km".replace(",", "."))
+                    _ck3.metric("km-candidato total", f"{_r_kmc['km_candidato_total']:,.0f}".replace(",", "."))
+                    if _mp < _ms:
+                        st.caption("💡 **Insight:** o candidato típico percorre **menos** do que a média por município sugere — "
+                                   "os municípios mais distantes concentram **poucos** candidatos. A situação real é melhor do que a média simples indica.")
+                    elif _mp > _ms:
+                        st.caption("💡 **Insight:** o candidato típico percorre **mais** do que a média por município sugere — "
+                                   "a carga se concentra em municípios **distantes E populosos**. Priorize-os na decisão de alocação.")
+                    else:
+                        st.caption("💡 **Insight:** a carga de deslocamento está uniformemente distribuída entre os candidatos.")
+                    _rk_kmc = _ranking_km_candidato(_df_kmc)
+                    if _rk_kmc is not None and not _rk_kmc.empty:
+                        st.markdown("**Onde a carga se concentra** — municípios de origem por km-candidato (distância × candidatos):")
+                        st.dataframe(_rk_kmc, use_container_width=True, hide_index=True)
+                        st.caption("📖 **km-candidato** = distância × nº de candidatos daquela origem. É a soma de quilômetros que o "
+                                   "conjunto de candidatos daquele município percorre — o número que dimensiona o impacto real de uma decisão.")
+                        try:
+                            st.download_button("📥 Baixar ranking km-candidato (.csv)", data=_rk_kmc.to_csv(index=False).encode("utf-8-sig"),
+                                               file_name="ranking_km_candidato.csv", mime="text/csv", key="dl_km_candidato")
+                        except Exception:
+                            logger.error("[KM-CAND-UI] Falha no download (isolada).", exc_info=True)
+    except Exception:
+        logger.error("[KM-CAND-UI] Falha ao renderizar km-candidato (isolada).", exc_info=True)
+
+    # [ANALISES3-R(UI) 288a] §13 percentis · §12 selo de confiança · §18 causal — read-only, isoladas.
+    _df_a3 = st.session_state.get("df_processado")
+    try:
+        _pc = _percentis_distancia(_df_a3)
+        if _pc:
+            with st.expander("📏 Percentis de distância — a cauda de candidatos que percorre mais (§13)", expanded=False):
+                _pcl = st.columns(4)
+                _pcl[0].metric("Mediana (P50)", f"{_pc['p50']:,.0f} km".replace(",", "."))
+                _pcl[1].metric("P90", f"{_pc['p90']:,.0f} km".replace(",", "."))
+                _pcl[2].metric("P95", f"{_pc['p95']:,.0f} km".replace(",", "."))
+                _pcl[3].metric("Máximo", f"{_pc['max']:,.0f} km".replace(",", "."))
+                if _pc.get("ponderado") and _pc.get("p90_cand") is not None:
+                    st.caption(f"⚖️ Ponderado por candidato: **P90 = {_pc['p90_cand']:.0f} km** · P95 = {_pc.get('p95_cand'):.0f} km — "
+                               "o percentil que o CANDIDATO típico enfrenta (mais fiel que o percentil por município).")
+                st.caption("📖 **P90 = 160 km** significa que 90% das rotas ficam até 160 km; os 10% acima são a 'cauda' a monitorar.")
+    except Exception:
+        logger.error("[PERCENTIS-UI] Falha (isolada).", exc_info=True)
+    try:
+        _sl = _resumo_selo_confianca(_df_a3)
+        if _sl and _sl.get("dist"):
+            with st.expander("🎗️ Confiança consolidada das rotas (§12)", expanded=False):
+                _ic = {"Alta":"🟢","Média":"🟡","Baixa":"🟠","Crítica":"🔴","Não avaliável":"⚪"}
+                _sldf = pd.DataFrame([{"Selo": f"{_ic.get(k,'')} {k}", "Rotas": v,
+                                       "%": round(100.0*v/_sl["total"],1)} for k,v in _sl["dist"].items()])
+                st.dataframe(_sldf, use_container_width=True, hide_index=True)
+                st.caption("📖 **Regras:** 🔴 Crítica = divergência ≥100% entre motores; 🟠 Baixa = estimativa/linha reta "
+                           "ou divergência ≥30%; 🟢 Alta = viária com motores concordando/score alto; 🟡 Média = demais; "
+                           "⚪ Não avaliável = sem distância válida.")
+    except Exception:
+        logger.error("[SELO-UI] Falha (isolada).", exc_info=True)
+    try:
+        _cx = _diagnostico_causal(_df_a3)
+        if _cx and _cx.get("dist"):
+            with st.expander("🔎 Diagnóstico causal — por que uma rota pode perder para uma referência (§18)", expanded=False):
+                _cxdf = pd.DataFrame([{"Causa": k, "Rotas": v, "%": round(100.0*v/_cx["total"],1)} for k,v in _cx["dist"].items()])
+                st.dataframe(_cxdf, use_container_width=True, hide_index=True)
+                st.caption("📖 Cada rota é classificada pela causa que a tornaria vulnerável a perder para um estudo de "
+                           "referência: **estimada** (linha reta), **fallback**, **balsa**, **divergência entre motores** "
+                           "ou **viária confirmada** (a saudável). É a base da auditoria causal do §18.")
+    except Exception:
+        logger.error("[CAUSAL-UI] Falha (isolada).", exc_info=True)
+
+    # [VEREDITO-R(UI) 279a] Entenda uma decisão de alocação — cartão read-only (§10/§11). Aditivo, isolado.
+    try:
+        _df_ver = st.session_state.get("df_processado")
+        if _df_ver is not None and len(_df_ver) > 0 and "Origem" in _df_ver.columns and \
+           any(_c in _df_ver.columns for _c in ("Município Hub", "Municipio Concorrente", "Concorrente Analisado")):
+            with st.expander("🔎 Entenda uma decisão de alocação (por que este local · por que não o 2º)", expanded=False):
+                st.caption("Projeção **read-only** de uma decisão já calculada — escolha um município de origem para ver a justificativa.")
+                _origens_ver = sorted(_df_ver["Origem"].dropna().astype(str).unique().tolist())
+                if _origens_ver:
+                    _sel_ver = st.selectbox("Município de origem", _origens_ver, key="veredito_sel_origem")
+                    _html_ver = _render_veredito_card(_extrair_decisao_alocacao(_df_ver, _sel_ver))
+                    if _html_ver:
+                        st.markdown(_html_ver, unsafe_allow_html=True)
+                    else:
+                        st.info("Sem dados de decisão para este município.")
+    except Exception:
+        logger.error("[VEREDITO-UI] Falha ao renderizar cartão de veredito (isolada).", exc_info=True)
+
     # [LIVRO-RAZAO-R3 276ª] Livro-Razão de Rastreabilidade — download auditável (aditivo, read-only).
     with st.expander("📒 Livro-Razão de Rastreabilidade (1 linha por rota: motor, divergência, confiança, tempos)", expanded=False):
         st.caption("Projeção **read-only** dos dados já calculados do último Estudo em Lote — sem rede, sem recálculo. "
@@ -45999,3 +46848,10 @@ if _secao == _SECOES[12]:   # tab_pesquisa
 # ==============================================================================
 if _secao == _SECOES[13]:   # tab_sobre_desenvolvedor
     _dev_render_streamlit(contexto="aba")
+
+
+# [RODAPE-MNIL 282a] Selo de versão .mnil ao fim de cada página (aditivo, defensivo).
+try:
+    st.markdown(_render_rodape_mnil("v3.45", _VERSAO_APP), unsafe_allow_html=True)
+except Exception:
+    logger.error("[RODAPE-UI] Falha ao renderizar rodapé (isolada).", exc_info=True)
