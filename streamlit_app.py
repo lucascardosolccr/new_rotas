@@ -63,6 +63,27 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.53 (290a geracao) -> PAINEL "FONTE DA VERDADE" NO VALIDADOR RAPIDO (§22/§25, read-only, aditivo)
+#     Novo expander no Validador Rapido (Single-Shot) que responde "qual motor produziu cada dado?": tabela
+#     por motor (Google/OSRM/GraphHopper/Valhalla) mostrando SOMENTE o dado DELE — distancia, tempo, geometria
+#     (propria/nao), link e status — derivado dos campos DEDICADOS do RotaPipeline (comparativo_provedores p/
+#     Google+OSRM, dados_graphhopper[41], dados_valhalla[42], link_rota[2]=Google, link_osrm_viewer[36]). NUNCA
+#     preenche o dado ausente de um motor com o de outro: mostra 'Nao retornado pela fonte' (§17). Inclui
+#     tabela de comparacao pos-separacao (§24). Precede a auditoria de isolamento por leitura de codigo
+#     (DIAGNOSTICO_ISOLAMENTO_MOTORES_SINGLESHOT_V289.md): a associacao dado<->fonte ja era estruturalmente
+#     correta; este painel a torna VISIVEL e auditavel. +3 funcoes puras (_fv_km,_fv_linha,
+#     _fonte_verdade_singleshot + const _FV_NAO). NAO altera pipeline, mapa, link ou selecao existentes.
+#     Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements
+#     INALTERADO. Suite test_fonte_verdade.py.
+#   v3.52 (289a geracao) -> §17 ORIGEM DO PROBLEMA: DADO x ROTEAMENTO x ALGORITMO (rotulo consolidado, read-only)
+#     Nova analise READ-ONLY na aba Auditoria que CONSOLIDA a taxonomia de divergencias ja existente
+#     (_classificar_divergencia, 236a) em 5 CLASSES ACIONAVEIS + empate: Dado (coordenadas/geocodificacao),
+#     Roteamento (motor/geometria), Algoritmo (selecao/ranking — o que da p/ corrigir), Metodologico (criterio)
+#     e Legitimo (infraestrutura real). Consome diag['distribuicoes']['por_categoria'] da sessao
+#     (cmp_diag_divergencias) — NAO recomputa nada, NAO toca em _classificar_divergencia nem no pipeline XAI.
+#     Separa os casos que a aplicacao pode corrigir (Algoritmo) do ruido e da diferenca legitima. +2 funcoes
+#     puras (_classe_problema_17, _resumo_classe_problema + const _CLASSE17_ORDEM). Invariantes: RotaPipeline 43,
+#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_classe17.py.
 #   v3.51 (288a geracao) -> 3 ANALISES: PERCENTIS §13 + SELO DE CONFIANCA §12 + DIAGNOSTICO CAUSAL §18
 #     Tres analises READ-ONLY na aba Auditoria, aditivas e defensivas: (1) §13 PERCENTIS de distancia (P50/P90/
 #     P95/Max) com versao PONDERADA POR CANDIDATO (dimensiona a cauda real); (2) §12 SELO DE CONFIANCA
@@ -11583,6 +11604,157 @@ def _diagnostico_causal(df):
         return {"total": n, "dist": {k: int(v) for k, v in vc.items()}}
     except Exception:
         logger.error("[CAUSAL] Falha (isolada).", exc_info=True); return None
+
+
+# ==============================================================================
+# [CLASSE17-R(UI) 289a geracao] §17 — consolida a taxonomia de divergencias em
+# CLASSES ACIONAVEIS (Dado x Roteamento x Algoritmo x Metodologico x Legitimo).
+# Projecao READ-ONLY de diag['distribuicoes']['por_categoria']. Defensiva.
+# ==============================================================================
+# §17: consolida a taxonomia de divergências em CLASSES ACIONÁVEIS (dado × roteamento ×
+# algoritmo × metodológico × legítimo). Projeção READ-ONLY do diagnóstico já existente.
+
+def _classe_problema_17(categoria, vantagem_de=None):
+    """Mapeia UMA categoria de divergência para a classe de problema do §17. PURO."""
+    c = (categoria or "").lower()
+    if "empate" in c:
+        return {"classe": "Empate técnico (sem problema)", "acao": "Ruído estatístico — nenhuma ação."}
+    if "geocod" in c or "confiab" in c:
+        return {"classe": "Dado", "acao": "Auditar coordenadas/geocodificação do polo escolhido."}
+    if "balsa" in c or "acesso" in c or "fluvial" in c or "isolad" in c:
+        return {"classe": "Legítimo (infraestrutura)", "acao": "Diferença real de transporte — não corrigir."}
+    if "sinuos" in c or "motor" in c:
+        return {"classe": "Roteamento", "acao": "Divergência inerente aos motores — consenso/menor rota viária mitiga."}
+    if "puramente viária" in c or "puramente viaria" in c:
+        if "refer" in c or vantagem_de == "Referência":
+            return {"classe": "Algoritmo (seleção/ranking)",
+                    "acao": "🔴 Revisar seleção: possível escolha de rota viária pior que uma alternativa válida."}
+        return {"classe": "Metodológico",
+                "acao": "Vitória viária da aplicação — diferença de critério da referência."}
+    return {"classe": "Metodológico", "acao": "Diferença de critério entre os estudos."}
+
+_CLASSE17_ORDEM = ["Algoritmo (seleção/ranking)", "Dado", "Roteamento",
+                   "Metodológico", "Legítimo (infraestrutura)", "Empate técnico (sem problema)"]
+
+def _resumo_classe_problema(diag):
+    """Agrega a distribuição por categoria do diagnóstico nas classes do §17. dict ou None. Defensivo."""
+    try:
+        if not diag:
+            return None
+        dist = (diag.get("distribuicoes") or {}).get("por_categoria") or []
+        if not dist:
+            return None
+        agg = {}
+        for item in dist:
+            cl = _classe_problema_17(item.get("Categoria"))
+            k = cl["classe"]
+            if k not in agg:
+                agg[k] = {"classe": k, "acao": cl["acao"], "casos": 0, "inscritos": 0}
+            agg[k]["casos"] += int(item.get("Casos") or 0)
+            agg[k]["inscritos"] += int(item.get("Inscritos") or 0)
+        if not agg:
+            return None
+        total_casos = sum(v["casos"] for v in agg.values())
+        total_insc = sum(v["inscritos"] for v in agg.values())
+        classes = sorted(agg.values(),
+                         key=lambda v: _CLASSE17_ORDEM.index(v["classe"]) if v["classe"] in _CLASSE17_ORDEM else 99)
+        for v in classes:
+            v["pct_casos"] = round(100.0 * v["casos"] / total_casos, 1) if total_casos else 0.0
+        return {"total_casos": total_casos, "total_inscritos": total_insc, "classes": classes}
+    except Exception:
+        logger.error("[CLASSE17] Falha (isolada).", exc_info=True)
+        return None
+
+
+# ==============================================================================
+# [FONTE-VERDADE-R(UI) 290a geracao] Painel "Fonte da Verdade" (§22/§25) do Validador
+# Rapido: por motor (Google/OSRM/GraphHopper/Valhalla), SOMENTE o dado produzido por
+# ele. READ-ONLY do RotaPipeline. Nunca preenche dado ausente de um motor com o de
+# outro (§17). Defensivo (res_ind None/curto -> None).
+# ==============================================================================
+# Painel "Fonte da Verdade" (§22/§25): por motor, SOMENTE o dado produzido por ele.
+# READ-ONLY do RotaPipeline. Nunca preenche o dado ausente de um motor com o de outro (§17).
+_FV_NAO = "Não retornado pela fonte"
+
+def _fv_km(v):
+    try:
+        return f"{float(v):.1f} km"
+    except (TypeError, ValueError):
+        return _FV_NAO
+
+def _fv_linha(motor, km, tempo, geom_label, link):
+    return {"Motor": motor,
+            "Distância": _fv_km(km) if km not in (None, "") else _FV_NAO,
+            "Tempo": (str(tempo) if tempo not in (None, "") else _FV_NAO),
+            "Geometria": geom_label,
+            "Link": (str(link) if link else _FV_NAO)}
+
+def _fonte_verdade_singleshot(res_ind):
+    """Por motor (Google/OSRM/GraphHopper/Valhalla), só o dado DELE. dict|None. Defensivo."""
+    try:
+        if res_ind is None:
+            return None
+        try:
+            _n = len(res_ind)
+        except TypeError:
+            return None
+        if _n < 43:
+            return None
+        def _g(i, d=None):
+            try:
+                return res_ind[i]
+            except (IndexError, TypeError):
+                return d
+        _fonte = str(_g(5) or "").upper()
+        entrada = {"origem": _g(10) or "—", "destino": _g(16) or "—",
+                   "lat_o": _g(19), "lon_o": _g(20), "lat_d": _g(21), "lon_d": _g(22)}
+        comp = _g(35) if isinstance(_g(35), dict) else {}
+        motores = []
+        # ---- GOOGLE: métricas do comparativo; se Google venceu e não há comparativo, campos 0/1 são dele ----
+        _g_km = comp.get("km_google"); _g_tempo = comp.get("tempo_google")
+        _google_venceu = ("GEOD" not in _fonte) and not any(
+            m in _fonte for m in ("OSRM", "GRAPHHOPPER", "VALHALLA", "ORS", "OPENROUTE"))
+        if _g_km in (None, "") and _google_venceu:
+            _g_km, _g_tempo = _g(0), _g(1)
+        motores.append(_fv_linha("🗺️ Google Maps", _g_km, _g_tempo,
+                                 "Traçada por nomes (embed Google)", _g(2)))
+        # ---- OSRM: métricas do comparativo; link próprio (campo 36) ----
+        _o_km = comp.get("km_osrm"); _o_tempo = comp.get("tempo_osrm")
+        motores.append(_fv_linha("🛰️ OSRM", _o_km, _o_tempo,
+                                 "Sim (própria)" if _o_km not in (None, "") else "Não retornada", _g(36)))
+        # ---- GRAPHHOPPER: parse do campo 41 ----
+        _gh = None
+        if "_parsear_dados_graphhopper" in globals():
+            try:
+                _raw = _g(41)
+                _gh = _parsear_dados_graphhopper(_raw) if _raw else None
+            except Exception:
+                _gh = None
+        if _gh:
+            motores.append(_fv_linha("🚗 GraphHopper", _gh.get("km"), _gh.get("tempo_min"),
+                                     "Sim (própria)" if _gh.get("geo_poly") else "Não retornada", _gh.get("link_maps")))
+        else:
+            motores.append(_fv_linha("🚗 GraphHopper", None, None, "Não retornada", None))
+        # ---- VALHALLA: parse do campo 42 ----
+        _vl = None
+        if "_parsear_dados_valhalla" in globals():
+            try:
+                _raw = _g(42)
+                _vl = _parsear_dados_valhalla(_raw) if _raw else None
+            except Exception:
+                _vl = None
+        if _vl:
+            motores.append(_fv_linha("🧭 Valhalla", _vl.get("km"), _vl.get("tempo_min"),
+                                     "Sim (própria)" if _vl.get("geo_poly") else "Não retornada", _vl.get("link_maps")))
+        else:
+            motores.append(_fv_linha("🧭 Valhalla", None, None, "Não retornada", None))
+        comparacao = [{"Motor": m["Motor"], "Distância": m["Distância"], "Tempo": m["Tempo"]}
+                      for m in motores if m["Distância"] != _FV_NAO]
+        return {"entrada": entrada, "motores": motores,
+                "comparacao": comparacao if len(comparacao) >= 2 else None}
+    except Exception:
+        logger.error("[FONTE-VERDADE] Falha (isolada).", exc_info=True)
+        return None
 
 
 def _df_para_geojson(df):
@@ -35643,7 +35815,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "288"
+_VERSAO_APP = "290"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -37816,6 +37988,25 @@ if _secao == _SECOES[0]:   # tab_individual
                         st.caption("ℹ️ O **Valhalla** é um motor de roteamento sem chave (open-source, dados OSM) que participa da disputa "
                                    "pela menor rota viária, em igualdade com Google, OSRM e GraphHopper. Numa instância própria, participa "
                                    "de toda rota como o OSRM. Estes são os valores que **ele** encontrou para esta rota.")
+                # [FONTE-VERDADE-R(UI) 290a] Painel "Fonte da Verdade" (§22/§25) — read-only, isolado, aditivo.
+                try:
+                    _fv = _fonte_verdade_singleshot(res_ind)
+                    if _fv and _fv.get("motores"):
+                        with st.expander("🔍 Fonte da Verdade — cada dado com seu motor de origem (§25)", expanded=False):
+                            _fve = _fv.get("entrada") or {}
+                            st.caption(f"**Entrada comum a todos os motores** · Origem: {_fve.get('origem','—')} · "
+                                       f"Destino: {_fve.get('destino','—')} · Coords O ({_fve.get('lat_o','—')}, {_fve.get('lon_o','—')}) "
+                                       f"→ D ({_fve.get('lat_d','—')}, {_fve.get('lon_d','—')}).")
+                            st.dataframe(pd.DataFrame(_fv["motores"]), use_container_width=True, hide_index=True)
+                            st.caption("📖 Cada linha traz os dados **exclusivamente** do seu motor. "
+                                       "'Não retornado pela fonte' = aquele motor não forneceu o dado; **nunca** é preenchido com o "
+                                       "de outro (§17). Link e geometria de cada linha pertencem só àquele motor (§25).")
+                            if _fv.get("comparacao"):
+                                st.markdown("**📊 Comparação (só depois da separação, §24):**")
+                                st.dataframe(pd.DataFrame(_fv["comparacao"]), use_container_width=True, hide_index=True)
+                                st.caption("Comparação lado a lado — não altera nem mistura os resultados originais (§24).")
+                except Exception:
+                    logger.error("[FONTE-VERDADE-UI] Falha ao renderizar (isolada).", exc_info=True)
             else:
                 st.error("Falha na validação de consistência geodésica unificada.")
         else:
@@ -46625,6 +46816,22 @@ if _secao == _SECOES[11]:   # tab_auditoria
                            "ou **viária confirmada** (a saudável). É a base da auditoria causal do §18.")
     except Exception:
         logger.error("[CAUSAL-UI] Falha (isolada).", exc_info=True)
+
+    # [CLASSE17-R(UI) 289a] §17 origem do problema (dado × roteamento × algoritmo) — read-only, isolado.
+    try:
+        _diag17 = st.session_state.get("cmp_diag_divergencias")
+        _r17 = _resumo_classe_problema(_diag17)
+        if _r17 and _r17.get("classes"):
+            with st.expander("🔬 Origem do problema — dado × roteamento × algoritmo (§17)", expanded=False):
+                _df17 = pd.DataFrame([{"Classe": _c["classe"], "Casos": _c["casos"], "%": _c["pct_casos"],
+                                       "Candidatos": _c["inscritos"], "Ação": _c["acao"]} for _c in _r17["classes"]])
+                st.dataframe(_df17, use_container_width=True, hide_index=True)
+                st.caption("📖 Consolida as causas em CLASSES ACIONÁVEIS: **Dado** (coordenadas/geocodificação), "
+                           "**Roteamento** (motor/geometria), **Algoritmo** (seleção/ranking — o que podemos corrigir), "
+                           "**Metodológico** (critério diferente) e **Legítimo** (infraestrutura real). Responde à "
+                           "pergunta do §17: o problema está no dado, no roteamento ou no algoritmo?")
+    except Exception:
+        logger.error("[CLASSE17-UI] Falha ao renderizar origem do problema (isolada).", exc_info=True)
 
     # [VEREDITO-R(UI) 279a] Entenda uma decisão de alocação — cartão read-only (§10/§11). Aditivo, isolado.
     try:
