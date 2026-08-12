@@ -63,6 +63,70 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.60 (297a geracao) -> KPIs ENRIQUECIDOS + DOWNLOAD DO MAPA na aba Analise Geografica (§8/§10/§16)
+#     (1) Resumo agora inclui DESLOCAMENTO MEDIO POR CANDIDATO (media ponderada km-candidato), P90 e P95 da
+#     distancia, e contagem de rotas estimadas/sem-rota (qualidade), com insight comparando a media por
+#     candidato vs por municipio (§8/§10). (2) O mapa (individual ou rede) agora pode ser BAIXADO como HTML
+#     interativo autocontido (§16). READ-ONLY, sobre o conjunto ja filtrado. +2 funcoes puras
+#     (_geo_pct,_geo_kpis_extra). Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports
+#     identicos, requirements INALTERADO. Suite test_geo_kpis.py.
+#   v3.59 (296a geracao) -> REDE DE ATENDIMENTO (CLUSTERING §10/§15) + ANALISE DO 2o COLOCADO (§11)
+#     Na aba Analise Geografica: (1) modo "Rede de atendimento (agregada)" — clustering em GRADE feito no
+#     Python (arredonda coords, agrega origens por celula com nº de candidatos e destino dominante), desenhado
+#     como celulas azuis ligadas ao destino por fluxo teal. Mantem o mapa legivel/rapido em grandes volumes SEM
+#     plugin/CDN novo (§15). (2) Detalhe da rota agora mostra o 2o COLOCADO/alternativa (Polo do concorrente +
+#     Distancia Concorrente): 2o destino, distancia, diferenca e alerta se o 2o seria mais perto (auditar
+#     selecao). _geo_analise_dataset e _geo_rota_detalhe estendidos (aditivo). +2 funcoes puras
+#     (_geo_clusters,_geo_mapa_rede). READ-ONLY, nao refaz roteamento. Invariantes: RotaPipeline 43, _SECOES 15,
+#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_geo_rede.py.
+#   v3.58 (295a geracao) -> ANALISE GEOGRAFICA VISUAL: ABA DEDICADA + FILTROS + GRAFICOS + SELECAO DE ROTA
+#     Promove a Analise Geografica (294a) de secao na Auditoria para ABA DEDICADA (indice 14 em _SECOES, grupo
+#     Analisar) e a enriquece: FILTROS (UF/origem/destino/faixa de distancia/balsa/alerta/estimada/sem-rota,
+#     §4/§5), GRAFICOS nativos (rotas e candidatos por faixa, top destinos, por UF, por motor, %fallback, §9),
+#     SELECAO DE ROTA para analise detalhada (distancia/linha reta/razao/km-candidato/motor/alertas + mapa da
+#     rota isolada, §11), alem de KPIs/mapa/alertas/tabela/export/tutorial ja existentes. Tudo READ-ONLY sobre
+#     os dados ja calculados (nao refaz roteamento §15, nao inventa localizacao §14). +5 funcoes puras
+#     (_geo_faixa_idx,_geo_filtrar,_geo_charts_data,_geo_rota_label,_geo_rota_detalhe). _SECOES: 14 -> 15
+#     (mudanca estrutural intencional). Invariantes: RotaPipeline 43, baloes 1x, bare-except 0, imports
+#     identicos, requirements INALTERADO. Suite test_geo_tab.py.
+#   v3.57 (294a geracao) -> ANALISE GEOGRAFICA VISUAL (nova secao read-only, reaproveita dados calculados)
+#     Nova secao na aba Auditoria que transforma o resultado tabular em analise geografica: KPIs (origens,
+#     destinos, candidatos, distancia media/max, balsa, alertas), MAPA Leaflet autocontido (origens azuis
+#     dimensionadas por candidatos, destinos vermelhos, tracado REAL quando ha geometria, conector tracejado
+#     honesto quando nao ha — §3/§21), tabela de ALERTAS geograficos (viaria<reta, muito longa, balsa,
+#     estimada, sem rota — §12), tabela completa + export CSV (§16), tutorial (§17). Reaproveita coords reais/
+#     geometria/distancia/candidatos JA calculados (decodifica polyline via _decodificar_polyline) — NAO refaz
+#     roteamento (§15) e NAO inventa localizacao (mostra a fonte da coordenada — §14). Paleta acessivel a
+#     daltonicos. +5 funcoes puras (_geo_col,_geo_num,_geo_analise_dataset,_geo_mapa_leaflet + consts _GEO_*).
+#     Sem nova dependencia (Leaflet ja usado). Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x,
+#     bare-except 0, imports identicos, requirements INALTERADO. Suite test_geo_analise.py.
+#   v3.56 (293a geracao) -> CORRECAO DE 2 BUGS REAIS NO VALIDADOR RAPIDO (mapa do GraphHopper/vencedor)
+#     BUG 1 (data-URI como texto): os expanders do GraphHopper e do Valhalla passavam o retorno de
+#     _gerar_mapa_leaflet_rota (um data:text/html;base64,...) DIRETO para components.html, que renderizava a
+#     STRING como texto. Agora decodificam antes via _decodificar_mapa_datauri (mesmo padrao do mapa principal).
+#     BUG 2 (mapa do OSRM quando GraphHopper vence): o pipeline preenche link_embed (mapa principal) SEMPRE com
+#     a geometria do OSRM. _mapa_vencedor_singleshot reconstroi o mapa principal a partir da geometria DO
+#     VENCEDOR (GraphHopper/Valhalla) e ajusta o link do visualizador; se o vencedor nao tem geometria propria,
+#     mantem o atual (nao fabrica). Fix no RENDER (nao toca o pipeline). +2 funcoes puras
+#     (_decodificar_mapa_datauri, _mapa_vencedor_singleshot). Invariantes: RotaPipeline 43, _SECOES 14,
+#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_mapa_fix.py.
+#   v3.55 (292a geracao) -> PLAUSIBILIDADE DE VELOCIDADE POR MOTOR (Validador Rapido, read-only)
+#     Completa a camada de sanidade do painel "Fonte da Verdade": velocidade media implicita (distancia/tempo)
+#     por motor, com flag 🔴 Suspeita (>130 km/h, dado quebrado) / 🟠 Atencao (<8 km/h, possivel balsa/urbano) /
+#     ✅ Plausivel. Terceira perna do triangulo de validacao (distancia x linha reta, concordancia entre
+#     motores, e agora tempo x distancia). Todos os tempos ja vem em minutos (comparativo tempo_g_min/
+#     tempo_o_min; GH/VL tempo_min). +3 funcoes puras (_fv_min_val, _fv_min_por_motor,
+#     _fv_velocidade_plausibilidade). NAO altera pipeline, mapa, link ou selecao. Invariantes: RotaPipeline 43,
+#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_velocidade.py.
+#   v3.54 (291a geracao) -> CONCORDANCIA ENTRE MOTORES + SANIDADE VIARIA x LINHA RETA (Validador Rapido, read-only)
+#     Estende o painel "Fonte da Verdade" (290a) com duas checagens de validacao de alto valor: (1) CONCORDANCIA
+#     entre TODOS os motores de uma vez (min/mediana/max, amplitude km e %, nivel: alta/moderada/alta divergencia)
+#     — visao unica que complementa a comparacao par-a-par-vs-Google ja existente; (2) SANIDADE viaria x linha
+#     reta por motor: sinaliza 🔴 o fisicamente impossivel (viaria < linha reta) e 🟠 sinuosidade extrema
+#     (viaria > 3x a linha reta). Deriva das distancias que cada motor produziu (fontes dedicadas) + linha reta
+#     (campo 4). +2 funcoes puras (_fv_kms_por_motor, _fv_concordancia_sanidade). NAO altera pipeline, mapa,
+#     link ou selecao. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos,
+#     requirements INALTERADO. Suite test_concordancia.py.
 #   v3.53 (290a geracao) -> PAINEL "FONTE DA VERDADE" NO VALIDADOR RAPIDO (§22/§25, read-only, aditivo)
 #     Novo expander no Validador Rapido (Single-Shot) que responde "qual motor produziu cada dado?": tabela
 #     por motor (Google/OSRM/GraphHopper/Valhalla) mostrando SOMENTE o dado DELE — distancia, tempo, geometria
@@ -11754,6 +11818,765 @@ def _fonte_verdade_singleshot(res_ind):
                 "comparacao": comparacao if len(comparacao) >= 2 else None}
     except Exception:
         logger.error("[FONTE-VERDADE] Falha (isolada).", exc_info=True)
+        return None
+
+
+# ==============================================================================
+# [FV-CONCORD-R(UI) 291a geracao] Concordancia entre TODOS os motores + sanidade
+# viaria x linha reta (§4/§10/§15). READ-ONLY, extensao do painel Fonte da Verdade.
+# Sinaliza o fisicamente impossivel (viaria < linha reta) e sinuosidade extrema.
+# ==============================================================================
+# Concordância entre TODOS os motores + sanidade viária×linha reta. READ-ONLY. Puro/defensivo.
+
+def _fv_kms_por_motor(res_ind):
+    """Distância viária numérica (float|None) por motor, cada uma da fonte DELE. Puro."""
+    def _g(i, d=None):
+        try: return res_ind[i]
+        except (IndexError, TypeError): return d
+    def _num(v):
+        try: return float(v)
+        except (TypeError, ValueError): return None
+    _fonte = str(_g(5) or "").upper()
+    comp = _g(35) if isinstance(_g(35), dict) else {}
+    _google_venceu = ("GEOD" not in _fonte) and not any(
+        m in _fonte for m in ("OSRM", "GRAPHHOPPER", "VALHALLA", "ORS", "OPENROUTE"))
+    _g_km = _num(comp.get("km_google"))
+    if _g_km is None and _google_venceu:
+        _g_km = _num(_g(0))
+    _o_km = _num(comp.get("km_osrm"))
+    _gh_km = _vl_km = None
+    if "_parsear_dados_graphhopper" in globals():
+        try:
+            _r = _g(41); _d = _parsear_dados_graphhopper(_r) if _r else None
+            _gh_km = _num(_d.get("km")) if _d else None
+        except Exception:
+            _gh_km = None
+    if "_parsear_dados_valhalla" in globals():
+        try:
+            _r = _g(42); _d = _parsear_dados_valhalla(_r) if _r else None
+            _vl_km = _num(_d.get("km")) if _d else None
+        except Exception:
+            _vl_km = None
+    return {"Google Maps": _g_km, "OSRM": _o_km, "GraphHopper": _gh_km, "Valhalla": _vl_km}
+
+def _fv_concordancia_sanidade(res_ind, tol_alta=5.0, tol_moderada=15.0, ratio_suspeito=3.0):
+    """Concordância entre motores + sanidade viária×linha reta (§4/§10/§15). dict|None. Defensivo."""
+    try:
+        if res_ind is None:
+            return None
+        try:
+            _n = len(res_ind)
+        except TypeError:
+            return None
+        if _n < 43:
+            return None
+        def _g(i, d=None):
+            try: return res_ind[i]
+            except (IndexError, TypeError): return d
+        kms = _fv_kms_por_motor(res_ind)
+        validos = {k: v for k, v in kms.items() if isinstance(v, (int, float)) and v > 0}
+        try:
+            _lr = float(_g(4))
+        except (TypeError, ValueError):
+            _lr = None
+        # ---- concordância entre motores ----
+        conc = None
+        if len(validos) >= 2:
+            vals = sorted(validos.values())
+            _mn, _mx = vals[0], vals[-1]
+            _med = (vals[len(vals) // 2] if len(vals) % 2 == 1
+                    else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2.0)
+            _amp = _mx - _mn
+            _amp_pct = (_amp / _med * 100.0) if _med else 0.0
+            if _amp_pct < tol_alta:
+                _nivel = "🟢 Alta concordância"
+            elif _amp_pct < tol_moderada:
+                _nivel = "🟡 Divergência moderada"
+            else:
+                _nivel = "🟠 Divergência alta"
+            conc = {"n_motores": len(validos), "min": round(_mn, 1), "max": round(_mx, 1),
+                    "mediana": round(_med, 1), "amplitude_km": round(_amp, 1),
+                    "amplitude_pct": round(_amp_pct, 1), "nivel": _nivel}
+        # ---- sanidade viária × linha reta ----
+        sanidade = []
+        for motor, km in kms.items():
+            if not (isinstance(km, (int, float)) and km > 0):
+                continue
+            if _lr is None or _lr <= 0:
+                status, nota = "⚪ Não avaliável", "Linha reta indisponível — sanidade não avaliável."
+            elif km < _lr - 0.05:
+                status = "🔴 Suspeita"
+                nota = f"Viária ({km:.1f} km) MENOR que a linha reta ({_lr:.1f} km) — fisicamente impossível."
+            elif km > _lr * ratio_suspeito:
+                status = "🟠 Atenção"
+                nota = f"Viária {km / _lr:.1f}× a linha reta — sinuosidade/desvio muito alto (verificar)."
+            else:
+                status, nota = "✅ Plausível", "Rota viária coerente com a linha reta."
+            sanidade.append({"Motor": motor, "Distância viária": f"{km:.1f} km",
+                             "Linha reta": (f"{_lr:.1f} km" if _lr else "—"),
+                             "Sanidade": status, "Observação": nota})
+        if conc is None and not sanidade:
+            return None
+        return {"linha_reta": _lr, "concordancia": conc, "sanidade": sanidade}
+    except Exception:
+        logger.error("[FV-CONCORD] Falha (isolada).", exc_info=True)
+        return None
+
+
+# ==============================================================================
+# [FV-VELOCIDADE-R(UI) 292a geracao] Plausibilidade de velocidade implicita por motor
+# (tempo x distancia, §15). READ-ONLY, extensao do painel Fonte da Verdade. Captura
+# dado quebrado: velocidade impossivel (>130 km/h) ou implausivelmente lenta (<8 km/h).
+# ==============================================================================
+# Plausibilidade de velocidade implícita por motor (km vs tempo). READ-ONLY. Puro/defensivo.
+# Captura dado quebrado: velocidade impossível (ex.: 360 km/h) ou implausivelmente lenta.
+
+def _fv_min_val(v):
+    """Extrai minutos (float) de valores em minutos (num ou str '20'/'20 min'). None se não der."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        pass
+    try:
+        tok = str(v).strip().replace(",", ".").split()[0]
+        return float(tok)
+    except (TypeError, ValueError, IndexError):
+        return None
+
+def _fv_min_por_motor(res_ind):
+    """Tempo (minutos, float|None) por motor, cada um da fonte DELE. Puro."""
+    def _g(i, d=None):
+        try: return res_ind[i]
+        except (IndexError, TypeError): return d
+    _fonte = str(_g(5) or "").upper()
+    comp = _g(35) if isinstance(_g(35), dict) else {}
+    _google_venceu = ("GEOD" not in _fonte) and not any(
+        m in _fonte for m in ("OSRM", "GRAPHHOPPER", "VALHALLA", "ORS", "OPENROUTE"))
+    _g_min = _fv_min_val(comp.get("tempo_google"))
+    if _g_min is None and _google_venceu:
+        _g_min = _fv_min_val(_g(1))
+    _o_min = _fv_min_val(comp.get("tempo_osrm"))
+    _gh_min = _vl_min = None
+    if "_parsear_dados_graphhopper" in globals():
+        try:
+            _r = _g(41); _d = _parsear_dados_graphhopper(_r) if _r else None
+            _gh_min = _fv_min_val(_d.get("tempo_min")) if _d else None
+        except Exception:
+            _gh_min = None
+    if "_parsear_dados_valhalla" in globals():
+        try:
+            _r = _g(42); _d = _parsear_dados_valhalla(_r) if _r else None
+            _vl_min = _fv_min_val(_d.get("tempo_min")) if _d else None
+        except Exception:
+            _vl_min = None
+    return {"Google Maps": _g_min, "OSRM": _o_min, "GraphHopper": _gh_min, "Valhalla": _vl_min}
+
+def _fv_velocidade_plausibilidade(res_ind, v_max=130.0, v_min=8.0):
+    """Velocidade média implícita por motor + flag de plausibilidade. lista|None. Defensivo."""
+    try:
+        if res_ind is None:
+            return None
+        try:
+            _n = len(res_ind)
+        except TypeError:
+            return None
+        if _n < 43:
+            return None
+        if "_fv_kms_por_motor" not in globals():
+            return None
+        kms = _fv_kms_por_motor(res_ind)
+        mins = _fv_min_por_motor(res_ind)
+        linhas = []
+        for motor in ("Google Maps", "OSRM", "GraphHopper", "Valhalla"):
+            km = kms.get(motor)
+            if not (isinstance(km, (int, float)) and km > 0):
+                continue
+            mn = mins.get(motor)
+            if not (isinstance(mn, (int, float)) and mn > 0):
+                linhas.append({"Motor": motor, "Distância": f"{km:.1f} km", "Tempo": "—",
+                               "Velocidade média": "—", "Plausibilidade": "⚪ Tempo indisponível"})
+                continue
+            vel = km / (mn / 60.0)
+            if vel > v_max:
+                status = f"🔴 Suspeita (>{v_max:.0f} km/h — dado provavelmente quebrado)"
+            elif vel < v_min:
+                status = f"🟠 Atenção (<{v_min:.0f} km/h — muito lenta; balsa/urbano?)"
+            else:
+                status = "✅ Plausível"
+            linhas.append({"Motor": motor, "Distância": f"{km:.1f} km",
+                           "Tempo": f"{mn:.0f} min", "Velocidade média": f"{vel:.0f} km/h",
+                           "Plausibilidade": status})
+        return linhas or None
+    except Exception:
+        logger.error("[FV-VELOCIDADE] Falha (isolada).", exc_info=True)
+        return None
+
+
+# ==============================================================================
+# [MAPA-FIX-R 293a geracao] Correcoes do Validador Rapido: (1) _decodificar_mapa_datauri
+# decodifica o data:text/html;base64 antes de components.html (Bug 1: data-URI exibido
+# como texto no mapa do GraphHopper/Valhalla); (2) _mapa_vencedor_singleshot reconstroi
+# o MAPA PRINCIPAL a partir da geometria DO VENCEDOR quando GraphHopper/Valhalla vence
+# (Bug 2: pipeline preenche link_embed com a geometria do OSRM). Puros/defensivos.
+# ==============================================================================
+# Correções do Validador Rápido: (1) decodificar data-URI antes de renderizar (Bug 1);
+# (2) mapa principal = geometria DO VENCEDOR quando GraphHopper/Valhalla vence (Bug 2).
+
+def _decodificar_mapa_datauri(s):
+    """Se `s` for um data:text/html;base64,... devolve o HTML decodificado; senão, devolve `s`.
+    Corrige o Bug 1 (data-URI renderizado como texto). Puro/defensivo."""
+    try:
+        if isinstance(s, str) and s.startswith("data:text/html;base64,"):
+            import base64 as _b64
+            return _b64.b64decode(s.split(",", 1)[1]).decode("utf-8")
+        return s
+    except Exception:
+        return s
+
+def _mapa_vencedor_singleshot(res_ind, nome_vencedor):
+    """Quando o vencedor é GraphHopper/Valhalla, reconstrói o mapa principal a partir da
+    geometria DELE (não do OSRM). Retorna {uri, viewer} ou None (mantém o mapa atual). Puro/defensivo.
+    Corrige o Bug 2 (mapa do OSRM exibido quando o vencedor é GraphHopper)."""
+    try:
+        if res_ind is None or not nome_vencedor:
+            return None
+        try:
+            if len(res_ind) < 43:
+                return None
+        except TypeError:
+            return None
+        if "_gerar_mapa_leaflet_rota" not in globals():
+            return None
+        def _g(i, d=None):
+            try: return res_ind[i]
+            except (IndexError, TypeError): return d
+        if nome_vencedor == "GraphHopper":
+            _raw, _parse, _cor = _g(41), globals().get("_parsear_dados_graphhopper"), "#7c3aed"
+        elif nome_vencedor == "Valhalla":
+            _raw, _parse, _cor = _g(42), globals().get("_parsear_dados_valhalla"), "#0891b2"
+        else:
+            return None  # OSRM/Google/Geodésico: mapa atual já é do vencedor
+        if not _raw or _parse is None:
+            return None
+        _d = _parse(_raw)
+        if not _d or not _d.get("geo_poly"):
+            return None  # sem geometria própria → não fabrica; UI mantém comportamento e avisa
+        try:
+            _lat_o, _lon_o = float(_g(19)), float(_g(20))
+            _lat_d, _lon_d = float(_g(21)), float(_g(22))
+        except (TypeError, ValueError):
+            return None
+        _km = _d.get("km")
+        _uri = _gerar_mapa_leaflet_rota(
+            _d["geo_poly"], _lat_o, _lon_o, _lat_d, _lon_d,
+            nome_origem=str(_g(10) or ""), nome_destino=str(_g(16) or ""),
+            distancia_km=(f"{float(_km):.1f}" if _km not in (None, "") else ""),
+            tempo_str=str(_d.get("tempo_min", "") or ""),
+            provedor=nome_vencedor, cor=_cor)
+        return {"uri": _uri, "viewer": _d.get("link_maps", "") or ""}
+    except Exception:
+        logger.error("[MAPA-VENCEDOR] Falha (isolada).", exc_info=True)
+        return None
+
+
+# ==============================================================================
+# [GEO-ANALISE-R 294a geracao] Analise Geografica Visual: dataset geografico (read-only,
+# reaproveita coords/geometria/distancia/candidatos ja calculados — NAO refaz roteamento)
+# + mapa Leaflet autocontido (origens azuis dimensionadas por candidatos, destinos
+# vermelhos, tracado REAL quando ha geometria, conector tracejado honesto quando nao ha).
+# §1-21. Puros/defensivos.
+# ==============================================================================
+# Núcleo da "Análise Geográfica Visual": monta o dataset geográfico READ-ONLY a partir das
+# colunas JÁ produzidas pela alocação (coords reais, geometria, distância, linha reta, tempo,
+# motor, candidatos, balsa, fonte da coordenada). NÃO refaz roteamento. §14/§15/§21.
+
+_GEO_ORIG = ["Origem", "Municipio Origem", "Município Origem", "Municipio de Origem", "Município de Origem"]
+_GEO_DEST = ["Destino", "Local de Aplicação", "Local de Aplicacao", "Destino Aplicacao", "Melhor Local de Aplicação", "Melhor Local"]
+_GEO_DIST = ["Distancia", "Distância (km)", "Distância Real (km)", "Distância"]
+_GEO_RETA = ["Distância Linha Reta", "Linha Reta (km)", "Linha Reta", "Distância em linha reta (km)", "Distância em linha reta"]
+_GEO_TEMPO = ["Tempo Total (s)", "Tempo", "Tempo (min)", "Tempo Estimado"]
+_GEO_CAND = ["Inscritos", "Candidatos", "QT_INSCRITOS", "Qtd Candidatos", "Quantidade de Inscritos"]
+_GEO_LATO = ["Lat Origem", "Latitude Origem", "Lat"]
+_GEO_LONO = ["Lon Origem", "Longitude Origem", "Lon"]
+_GEO_LATD = ["Lat Destino", "Latitude Destino"]
+_GEO_LOND = ["Lon Destino", "Longitude Destino"]
+_GEO_UF = ["UF", "UF Origem", "SG_UF"]
+_GEO_IBGE = ["Código IBGE", "Codigo IBGE", "Código IBGE da origem"]
+_GEO_BALSA = ["Balsas", "Balsa"]
+_GEO_FONTECO = ["Fonte da Coordenada Origem", "Fonte da Coordenada", "Fonte Coordenada"]
+
+def _geo_col(df, cands):
+    for c in cands:
+        if c in df.columns:
+            return c
+    return None
+
+def _geo_num(v):
+    try:
+        f = float(v)
+        return f if np.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None
+
+def _geo_analise_dataset(df, ratio_suspeito=3.0, dist_longa=200.0):
+    """Monta a lista de rotas geográficas + resumo, a partir dos dados já calculados. dict|None. Defensivo."""
+    try:
+        if df is None or len(df) == 0:
+            return None
+        c_dist = _geo_col(df, _GEO_DIST)
+        c_lato, c_lono = _geo_col(df, _GEO_LATO), _geo_col(df, _GEO_LONO)
+        c_latd, c_lond = _geo_col(df, _GEO_LATD), _geo_col(df, _GEO_LOND)
+        if c_lato is None or c_lono is None:
+            return {"tem_coords": False}  # sem coordenadas de origem não há mapa
+        c_orig, c_dest = _geo_col(df, _GEO_ORIG), _geo_col(df, _GEO_DEST)
+        c_reta, c_tempo = _geo_col(df, _GEO_RETA), _geo_col(df, _GEO_TEMPO)
+        c_cand, c_uf = _geo_col(df, _GEO_CAND), _geo_col(df, _GEO_UF)
+        c_ibge, c_balsa = _geo_col(df, _GEO_IBGE), _geo_col(df, _GEO_BALSA)
+        c_fonte, c_motor = _geo_col(df, _GEO_FONTECO), ("Fonte da Rota" if "Fonte da Rota" in df.columns else None)
+        c_geo = "Geometria" if "Geometria" in df.columns else None
+        c_conc = _geo_col(df, ["Polo do concorrente"])
+        c_distconc = _geo_col(df, ["Distancia Concorrente", "Distância dele (km)"])
+        rotas = []
+        for _, r in df.iterrows():
+            lat_o, lon_o = _geo_num(r.get(c_lato)), _geo_num(r.get(c_lono))
+            if lat_o is None or lon_o is None:
+                continue  # §14: sem coordenada real, não inventa posição
+            lat_d = _geo_num(r.get(c_latd)) if c_latd else None
+            lon_d = _geo_num(r.get(c_lond)) if c_lond else None
+            dist = _geo_num(r.get(c_dist)) if c_dist else None
+            reta = _geo_num(r.get(c_reta)) if c_reta else None
+            cand = _geo_num(r.get(c_cand)) if c_cand else None
+            motor = str(r.get(c_motor)) if c_motor and r.get(c_motor) is not None else "—"
+            balsa = (str(r.get(c_balsa)).strip().lower() in ("sim", "yes", "true", "1")) if c_balsa else False
+            geom = r.get(c_geo) if c_geo else None
+            tem_geom = isinstance(geom, str) and len(geom) > 0
+            # tipo de rota (§3/§21): honesto sobre o método
+            _mup = motor.lower()
+            if "linha reta" in _mup or "geod" in _mup or "estimat" in _mup:
+                tipo = "📏 Linha reta/estimada"
+            elif not (isinstance(dist, (int, float)) and dist > 0):
+                tipo = "❌ Sem rota"
+            elif tem_geom:
+                tipo = "🛣️ Viária (geometria real)"
+            else:
+                tipo = "🛣️ Viária (sem geometria)"
+            # alertas (§12)
+            alertas = []
+            _eh_viaria = tipo.startswith("🛣️")
+            if _eh_viaria and isinstance(dist, (int, float)) and dist > 0 and isinstance(reta, (int, float)) and reta > 0:
+                if dist < reta - 0.05:
+                    alertas.append("🔴 Viária menor que a linha reta (impossível)")
+                elif dist > reta * ratio_suspeito:
+                    alertas.append("🟠 Viária muito maior que a linha reta (sinuosidade extrema)")
+            if isinstance(dist, (int, float)) and dist > dist_longa:
+                alertas.append("🟠 Rota muito longa")
+            if balsa:
+                alertas.append("🛟 Rota com balsa")
+            if tipo.startswith("📏"):
+                alertas.append("⚠️ Distância estimada (linha reta), não viária")
+            if tipo.startswith("❌"):
+                alertas.append("❌ Sem rota viária calculada")
+            rotas.append({
+                "origem": str(r.get(c_orig)) if c_orig else "—",
+                "uf": str(r.get(c_uf)) if c_uf else "—",
+                "ibge": str(r.get(c_ibge)) if c_ibge else "—",
+                "destino": str(r.get(c_dest)) if c_dest else "—",
+                "lat_o": lat_o, "lon_o": lon_o, "lat_d": lat_d, "lon_d": lon_d,
+                "dist_km": dist, "linha_reta_km": reta, "candidatos": cand,
+                "motor": motor, "balsa": balsa, "tem_geometria": tem_geom,
+                "fonte_coord": (str(r.get(c_fonte)) if c_fonte and r.get(c_fonte) is not None else "—"),
+                "tipo_rota": tipo, "alertas": alertas,
+                "concorrente": (str(r.get(c_conc)) if c_conc and r.get(c_conc) is not None else None),
+                "dist_concorrente": (_geo_num(r.get(c_distconc)) if c_distconc else None),
+                "geom_raw": (geom if tem_geom else None),
+            })
+        if not rotas:
+            return {"tem_coords": True, "n": 0}
+        _dist_vals = [x["dist_km"] for x in rotas if isinstance(x["dist_km"], (int, float)) and x["dist_km"] > 0]
+        _cand_vals = [x["candidatos"] for x in rotas if isinstance(x["candidatos"], (int, float)) and x["candidatos"] > 0]
+        resumo = {
+            "tem_coords": True, "n": len(rotas),
+            "n_origens": len({x["origem"] for x in rotas}),
+            "n_destinos": len({x["destino"] for x in rotas if x["destino"] != "—"}),
+            "n_com_alerta": sum(1 for x in rotas if x["alertas"]),
+            "n_com_geometria": sum(1 for x in rotas if x["tem_geometria"]),
+            "n_balsa": sum(1 for x in rotas if x["balsa"]),
+            "n_estimada": sum(1 for x in rotas if x["tipo_rota"].startswith("📏")),
+            "n_sem_rota": sum(1 for x in rotas if x["tipo_rota"].startswith("❌")),
+            "dist_media": (round(float(np.mean(_dist_vals)), 1) if _dist_vals else None),
+            "dist_max": (round(max(_dist_vals), 1) if _dist_vals else None),
+            "total_candidatos": (int(sum(_cand_vals)) if _cand_vals else None),
+            "tem_candidatos": bool(_cand_vals),
+        }
+        return {"resumo": resumo, "rotas": rotas}
+    except Exception:
+        logger.error("[GEO-ANALISE] Falha (isolada).", exc_info=True)
+        return None
+
+
+# Mapa Leaflet autocontido da Análise Geográfica (overview). Origens azuis (raio ~ candidatos),
+# destinos vermelhos, traçado REAL quando há geometria (teal), conector tracejado honesto quando
+# não há (âmbar=estimada, coral=sem rota). Paleta acessível a daltônicos. Retorna HTML puro.
+
+# paleta acessível (ColorBrewer, segura para daltonismo)
+_GEO_AZUL, _GEO_VERM = "#1f78b4", "#e31a1c"
+_GEO_VIARIA, _GEO_ESTIM, _GEO_SEMROTA = "#1F8A70", "#E8A33D", "#C6553F"
+
+def _geo_mapa_leaflet(rotas, altura=520, max_features=400, decode_fn=None):
+    """HTML Leaflet autocontido a partir de rotas (lista de dicts). Cada rota pode ter geom_coords
+    ([[lat,lon],...]) decodificada. Puro/defensivo. Retorna HTML (para components.html)."""
+    try:
+        import json
+        if not rotas:
+            return ""
+        _rt = rotas[:max_features]
+        origens, destinos, linhas, pts = [], [], [], []
+        for x in _rt:
+            lo, ln = x.get("lat_o"), x.get("lon_o")
+            if not (isinstance(lo, (int, float)) and isinstance(ln, (int, float))):
+                continue
+            cand = x.get("candidatos")
+            _c = cand if isinstance(cand, (int, float)) and cand > 0 else 1
+            origens.append({"lat": lo, "lng": ln, "nome": x.get("origem", "—"), "uf": x.get("uf", "—"),
+                            "cand": (int(cand) if isinstance(cand, (int, float)) else None),
+                            "dest": x.get("destino", "—"),
+                            "dist": x.get("dist_km"), "tipo": x.get("tipo_rota", "—"),
+                            "motor": x.get("motor", "—"), "fonte": x.get("fonte_coord", "—"),
+                            "alertas": x.get("alertas", []), "r": max(4, min(22, 4 + (_c ** 0.5)))})
+            pts.append([lo, ln])
+            ld, nd = x.get("lat_d"), x.get("lon_d")
+            if isinstance(ld, (int, float)) and isinstance(nd, (int, float)):
+                destinos.append({"lat": ld, "lng": nd, "nome": x.get("destino", "—")})
+                pts.append([ld, nd])
+                tipo = x.get("tipo_rota", "")
+                coords = x.get("geom_coords")
+                if not coords and decode_fn is not None and x.get("geom_raw"):
+                    try:
+                        _dec = decode_fn(x.get("geom_raw"))
+                        coords = [[float(_p[0]), float(_p[1])] for _p in _dec] if _dec and len(_dec) >= 2 else None
+                    except Exception:
+                        coords = None
+                if coords and len(coords) >= 2:
+                    linhas.append({"pts": coords, "cor": _GEO_VIARIA, "dash": None})
+                    pts.extend(coords[:: max(1, len(coords) // 20)])
+                else:
+                    cor = _GEO_ESTIM if tipo.startswith("📏") else (_GEO_SEMROTA if tipo.startswith("❌") else _GEO_VIARIA)
+                    dash = "6,6" if not tipo.startswith("🛣️") else None
+                    linhas.append({"pts": [[lo, ln], [ld, nd]], "cor": cor, "dash": dash})
+        if not pts:
+            return ""
+        payload = json.dumps({"origens": origens, "destinos": destinos, "linhas": linhas},
+                             ensure_ascii=False).replace("</", "<\\/")
+        html = """<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>html,body,#m{margin:0;height:__H__px;width:100%;font-family:Inter,system-ui,sans-serif}
+.leaflet-popup-content{font-size:12px;line-height:1.4}.lg{position:absolute;z-index:999;right:8px;top:8px;background:#fff;
+padding:8px 10px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.2);font-size:11px}
+.lg b{font-size:12px}.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}</style>
+</head><body><div id="m"></div>
+<div class="lg"><b>Legenda</b><br>
+<span class="sw" style="background:__AZUL__"></span>Origem (tamanho = candidatos)<br>
+<span class="sw" style="background:__VERM__"></span>Destino (local de prova)<br>
+<span class="sw" style="background:__VIARIA__"></span>Rota viária (traçado real)<br>
+<span class="sw" style="background:__ESTIM__"></span>Estimada/linha reta<br>
+<span class="sw" style="background:__SEMROTA__"></span>Sem rota</div>
+<script>
+var D=__PAYLOAD__;
+var map=L.map('m',{scrollWheelZoom:false});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+var b=[];
+D.linhas.forEach(function(l){var o={color:l.cor,weight:l.pts.length>2?4:2,opacity:.75};if(l.dash)o.dashArray=l.dash;
+L.polyline(l.pts,o).addTo(map);});
+D.destinos.forEach(function(d){L.circleMarker([d.lat,d.lng],{radius:7,color:'#fff',weight:1.5,fillColor:'__VERM__',fillOpacity:1})
+.bindPopup('<b>🔴 Destino</b><br>'+d.nome).addTo(map);b.push([d.lat,d.lng]);});
+D.origens.forEach(function(o){var al=(o.alertas&&o.alertas.length)?('<br><b>⚠️ '+o.alertas.join('<br>⚠️ ')+'</b>'):'';
+var cd=(o.cand!=null)?(o.cand+' candidato(s)'):'candidatos: n/d';
+var ds=(o.dist!=null)?(o.dist+' km'):'distância: n/d';
+L.circleMarker([o.lat,o.lng],{radius:o.r,color:'#fff',weight:1,fillColor:'__AZUL__',fillOpacity:.85})
+.bindPopup('<b>🔵 '+o.nome+'/'+o.uf+'</b><br>'+cd+'<br>→ '+o.dest+'<br>'+ds+'<br>'+o.tipo+'<br><i>Motor: '+o.motor+'</i><br><i>Coord: '+o.fonte+'</i>'+al)
+.addTo(map);b.push([o.lat,o.lng]);});
+if(b.length)map.fitBounds(b,{padding:[30,30]});else map.setView([-15.8,-47.9],4);
+</script></body></html>"""
+        return (html.replace("__H__", str(int(altura)))
+                    .replace("__PAYLOAD__", payload)
+                    .replace("__AZUL__", _GEO_AZUL).replace("__VERM__", _GEO_VERM)
+                    .replace("__VIARIA__", _GEO_VIARIA).replace("__ESTIM__", _GEO_ESTIM)
+                    .replace("__SEMROTA__", _GEO_SEMROTA))
+    except Exception:
+        logger.error("[GEO-MAPA] Falha (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [GEO-EXTRA-R 295a geracao] Filtros, agregacao para graficos e detalhe de rota da
+# Analise Geografica (§4/§5/§9/§11). READ-ONLY, puros/defensivos.
+# ==============================================================================
+# Filtros, agregação para gráficos e rótulo de rota da Análise Geográfica. READ-ONLY. Puros/defensivos.
+
+_GEO_FAIXAS = [(0, 10), (10, 25), (25, 50), (50, 100), (100, 200), (200, float("inf"))]
+_GEO_FAIXA_LBL = ["0–10 km", "10–25 km", "25–50 km", "50–100 km", "100–200 km", "> 200 km"]
+
+def _geo_faixa_idx(d):
+    for i, (a, b) in enumerate(_GEO_FAIXAS):
+        if a <= d < b:
+            return i
+    return len(_GEO_FAIXAS) - 1
+
+def _geo_filtrar(rotas, uf=None, origem=None, destino=None, dist_min=None, dist_max=None,
+                 so_balsa=False, so_alerta=False, so_estimada=False, so_sem_rota=False):
+    """Filtra a lista de rotas. Puro. Valores None/False = sem filtro."""
+    try:
+        out = []
+        for r in rotas or []:
+            if uf and uf != "(todas)" and str(r.get("uf")) != uf:
+                continue
+            if origem and origem != "(todas)" and str(r.get("origem")) != origem:
+                continue
+            if destino and destino != "(todos)" and str(r.get("destino")) != destino:
+                continue
+            d = r.get("dist_km")
+            if dist_min is not None and (not isinstance(d, (int, float)) or d < dist_min):
+                continue
+            if dist_max is not None and (not isinstance(d, (int, float)) or d > dist_max):
+                continue
+            if so_balsa and not r.get("balsa"):
+                continue
+            if so_alerta and not r.get("alertas"):
+                continue
+            if so_estimada and not str(r.get("tipo_rota", "")).startswith("📏"):
+                continue
+            if so_sem_rota and not str(r.get("tipo_rota", "")).startswith("❌"):
+                continue
+            out.append(r)
+        return out
+    except Exception:
+        logger.error("[GEO-FILTRO] Falha (isolada).", exc_info=True)
+        return list(rotas or [])
+
+def _geo_charts_data(rotas):
+    """Agrega dados para os gráficos (§9). dict|None. Puro/defensivo."""
+    try:
+        if not rotas:
+            return None
+        n_faixa = [0] * len(_GEO_FAIXAS)
+        cand_faixa = [0.0] * len(_GEO_FAIXAS)
+        dest_cand, uf_cand, uf_dist, motor_cont = {}, {}, {}, {}
+        n_fallback = 0
+        for r in rotas:
+            d = r.get("dist_km")
+            c = r.get("candidatos")
+            _c = float(c) if isinstance(c, (int, float)) and c > 0 else 0.0
+            if isinstance(d, (int, float)) and d >= 0:
+                fi = _geo_faixa_idx(d)
+                n_faixa[fi] += 1
+                cand_faixa[fi] += _c
+            dest = str(r.get("destino", "—"))
+            if dest and dest != "—":
+                dest_cand[dest] = dest_cand.get(dest, 0.0) + _c
+            uf = str(r.get("uf", "—"))
+            uf_cand[uf] = uf_cand.get(uf, 0.0) + _c
+            if isinstance(d, (int, float)) and d > 0:
+                uf_dist.setdefault(uf, []).append(d)
+            motor = str(r.get("motor", "—"))
+            motor_cont[motor] = motor_cont.get(motor, 0) + 1
+            if "fallback" in motor.lower() or "fossgis" in motor.lower() or str(r.get("tipo_rota", "")).startswith("📏"):
+                n_fallback += 1
+        top_destinos = sorted(dest_cand.items(), key=lambda kv: kv[1], reverse=True)[:15]
+        por_uf = sorted(
+            [{"uf": u, "candidatos": int(uf_cand.get(u, 0)),
+              "dist_media": round(sum(uf_dist[u]) / len(uf_dist[u]), 1) if uf_dist.get(u) else None}
+             for u in uf_cand], key=lambda x: x["candidatos"], reverse=True)
+        return {
+            "faixas_lbl": _GEO_FAIXA_LBL,
+            "faixas_rotas": n_faixa,
+            "faixas_candidatos": [int(x) for x in cand_faixa],
+            "top_destinos": [{"destino": k, "candidatos": int(v)} for k, v in top_destinos],
+            "por_uf": por_uf,
+            "por_motor": sorted([{"motor": k, "rotas": v} for k, v in motor_cont.items()],
+                                key=lambda x: x["rotas"], reverse=True),
+            "n_fallback": n_fallback, "total": len(rotas),
+            "pct_fallback": round(100.0 * n_fallback / len(rotas), 1) if rotas else 0.0,
+        }
+    except Exception:
+        logger.error("[GEO-CHARTS] Falha (isolada).", exc_info=True)
+        return None
+
+def _geo_rota_label(r, i):
+    """Rótulo curto p/ o selectbox de seleção de rota."""
+    d = r.get("dist_km")
+    ds = f"{d:.1f} km" if isinstance(d, (int, float)) else "s/ dist"
+    c = r.get("candidatos")
+    cs = f", {int(c)} cand" if isinstance(c, (int, float)) and c > 0 else ""
+    return f"{i+1}. {r.get('origem','—')}/{r.get('uf','—')} → {r.get('destino','—')} ({ds}{cs})"
+
+def _geo_rota_detalhe(r):
+    """Detalhe de uma rota selecionada (§11). dict. Puro."""
+    d = r.get("dist_km"); c = r.get("candidatos"); reta = r.get("linha_reta_km")
+    kmc = (round(float(d) * float(c), 1) if isinstance(d, (int, float)) and isinstance(c, (int, float)) and c > 0 else None)
+    razao = (round(float(d) / float(reta), 2) if isinstance(d, (int, float)) and isinstance(reta, (int, float)) and reta > 0 else None)
+    _conc = r.get("concorrente"); _dconc = r.get("dist_concorrente")
+    _dif2 = (round(float(_dconc) - float(d), 1) if isinstance(d, (int, float)) and isinstance(_dconc, (int, float)) else None)
+    _seg_melhor = (bool(_dconc < d) if isinstance(d, (int, float)) and isinstance(_dconc, (int, float)) and d > 0 else False)
+    return {
+        "concorrente": _conc, "dist_concorrente": _dconc, "dif_para_2o": _dif2, "segundo_seria_melhor": _seg_melhor,
+        "origem": r.get("origem", "—"), "uf": r.get("uf", "—"), "ibge": r.get("ibge", "—"),
+        "destino": r.get("destino", "—"), "dist_km": d, "linha_reta_km": reta, "razao_vr": razao,
+        "candidatos": (int(c) if isinstance(c, (int, float)) else None), "km_candidato": kmc,
+        "motor": r.get("motor", "—"), "tipo_rota": r.get("tipo_rota", "—"),
+        "fonte_coord": r.get("fonte_coord", "—"), "balsa": r.get("balsa", False),
+        "alertas": r.get("alertas", []),
+    }
+
+
+# ==============================================================================
+# [GEO-REDE-R 296a geracao] Rede de atendimento com clustering em grade (§10/§15) —
+# agregacao no Python (sem plugin/CDN novo) + mapa da rede. READ-ONLY, puros/defensivos.
+# ==============================================================================
+# Rede de atendimento com clustering em grade (§10/§15) + captura do 2º colocado (§11).
+# Agregação no Python (sem plugin/CDN novo). READ-ONLY. Puros/defensivos.
+
+def _geo_clusters(rotas, precision=1):
+    """Agrega origens em células de grade (arredonda coords). Cada célula: nº de rotas/origens,
+    candidatos, destinos e o destino DOMINANTE (mais candidatos). Lista ordenada. Puro/defensivo."""
+    try:
+        cells = {}
+        for r in rotas or []:
+            lo, ln = r.get("lat_o"), r.get("lon_o")
+            if not (isinstance(lo, (int, float)) and isinstance(ln, (int, float))):
+                continue
+            c = r.get("candidatos")
+            _c = float(c) if isinstance(c, (int, float)) and c > 0 else 0.0
+            key = (round(lo, precision), round(ln, precision))
+            cell = cells.setdefault(key, {"lat_sum": 0.0, "lon_sum": 0.0, "n": 0, "cand": 0.0,
+                                          "dests": {}, "alertas": 0, "origens": set()})
+            cell["lat_sum"] += lo; cell["lon_sum"] += ln; cell["n"] += 1; cell["cand"] += _c
+            cell["origens"].add(str(r.get("origem", "—")))
+            if r.get("alertas"):
+                cell["alertas"] += 1
+            dest = str(r.get("destino", "—"))
+            ld, nd = r.get("lat_d"), r.get("lon_d")
+            if dest and dest != "—":
+                d = cell["dests"].setdefault(dest, {"cand": 0.0, "lat": ld, "lon": nd})
+                d["cand"] += _c
+        out = []
+        for c in cells.values():
+            dests = sorted(c["dests"].items(), key=lambda kv: kv[1]["cand"], reverse=True)
+            dom = dests[0] if dests else None
+            out.append({
+                "lat": c["lat_sum"] / c["n"], "lon": c["lon_sum"] / c["n"],
+                "n_rotas": c["n"], "n_origens": len(c["origens"]), "n_candidatos": int(c["cand"]),
+                "n_destinos": len(c["dests"]), "n_alertas": c["alertas"],
+                "dom_destino": (dom[0] if dom else None),
+                "dom_lat": (dom[1]["lat"] if dom and isinstance(dom[1]["lat"], (int, float)) else None),
+                "dom_lon": (dom[1]["lon"] if dom and isinstance(dom[1]["lon"], (int, float)) else None),
+                "destinos_top": [d[0] for d in dests[:5]],
+            })
+        return sorted(out, key=lambda x: x["n_candidatos"], reverse=True)
+    except Exception:
+        logger.error("[GEO-CLUSTER] Falha (isolada).", exc_info=True)
+        return []
+
+def _geo_mapa_rede(clusters, altura=540, max_cells=600):
+    """Mapa Leaflet da rede de atendimento: células agregadas (azul, tamanho ~ candidatos) ligadas
+    ao destino dominante (linha teal). Autocontido, sem plugin. Puro/defensivo. Retorna HTML."""
+    try:
+        import json
+        if not clusters:
+            return ""
+        _cl = clusters[:max_cells]
+        cel, dst, lin, pts = [], {}, [], []
+        for c in _cl:
+            la, lo = c.get("lat"), c.get("lon")
+            if not (isinstance(la, (int, float)) and isinstance(lo, (int, float))):
+                continue
+            nc = c.get("n_candidatos") or 0
+            cel.append({"lat": la, "lng": lo, "no": c.get("n_origens", 0), "nc": nc,
+                        "nd": c.get("n_destinos", 0), "na": c.get("n_alertas", 0),
+                        "dt": c.get("destinos_top", []),
+                        "r": max(6, min(34, 6 + (nc ** 0.5)))})
+            pts.append([la, lo])
+            dla, dlo = c.get("dom_lat"), c.get("dom_lon")
+            if isinstance(dla, (int, float)) and isinstance(dlo, (int, float)):
+                k = (round(dla, 5), round(dlo, 5))
+                dst[k] = {"lat": dla, "lng": dlo, "nome": c.get("dom_destino", "—")}
+                lin.append({"a": [la, lo], "b": [dla, dlo], "w": max(1, min(8, (nc ** 0.5) / 3))})
+                pts.append([dla, dlo])
+        if not pts:
+            return ""
+        payload = json.dumps({"cel": cel, "dst": list(dst.values()), "lin": lin},
+                             ensure_ascii=False).replace("</", "<\\/")
+        html = """<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>html,body,#m{margin:0;height:__H__px;width:100%;font-family:Inter,system-ui,sans-serif}
+.leaflet-popup-content{font-size:12px;line-height:1.4}.lg{position:absolute;z-index:999;right:8px;top:8px;background:#fff;
+padding:8px 10px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.2);font-size:11px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}</style>
+</head><body><div id="m"></div>
+<div class="lg"><b>Rede de atendimento</b><br>
+<span class="sw" style="background:#1f78b4"></span>Cluster de origens (tamanho = candidatos)<br>
+<span class="sw" style="background:#e31a1c"></span>Destino (local de prova)<br>
+<span class="sw" style="background:#1F8A70"></span>Fluxo cluster → destino dominante</div>
+<script>
+var D=__PAYLOAD__;
+var map=L.map('m',{scrollWheelZoom:false});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+var b=[];
+D.lin.forEach(function(l){L.polyline([l.a,l.b],{color:'#1F8A70',weight:l.w,opacity:.5}).addTo(map);});
+D.dst.forEach(function(d){L.circleMarker([d.lat,d.lng],{radius:7,color:'#fff',weight:1.5,fillColor:'#e31a1c',fillOpacity:1})
+.bindPopup('<b>🔴 Destino</b><br>'+d.nome).addTo(map);b.push([d.lat,d.lng]);});
+D.cel.forEach(function(c){var al=(c.na>0)?('<br><b>⚠️ '+c.na+' rota(s) com alerta</b>'):'';
+L.circleMarker([c.lat,c.lng],{radius:c.r,color:'#fff',weight:1,fillColor:'#1f78b4',fillOpacity:.8})
+.bindPopup('<b>🔵 Cluster de origens</b><br>'+c.no+' município(s) de origem<br><b>'+c.nc+' candidato(s)</b><br>'
++c.nd+' destino(s)<br><i>Principais: '+(c.dt.join(', ')||'—')+'</i>'+al).addTo(map);b.push([c.lat,c.lng]);});
+if(b.length)map.fitBounds(b,{padding:[30,30]});else map.setView([-15.8,-47.9],4);
+</script></body></html>"""
+        return html.replace("__H__", str(int(altura))).replace("__PAYLOAD__", payload)
+    except Exception:
+        logger.error("[GEO-REDE] Falha (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [GEO-KPIS-R 297a geracao] KPIs enriquecidos da aba geografica (§8/§10): media
+# ponderada por candidato (km-candidato), percentis P50/P90/P95 e contagens de
+# qualidade (estimada/sem-rota/geometria). READ-ONLY sobre a lista de rotas. Puro.
+# ==============================================================================
+# KPIs enriquecidos da aba geográfica (§8/§10): média ponderada por candidato + percentis + qualidade.
+# READ-ONLY sobre a lista de rotas já montada. Puro/defensivo.
+
+def _geo_pct(sorted_vals, q):
+    if not sorted_vals:
+        return None
+    k = (len(sorted_vals) - 1) * q
+    f = int(k); c = min(f + 1, len(sorted_vals) - 1)
+    return round(sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f), 1)
+
+def _geo_kpis_extra(rotas):
+    """Média ponderada por candidato, P50/P90/P95 e contagens de qualidade. dict|None. Puro."""
+    try:
+        if not rotas:
+            return None
+        dv = [r["dist_km"] for r in rotas if isinstance(r.get("dist_km"), (int, float)) and r["dist_km"] > 0]
+        pares = [(float(r["dist_km"]), float(r["candidatos"])) for r in rotas
+                 if isinstance(r.get("dist_km"), (int, float)) and r["dist_km"] > 0
+                 and isinstance(r.get("candidatos"), (int, float)) and r["candidatos"] > 0]
+        out = {"media_simples": (round(sum(dv) / len(dv), 1) if dv else None), "media_ponderada": None}
+        if pares:
+            tot_c = sum(c for _, c in pares)
+            out["media_ponderada"] = (round(sum(d * c for d, c in pares) / tot_c, 1) if tot_c else None)
+            out["total_candidatos"] = int(tot_c)
+        if dv:
+            sv = sorted(dv)
+            out["p50"], out["p90"], out["p95"] = _geo_pct(sv, .5), _geo_pct(sv, .9), _geo_pct(sv, .95)
+        out["n_estimada"] = sum(1 for r in rotas if str(r.get("tipo_rota", "")).startswith("📏"))
+        out["n_sem_rota"] = sum(1 for r in rotas if str(r.get("tipo_rota", "")).startswith("❌"))
+        out["n_com_geometria"] = sum(1 for r in rotas if r.get("tem_geometria"))
+        out["n_total"] = len(rotas)
+        return out
+    except Exception:
+        logger.error("[GEO-KPIS] Falha (isolada).", exc_info=True)
         return None
 
 
@@ -35804,6 +36627,7 @@ _SECOES = [
     "🔍 Auditoria da Aplicação",
     "⭐ Pesquisa de Satisfação",
     "👨\u200d💻 Sobre o Desenvolvedor",   # [DEV-ABOUT - Rodada 1] seção institucional (índice 13)
+    "🗺️ Análise Geográfica",   # [GEO-TAB - 295a geração] central de análise geográfica (índice 14)
 ]
 # [UI-LAZY - 142ª geração] TRAVA DURANTE O PROCESSAMENTO. Efeito colateral REAL da renderização
 # preguiçosa: com st.tabs, o corpo de todas as abas executava sempre, então o processamento em chunks
@@ -35815,7 +36639,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "290"
+_VERSAO_APP = "297"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -36451,7 +37275,7 @@ _PROC_ATIVO = bool(st.session_state.get('lote_em_andamento') or st.session_state
 _GRUPOS_NAV = {
     "🔍 Consultar": [0, 1],        # Deslocamento · Estudo em Lote
     "🎯 Decidir":   [2, 3, 7],     # Locais de Aplicação · Comparador · Polos Alternativos
-    "📊 Analisar":  [4, 5, 6],     # Painel · Calculadora · Classificação
+    "📊 Analisar":  [4, 5, 6, 14],  # Painel · Calculadora · Classificação · Análise Geográfica
     "📚 Aprender":  [8, 9, 13],    # Enciclopédia · Manual · Sobre o Desenvolvedor
     "⚙️ Sistema":   [10, 11, 12],  # Monitor APIs · Auditoria · Satisfação
 }
@@ -36836,6 +37660,209 @@ def _ckpt_info_retomavel(slot, chave_total, chave_idx):
     except Exception:
         return None
 
+
+# ===================== [GEO-TAB 295a] Análise Geográfica Visual (aba dedicada) =====================
+if _secao == _SECOES[14]:   # tab_geografica
+    st.header("🗺️ Análise Geográfica Visual")
+    st.caption("Central de análise geográfica e logística dos candidatos: **origem → deslocamento → destino**, "
+               "reaproveitando as coordenadas, geometrias e distâncias já calculadas (não refaz roteamento).")
+    try:
+        _geo_ds = None
+        for _gk in ("df_processado", "alo_resultados", "lote_resultados", "cmp_resultado"):
+            _gcand = st.session_state.get(_gk)
+            if isinstance(_gcand, pd.DataFrame):
+                _gtry = _geo_analise_dataset(_gcand)
+                if _gtry and _gtry.get("rotas"):
+                    _geo_ds = _gtry
+                    break
+        if not (_geo_ds and _geo_ds.get("rotas")):
+            st.info("ℹ️ Processe uma alocação (ou lote) com coordenadas de origem para habilitar a análise geográfica. "
+                    "Esta aba reaproveita os resultados já calculados — ela aparece assim que houver rotas com coordenadas.")
+        else:
+            _rotas_all = _geo_ds["rotas"]
+            with st.expander("❓ Como usar esta aba", expanded=False):
+                st.markdown(
+                    "1. **Mapa:** 🔵 origem (tamanho = candidatos) · 🔴 destino (local de prova).\n"
+                    "2. **Traçado:** linha **cheia** = rota viária real; **tracejada âmbar** = estimada/linha reta; "
+                    "**tracejada coral** = sem rota. Nunca desenhamos uma reta fingindo ser rota viária.\n"
+                    "3. **Filtros:** restrinja por UF, origem, destino, distância, balsa, alerta ou tipo de rota.\n"
+                    "4. **Selecionar rota:** escolha uma rota para ver o detalhe (distância, tempo, km-candidato, alertas) e o traçado isolado.\n"
+                    "5. **Cores:** paleta acessível a daltônicos. Clique num ponto do mapa para os detalhes.\n"
+                    "6. **Exportar:** baixe a tabela completa em CSV.\n"
+                    "7. **Alertas:** casos com distância impossível, rota muito longa, balsa, estimativa ou sem rota aparecem em 🚨 Alertas.")
+            st.markdown("#### 🔎 Filtros")
+            _ufs = ["(todas)"] + sorted({str(r.get("uf")) for r in _rotas_all if r.get("uf") not in (None, "—")})
+            _origs = ["(todas)"] + sorted({str(r.get("origem")) for r in _rotas_all if r.get("origem") not in (None, "—")})
+            _dests = ["(todos)"] + sorted({str(r.get("destino")) for r in _rotas_all if r.get("destino") not in (None, "—")})
+            _fc = st.columns(3)
+            _f_uf = _fc[0].selectbox("UF", _ufs, key="geo_f_uf")
+            _f_orig = _fc[1].selectbox("Origem", _origs, key="geo_f_orig")
+            _f_dest = _fc[2].selectbox("Destino", _dests, key="geo_f_dest")
+            _dists = [r.get("dist_km") for r in _rotas_all if isinstance(r.get("dist_km"), (int, float)) and r.get("dist_km") > 0]
+            _dmax = float(max(_dists)) if _dists else 100.0
+            _fr = st.slider("Faixa de distância (km)", 0.0, round(_dmax, 1), (0.0, round(_dmax, 1)), key="geo_f_dist")
+            _fk = st.columns(4)
+            _f_balsa = _fk[0].checkbox("Só com balsa", key="geo_f_balsa")
+            _f_alerta = _fk[1].checkbox("Só com alerta", key="geo_f_alerta")
+            _f_estim = _fk[2].checkbox("Só estimadas", key="geo_f_estim")
+            _f_semrota = _fk[3].checkbox("Só sem rota", key="geo_f_semrota")
+            _rotas = _geo_filtrar(_rotas_all, uf=_f_uf, origem=_f_orig, destino=_f_dest,
+                                  dist_min=_fr[0], dist_max=_fr[1], so_balsa=_f_balsa,
+                                  so_alerta=_f_alerta, so_estimada=_f_estim, so_sem_rota=_f_semrota)
+            st.caption(f"Mostrando **{len(_rotas)}** de {len(_rotas_all)} rotas após os filtros.")
+            if not _rotas:
+                st.warning("Nenhuma rota atende aos filtros selecionados.")
+            else:
+                # KPIs do conjunto filtrado
+                _dvals = [x["dist_km"] for x in _rotas if isinstance(x["dist_km"], (int, float)) and x["dist_km"] > 0]
+                _cvals = [x["candidatos"] for x in _rotas if isinstance(x["candidatos"], (int, float)) and x["candidatos"] > 0]
+                st.markdown("#### 📊 Resumo")
+                _k = st.columns(4)
+                _k[0].metric("Origens", len({x["origem"] for x in _rotas}))
+                _k[1].metric("Destinos", len({x["destino"] for x in _rotas if x["destino"] != "—"}))
+                _k[2].metric("Rotas", len(_rotas))
+                _k[3].metric("Candidatos", (f"{int(sum(_cvals)):,}".replace(",", ".") if _cvals else "n/d"))
+                _k2 = st.columns(4)
+                _k2[0].metric("Distância média", (f"{(sum(_dvals)/len(_dvals)):.1f} km" if _dvals else "n/d"))
+                _k2[1].metric("Maior distância", (f"{max(_dvals):.1f} km" if _dvals else "n/d"))
+                _k2[2].metric("Com balsa", sum(1 for x in _rotas if x.get("balsa")))
+                _k2[3].metric("Com alerta", sum(1 for x in _rotas if x.get("alertas")))
+                _kx = _geo_kpis_extra(_rotas)
+                if _kx:
+                    _k3 = st.columns(4)
+                    _k3[0].metric("Deslocamento médio por candidato",
+                                  (f"{_kx['media_ponderada']:.1f} km" if _kx.get("media_ponderada") is not None else "n/d"),
+                                  help="Ponderado pelo nº de candidatos — o que o candidato típico percorre (§8).")
+                    _k3[1].metric("P90 da distância", (f"{_kx['p90']:.1f} km" if _kx.get("p90") is not None else "n/d"),
+                                  help="90% das rotas ficam até este valor; os 10% acima são a cauda (§10).")
+                    _k3[2].metric("P95 da distância", (f"{_kx['p95']:.1f} km" if _kx.get("p95") is not None else "n/d"))
+                    _k3[3].metric("Estimadas / sem rota", f"{_kx.get('n_estimada',0)} / {_kx.get('n_sem_rota',0)}",
+                                  help="Rotas que NÃO usam viária confirmada — quanto menor, melhor a qualidade do estudo (§21).")
+                    if _kx.get("media_ponderada") is not None and _kx.get("media_simples") is not None:
+                        if _kx["media_ponderada"] < _kx["media_simples"] * 0.95:
+                            st.caption("💡 O candidato **típico** percorre **menos** que a média por município sugere — "
+                                       "os deslocamentos longos concentram **poucos** candidatos. A situação real é melhor que a média simples.")
+                        elif _kx["media_ponderada"] > _kx["media_simples"] * 1.05:
+                            st.caption("💡 O candidato **típico** percorre **mais** que a média por município sugere — "
+                                       "a carga se concentra em origens **distantes e populosas**. Priorize-as na decisão.")
+                st.markdown("#### 🗺️ Mapa")
+                _radio_map = st.radio("Exibição do mapa", ["Todas as rotas filtradas", "Somente a rota selecionada", "Rede de atendimento (agregada)"],
+                                      horizontal=True, key="geo_map_mode")
+                _sel_idx = None
+                _labels = [_geo_rota_label(r, i) for i, r in enumerate(_rotas)]
+                _sel_label = st.selectbox("🔍 Selecionar rota para análise detalhada", ["(nenhuma)"] + _labels, key="geo_sel_rota")
+                if _sel_label != "(nenhuma)":
+                    _sel_idx = _labels.index(_sel_label)
+                if _radio_map.startswith("Rede"):
+                    _clusters = _geo_clusters(_rotas, precision=(1 if len(_rotas) > 400 else 2))
+                    _gmapa = _geo_mapa_rede(_clusters, altura=540)
+                    _map_cap = ("🔵 cluster de origens (tamanho = candidatos) · 🔴 destino · linha teal = fluxo cluster → destino "
+                                "dominante. Origens agregadas por proximidade — mantém o mapa legível e rápido em grandes volumes.")
+                else:
+                    _rotas_map = ([_rotas[_sel_idx]] if (_radio_map.startswith("Somente") and _sel_idx is not None) else _rotas)
+                    _gmapa = _geo_mapa_leaflet(_rotas_map, altura=540, max_features=400,
+                                               decode_fn=globals().get("_decodificar_polyline"))
+                    _map_cap = ("🔵 origem (tamanho = candidatos) · 🔴 destino · linha cheia = rota viária real · "
+                                "tracejada âmbar = estimada · tracejada coral = sem rota. Até 400 rotas por vez.")
+                if _gmapa:
+                    components.html(_gmapa, height=560, scrolling=False)
+                    st.caption(_map_cap)
+                    try:
+                        st.download_button("⬇️ Baixar mapa (HTML interativo)", data=_gmapa,
+                                           file_name="mapa_geografico.html", mime="text/html", key="geo_dl_mapa",
+                                           help="Mapa autocontido — abre offline em qualquer navegador (§16).")
+                    except Exception:
+                        logger.error("[GEO-TAB] Falha no download do mapa (isolada).", exc_info=True)
+                else:
+                    st.info("Sem coordenadas suficientes para desenhar o mapa deste conjunto.")
+                if _sel_idx is not None:
+                    st.markdown("#### 🔍 Rota selecionada")
+                    _det = _geo_rota_detalhe(_rotas[_sel_idx])
+                    _dc = st.columns(3)
+                    _dc[0].metric("Distância viária", (f"{_det['dist_km']:.1f} km" if isinstance(_det["dist_km"], (int, float)) else "—"))
+                    _dc[1].metric("Linha reta", (f"{_det['linha_reta_km']:.1f} km" if isinstance(_det["linha_reta_km"], (int, float)) else "—"))
+                    _dc[2].metric("Razão viária/reta", (f"{_det['razao_vr']:.2f}×" if _det.get("razao_vr") else "—"))
+                    _dc2 = st.columns(3)
+                    _dc2[0].metric("Candidatos", (_det["candidatos"] if _det["candidatos"] is not None else "n/d"))
+                    _dc2[1].metric("km-candidato", (f"{_det['km_candidato']:,.0f}".replace(",", ".") if _det.get("km_candidato") else "n/d"))
+                    _dc2[2].metric("Motor", _det["motor"])
+                    st.caption(f"**{_det['origem']}/{_det['uf']}** (IBGE {_det['ibge']}) → **{_det['destino']}** · "
+                               f"{_det['tipo_rota']} · coordenada: {_det['fonte_coord']}"
+                               + (" · 🛟 balsa" if _det.get("balsa") else ""))
+                    if _det.get("alertas"):
+                        st.warning("⚠️ " + " · ".join(_det["alertas"]))
+                    if _det.get("concorrente"):
+                        st.markdown("**🥈 Alternativa (2º colocado):**")
+                        _ac = st.columns(3)
+                        _ac[0].metric("2º destino", _det["concorrente"])
+                        _ac[1].metric("Distância do 2º", (f"{_det['dist_concorrente']:.1f} km" if isinstance(_det.get("dist_concorrente"), (int, float)) else "—"))
+                        _ac[2].metric("Diferença p/ o 2º", (f"{_det['dif_para_2o']:+.1f} km" if _det.get("dif_para_2o") is not None else "—"))
+                        if _det.get("segundo_seria_melhor"):
+                            st.warning("🔴 Pelo critério de menor distância, o **2º colocado seria mais perto** — vale auditar a seleção do vencedor nesta rota.")
+                        elif _det.get("dif_para_2o") is not None:
+                            st.caption("✅ O destino vencedor é ao menos tão próximo quanto a alternativa (2º colocado).")
+                st.markdown("#### 📈 Gráficos")
+                _cd = _geo_charts_data(_rotas)
+                if _cd:
+                    _g1, _g2 = st.columns(2)
+                    with _g1:
+                        st.caption("**Rotas por faixa de distância**")
+                        st.bar_chart(pd.DataFrame({"Rotas": _cd["faixas_rotas"]}, index=_cd["faixas_lbl"]))
+                    with _g2:
+                        st.caption("**Candidatos por faixa de distância**")
+                        st.bar_chart(pd.DataFrame({"Candidatos": _cd["faixas_candidatos"]}, index=_cd["faixas_lbl"]))
+                    if _cd["top_destinos"]:
+                        st.caption("**Destinos que mais atendem candidatos** (top 15)")
+                        _td = pd.DataFrame(_cd["top_destinos"]).set_index("destino")
+                        st.bar_chart(_td)
+                    _g3, _g4 = st.columns(2)
+                    with _g3:
+                        if _cd["por_uf"]:
+                            st.caption("**Candidatos por UF**")
+                            _uf_df = pd.DataFrame(_cd["por_uf"])[["uf", "candidatos"]].set_index("uf")
+                            st.bar_chart(_uf_df)
+                    with _g4:
+                        if _cd["por_motor"]:
+                            st.caption("**Rotas por motor**")
+                            _mt = pd.DataFrame(_cd["por_motor"]).set_index("motor")
+                            st.bar_chart(_mt)
+                    st.caption(f"🛟 **Fallback/estimadas:** {_cd['n_fallback']} de {_cd['total']} rotas "
+                               f"(**{_cd['pct_fallback']}%**) não usam rota viária confirmada.")
+                _galert = [x for x in _rotas if x.get("alertas")]
+                if _galert:
+                    st.markdown("#### 🚨 Alertas geográficos")
+                    _adf = pd.DataFrame([{"Origem": f"{a['origem']}/{a['uf']}", "Destino": a["destino"],
+                                          "Distância": (f"{a['dist_km']:.1f} km" if isinstance(a["dist_km"], (int, float)) else "—"),
+                                          "Alerta": " · ".join(a["alertas"])} for a in _galert[:300]])
+                    st.dataframe(_adf, use_container_width=True, hide_index=True)
+                st.markdown("#### 📋 Tabela e exportação")
+                _tdf = pd.DataFrame([{"Origem": x["origem"], "UF": x["uf"], "IBGE": x["ibge"], "Destino": x["destino"],
+                                      "Distância (km)": x["dist_km"], "Linha reta (km)": x["linha_reta_km"],
+                                      "Candidatos": x["candidatos"], "Motor": x["motor"], "Tipo de rota": x["tipo_rota"],
+                                      "Fonte da coordenada": x["fonte_coord"], "Balsa": ("Sim" if x.get("balsa") else "Não"),
+                                      "Alertas": " · ".join(x["alertas"])} for x in _rotas])
+                st.dataframe(_tdf, use_container_width=True, hide_index=True)
+                try:
+                    st.download_button("📥 Baixar análise geográfica (.csv)", data=_tdf.to_csv(index=False).encode("utf-8-sig"),
+                                       file_name="analise_geografica.csv", mime="text/csv", key="geo_dl_csv")
+                except Exception:
+                    logger.error("[GEO-TAB] Falha no download (isolada).", exc_info=True)
+                with st.expander("📚 Exemplo didático — como ler a tabela", expanded=False):
+                    st.markdown(
+                        "| Origem | Candidatos | Destino | Distância viária | Linha reta | Motor | Tipo |\n"
+                        "|---|--:|---|--:|--:|---|---|\n"
+                        "| Município A/UF | 25 | Município B/UF | 42,5 km | 31,2 km | Google Maps | 🛣️ Viária |\n\n"
+                        "- **Origem/UF:** de onde saem os candidatos.  \n"
+                        "- **Candidatos:** quantas pessoas aquela origem desloca (pondera o impacto).  \n"
+                        "- **Destino:** o local de prova escolhido.  \n"
+                        "- **Distância viária:** o trajeto real de estrada; **Linha reta:** o voo de pássaro (árbitro de sanidade).  \n"
+                        "- **Motor:** quem calculou a rota vencedora.  \n"
+                        "- **Tipo:** 🛣️ viária real, 📏 estimada/linha reta, ❌ sem rota — sempre explícito, nunca mascarado.")
+                st.caption("📖 Reaproveita coordenadas e geometrias **já calculadas** — não refaz roteamento (§15) e não inventa "
+                           "localização: a **fonte da coordenada** é sempre exibida (§14). Dados estimados/fallback ficam explícitos (§21).")
+    except Exception:
+        logger.error("[GEO-TAB] Falha ao renderizar a Análise Geográfica (isolada).", exc_info=True)
+        st.warning("Não foi possível montar a Análise Geográfica desta rodada. As demais seções seguem normais.")
 
 if _secao == _SECOES[0]:   # tab_individual
     st.info("🎯 **Objetivo desta aba:** Analisar o deslocamento de UM candidato até seu local de prova. Informe o **município de origem do candidato** e o **local de aplicação** para obter a distância viária oficial, a distância geodésica rigorosa e a explicabilidade da identificação territorial.")
@@ -37735,6 +38762,14 @@ if _secao == _SECOES[0]:   # tab_individual
                     _nome_vencedor_ui = "Google Maps"
                 # _eh_google_ui = Google venceu de fato (nenhum contendor viário nem geodésico)
                 _eh_google_ui = (not _eh_geodesico_ui) and (not _eh_contendor_ui)
+                # [MAPA-VENCEDOR-FIX 293a] Bug 2: se GraphHopper/Valhalla venceu, o mapa principal deve ser a
+                # geometria DELE (o pipeline preenche link_embed com a do OSRM). Reconstroi do vencedor; se ele
+                # nao tiver geometria propria, mantem o atual (nao fabrica).
+                _mv = _mapa_vencedor_singleshot(res_ind, _nome_vencedor_ui) if _eh_contendor_ui else None
+                if _mv and _mv.get("uri"):
+                    url_iframe = _mv["uri"]
+                    if _mv.get("viewer"):
+                        _link_osrm_viewer = _mv["viewer"]
                 _eh_mapa_leaflet = isinstance(url_iframe, str) and url_iframe.startswith("data:text/html;base64,")
                 # [VIS-DINAMICA - 30ª geração] APRESENTAÇÃO DINÂMICA POR PROVEDOR VENCEDOR:
                 #   • GOOGLE vence → mapa embarcado EXCLUSIVAMENTE do Google (iframe http) + 1 link (Google).
@@ -37925,7 +38960,7 @@ if _secao == _SECOES[0]:   # tab_individual
                                     distancia_km=f"{_gh['km']:.1f}", tempo_str=_gh_tempo_fmt,
                                     provedor="GraphHopper", cor="#7c3aed") if "_gerar_mapa_leaflet_rota" in globals() else ""
                                 if _gh_html_mapa:
-                                    components.html(_gh_html_mapa, height=420, scrolling=False)
+                                    components.html(_decodificar_mapa_datauri(_gh_html_mapa), height=420, scrolling=False)
                                     _gh_mapa_ok = True
                                     st.caption("🗺️ Mapa: **geometria exata** da rota calculada pelo GraphHopper.")
                             except Exception:
@@ -37976,7 +39011,7 @@ if _secao == _SECOES[0]:   # tab_individual
                                     distancia_km=f"{_vlh['km']:.1f}", tempo_str=_vl_tempo_fmt,
                                     provedor="Valhalla", cor="#0891b2") if "_gerar_mapa_leaflet_rota" in globals() else ""
                                 if _vl_html_mapa:
-                                    components.html(_vl_html_mapa, height=420, scrolling=False)
+                                    components.html(_decodificar_mapa_datauri(_vl_html_mapa), height=420, scrolling=False)
                                     _vl_mapa_ok = True
                                     st.caption("🗺️ Mapa: **geometria exata** da rota calculada pelo Valhalla.")
                             except Exception:
@@ -38005,6 +39040,24 @@ if _secao == _SECOES[0]:   # tab_individual
                                 st.markdown("**📊 Comparação (só depois da separação, §24):**")
                                 st.dataframe(pd.DataFrame(_fv["comparacao"]), use_container_width=True, hide_index=True)
                                 st.caption("Comparação lado a lado — não altera nem mistura os resultados originais (§24).")
+                            _fvcs = _fv_concordancia_sanidade(res_ind)
+                            if _fvcs:
+                                _conc = _fvcs.get("concordancia")
+                                if _conc:
+                                    st.markdown(f"**🤝 Concordância entre motores:** {_conc['nivel']} — "
+                                                f"amplitude {_conc['amplitude_km']} km ({_conc['amplitude_pct']}%) entre "
+                                                f"{_conc['n_motores']} motores · menor {_conc['min']} km · mediana {_conc['mediana']} km · maior {_conc['max']} km.")
+                                if _fvcs.get("sanidade"):
+                                    st.markdown("**🩺 Sanidade viária × linha reta:**")
+                                    st.dataframe(pd.DataFrame(_fvcs["sanidade"]), use_container_width=True, hide_index=True)
+                                    st.caption("Regra: a distância viária **nunca** pode ser menor que a linha reta (voo de pássaro). "
+                                               "🔴 Suspeita = viária < linha reta (impossível); 🟠 Atenção = viária > 3× a linha reta (sinuosidade extrema).")
+                            _fvvel = _fv_velocidade_plausibilidade(res_ind)
+                            if _fvvel:
+                                st.markdown("**⏱️ Plausibilidade de velocidade (tempo × distância):**")
+                                st.dataframe(pd.DataFrame(_fvvel), use_container_width=True, hide_index=True)
+                                st.caption("Velocidade média implícita = distância ÷ tempo. 🔴 Suspeita = acima de 130 km/h "
+                                           "(tempo ou distância provavelmente quebrado); 🟠 Atenção = abaixo de 8 km/h (pode ser balsa/tráfego urbano).")
                 except Exception:
                     logger.error("[FONTE-VERDADE-UI] Falha ao renderizar (isolada).", exc_info=True)
             else:
