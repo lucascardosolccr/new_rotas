@@ -63,6 +63,16 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.61 (298a geracao) -> EXPLORADOR 1o x 2o COLOCADO na aba Analise Geografica (disputa vencedor x concorrente)
+#     Ao selecionar uma rota: mostra a DISPUTA 1o x 2o num mapa (origem + rota viaria REAL do vencedor em verde +
+#     2o colocado como CONECTOR laranja tracejado) com interpretacao automatica (por que o vencedor foi escolhido,
+#     respeitando a metodologia viaria; alerta se o 2o seria mais perto -> auditar selecao) e anomalias. Reusa a
+#     coordenada REAL do 2o polo buscando onde ele foi vencedor (NAO inventa §8); a geometria da rota do 2o NAO
+#     foi armazenada, entao e mostrada como conector explicitamente rotulado (NAO recalcula as cegas §9/§15).
+#     Tambem: visao AGREGADA das disputas (nº com 2o, apertadas, 2o mais perto, economia km-candidato se migrasse,
+#     distancia media vencedor vs 2o). +4 funcoes puras (_geo_polo_coords,_geo_duelo,_geo_duelo_agregado,
+#     _geo_mapa_duelo). Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos,
+#     requirements INALTERADO. Suite test_geo_duelo.py.
 #   v3.60 (297a geracao) -> KPIs ENRIQUECIDOS + DOWNLOAD DO MAPA na aba Analise Geografica (§8/§10/§16)
 #     (1) Resumo agora inclui DESLOCAMENTO MEDIO POR CANDIDATO (media ponderada km-candidato), P90 e P95 da
 #     distancia, e contagem de rotas estimadas/sem-rota (qualidade), com insight comparando a media por
@@ -12578,6 +12588,200 @@ def _geo_kpis_extra(rotas):
     except Exception:
         logger.error("[GEO-KPIS] Falha (isolada).", exc_info=True)
         return None
+
+
+# ==============================================================================
+# [GEO-DUELO-R 298a geracao] Explorador 1o x 2o colocado (§brief disputa): reusa a
+# coordenada REAL do 2o polo (busca onde ele foi vencedor — nao inventa §8); mostra o
+# vencedor com rota viaria REAL e o 2o como CONECTOR honesto (geometria do 2o nao
+# armazenada §9/§15) + comparacao/interpretacao/anomalias/agregado. READ-ONLY. Puros.
+# ==============================================================================
+def _geo_polo_coords(rotas):
+    """Mapa {nome_do_polo: (lat, lon)} a partir dos destinos já processados. Reuso fiel de coords."""
+    m = {}
+    try:
+        for r in rotas or []:
+            nd = str(r.get("destino", "") or "").strip()
+            ld, lo = r.get("lat_d"), r.get("lon_d")
+            if nd and nd != "—" and isinstance(ld, (int, float)) and isinstance(lo, (int, float)) and nd not in m:
+                m[nd] = (ld, lo)
+        return m
+    except Exception:
+        logger.error("[GEO-POLO] Falha (isolada).", exc_info=True)
+        return m
+
+def _geo_duelo(r, polo_coords):
+    """Duelo 1º×2º de uma origem: dados, diferença, interpretação, anomalias. dict|None. Puro."""
+    try:
+        if not r:
+            return None
+        d1 = r.get("dist_km")
+        conc = r.get("concorrente")
+        d2 = r.get("dist_concorrente")
+        cand = r.get("candidatos")
+        reta = r.get("linha_reta_km")
+        tem_2o = bool(conc) and conc not in ("—", "None", "nan")
+        coord2 = polo_coords.get(str(conc)) if (tem_2o and polo_coords) else None
+        dif = (round(float(d2) - float(d1), 1) if isinstance(d1, (int, float)) and isinstance(d2, (int, float)) else None)
+        segundo_melhor = (bool(d2 < d1) if isinstance(d1, (int, float)) and isinstance(d2, (int, float)) and d1 > 0 else False)
+        economia_kmc = (round(abs(float(dif)) * float(cand), 0) if dif is not None and isinstance(cand, (int, float)) and cand > 0 else None)
+        # interpretação automática (§5), respeitando a metodologia viária (§6)
+        interp = None
+        estimada = str(r.get("tipo_rota", "")).startswith("📏")
+        sem_rota = str(r.get("tipo_rota", "")).startswith("❌")
+        if tem_2o and dif is not None:
+            _o = f"{r.get('origem','—')}/{r.get('uf','—')}"
+            _v = r.get("destino", "—")
+            if sem_rota:
+                interp = (f"⚠️ A metodologia é menor rota viária, mas **não foi obtida rota viária confiável** para {_o}. "
+                          f"A decisão usou um fallback/estimativa — considere na auditoria; não é escolha puramente viária.")
+            elif estimada:
+                interp = (f"⚠️ A distância do vencedor **{_v}** é uma **estimativa (linha reta)**, não viária confirmada. "
+                          f"A comparação com o 2º ({conc}) deve ser lida com cautela.")
+            elif segundo_melhor:
+                interp = (f"🔴 Em {_o}, o **2º colocado {conc}** aparece com distância viária **menor** que o vencedor "
+                          f"**{_v}** ({d2:.1f} km vs {d1:.1f} km). Vale auditar a seleção do vencedor nesta origem.")
+            else:
+                _txt = (f"🥇 **{_v}** foi selecionado por apresentar a menor distância viária: {d1:.1f} km, "
+                        f"contra {d2:.1f} km do 2º colocado **{conc}** — diferença de {abs(dif):.1f} km por candidato.")
+                if economia_kmc:
+                    _txt += f" Com {int(cand)} candidato(s) nesta origem, isso representa ~{int(economia_kmc)} km-candidato de deslocamento evitado."
+                interp = _txt
+        # anomalias (§11)
+        anomalias = list(r.get("alertas", []))
+        if tem_2o and dif is not None and d1 and abs(dif) < max(1.0, 0.02 * float(d1)):
+            anomalias.append("🟠 Disputa apertada (1º e 2º quase empatados)")
+        if segundo_melhor:
+            anomalias.append("🔴 2º colocado com distância viária menor que o vencedor")
+        if tem_2o and not coord2:
+            anomalias.append("ℹ️ Coordenada do 2º polo não encontrada nos dados processados")
+        return {
+            "origem": r.get("origem", "—"), "uf": r.get("uf", "—"), "ibge": r.get("ibge", "—"),
+            "candidatos": (int(cand) if isinstance(cand, (int, float)) else None),
+            "lat_o": r.get("lat_o"), "lon_o": r.get("lon_o"),
+            "vencedor": r.get("destino", "—"), "lat_v": r.get("lat_d"), "lon_v": r.get("lon_d"),
+            "dist_v": d1, "tempo_v": None, "linha_reta": reta, "motor_v": r.get("motor", "—"),
+            "tipo_rota_v": r.get("tipo_rota", "—"), "fonte_coord": r.get("fonte_coord", "—"),
+            "geom_v": r.get("geom_raw"),
+            "tem_2o": tem_2o, "segundo": conc if tem_2o else None,
+            "lat_2": (coord2[0] if coord2 else None), "lon_2": (coord2[1] if coord2 else None),
+            "coord2_disponivel": bool(coord2), "dist_2": d2,
+            "diferenca_km": dif, "segundo_seria_melhor": segundo_melhor, "economia_km_candidato": economia_kmc,
+            "interpretacao": interp, "anomalias": anomalias,
+        }
+    except Exception:
+        logger.error("[GEO-DUELO] Falha (isolada).", exc_info=True)
+        return None
+
+def _geo_duelo_agregado(rotas):
+    """Visão agregada das disputas 1º×2º (§10). dict|None. Puro."""
+    try:
+        if not rotas:
+            return None
+        com2 = [r for r in rotas if r.get("concorrente") and r.get("concorrente") not in ("—", "None", "nan")]
+        difs = []
+        n_apertada = n_2o_melhor = n_balsa = n_fallback = 0
+        cand_benef = 0
+        eco_total = 0.0
+        for r in com2:
+            d1, d2, c = r.get("dist_km"), r.get("dist_concorrente"), r.get("candidatos")
+            if isinstance(d1, (int, float)) and isinstance(d2, (int, float)):
+                dif = d2 - d1
+                difs.append(dif)
+                if d1 > 0 and abs(dif) < max(1.0, 0.02 * d1):
+                    n_apertada += 1
+                if d2 < d1:
+                    n_2o_melhor += 1
+                if isinstance(c, (int, float)) and c > 0 and dif > 0:
+                    eco_total += dif * c
+                    cand_benef += c
+            if r.get("balsa"):
+                n_balsa += 1
+            if str(r.get("tipo_rota", "")).startswith("📏") or str(r.get("tipo_rota", "")).startswith("❌"):
+                n_fallback += 1
+        dv1 = [r["dist_km"] for r in com2 if isinstance(r.get("dist_km"), (int, float)) and r["dist_km"] > 0]
+        dv2 = [r["dist_concorrente"] for r in com2 if isinstance(r.get("dist_concorrente"), (int, float)) and r["dist_concorrente"] > 0]
+        return {
+            "n_disputas": len(com2),
+            "n_apertadas": n_apertada, "n_2o_melhor": n_2o_melhor, "n_balsa": n_balsa, "n_fallback": n_fallback,
+            "dist_media_vencedor": (round(sum(dv1) / len(dv1), 1) if dv1 else None),
+            "dist_media_concorrente": (round(sum(dv2) / len(dv2), 1) if dv2 else None),
+            "economia_media_km": (round(sum(difs) / len(difs), 1) if difs else None),
+            "economia_total_km_candidato": (int(eco_total) if eco_total else 0),
+            "candidatos_beneficiados": (int(cand_benef) if cand_benef else 0),
+        }
+    except Exception:
+        logger.error("[GEO-DUELO-AGG] Falha (isolada).", exc_info=True)
+        return None
+
+def _geo_mapa_duelo(duelo, decode_fn=None, altura=460):
+    """Mapa do duelo 1º×2º: origem, rota REAL do vencedor (verde), 2º polo (laranja) + conector
+    honesto (geometria do 2º não armazenada). Autocontido. Puro/defensivo. Retorna HTML."""
+    try:
+        import json
+        if not duelo:
+            return ""
+        lo, ln = duelo.get("lat_o"), duelo.get("lon_o")
+        lv, nv = duelo.get("lat_v"), duelo.get("lon_v")
+        if not (isinstance(lo, (int, float)) and isinstance(ln, (int, float))):
+            return ""
+        pts = [[lo, ln]]
+        linhas, marcadores = [], []
+        marcadores.append({"lat": lo, "lng": ln, "cor": "#1f78b4", "t": "🔵 Origem", "n": f"{duelo.get('origem','—')}/{duelo.get('uf','—')}"})
+        # vencedor: rota real
+        if isinstance(lv, (int, float)) and isinstance(nv, (int, float)):
+            pts.append([lv, nv])
+            marcadores.append({"lat": lv, "lng": nv, "cor": "#1F8A70", "t": "🥇 Vencedor", "n": duelo.get("vencedor", "—")})
+            coords = None
+            if decode_fn and duelo.get("geom_v"):
+                try:
+                    _d = decode_fn(duelo["geom_v"])
+                    coords = [[float(p[0]), float(p[1])] for p in _d] if _d and len(_d) >= 2 else None
+                except Exception:
+                    coords = None
+            if coords:
+                linhas.append({"pts": coords, "cor": "#1F8A70", "dash": None, "w": 4})
+                pts.extend(coords[:: max(1, len(coords) // 20)])
+            else:
+                linhas.append({"pts": [[lo, ln], [lv, nv]], "cor": "#1F8A70", "dash": None, "w": 3})
+        # 2º colocado: marcador real (coord reusada) + conector honesto (sem geometria)
+        l2, n2 = duelo.get("lat_2"), duelo.get("lon_2")
+        if duelo.get("tem_2o") and isinstance(l2, (int, float)) and isinstance(n2, (int, float)):
+            pts.append([l2, n2])
+            marcadores.append({"lat": l2, "lng": n2, "cor": "#E8A33D", "t": "🥈 2º colocado", "n": duelo.get("segundo", "—")})
+            linhas.append({"pts": [[lo, ln], [l2, n2]], "cor": "#E8A33D", "dash": "8,8", "w": 2})
+        payload = json.dumps({"linhas": linhas, "marcadores": marcadores}, ensure_ascii=False).replace("</", "<\\/")
+        nota_2o = ("O traçado do 2º colocado é um <b>conector</b> (a geometria da rota dele não foi armazenada no processamento)."
+                   if duelo.get("tem_2o") and duelo.get("coord2_disponivel")
+                   else ("Coordenada do 2º colocado não encontrada nos dados — 2º não plotado." if duelo.get("tem_2o") else "Sem 2º colocado registrado."))
+        html = """<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>html,body,#m{margin:0;height:__H__px;width:100%;font-family:Inter,system-ui,sans-serif}
+.leaflet-popup-content{font-size:12px}.lg{position:absolute;z-index:999;right:8px;top:8px;background:#fff;padding:8px 10px;
+border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.2);font-size:11px;max-width:230px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.dl{display:inline-block;width:16px;height:0;border-top:3px dashed #E8A33D;margin-right:5px;vertical-align:middle}
+.sl{display:inline-block;width:16px;height:0;border-top:3px solid #1F8A70;margin-right:5px;vertical-align:middle}</style>
+</head><body><div id="m"></div>
+<div class="lg"><b>1º × 2º colocado</b><br>
+<span class="sw" style="background:#1f78b4"></span>Origem<br>
+<span class="sw" style="background:#1F8A70"></span>🥇 Vencedor &nbsp;<span class="sl"></span>rota viária real<br>
+<span class="sw" style="background:#E8A33D"></span>🥈 2º colocado &nbsp;<span class="dl"></span>conector<br>
+<small>__NOTA__</small></div>
+<script>
+var D=__PAYLOAD__;var map=L.map('m',{scrollWheelZoom:false});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+var b=[];
+D.linhas.forEach(function(l){var o={color:l.cor,weight:l.w,opacity:.8};if(l.dash)o.dashArray=l.dash;L.polyline(l.pts,o).addTo(map);l.pts.forEach(function(p){b.push(p)});});
+D.marcadores.forEach(function(m){L.circleMarker([m.lat,m.lng],{radius:8,color:'#fff',weight:1.5,fillColor:m.cor,fillOpacity:1})
+.bindPopup('<b>'+m.t+'</b><br>'+m.n).addTo(map);b.push([m.lat,m.lng]);});
+if(b.length)map.fitBounds(b,{padding:[35,35]});else map.setView([-15.8,-47.9],4);
+</script></body></html>"""
+        return html.replace("__H__", str(int(altura))).replace("__PAYLOAD__", payload).replace("__NOTA__", nota_2o)
+    except Exception:
+        logger.error("[GEO-MAPA-DUELO] Falha (isolada).", exc_info=True)
+        return ""
 
 
 def _df_para_geojson(df):
@@ -36639,7 +36843,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "297"
+_VERSAO_APP = "298"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -37680,6 +37884,7 @@ if _secao == _SECOES[14]:   # tab_geografica
                     "Esta aba reaproveita os resultados já calculados — ela aparece assim que houver rotas com coordenadas.")
         else:
             _rotas_all = _geo_ds["rotas"]
+            _polo_coords = _geo_polo_coords(_rotas_all)
             with st.expander("❓ Como usar esta aba", expanded=False):
                 st.markdown(
                     "1. **Mapa:** 🔵 origem (tamanho = candidatos) · 🔴 destino (local de prova).\n"
@@ -37801,6 +38006,14 @@ if _secao == _SECOES[14]:   # tab_geografica
                             st.warning("🔴 Pelo critério de menor distância, o **2º colocado seria mais perto** — vale auditar a seleção do vencedor nesta rota.")
                         elif _det.get("dif_para_2o") is not None:
                             st.caption("✅ O destino vencedor é ao menos tão próximo quanto a alternativa (2º colocado).")
+                        _duelo = _geo_duelo(_rotas[_sel_idx], _polo_coords)
+                        if _duelo and _duelo.get("interpretacao"):
+                            st.markdown("**⚔️ Disputa 1º × 2º:** " + _duelo["interpretacao"])
+                        _hmap = _geo_mapa_duelo(_duelo, decode_fn=globals().get("_decodificar_polyline"))
+                        if _hmap:
+                            components.html(_hmap, height=480, scrolling=False)
+                            if _duelo and not _duelo.get("coord2_disponivel") and _duelo.get("tem_2o"):
+                                st.caption("ℹ️ A coordenada do 2º colocado não foi encontrada nos dados processados — ele não aparece no mapa. Não inventamos posição.")
                 st.markdown("#### 📈 Gráficos")
                 _cd = _geo_charts_data(_rotas)
                 if _cd:
@@ -37835,6 +38048,17 @@ if _secao == _SECOES[14]:   # tab_geografica
                                           "Distância": (f"{a['dist_km']:.1f} km" if isinstance(a["dist_km"], (int, float)) else "—"),
                                           "Alerta": " · ".join(a["alertas"])} for a in _galert[:300]])
                     st.dataframe(_adf, use_container_width=True, hide_index=True)
+                _dagg = _geo_duelo_agregado(_rotas)
+                if _dagg and _dagg.get("n_disputas"):
+                    st.markdown("#### ⚔️ Disputas 1º × 2º (visão geral)")
+                    _dc = st.columns(4)
+                    _dc[0].metric("Disputas com 2º", _dagg["n_disputas"])
+                    _dc[1].metric("Apertadas (quase empate)", _dagg["n_apertadas"])
+                    _dc[2].metric("2º seria mais perto", _dagg["n_2o_melhor"])
+                    _dc[3].metric("Economia se migrasse", (f"{_dagg['economia_total_km_candidato']:,}".replace(",", ".") + " km-cand" if _dagg.get("economia_total_km_candidato") else "—"))
+                    if _dagg.get("dist_media_vencedor") is not None and _dagg.get("dist_media_concorrente") is not None:
+                        st.caption(f"Distância média — vencedor **{_dagg['dist_media_vencedor']} km** vs 2º **{_dagg['dist_media_concorrente']} km**. "
+                                   + (f"🔴 **{_dagg['n_2o_melhor']} caso(s)** em que o 2º colocado tem distância menor que o vencedor — priorize a auditoria desses." if _dagg["n_2o_melhor"] else "✅ Em nenhum caso o 2º supera o vencedor em distância viária."))
                 st.markdown("#### 📋 Tabela e exportação")
                 _tdf = pd.DataFrame([{"Origem": x["origem"], "UF": x["uf"], "IBGE": x["ibge"], "Destino": x["destino"],
                                       "Distância (km)": x["dist_km"], "Linha reta (km)": x["linha_reta_km"],
