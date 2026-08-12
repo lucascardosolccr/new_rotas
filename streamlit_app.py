@@ -63,6 +63,29 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.63 (300a geracao) -> CORRECAO DE TRAVAMENTO REAL na finalizacao ("trava em N restantes", ex. 2720/2732)
+#     CAUSA-RAIZ: no loop de roteamento continuo, quando a lista REAL de tarefas (alo_tarefas) esgota mas
+#     alo_total conta MAIS (pares equivalentes/filtrados que nunca viraram tarefa concreta — os 12 "fantasma"
+#     do print), o slice _tarefas[_idx_local:...] fica vazio e o `if not _mini: break` saia SEM avancar o indice.
+#     Resultado: alo_chunk_idx travado < alo_total, _ir_finalizar=False e a app reexecutava PARA SEMPRE presa em
+#     "N restantes" (so escapando apos ~milhares de reruns pelo teto _TETO_EXEC — minutos/horas parecendo travada;
+#     o anti-estagnacao nao ajudava porque o break do slice vazio precede o ramo de pulo forcado). FIX cirurgico:
+#     ao detectar tarefas reais esgotadas com _idx_local < _total, salta _idx_local=_total e persiste, indo direto
+#     a finalizacao (fantasmas recebem fallback como qualquer par nao roteado). Provado por simulacao do loop
+#     (antes: trava; depois: finaliza em 1 rerun; caso normal len==total inalterado). +0 funcoes; mudanca de 1
+#     ponto no loop. Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos,
+#     requirements INALTERADO, pipeline/finalizacao/disjuntor intocados. Suite test_fix_fantasma.py.
+#   v3.62 (299a geracao) -> ANALISE GEOGRAFICA DAS DIVERGENCIAS no Comparador de Estudos (§4/§5/§6/§7/§8/§9/§16)
+#     Nova secao no painel de divergencias do Comparador: MAPA aplicacao x referencia (origem azul dimensionada
+#     por candidatos, destino da APLICACAO em verde, destino da REFERENCIA em roxo) reusando as coordenadas REAIS
+#     ja processadas em cmp_diag_divergencias['analises'] (§15 — nao inventa; sem coord de origem nao plota).
+#     Tracados sao CONECTORES honestos (geometria das rotas nao armazenada no lote §9). Inclui FILTROS (categoria/
+#     balsa/sem-rota/referencia-melhor) e ORDENACAO (dif km/%/candidatos/km-candidato/tempo/divergencia motores §6),
+#     IMPACTO por candidatos (beneficiados/prejudicados/km-candidato §7), LEITURA DO ANALISTA por divergencia (§16),
+#     comparacao app x ref lado a lado (§8) e tabela+export CSV. READ-ONLY, reusa a analise de divergencias
+#     existente — NAO recomputa nada, NAO toca _analisar_divergencia_par nem o pipeline. +8 funcoes puras _geodiv_*.
+#     Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO.
+#     Suite test_geodiv.py. Pendentes p/ proximos incrementos: §10/§11 (mapas nos relatorios HTML), §18 (export Excel).
 #   v3.61 (298a geracao) -> EXPLORADOR 1o x 2o COLOCADO na aba Analise Geografica (disputa vencedor x concorrente)
 #     Ao selecionar uma rota: mostra a DISPUTA 1o x 2o num mapa (origem + rota viaria REAL do vencedor em verde +
 #     2o colocado como CONECTOR laranja tracejado) com interpretacao automatica (por que o vencedor foi escolhido,
@@ -12781,6 +12804,250 @@ if(b.length)map.fitBounds(b,{padding:[35,35]});else map.setView([-15.8,-47.9],4)
         return html.replace("__H__", str(int(altura))).replace("__PAYLOAD__", payload).replace("__NOTA__", nota_2o)
     except Exception:
         logger.error("[GEO-MAPA-DUELO] Falha (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [GEODIV-R 299a geracao] Analise Geografica das Divergencias do Comparador (§4/§5/§6/§7/
+# §8/§9/§16): reusa cmp_diag_divergencias['analises'] (coords REAIS de origem, destino da
+# aplicacao e destino da referencia — §15). Mapa app x referencia com conectores honestos
+# (geometria das rotas nao armazenada no lote §9) + filtros/ordenacao + Leitura do Analista
+# + impacto por candidatos. READ-ONLY. Puros/defensivos.
+# ==============================================================================
+def _geodiv_coord(v):
+    """Parseia coordenada em varios formatos -> (lat, lon) | None. Robusto."""
+    try:
+        if v is None:
+            return None
+        if isinstance(v, (tuple, list)) and len(v) >= 2:
+            return (float(v[0]), float(v[1]))
+        if isinstance(v, dict):
+            la = v.get("lat", v.get("latitude"))
+            lo = v.get("lon", v.get("lng", v.get("longitude")))
+            if la is not None and lo is not None:
+                return (float(la), float(lo))
+        if isinstance(v, str) and "," in v:
+            a, b = v.split(",")[:2]
+            return (float(a.strip()), float(b.strip()))
+        return None
+    except (TypeError, ValueError):
+        return None
+
+def _geodiv_num(v):
+    try:
+        f = float(v)
+        return f if f == f else None  # NaN-safe
+    except (TypeError, ValueError):
+        return None
+
+def _geodiv_dataset(analises):
+    """Monta as linhas geográficas de divergência a partir de diag['analises']. list. Defensivo."""
+    out = []
+    try:
+        for a in analises or []:
+            oc = _geodiv_coord(a.get("Coord Origem"))
+            if not oc:
+                continue  # §15: sem coordenada de origem real, não plota
+            ac = _geodiv_coord(a.get("Coord Destino Aplicação"))
+            rc = _geodiv_coord(a.get("Coord Destino Referência"))
+            da = _geodiv_num(a.get("Distância Aplicação (km)"))
+            dr = _geodiv_num(a.get("Distância Referência (km)"))
+            insc = _geodiv_num(a.get("Inscritos")) or 0
+            dif = (round(dr - da, 1) if da is not None and dr is not None else None)  # + = app mais curta
+            difp = (round(100.0 * (dr - da) / da, 1) if da and dr is not None and da > 0 else None)
+            kmc = (round(abs(dif) * insc, 0) if dif is not None and insc else None)
+            cat = str(a.get("Categoria") or "—")
+            venc = str(a.get("Vencedor (Qualidade)") or a.get("Vantagem de") or "—")
+            alertas = []
+            if dif is not None and dif < 0:
+                alertas.append("🔴 Referência mais curta que a aplicação")
+            if "balsa" in cat.lower() or a.get("Balsa Aplicação") == "Sim" or a.get("Balsa Referência") == "Sim":
+                alertas.append("🛟 Balsa envolvida")
+            if "sem rota" in cat.lower() or "fluvial" in cat.lower() or "acesso" in cat.lower():
+                alertas.append("⚠️ Acesso fluvial/sem rota viária")
+            if "geocod" in cat.lower():
+                alertas.append("⚠️ Baixa confiabilidade de coordenada/geocodificação")
+            out.append({
+                "municipio": str(a.get("Município") or "—"), "uf": str(a.get("UF") or "—"),
+                "inscritos": int(insc) if insc else None,
+                "lat_o": oc[0], "lon_o": oc[1],
+                "app_destino": str(a.get("Destino Aplicação") or "—"),
+                "lat_a": (ac[0] if ac else None), "lon_a": (ac[1] if ac else None), "app_coord_ok": bool(ac),
+                "app_dist": da, "app_motor": str(a.get("Motor Aplicação") or "—"),
+                "ref_destino": str(a.get("Destino Referência") or "—"),
+                "lat_r": (rc[0] if rc else None), "lon_r": (rc[1] if rc else None), "ref_coord_ok": bool(rc),
+                "ref_dist": dr, "ref_motor": str(a.get("Motor Referência") or "—"),
+                "dif_km": dif, "dif_pct": difp, "dif_tempo_min": _geodiv_num(a.get("Diferença Tempo (min)")),
+                "km_candidato": kmc, "categoria": cat, "vencedor": venc,
+                "divergencia_motores_pct": _geodiv_num(a.get("Divergência Motores (%)")),
+                "alertas": alertas,
+            })
+        return out
+    except Exception:
+        logger.error("[GEODIV] Falha (isolada).", exc_info=True)
+        return out
+
+_GEODIV_ORD = {
+    "Maior diferença (km)": lambda r: abs(r["dif_km"]) if r.get("dif_km") is not None else -1,
+    "Maior diferença (%)": lambda r: abs(r["dif_pct"]) if r.get("dif_pct") is not None else -1,
+    "Mais candidatos": lambda r: r["inscritos"] or 0,
+    "Maior impacto (km-candidato)": lambda r: r["km_candidato"] or 0,
+    "Maior diferença de tempo": lambda r: abs(r["dif_tempo_min"]) if r.get("dif_tempo_min") is not None else -1,
+    "Maior divergência Google×OSRM": lambda r: r["divergencia_motores_pct"] or 0,
+}
+
+def _geodiv_filtrar(rows, categoria=None, so_balsa=False, so_sem_rota=False, so_ref_melhor=False):
+    try:
+        out = []
+        for r in rows or []:
+            if categoria and categoria != "(todas)" and r.get("categoria") != categoria:
+                continue
+            if so_balsa and not any("balsa" in a.lower() for a in r.get("alertas", [])):
+                continue
+            if so_sem_rota and not any("sem rota" in a.lower() or "fluvial" in a.lower() for a in r.get("alertas", [])):
+                continue
+            if so_ref_melhor and not (r.get("dif_km") is not None and r["dif_km"] < 0):
+                continue
+            out.append(r)
+        return out
+    except Exception:
+        logger.error("[GEODIV-FILTRO] Falha (isolada).", exc_info=True)
+        return list(rows or [])
+
+def _geodiv_ordenar(rows, criterio):
+    try:
+        fn = _GEODIV_ORD.get(criterio)
+        return sorted(rows, key=fn, reverse=True) if fn else rows
+    except Exception:
+        return rows
+
+def _geodiv_leitura(r):
+    """Leitura do Analista (§16) para uma divergência. str. A partir de dados reais."""
+    try:
+        if not r:
+            return ""
+        _o = f"{r.get('municipio','—')}/{r.get('uf','—')}"
+        insc = r.get("inscritos")
+        da, dr, dif = r.get("app_dist"), r.get("ref_dist"), r.get("dif_km")
+        partes = [f"A origem **{_o}**" + (f" possui **{insc} candidato(s)**." if insc else ".")]
+        if da is not None and dr is not None:
+            partes.append(f"A **aplicação** escolheu **{r.get('app_destino','—')}** ({da:.1f} km); "
+                          f"a **referência**, **{r.get('ref_destino','—')}** ({dr:.1f} km).")
+            if dif is not None:
+                if dif > 0:
+                    _t = f"A aplicação está **{dif:.1f} km mais curta**"
+                    if r.get("km_candidato"):
+                        _t += f" — ~{int(r['km_candidato'])} km-candidato de deslocamento evitado"
+                    partes.append(_t + ".")
+                elif dif < 0:
+                    partes.append(f"🔴 A **referência está {abs(dif):.1f} km mais curta** — vale investigar se a aplicação "
+                                  f"deixou de escolher a melhor rota viária aqui.")
+                else:
+                    partes.append("As duas soluções empatam em distância.")
+        cat = r.get("categoria", "—")
+        if cat and cat != "—":
+            partes.append(f"Causa provável da divergência: **{cat}**.")
+        if any("fluvial" in a.lower() or "sem rota" in a.lower() for a in r.get("alertas", [])):
+            partes.append("⚠️ Há indício de acesso fluvial/sem rota viária — a distância pode ser estimativa, não viária; leia com cautela (§9).")
+        if any("balsa" in a.lower() for a in r.get("alertas", [])):
+            partes.append("🛟 A rota envolve balsa, o que afeta tempo e logística.")
+        return " ".join(partes)
+    except Exception:
+        logger.error("[GEODIV-LEITURA] Falha (isolada).", exc_info=True)
+        return ""
+
+def _geodiv_agregado(rows):
+    """Impacto nos candidatos (§7). dict|None."""
+    try:
+        if not rows:
+            return None
+        n = len(rows)
+        app_sup = [r for r in rows if r.get("dif_km") is not None and r["dif_km"] > 0]
+        ref_sup = [r for r in rows if r.get("dif_km") is not None and r["dif_km"] < 0]
+        insc_app = sum((r.get("inscritos") or 0) for r in app_sup)
+        insc_ref = sum((r.get("inscritos") or 0) for r in ref_sup)
+        kmc_total = sum((r.get("km_candidato") or 0) for r in rows)
+        # municípios que concentram o impacto
+        top = sorted([r for r in rows if r.get("km_candidato")], key=lambda r: r["km_candidato"], reverse=True)[:10]
+        return {
+            "n": n, "n_app_superior": len(app_sup), "n_ref_superior": len(ref_sup),
+            "inscritos_beneficiados_app": int(insc_app), "inscritos_prejudicados": int(insc_ref),
+            "km_candidato_total": int(kmc_total),
+            "top_impacto": [{"municipio": f"{r['municipio']}/{r['uf']}", "km_candidato": int(r["km_candidato"]),
+                             "dif_km": r["dif_km"], "inscritos": r.get("inscritos")} for r in top],
+        }
+    except Exception:
+        logger.error("[GEODIV-AGG] Falha (isolada).", exc_info=True)
+        return None
+
+def _geodiv_mapa(rows, altura=520, max_features=400):
+    """Mapa de divergências: origem + destino da aplicação (verde) + destino da referência (roxo),
+    ligados por CONECTORES honestos (geometria das rotas não armazenada no comparativo). Puro. HTML."""
+    try:
+        import json
+        if not rows:
+            return ""
+        _rt = rows[:max_features]
+        orig, appd, refd, lin, pts = [], [], [], [], []
+        for r in _rt:
+            lo, ln = r.get("lat_o"), r.get("lon_o")
+            if not (isinstance(lo, (int, float)) and isinstance(ln, (int, float))):
+                continue
+            insc = r.get("inscritos")
+            _c = insc if isinstance(insc, (int, float)) and insc > 0 else 1
+            orig.append({"lat": lo, "lng": ln, "m": f"{r.get('municipio','—')}/{r.get('uf','—')}",
+                         "insc": insc, "cat": r.get("categoria", "—"),
+                         "ad": r.get("app_destino"), "adk": r.get("app_dist"),
+                         "rd": r.get("ref_destino"), "rdk": r.get("ref_dist"),
+                         "dif": r.get("dif_km"), "kmc": r.get("km_candidato"),
+                         "al": r.get("alertas", []), "r": max(4, min(20, 4 + (_c ** 0.5)))})
+            pts.append([lo, ln])
+            la, na = r.get("lat_a"), r.get("lon_a")
+            if isinstance(la, (int, float)) and isinstance(na, (int, float)):
+                appd.append({"lat": la, "lng": na, "n": r.get("app_destino", "—")})
+                lin.append({"a": [lo, ln], "b": [la, na], "cor": "#1F8A70"})
+                pts.append([la, na])
+            lr, nr = r.get("lat_r"), r.get("lon_r")
+            if isinstance(lr, (int, float)) and isinstance(nr, (int, float)):
+                refd.append({"lat": lr, "lng": nr, "n": r.get("ref_destino", "—")})
+                lin.append({"a": [lo, ln], "b": [lr, nr], "cor": "#7c3aed"})
+                pts.append([lr, nr])
+        if not pts:
+            return ""
+        payload = json.dumps({"orig": orig, "appd": appd, "refd": refd, "lin": lin}, ensure_ascii=False).replace("</", "<\\/")
+        html = """<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>html,body,#m{margin:0;height:__H__px;width:100%;font-family:Inter,system-ui,sans-serif}
+.leaflet-popup-content{font-size:12px;line-height:1.4}.lg{position:absolute;z-index:999;right:8px;top:8px;background:#fff;
+padding:8px 10px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.2);font-size:11px;max-width:250px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.dl{display:inline-block;width:16px;height:0;border-top:3px dashed;margin-right:5px;vertical-align:middle}</style>
+</head><body><div id="m"></div>
+<div class="lg"><b>Divergências: aplicação × referência</b><br>
+<span class="sw" style="background:#1f78b4"></span>Origem (tamanho = candidatos)<br>
+<span class="sw" style="background:#1F8A70"></span>Destino da aplicação &nbsp;<span class="dl" style="border-color:#1F8A70"></span><br>
+<span class="sw" style="background:#7c3aed"></span>Destino da referência &nbsp;<span class="dl" style="border-color:#7c3aed"></span><br>
+<small>Os traçados são <b>conectores</b> — a geometria das rotas não é armazenada no comparativo em lote.</small></div>
+<script>
+var D=__PAYLOAD__;var map=L.map('m',{scrollWheelZoom:false});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+var b=[];
+D.lin.forEach(function(l){L.polyline([l.a,l.b],{color:l.cor,weight:2,opacity:.6,dashArray:'7,7'}).addTo(map);});
+D.appd.forEach(function(d){L.circleMarker([d.lat,d.lng],{radius:6,color:'#fff',weight:1.3,fillColor:'#1F8A70',fillOpacity:1}).bindPopup('<b>🟢 Destino da aplicação</b><br>'+d.n).addTo(map);b.push([d.lat,d.lng]);});
+D.refd.forEach(function(d){L.circleMarker([d.lat,d.lng],{radius:6,color:'#fff',weight:1.3,fillColor:'#7c3aed',fillOpacity:1}).bindPopup('<b>🟣 Destino da referência</b><br>'+d.n).addTo(map);b.push([d.lat,d.lng]);});
+D.orig.forEach(function(o){var al=(o.al&&o.al.length)?('<br><b>⚠️ '+o.al.join('<br>⚠️ ')+'</b>'):'';
+var dif=(o.dif==null)?'':('<br>Diferença: <b>'+o.dif+' km</b>'+(o.kmc?(' · '+o.kmc+' km-candidato'):''));
+L.circleMarker([o.lat,o.lng],{radius:o.r,color:'#fff',weight:1,fillColor:'#1f78b4',fillOpacity:.85})
+.bindPopup('<b>🔵 '+o.m+'</b>'+(o.insc?('<br>'+o.insc+' candidato(s)'):'')
++'<br>🟢 App: '+(o.ad||'—')+(o.adk!=null?(' ('+o.adk+' km)'):'')
++'<br>🟣 Ref: '+(o.rd||'—')+(o.rdk!=null?(' ('+o.rdk+' km)'):'')+dif
++'<br><i>'+(o.cat||'')+'</i>'+al).addTo(map);b.push([o.lat,o.lng]);});
+if(b.length)map.fitBounds(b,{padding:[30,30]});else map.setView([-15.8,-47.9],4);
+</script></body></html>"""
+        return html.replace("__H__", str(int(altura))).replace("__PAYLOAD__", payload)
+    except Exception:
+        logger.error("[GEODIV-MAPA] Falha (isolada).", exc_info=True)
         return ""
 
 
@@ -36843,7 +37110,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "298"
+_VERSAO_APP = "300"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -39784,6 +40051,15 @@ if _secao == _SECOES[1]:   # tab_processamento
                 while _idx_local < _total:
                     _mini = _tarefas[_idx_local:_idx_local + _MINI]
                     if not _mini:
+                        # [FIX-TAREFAS-FANTASMA - 300ª geração] Mesmo esgotamento tratado no loop de
+                        # Alocação: se a lista real de tarefas acabou mas _total conta mais (pares
+                        # equivalentes/filtrados), salta ao total para finalizar já, em vez de depender
+                        # do watchdog de estagnação (que só avança após o tempo-limite). Fantasmas → fallback.
+                        if _idx_local < _total:
+                            logger.warning("[FIX-TAREFAS-FANTASMA/lote] Tarefas reais esgotadas em idx=%d "
+                                           "com _total=%d — encerrando o roteamento e finalizando.", _idx_local, _total)
+                            _idx_local = _total
+                            _processou_algo = True
                         break
                     try:
                         _res_mini = processar_chunk_rotas(_mini, runner_up_map=_runner_map)
@@ -41591,6 +41867,22 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 while _idx_local < _total:
                     _mini = _tarefas[_idx_local:_idx_local + _MINI_ALO]
                     if not _mini:
+                        # [FIX-TAREFAS-FANTASMA - 300ª geração] CAUSA-RAIZ do travamento em "N restantes":
+                        # a lista REAL de tarefas acabou (_idx_local >= len(_tarefas)), mas _total contava
+                        # MAIS — pares equivalentes/filtrados que nunca viraram tarefa concreta (ex.: 2.720
+                        # tarefas com _total=2.732 → 12 "fantasma"). Sem este salto, o slice vazio quebrava o
+                        # laço SEM avançar o índice: alo_chunk_idx ficava < _total, _ir_finalizar=False e a
+                        # app REEXECUTAVA PARA SEMPRE presa em "12 restantes" (só escapando após ~milhares de
+                        # reruns pelo teto de execuções — minutos/horas parecendo travada). Aqui reconhecemos
+                        # o esgotamento das tarefas reais e saltamos ao total para FINALIZAR imediatamente;
+                        # os registros-fantasma recebem tratamento de fallback na finalização (como qualquer
+                        # par não roteado). Não recalcula nada e não afeta o caso normal (len==total).
+                        if _idx_local < _total:
+                            logger.warning("[FIX-TAREFAS-FANTASMA] Tarefas reais esgotadas em idx=%d com "
+                                           "alo_total=%d (%d registro(s) sem tarefa concreta) — encerrando o "
+                                           "roteamento e indo à finalização.", _idx_local, _total, _total - _idx_local)
+                            _idx_local = _total
+                            _proc_alo = True
                         break
                     if _pular_forcado:
                         # estagnação detectada: registra os pares travados como pendentes e força o avanço
@@ -45050,6 +45342,78 @@ if _secao == _SECOES[3]:   # tab_comparador
             # painel persistente (renderiza em todo rerun enquanto o diagnóstico existir na sessão)
             _diag_sess = st.session_state.get('cmp_diag_divergencias')
             if _diag_sess:
+                # [GEODIV-UI 299a] Análise Geográfica das Divergências (§4/§5/§6/§7/§8/§9/§16) — read-only, reusa coords reais.
+                try:
+                    _gd_rows = _geodiv_dataset(_diag_sess.get("analises") or [])
+                    if _gd_rows:
+                        with st.expander("🗺️ Análise Geográfica das Divergências", expanded=False):
+                            st.caption("Mapa **aplicação × referência**: 🔵 origem · 🟢 destino da aplicação · 🟣 destino da referência. "
+                                       "Reaproveita as coordenadas reais já processadas — não refaz roteamento e não inventa posição (§15).")
+                            _cats = ["(todas)"] + sorted({r["categoria"] for r in _gd_rows if r.get("categoria") and r["categoria"] != "—"})
+                            _fc = st.columns(2)
+                            _f_cat = _fc[0].selectbox("Categoria da divergência", _cats, key="geodiv_cat")
+                            _f_ord = _fc[1].selectbox("Ordenar por", list(_GEODIV_ORD.keys()), key="geodiv_ord")
+                            _fk = st.columns(3)
+                            _f_balsa = _fk[0].checkbox("Só com balsa", key="geodiv_balsa")
+                            _f_semrota = _fk[1].checkbox("Só sem rota viária", key="geodiv_semrota")
+                            _f_refm = _fk[2].checkbox("Só onde a referência é melhor", key="geodiv_refm")
+                            _rows = _geodiv_ordenar(_geodiv_filtrar(_gd_rows, categoria=_f_cat, so_balsa=_f_balsa,
+                                                                    so_sem_rota=_f_semrota, so_ref_melhor=_f_refm), _f_ord)
+                            st.caption(f"Mostrando **{len(_rows)}** de {len(_gd_rows)} divergências com coordenadas.")
+                            _ag = _geodiv_agregado(_rows)
+                            if _ag:
+                                _k = st.columns(4)
+                                _k[0].metric("Divergências", _ag["n"])
+                                _k[1].metric("Aplicação superior", _ag["n_app_superior"])
+                                _k[2].metric("Referência superior", _ag["n_ref_superior"])
+                                _k[3].metric("Impacto (km-candidato)", f"{_ag['km_candidato_total']:,}".replace(",", "."))
+                                st.caption(f"👥 Candidatos **beneficiados pela aplicação**: {_ag['inscritos_beneficiados_app']} · "
+                                           f"**em perda** (referência seria melhor): {_ag['inscritos_prejudicados']} (§7).")
+                            if _rows:
+                                _hm = _geodiv_mapa(_rows, altura=520, max_features=400)
+                                if _hm:
+                                    components.html(_hm, height=540, scrolling=False)
+                                    st.caption("Os traçados são **conectores** — a geometria das rotas não é armazenada no comparativo em lote (§9).")
+                                _labels = [f"{r['municipio']}/{r['uf']} — dif {r['dif_km']} km" for r in _rows[:300]]
+                                _sel = st.selectbox("🔍 Ver leitura de uma divergência", ["(nenhuma)"] + _labels, key="geodiv_sel")
+                                if _sel != "(nenhuma)":
+                                    _r = _rows[_labels.index(_sel)]
+                                    st.markdown("**🧠 Leitura do Analista:** " + _geodiv_leitura(_r))
+                                    _cc = st.columns(2)
+                                    with _cc[0]:
+                                        st.markdown(f"**🟢 Aplicação** → {_r['app_destino']}")
+                                        st.caption((f"{_r['app_dist']:.1f} km" if isinstance(_r.get('app_dist'), (int, float)) else "distância n/d")
+                                                   + f" · motor {_r['app_motor']}")
+                                    with _cc[1]:
+                                        st.markdown(f"**🟣 Referência** → {_r['ref_destino']}")
+                                        st.caption((f"{_r['ref_dist']:.1f} km" if isinstance(_r.get('ref_dist'), (int, float)) else "distância n/d")
+                                                   + f" · motor {_r['ref_motor']}")
+                                    if _r.get("alertas"):
+                                        st.warning("⚠️ " + " · ".join(_r["alertas"]))
+                                _tdf = pd.DataFrame([{
+                                    "Município": r["municipio"], "UF": r["uf"], "Candidatos": r["inscritos"],
+                                    "Destino aplicação": r["app_destino"], "Dist. aplicação (km)": r["app_dist"],
+                                    "Destino referência": r["ref_destino"], "Dist. referência (km)": r["ref_dist"],
+                                    "Diferença (km)": r["dif_km"], "Diferença (%)": r["dif_pct"],
+                                    "Impacto (km-cand)": r["km_candidato"], "Categoria": r["categoria"],
+                                    "Alertas": " · ".join(r["alertas"])} for r in _rows])
+                                st.dataframe(_tdf, use_container_width=True, hide_index=True)
+                                try:
+                                    st.download_button("📥 Baixar divergências geográficas (.csv)",
+                                                       data=_tdf.to_csv(index=False).encode("utf-8-sig"),
+                                                       file_name="divergencias_geograficas.csv", mime="text/csv", key="geodiv_dl")
+                                except Exception:
+                                    logger.error("[GEODIV-UI] Falha no download (isolada).", exc_info=True)
+                            with st.expander("❓ Como interpretar este mapa", expanded=False):
+                                st.markdown(
+                                    "- **🔵 Origem:** município dos candidatos (maior = mais candidatos).\n"
+                                    "- **🟢 Destino da aplicação** vs **🟣 destino da referência**: para onde cada estudo mandaria a origem.\n"
+                                    "- **Linhas tracejadas:** conectores origem→destino (não são o traçado viário — a geometria não é armazenada no lote).\n"
+                                    "- **Diferença (km):** positiva = a aplicação é mais curta; negativa 🔴 = a referência é mais curta (investigar).\n"
+                                    "- **Impacto (km-candidato):** diferença × candidatos — o peso logístico real da divergência.\n"
+                                    "- **Categoria:** por que os estudos divergiram (viária, motor, metodológica, balsa, sem rota) — divergência metodológica ≠ escolha pior (§9).")
+                except Exception:
+                    logger.error("[GEODIV-UI] Falha ao renderizar a análise geográfica de divergências (isolada).", exc_info=True)
                 # [POS-DIAGNOSTICO - 256ª geração] Reconciliação: o que o reprocessamento REVELOU vs. o placar
                 # do topo (calculado sobre os dados originais). Aparece a cada rerun enquanto o diagnóstico
                 # existir na sessão — é a "atualização das informações após processar as divergências".
