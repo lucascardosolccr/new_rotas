@@ -63,6 +63,72 @@
 #   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
 #   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
 #   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
+#   v3.69 (306a geracao) -> INSTRUMENTACAO DA FINALIZACAO (cronometra cada enriquecedor)
+#     Diagnostico seguro para localizar o gargalo do "trava no finalzinho": novo helper _crono_fin envolve
+#     cada enriquecedor da finalizacao (homonimos, integridade geografica, rotulos IBGE, classificacao de rotas,
+#     portao de distancias, humanizar identificadores) nos DOIS fluxos (Alocacao e Lote), registrando via _obs_fin
+#     o tempo/memoria de CADA etapa e emitindo AVISO acima do orcamento. No proximo estudo nacional, o log
+#     [FINALIZACAO/etapa] mostra exatamente onde o tempo e gasto — insumo para escalonar so o passo culpado.
+#     _crono_fin NAO altera resultados e NAO engole excecoes das etapas (propagam como antes). +1 funcao pura.
+#     Enriquecedores e pipeline byte-identicos (apenas o SITIO de chamada passa pelo cronometro). Invariantes:
+#     RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO.
+#     Suite test_crono_fin.py.
+#   v3.68 (305a geracao) -> ESCAPE POR TEMPO NA FINALIZACAO (anti-travamento "no finalzinho")
+#     A finalizacao (montagem + enriquecimento) roda numa passada sincrona; se for morta pelo WebSocket/memoria
+#     e REENTRAR, o watchdog so escapava por CONTAGEM (6 reentradas) — ate 6x o trabalho pesado antes de
+#     entregar o DF-seguro. Agora ha um escape ADICIONAL por TEMPO DE PAREDE (_FIN_WALL_BUDGET_S=90s) que age
+#     SO em reentrada (nunca na 1a passada, que sempre completa): se o tempo acumulado desde a 1a tentativa
+#     passa do orcamento, entrega o DF-seguro ja consolidado imediatamente. Bounded por tempo E por contagem.
+#     Aplicado aos DOIS fluxos (Alocacao e Lote). Marcador reescrito na 1a tentativa de cada estudo (sem estado
+#     obsoleto, sem limpeza extra). NAO degrada estudos que finalizam numa unica rerun (escape >=2a tentativa).
+#     Nota de arquitetura: xlsx e relatorio HTML JA sao gerados APOS o processamento e SOB DEMANDA (xlsx em fase
+#     propria 'gerar_planilha'/on-demand; HTML so ao clicar o botao) — desenho correto, mantido (construir
+#     durante o processamento seria pior, pois os dados so ficam finais no fim). +0 funcoes. Pipeline/montagem/
+#     roteamento byte-identicos. Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports
+#     identicos, requirements INALTERADO. Suite test_fin_watchdog.py.
+#   v3.67 (304a geracao) -> GARANTIA DEFINITIVA CONTRA O TRAVAMENTO da 300a ("trava em N restantes")
+#     Ataca a CAUSA-RAIZ e blinda em profundidade o invariante _total == len(_tarefas) nos DOIS loops de
+#     roteamento (Alocacao e Lote):
+#       (1) ORIGEM: _total passa a vir da LISTA REAL de tarefas (len(tarefas_priorizadas_*)) e nao de
+#           len(pares_unicos_*) — elimina qualquer divergencia ja na montagem.
+#       (2) RECONCILIACAO A CADA RERUN: ao carregar o loop, se _total > len(_tarefas) por QUALQUER motivo
+#           (checkpoint, poda, borda de dedup, refatoracao futura), _total e alinhado a lista real e
+#           persistido — tornando o travamento IMPOSSIVEL por construcao e corrigindo progresso/ETA.
+#       (3) INSTRUMENTACAO: log de aviso quando a reconciliacao age, para capturar a fonte se recorrer.
+#     Combinado com a finalizacao-no-esgotamento da 300a (mini-lote vazio -> finaliza), o roteamento SEMPRE
+#     converge. Ganhos colaterais de processamento: fim do "tail-spin" de milhares de reruns (velocidade no
+#     encerramento) e progresso/ETA fieis (qualidade/honestidade da telemetria). NENHUMA funcao nova; mudanca
+#     cirurgica em 4 pontos. Pipeline/roteamento/finalizacao byte-identicos. Invariantes: RotaPipeline 43,
+#     _SECOES 15, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_anti_trava.py.
+#   v3.66 (303a geracao) -> EXPORT EXCEL (.xlsx) DA ANALISE GEOGRAFICA (§18)
+#     A aba Analise Geografica ganha "📥 Baixar analise geografica (.xlsx)" (ao lado do CSV): planilha
+#     profissional estilizada (cabecalho institucional, freeze, autofilter) com as colunas do §18 — Origem, UF,
+#     Candidatos, Destino/Distancia 1º e 2º, Tempo 1º/2º (n/d honesto — nao armazenado em lote), Diferenca 1º→2º,
+#     Vencedor, Metodologia/tipo de distancia, Motor, Motivo da escolha, Impacto (km-candidato), Observacoes.
+#     Reusa xlsxwriter (ja no app) e os helpers _fmt_institucional/_estilizar_tabela_xlsx quando existem; sem
+#     dependencia nova. READ-ONLY sobre as rotas filtradas. +2 funcoes puras (_geo_montar_df_xlsx,_geo_xlsx_bytes)
+#     + const _GEOXLSX_COLS. Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports
+#     identicos, requirements INALTERADO. Suite test_geoxlsx.py.
+#   v3.65 (302a geracao) -> MAPA NO RELATORIO HTML DE LOCAIS (§10)
+#     O relatorio HTML de Locais ganha a secao "🗺️ Analise Geografica Visual": KPIs (origens, locais de prova,
+#     candidatos, distancia media, DESLOCAMENTO MEDIO POR CANDIDATO, P90, balsa, estimadas/sem-rota), MAPA
+#     INTERATIVO embutido via <iframe srcdoc> (origens azuis dimensionadas por candidatos, locais vermelhos,
+#     tracado REAL da rota viaria decodificado da geometria ja calculada, conectores honestos §9), resumo
+#     1o x 2o (segundos colocados) e tabela dos casos mais criticos (maiores distancias + alertas). Reusa os
+#     builders geograficos (294a-298a) e as coords/geometrias REAIS (§15) — nao recomputa nada. Aparece so
+#     quando ha coordenadas; senao a secao e omitida (relatorio identico ao anterior). +1 funcao pura
+#     (_geo_html_locais), sem aspas aninhadas (compat <3.12). Invariantes: RotaPipeline 43, _SECOES 15,
+#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_geohtml_locais.py.
+#   v3.64 (301a geracao) -> MAPA DAS DIVERGENCIAS NO RELATORIO HTML do Comparador (§10/§11)
+#     O relatorio HTML do Comparador ganha a secao "🗺️ Analise Geografica das Divergencias": KPIs (nº de
+#     divergencias, aplicacao/referencia superior, impacto km-candidato), respostas analiticas (onde perdemos/
+#     vencemos, quanto impactou, quais sao metodologicas), MAPA INTERATIVO embutido via <iframe srcdoc>
+#     (origem azul dimensionada por candidatos, destino da aplicacao verde, destino da referencia roxo,
+#     conectores honestos §9) e tabela dos casos mais impactantes. Reusa _geodiv_dataset/_agregado/_mapa (299a)
+#     e as coords REAIS ja processadas (§15) — nao recomputa nada. So aparece quando o usuario processou as
+#     rotas divergentes (diagnostico_div preenchido); default None -> export identico ao anterior. +1 funcao
+#     pura (_geodiv_html), sem aspas aninhadas (compat <3.12). Invariantes: RotaPipeline 43, _SECOES 15,
+#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_geodiv_html.py.
 #   v3.63 (300a geracao) -> CORRECAO DE TRAVAMENTO REAL na finalizacao ("trava em N restantes", ex. 2720/2732)
 #     CAUSA-RAIZ: no loop de roteamento continuo, quando a lista REAL de tarefas (alo_tarefas) esgota mas
 #     alo_total conta MAIS (pares equivalentes/filtrados que nunca viraram tarefa concreta — os 12 "fantasma"
@@ -9337,6 +9403,13 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
                          f'viária e por linha reta, e travessias.</p><table><thead><tr>{_cab_d}</tr></thead>'
                          f'<tbody>{_rows_d}</tbody></table>'))
 
+        # [GEO-HTML-LOCAIS - 302a geração] Seção geográfica (mapa interativo + KPIs + casos críticos).
+        try:
+            _geo_loc_h = _geo_html_locais(df)
+        except Exception:
+            _geo_loc_h = ""
+        if _geo_loc_h:
+            _sec.append(("geo_locais", "🗺️ Análise Geográfica Visual", _geo_loc_h))
         _sec.append(("diag", "Diagnóstico Executivo", "".join(f"<p>{d}</p>" for d in _dg) or "<p>Sem dados suficientes.</p>"))
         _sec.extend(_secoes_metodologia_referencias_html())  # [ARTIGO - 184ª geração]
         _sec.append(("glossario", "Glossário", _bloco_glossario_html()))  # [GLOSSARIO - 184ª geração]
@@ -10078,6 +10151,14 @@ def _gerar_relatorio_comparacao_html(stats, aud, titulo="Relatório da Comparaç
             if _divxai_c:
                 _sci_nav += '<a href="#diag-divergencias">Diagnóstico das Divergências</a>'
                 _sci_corpo += _divxai_c
+            # [GEODIV-HTML - 301a geração] Seção geográfica das divergências (mapa interativo + impacto).
+            try:
+                _geodiv_c = _geodiv_html(diagnostico_div)
+            except Exception:
+                _geodiv_c = ""
+            if _geodiv_c:
+                _sci_nav += '<a href="#geodiv-divergencias">Análise Geográfica das Divergências</a>'
+                _sci_corpo += _geodiv_c
             if _sci_corpo:
                 _nav = _sci_nav + _nav
                 _corpo = _sci_corpo + _corpo
@@ -13049,6 +13130,350 @@ if(b.length)map.fitBounds(b,{padding:[30,30]});else map.setView([-15.8,-47.9],4)
     except Exception:
         logger.error("[GEODIV-MAPA] Falha (isolada).", exc_info=True)
         return ""
+
+
+# ==============================================================================
+# [GEODIV-HTML-R 301a geracao] Secao "Analise Geografica das Divergencias" para o
+# RELATORIO HTML do Comparador (§10/§11): reusa _geodiv_dataset/_agregado/_mapa (299a),
+# embute o MAPA INTERATIVO via <iframe srcdoc> e responde onde perdemos/vencemos +
+# impacto + metodologicas. PURA/defensiva (diag vazio -> ''). Coords reais (§15).
+# ==============================================================================
+def _geodiv_html(diag):
+    """Retorna um <section> HTML completo (com <h2>) pronto para o relatório do Comparador.
+    diag = cmp_diag_divergencias (tem 'analises' com coords). Vazio/sem dados → ''. Nunca levanta."""
+    import html as _he
+    try:
+        if not diag:
+            return ""
+        _ds = globals().get("_geodiv_dataset")
+        _agf = globals().get("_geodiv_agregado")
+        _mpf = globals().get("_geodiv_mapa")
+        if not _ds:
+            return ""
+        rows = _ds(diag.get("analises") or [])
+        if not rows:
+            return ""
+        ag = (_agf(rows) if _agf else None) or {}
+        _n = ag.get("n", len(rows))
+        _napp = ag.get("n_app_superior", 0)
+        _nref = ag.get("n_ref_superior", 0)
+        _insc_app = ag.get("inscritos_beneficiados_app", 0)
+        _insc_ref = ag.get("inscritos_prejudicados", 0)
+        _kmc = ag.get("km_candidato_total", 0)
+        # KPIs
+        def _kpi(v, lbl):
+            return (f'<div class="gd-kpi"><div class="gd-kpi-v">{_he.escape(str(v))}</div>'
+                    f'<div class="gd-kpi-l">{_he.escape(lbl)}</div></div>')
+        _kpis = ('<div class="gd-kpis">'
+                 + _kpi(f"{_n:,}".replace(",", "."), "Divergências")
+                 + _kpi(f"{_napp:,}".replace(",", "."), "Aplicação superior")
+                 + _kpi(f"{_nref:,}".replace(",", "."), "Referência superior")
+                 + _kpi(f"{_kmc:,}".replace(",", "."), "Impacto (km-candidato)")
+                 + '</div>')
+        # respostas analíticas (§11)
+        _perg = ('<div class="gd-perg"><ul>'
+                 f'<li><b>Onde a referência foi superior?</b> {_nref} divergência(s), afetando '
+                 f'{_insc_ref} candidato(s) — os casos a investigar primeiro.</li>'
+                 f'<li><b>Onde nossa aplicação foi superior?</b> {_napp} divergência(s), beneficiando '
+                 f'{_insc_app} candidato(s).</li>'
+                 f'<li><b>Quanto isso impactou?</b> {_kmc:,} km-candidato no total das divergências.</li>'
+                 .replace(",", ".")
+                 + '<li><b>Quais são apenas metodológicas?</b> as classificadas como diferença por '
+                 'motor/malha ou linha reta × viária — distintas de uma escolha pior (ver categoria na tabela).</li>'
+                 '</ul></div>')
+        # mapa interativo embutido (iframe srcdoc) — §10
+        _mapa_iframe = ""
+        try:
+            _mh = _mpf(rows, altura=460, max_features=300) if _mpf else ""
+            if _mh:
+                _src = _he.escape(_mh, quote=True)
+                _mapa_iframe = (f'<iframe class="gd-map" srcdoc="{_src}" '
+                                f'style="width:100%;height:480px;border:1px solid #e5e7eb;border-radius:10px" '
+                                f'loading="lazy" referrerpolicy="no-referrer"></iframe>'
+                                '<p class="gd-nota">🔵 origem (tamanho = candidatos) · 🟢 destino da aplicação · '
+                                '🟣 destino da referência. Traçados são <b>conectores</b> (a geometria das rotas não '
+                                'é armazenada no comparativo em lote). O mapa é interativo e requer acesso à internet '
+                                'para carregar os blocos cartográficos.</p>')
+        except Exception:
+            _mapa_iframe = ""
+        # tabela dos casos mais impactantes (top por km-candidato)
+        _top = sorted([r for r in rows if r.get("km_candidato")], key=lambda r: r["km_candidato"], reverse=True)[:20]
+        _linhas = []
+        for r in _top:
+            _dif = r.get("dif_km")
+            _cor = "#C6553F" if (isinstance(_dif, (int, float)) and _dif < 0) else "#1F8A70"
+            _adk, _rdk, _kmc_r, _insc = r.get("app_dist"), r.get("ref_dist"), r.get("km_candidato"), r.get("inscritos")
+            _mun = _he.escape(str(r.get("municipio", "—"))) + "/" + _he.escape(str(r.get("uf", "—")))
+            _appd = _he.escape(str(r.get("app_destino", "—")))
+            _refd = _he.escape(str(r.get("ref_destino", "—")))
+            _cat = _he.escape(str(r.get("categoria", "—")))
+            _insc_s = str(_insc) if _insc is not None else "—"
+            _adk_s = ("%.1f" % _adk) if isinstance(_adk, (int, float)) else "—"
+            _rdk_s = ("%.1f" % _rdk) if isinstance(_rdk, (int, float)) else "—"
+            _dif_s = ("%+.1f" % _dif) if isinstance(_dif, (int, float)) else "—"
+            _kmc_s = (("{:,}".format(int(_kmc_r))).replace(",", ".")) if _kmc_r else "—"
+            _linhas.append(
+                "<tr>"
+                f'<td>{_mun}</td>'
+                f'<td class="n">{_insc_s}</td>'
+                f'<td>{_appd}</td>'
+                f'<td class="n">{_adk_s}</td>'
+                f'<td>{_refd}</td>'
+                f'<td class="n">{_rdk_s}</td>'
+                f'<td class="n" style="color:{_cor};font-weight:600">{_dif_s}</td>'
+                f'<td class="n">{_kmc_s}</td>'
+                f'<td>{_cat}</td>'
+                "</tr>")
+        _tabela = ("" if not _linhas else
+                   '<table class="gd-tab"><thead><tr>'
+                   '<th>Origem</th><th>Cand.</th><th>Destino aplicação</th><th>Dist. (km)</th>'
+                   '<th>Destino referência</th><th>Dist. (km)</th><th>Diferença (km)</th>'
+                   '<th>Impacto (km-cand)</th><th>Categoria</th>'
+                   '</tr></thead><tbody>' + "".join(_linhas) + '</tbody></table>')
+        _css = ('<style>'
+                '#geodiv-divergencias .gd-kpis{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}'
+                '#geodiv-divergencias .gd-kpi{flex:1;min-width:140px;background:#f8fafc;border:1px solid #e5e7eb;'
+                'border-radius:10px;padding:12px 14px;text-align:center}'
+                '#geodiv-divergencias .gd-kpi-v{font-size:22px;font-weight:700;color:#0E2A3B}'
+                '#geodiv-divergencias .gd-kpi-l{font-size:12px;color:#64748b;margin-top:2px}'
+                '#geodiv-divergencias .gd-perg{background:#f0f7f5;border-left:4px solid #1F8A70;padding:8px 14px;'
+                'border-radius:6px;margin:10px 0;font-size:13px}'
+                '#geodiv-divergencias .gd-nota{font-size:11px;color:#64748b;margin:6px 0 14px}'
+                '#geodiv-divergencias .gd-tab{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}'
+                '#geodiv-divergencias .gd-tab th,#geodiv-divergencias .gd-tab td{border:1px solid #e5e7eb;'
+                'padding:5px 8px;text-align:left}'
+                '#geodiv-divergencias .gd-tab th{background:#0E2A3B;color:#fff;font-weight:600}'
+                '#geodiv-divergencias .gd-tab td.n{text-align:right}'
+                '#geodiv-divergencias .gd-tab tbody tr:nth-child(even){background:#f8fafc}'
+                '</style>')
+        return (f'<section id="geodiv-divergencias">{_css}'
+                f'<h2>🗺️ Análise Geográfica das Divergências</h2>'
+                f'<p style="color:#475569;font-size:13px">Mapa e leitura territorial das divergências entre a '
+                f'<b>aplicação</b> e o <b>estudo de referência</b>, usando as coordenadas reais já processadas. '
+                f'Distância negativa (coral) = a referência ficou mais curta.</p>'
+                f'{_kpis}{_perg}{_mapa_iframe}{_tabela}'
+                f'</section>')
+    except Exception:
+        logger.error("[GEODIV-HTML] Falha (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [GEO-HTML-LOCAIS-R 302a geracao] Secao "Analise Geografica Visual" para o RELATORIO
+# HTML de Locais (§10): reusa _geo_analise_dataset/_geo_kpis_extra/_geo_mapa_leaflet/
+# _geo_duelo_agregado (294a-298a) + geometria REAL (decodifica polyline). MAPA interativo
+# via <iframe srcdoc>. Retorna o conteudo interno (o gerador embrulha em <section>). PURA.
+# ==============================================================================
+def _geo_html_locais(df):
+    import html as _he
+    try:
+        _dsf = globals().get("_geo_analise_dataset")
+        _kxf = globals().get("_geo_kpis_extra")
+        _mpf = globals().get("_geo_mapa_leaflet")
+        _daf = globals().get("_geo_duelo_agregado")
+        _dec = globals().get("_decodificar_polyline")
+        if not _dsf:
+            return ""
+        _ds = _dsf(df)
+        if not (_ds and _ds.get("rotas")):
+            return ""
+        rows = _ds["rotas"]
+        _r = _ds.get("resumo", {})
+        kx = (_kxf(rows) if _kxf else None) or {}
+
+        def _kpi(v, lbl):
+            return ('<div class="gl-kpi"><div class="gl-kpi-v">' + _he.escape(str(v)) +
+                    '</div><div class="gl-kpi-l">' + _he.escape(lbl) + '</div></div>')
+
+        def _fmt_km(v):
+            return ("%.1f km" % v) if isinstance(v, (int, float)) else "n/d"
+
+        _tot_c = _r.get("total_candidatos")
+        _kpis = ('<div class="gl-kpis">'
+                 + _kpi(_r.get("n_origens", "—"), "Municípios de origem")
+                 + _kpi(_r.get("n_destinos", "—"), "Locais de prova")
+                 + _kpi(("{:,}".format(_tot_c).replace(",", ".") if _tot_c else "n/d"), "Candidatos")
+                 + _kpi(_fmt_km(_r.get("dist_media")), "Distância média")
+                 + '</div><div class="gl-kpis">'
+                 + _kpi(_fmt_km(kx.get("media_ponderada")), "Deslocamento médio por candidato")
+                 + _kpi(_fmt_km(kx.get("p90")), "P90 da distância")
+                 + _kpi(_r.get("n_balsa", 0), "Rotas com balsa")
+                 + _kpi(str(kx.get("n_estimada", 0)) + " / " + str(kx.get("n_sem_rota", 0)), "Estimadas / sem rota")
+                 + '</div>')
+
+        # mapa interativo (geometria real das rotas) via iframe srcdoc
+        _mapa = ""
+        try:
+            _mh = _mpf(rows, altura=480, max_features=400, decode_fn=_dec) if _mpf else ""
+            if _mh:
+                _src = _he.escape(_mh, quote=True)
+                _mapa = ('<iframe srcdoc="' + _src + '" style="width:100%;height:500px;border:1px solid #e5e7eb;'
+                         'border-radius:10px" loading="lazy" referrerpolicy="no-referrer"></iframe>'
+                         '<p class="gl-nota">🔵 origem (tamanho = candidatos) · 🔴 local de prova · linha cheia = '
+                         'rota viária real · tracejada = estimada/sem rota. Interativo; requer internet para os '
+                         'blocos cartográficos. Coordenadas e geometrias reaproveitadas do processamento (§15).</p>')
+        except Exception:
+            _mapa = ""
+
+        # 1º × 2º (segundos colocados), quando houver
+        _duelo = ""
+        try:
+            _ag = _daf(rows) if _daf else None
+            if _ag and _ag.get("n_disputas"):
+                _eco = _ag.get("economia_total_km_candidato") or 0
+                _duelo = ('<div class="gl-perg"><b>1º × 2º colocado:</b> ' + str(_ag["n_disputas"]) +
+                          ' disputa(s) com 2º registrado; ' + str(_ag.get("n_2o_melhor", 0)) +
+                          ' caso(s) em que o 2º colocado é mais perto que o vencedor' +
+                          (' — ' + ("{:,}".format(int(_eco)).replace(",", ".")) + ' km-candidato de economia se migrasse.'
+                           if _eco else '.') + '</div>')
+        except Exception:
+            _duelo = ""
+
+        # tabela dos casos críticos: maiores distâncias e com alerta
+        _crit = sorted(rows, key=lambda x: (x.get("dist_km") or 0), reverse=True)[:15]
+        _linhas = []
+        for x in _crit:
+            _d = x.get("dist_km"); _c = x.get("candidatos")
+            _d_s = ("%.0f" % _d) if isinstance(_d, (int, float)) else "—"
+            _c_s = str(int(_c)) if isinstance(_c, (int, float)) else "—"
+            _al = " · ".join(x.get("alertas", [])) or "—"
+            _linhas.append("<tr><td>" + _he.escape(str(x.get("origem", "—"))) + "/" +
+                           _he.escape(str(x.get("uf", "—"))) + "</td><td>" +
+                           _he.escape(str(x.get("destino", "—"))) + "</td><td class='r'>" + _d_s +
+                           "</td><td class='r'>" + _c_s + "</td><td>" +
+                           _he.escape(str(x.get("tipo_rota", "—"))) + "</td><td>" + _he.escape(_al) + "</td></tr>")
+        _tabela = ('<table class="gl-tab"><thead><tr><th>Origem</th><th>Local de prova</th>'
+                   '<th class="r">km viária</th><th class="r">Candidatos</th><th>Tipo</th><th>Alertas</th>'
+                   '</tr></thead><tbody>' + "".join(_linhas) + '</tbody></table>')
+
+        _css = ('<style>'
+                '.gl-kpis{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}'
+                '.gl-kpi{flex:1;min-width:130px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;'
+                'padding:10px 12px;text-align:center}'
+                '.gl-kpi-v{font-size:20px;font-weight:700;color:#0E2A3B}'
+                '.gl-kpi-l{font-size:11px;color:#64748b;margin-top:2px}'
+                '.gl-perg{background:#f0f7f5;border-left:4px solid #1F8A70;padding:8px 12px;border-radius:6px;'
+                'margin:10px 0;font-size:13px}'
+                '.gl-nota{font-size:11px;color:#64748b;margin:6px 0 12px}'
+                '.gl-tab{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}'
+                '.gl-tab th,.gl-tab td{border:1px solid #e5e7eb;padding:5px 8px;text-align:left}'
+                '.gl-tab th{background:#0E2A3B;color:#fff}.gl-tab td.r{text-align:right}'
+                '.gl-tab tbody tr:nth-child(even){background:#f8fafc}'
+                '</style>')
+        return (_css + '<p class="lead">Visão territorial do estudo: de onde saem os candidatos, para onde vão e '
+                'como se distribuem os deslocamentos — a partir das coordenadas e rotas já calculadas.</p>'
+                + _kpis + _duelo + _mapa +
+                '<h3 style="margin-top:14px">Casos mais críticos (maiores distâncias)</h3>' + _tabela)
+    except Exception:
+        logger.error("[GEO-HTML-LOCAIS] Falha (isolada).", exc_info=True)
+        return ""
+
+
+# ==============================================================================
+# [GEO-XLSX-R 303a geracao] Export Excel (.xlsx) da Analise Geografica (§18): colunas
+# 1º/2º (destino, distancia, tempo=n/d honesto), diferenca, vencedor, metodologia/tipo,
+# motor, motivo, impacto km-candidato, observacoes. Reusa xlsxwriter + helpers de estilo
+# institucional do app. READ-ONLY. Puros/defensivos.
+# ==============================================================================
+_GEOXLSX_COLS = [
+    "Origem", "UF", "Candidatos",
+    "Destino 1º (aplicação)", "Distância 1º (km)", "Tempo 1º (min)",
+    "Destino 2º (concorrente)", "Distância 2º (km)", "Tempo 2º (min)",
+    "Diferença 1º→2º (km)", "Vencedor",
+    "Metodologia / tipo de distância", "Motor", "Motivo da escolha",
+    "Impacto (km-candidato)", "Observações",
+]
+
+def _geo_montar_df_xlsx(rows):
+    """DataFrame com as colunas do §18 a partir das rotas geográficas. Puro. pandas necessário (global)."""
+    import pandas as pd
+    _lin = []
+    for r in rows or []:
+        _d1 = r.get("dist_km")
+        _d2 = r.get("dist_concorrente")
+        _c = r.get("candidatos")
+        _conc = r.get("concorrente")
+        _tem2 = bool(_conc) and str(_conc) not in ("—", "None", "nan")
+        _dif = (round(float(_d2) - float(_d1), 1) if isinstance(_d1, (int, float)) and isinstance(_d2, (int, float)) else None)
+        _2o_perto = (isinstance(_d1, (int, float)) and isinstance(_d2, (int, float)) and _d1 > 0 and _d2 < _d1)
+        _tipo = str(r.get("tipo_rota", "—"))
+        _kmc = (round(float(_d1) * float(_c), 0) if isinstance(_d1, (int, float)) and isinstance(_c, (int, float)) and _c > 0 else None)
+        # motivo da escolha (honesto, derivado do tipo)
+        if _tipo.startswith("🛣️"):
+            _motivo = ("Menor rota viária (%.1f km)" % _d1) if isinstance(_d1, (int, float)) else "Menor rota viária"
+        elif _tipo.startswith("📏"):
+            _motivo = "Distância estimada (linha reta) — sem rota viária confirmada"
+        elif _tipo.startswith("❌"):
+            _motivo = "Sem rota viária — tratado por fallback"
+        else:
+            _motivo = "—"
+        if _2o_perto:
+            _motivo += " · ⚠️ 2º colocado mais perto (auditar seleção)"
+        _venc = ("⚠️ 2º mais perto" if _2o_perto else ("Aplicação (1º)" if _tem2 else "—"))
+        _obs = " · ".join(r.get("alertas", []))
+        _fc = r.get("fonte_coord")
+        if _fc and str(_fc) not in ("—", "None"):
+            _obs = (_obs + " · " if _obs else "") + ("Coord.: %s" % _fc)
+        _lin.append({
+            "Origem": r.get("origem", "—"), "UF": r.get("uf", "—"),
+            "Candidatos": (int(_c) if isinstance(_c, (int, float)) else None),
+            "Destino 1º (aplicação)": r.get("destino", "—"),
+            "Distância 1º (km)": (round(float(_d1), 1) if isinstance(_d1, (int, float)) else None),
+            "Tempo 1º (min)": "n/d",   # não armazenado no dataset em lote (honesto §21)
+            "Destino 2º (concorrente)": (_conc if _tem2 else "—"),
+            "Distância 2º (km)": (round(float(_d2), 1) if isinstance(_d2, (int, float)) else None),
+            "Tempo 2º (min)": "n/d",
+            "Diferença 1º→2º (km)": _dif,
+            "Vencedor": _venc,
+            "Metodologia / tipo de distância": _tipo,
+            "Motor": r.get("motor", "—"),
+            "Motivo da escolha": _motivo,
+            "Impacto (km-candidato)": (int(_kmc) if _kmc else None),
+            "Observações": (_obs or "—"),
+        })
+    return pd.DataFrame(_lin, columns=_GEOXLSX_COLS)
+
+def _geo_xlsx_bytes(rows):
+    """Gera o .xlsx estilizado da Análise Geográfica. bytes|None. Reusa helpers do app quando existem."""
+    import io
+    import pandas as pd
+    try:
+        if not rows:
+            return None
+        _df = _geo_montar_df_xlsx(rows)
+        if _df is None or len(_df) == 0:
+            return None
+        _buf = io.BytesIO()
+        with pd.ExcelWriter(_buf, engine="xlsxwriter") as _w:
+            _df.to_excel(_w, index=False, sheet_name="Análise Geográfica")
+            try:
+                _wb = getattr(_w, "book", None)
+                _ws = _w.sheets.get("Análise Geográfica")
+                _fmt_inst = globals().get("_fmt_institucional")
+                _estilizar = globals().get("_estilizar_tabela_xlsx")
+                _numfmt = globals().get("_num_formatos_por_coluna")
+                if _wb is not None and _ws is not None and _fmt_inst and _estilizar:
+                    _fmts = _fmt_inst(_wb)
+                    _estilizar(_ws, _wb, _df, _fmts,
+                               formatos_col=(_numfmt(_df) if _numfmt else None))
+                elif _ws is not None:
+                    # fallback mínimo de estilo: cabeçalho em negrito + freeze + autofilter + larguras
+                    _hf = _wb.add_format({"bold": True, "bg_color": "#0E2A3B", "font_color": "#FFFFFF",
+                                          "border": 1, "font_name": "Arial"}) if _wb else None
+                    if _hf:
+                        for _ci, _cn in enumerate(_df.columns):
+                            _ws.write(0, _ci, _cn, _hf)
+                    _ws.freeze_panes(1, 0)
+                    _ws.autofilter(0, 0, len(_df), len(_df.columns) - 1)
+                    for _ci, _cn in enumerate(_df.columns):
+                        _wid = min(48, max(12, int(_df[_cn].astype(str).str.len().max() if len(_df) else 12) + 2, len(str(_cn)) + 2))
+                        _ws.set_column(_ci, _ci, _wid)
+            except Exception:
+                logger.error("[GEO-XLSX] Falha ao estilizar (isolada; planilha já escrita).", exc_info=True)
+        return _buf.getvalue()
+    except Exception:
+        logger.error("[GEO-XLSX] Falha ao gerar o xlsx (isolada).", exc_info=True)
+        return None
 
 
 def _df_para_geojson(df):
@@ -37110,7 +37535,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "300"
+_VERSAO_APP = "306"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -37828,6 +38253,12 @@ with st.container():
 # Teto de reentradas da finalização antes de forçar a entrega degradada (defesa em
 # profundidade — finito e generoso; só dispara em cenário patológico de reentrada).
 _MAX_FIN_TENT = 6
+# [ANTI-TRAVA-FINALIZACAO - 305a geracao] Orcamento de tempo de parede da finalizacao. Escape ADICIONAL
+# ao teto de reentradas: se a finalizacao ja REENTROU (passada anterior morta pelo WebSocket/memoria) e o
+# tempo acumulado desde a 1a tentativa passa deste orcamento, entrega o DF-seguro em vez de re-tentar ate
+# o teto — escapa MAIS RAPIDO da tempestade de reentradas. So age em reentrada (nunca na 1a passada, que
+# sempre completa por mais longa que seja) — portanto NAO degrada estudos que finalizam numa unica rerun.
+_FIN_WALL_BUDGET_S = 90.0
 # Orçamento por etapa (s) acima do qual a observabilidade emite AVISO (não bloqueia).
 _FIN_ETAPA_WARN_S = 8.0
 
@@ -37856,6 +38287,24 @@ def _mem_rss_mb():
         return round(_rss / (1024.0 * 1024.0), 1) if _rss > 10_000_000 else round(_rss / 1024.0, 1)
     except Exception:
         return None
+
+
+def _crono_fin(rotulo, _fn, *args, **kwargs):
+    """[INSTRUMENTACAO-FINALIZACAO - 306a geracao] Cronometra UMA etapa da finalizacao via _obs_fin
+    (tempo decorrido, memoria RSS, AVISO se passar do orcamento _FIN_ETAPA_WARN_S) e devolve o resultado
+    INTACTO. Objetivo: revelar, em estudos grandes, QUAL enriquecedor concentra o tempo da finalizacao,
+    para escalonar so o passo culpado depois. NAO altera o resultado e NAO engole excecoes da etapa (se
+    _fn levantar, a excecao propaga como antes; o log de tempo so ocorre no caminho de sucesso). Se _fn
+    devolve tupla, registra as linhas do 1o elemento (o DataFrame). Puro e defensivo no proprio log."""
+    _t0 = time.time()
+    _r = _fn(*args, **kwargs)
+    try:
+        _alvo = _r[0] if (isinstance(_r, tuple) and _r) else _r
+        _lin = len(_alvo) if hasattr(_alvo, "__len__") else None
+        _obs_fin(rotulo, _t0, **({"linhas": _lin} if _lin is not None else {}))
+    except Exception:
+        pass
+    return _r
 
 
 def _obs_fin(etapa, t0, **extra):
@@ -38338,6 +38787,15 @@ if _secao == _SECOES[14]:   # tab_geografica
                                        file_name="analise_geografica.csv", mime="text/csv", key="geo_dl_csv")
                 except Exception:
                     logger.error("[GEO-TAB] Falha no download (isolada).", exc_info=True)
+                try:
+                    _geo_xb = _geo_xlsx_bytes(_rotas)
+                    if _geo_xb:
+                        st.download_button("📥 Baixar análise geográfica (.xlsx)", data=_geo_xb,
+                                           file_name="analise_geografica.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                           key="geo_dl_xlsx")
+                except Exception:
+                    logger.error("[GEO-TAB] Falha no download xlsx (isolada).", exc_info=True)
                 with st.expander("📚 Exemplo didático — como ler a tabela", expanded=False):
                     st.markdown(
                         "| Origem | Candidatos | Destino | Distância viária | Linha reta | Motor | Tipo |\n"
@@ -39898,7 +40356,8 @@ if _secao == _SECOES[1]:   # tab_processamento
                 st.session_state['lote_chunk_idx'] = 0
                 st.session_state['lote_df_base'] = df.copy()
                 st.session_state['lote_start_clock'] = time.time()
-                st.session_state['lote_total'] = len(pares_unicos)
+                # [ANTI-TRAVA-DEFINITIVO - 304a geracao] _total da LISTA REAL de tarefas (invariante).
+                st.session_state['lote_total'] = len(tarefas_priorizadas)
                 st.session_state['lote_operador'] = nome_operador
                 st.session_state['lote_preaquecido'] = _houve_preaquecimento
                 st.session_state['lote_runner_map'] = None  # lote padrão não usa runner-up
@@ -39970,6 +40429,19 @@ if _secao == _SECOES[1]:   # tab_processamento
                 _idx = st.session_state['lote_chunk_idx']
                 _resultados = st.session_state['lote_resultados']
                 _runner_map = st.session_state.get('lote_runner_map')
+                # [ANTI-TRAVA-DEFINITIVO - 304a geracao] Mesmo invariante _total == len(_tarefas) do loop
+                # de Alocacao: reconcilia _total a lista real de tarefas a cada rerun (impede o travamento
+                # em "N restantes" e corrige o progresso). Fantasma -> fallback na finalizacao.
+                try:
+                    _len_tar_lote = len(_tarefas) if _tarefas is not None else 0
+                    if int(_total) > _len_tar_lote:
+                        logger.warning("[ANTI-TRAVA-DEFINITIVO/lote] _total=%d > len(_tarefas)=%d — "
+                                       "reconciliando (%d fantasma).", int(_total), _len_tar_lote,
+                                       int(_total) - _len_tar_lote)
+                        _total = _len_tar_lote
+                        st.session_state['lote_total'] = _total
+                except Exception:
+                    logger.error("[ANTI-TRAVA-DEFINITIVO/lote] Falha na reconciliacao (isolada).", exc_info=True)
                 _total_chunks = max(1, math.ceil(_total / CHUNK_SIZE))
                 _chunk_atual_num = _idx // CHUNK_SIZE + 1
                 
@@ -40100,15 +40572,22 @@ if _secao == _SECOES[1]:   # tab_processamento
                     _lote_fin_tent = int(st.session_state.get('lote_fin_tentativas', 0)) + 1
                     st.session_state['lote_fin_tentativas'] = _lote_fin_tent
                     _t_lote_fin0 = time.time()
+                    # [ANTI-TRAVA-FINALIZACAO - 305a] Escape por tempo de parede (so em reentrada), igual à Alocação.
+                    if _lote_fin_tent <= 1:
+                        st.session_state['lote_fin_wall_start'] = _t_lote_fin0
+                    _lote_fin_wall0 = st.session_state.get('lote_fin_wall_start', _t_lote_fin0)
+                    _lote_fin_estourou_tempo = (_lote_fin_tent >= 2) and ((time.time() - float(_lote_fin_wall0)) > _FIN_WALL_BUDGET_S)
                     try:
                         logger.info("[FINALIZACAO/lote/inicio] tentativa=%d resultados=%s%s",
                                     _lote_fin_tent, len(_resultados) if _resultados is not None else 0,
                                     (" mem=%sMB" % _mem_rss_mb()) if _mem_rss_mb() is not None else "")
                     except Exception:
                         pass
-                    if _lote_fin_tent > _MAX_FIN_TENT:
-                        logger.error("[FINALIZACAO/lote/watchdog] Teto de %d tentativas atingido — forçando "
-                                     "resposta degradada para impedir travamento.", _MAX_FIN_TENT)
+                    if _lote_fin_tent > _MAX_FIN_TENT or _lote_fin_estourou_tempo:
+                        logger.error("[FINALIZACAO/lote/watchdog] Escape acionado (tentativa=%d/teto=%d; "
+                                     "tempo=%.0fs/orcamento=%.0fs) — forçando resposta degradada para impedir "
+                                     "travamento.", _lote_fin_tent, _MAX_FIN_TENT,
+                                     (time.time() - float(_lote_fin_wall0)), _FIN_WALL_BUDGET_S)
                         _df_forcado_lote = st.session_state.get('lote_df_seguro')
                         if _df_forcado_lote is None:
                             try:
@@ -40165,11 +40644,11 @@ if _secao == _SECOES[1]:   # tab_processamento
                              linhas=(len(df_final) if df_final is not None else 0))
                     # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos
                     # (contexto da planilha + validação espacial). Defensivo; nunca quebra o lote.
-                    df_final = _enriquecer_desambiguacao_homonimos(df_final)
+                    df_final = _crono_fin("enriq_homonimos", _enriquecer_desambiguacao_homonimos, df_final)
                     # [INTEGRIDADE - 133ª geração] Pós-passo ADITIVO: Índice de Integridade Geográfica + alerta por rota.
-                    df_final = _enriquecer_integridade_geografica(df_final)
+                    df_final = _crono_fin("enriq_integridade", _enriquecer_integridade_geografica, df_final)
                     # [IBGE-ROTULO - 146ª geração] Rótulos legíveis + retroalimentação Município/UF.
-                    df_final = _enriquecer_rotulos_ibge(df_final)
+                    df_final = _crono_fin("enriq_rotulos_ibge", _enriquecer_rotulos_ibge, df_final)
                     # [HUMANIZAR - 173ª geração] O CÓDIGO IBGE SAI da coluna Origem/Destino; o NOME entra.
                     # O código NÃO se perde: vai para a coluna própria. Ninguém analisa uma planilha com
                     # '1100023' na coluna Origem — código é identificador de MÁQUINA, nome é de GENTE.
@@ -40185,9 +40664,9 @@ if _secao == _SECOES[1]:   # tab_processamento
                     # (E zero com origem == destino é VÁLIDO: prova na própria cidade. Confundir os dois
                     #  foi o pecado original — usar zero como SENTINELA num campo onde ele é legítimo.)
                     # ═══════════════════════════════════════════════════════════════════════════════
-                    df_final, _rel_portao = _portao_final_distancias(df_final)
+                    df_final, _rel_portao = _crono_fin("portao_distancias", _portao_final_distancias, df_final)
                     st.session_state['portao_relatorio'] = _rel_portao
-                    df_final = _humanizar_identificadores(df_final)
+                    df_final = _crono_fin("humanizar_ids", _humanizar_identificadores, df_final)
                     
                     # Recalcula Linha Reta vetorizada (Haversine IUGG)
                     lat_o = np.radians(df_final['Lat Origem'].astype(float).values)
@@ -41744,7 +42223,10 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 st.session_state['alo_exec_conta'] = 0                 # teto de execuções (defesa em profundidade)
                 st.session_state['alo_finalizacao_forcada'] = False
                 st.session_state['alo_df_pares'] = df_pares
-                st.session_state['alo_total'] = len(pares_unicos_alo)
+                # [ANTI-TRAVA-DEFINITIVO - 304a geracao] _total vem da LISTA REAL de tarefas (nao de
+                # pares_unicos_alo): garante o invariante _total == len(alo_tarefas) desde a origem, para que
+                # o loop de roteamento nunca conte registros que nao existem como tarefa (causa do travamento).
+                st.session_state['alo_total'] = len(tarefas_priorizadas_alo)
                 st.session_state['alo_runner_map'] = runner_up_map
                 # [RANK-NHUBS - 58ª geração / itens #7/#9] guarda o ranking top-5 (linha reta) por
                 # cliente para o painel de disputa (custo zero — já calculado na matriz vetorizada).
@@ -41766,6 +42248,23 @@ if _secao == _SECOES[2]:   # tab_alocacao
             _idx = st.session_state['alo_chunk_idx']
             _resultados = st.session_state['alo_resultados']
             _runner_map = st.session_state['alo_runner_map']
+            # [ANTI-TRAVA-DEFINITIVO - 304a geracao] INVARIANTE _total == len(_tarefas), reforcado a CADA
+            # rerun. O travamento em "N restantes" so e possivel quando _total > len(_tarefas) (registros-
+            # fantasma: contados no total mas ausentes da lista de tarefas). Aqui reconciliamos de forma
+            # incondicional: se por QUALQUER motivo (checkpoint, poda, borda de dedup, refatoracao futura)
+            # _total exceder a lista real, alinhamos _total ao tamanho real e persistimos — tornando o
+            # travamento IMPOSSIVEL por construcao e corrigindo o progresso/ETA exibidos. Os eventuais
+            # fantasma recebem fallback na finalizacao (como qualquer par nao roteado). Instrumentado.
+            try:
+                _len_tar_alo = len(_tarefas) if _tarefas is not None else 0
+                if int(_total) > _len_tar_alo:
+                    logger.warning("[ANTI-TRAVA-DEFINITIVO/alo] _total=%d > len(_tarefas)=%d — reconciliando "
+                                   "(%d fantasma alinhado[s]). Investigar origem se recorrente.",
+                                   int(_total), _len_tar_alo, int(_total) - _len_tar_alo)
+                    _total = _len_tar_alo
+                    st.session_state['alo_total'] = _total
+            except Exception:
+                logger.error("[ANTI-TRAVA-DEFINITIVO/alo] Falha na reconciliacao (isolada).", exc_info=True)
             _total_chunks = max(1, math.ceil(_total / CHUNK_SIZE_ALO)) if _total > 0 else 1
             _chunk_num = _idx // CHUNK_SIZE_ALO + 1
             
@@ -42010,6 +42509,12 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 _fin_tent = int(st.session_state.get('alo_fin_tentativas', 0)) + 1
                 st.session_state['alo_fin_tentativas'] = _fin_tent
                 _t_fin0 = time.time()
+                # [ANTI-TRAVA-FINALIZACAO - 305a] Marca o inicio da finalizacao na 1a tentativa (reescrito a
+                # cada estudo, pois alo_fin_tentativas reinicia) e habilita o escape por tempo SO em reentrada.
+                if _fin_tent <= 1:
+                    st.session_state['alo_fin_wall_start'] = _t_fin0
+                _alo_fin_wall0 = st.session_state.get('alo_fin_wall_start', _t_fin0)
+                _alo_fin_estourou_tempo = (_fin_tent >= 2) and ((time.time() - float(_alo_fin_wall0)) > _FIN_WALL_BUDGET_S)
                 try:
                     logger.info("[FINALIZACAO/inicio] tentativa=%d pares=%s resultados=%s%s",
                                 _fin_tent, len(_df_pares) if _df_pares is not None else 0,
@@ -42017,13 +42522,14 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                 (" mem=%sMB" % _mem_rss_mb()) if _mem_rss_mb() is not None else "")
                 except Exception:
                     pass
-                if _fin_tent > _MAX_FIN_TENT:
+                if _fin_tent > _MAX_FIN_TENT or _alo_fin_estourou_tempo:
                     # ENTREGA DEGRADADA (nunca trava): usa o DF-seguro pré-commitado; se ele não existe (a
                     # montagem base nunca completou), tenta uma montagem base mínima; em último caso entrega um
                     # DataFrame vazio-porém-válido com aviso — o importante é ESCAPAR de 'processar'.
-                    logger.error("[FINALIZACAO/watchdog] Teto de %d tentativas atingido — forçando entrega "
-                                 "degradada para impedir travamento. Entregando os resultados já consolidados.",
-                                 _MAX_FIN_TENT)
+                    logger.error("[FINALIZACAO/watchdog] Escape acionado (tentativa=%d/teto=%d; tempo=%.0fs/"
+                                 "orcamento=%.0fs) — forçando entrega degradada para impedir travamento. "
+                                 "Entregando os resultados já consolidados.", _fin_tent, _MAX_FIN_TENT,
+                                 (time.time() - float(_alo_fin_wall0)), _FIN_WALL_BUDGET_S)
                     _df_forcado = st.session_state.get('alo_df_seguro')
                     if _df_forcado is None:
                         try:
@@ -42315,11 +42821,11 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # o painel de auditoria já sinaliza cada caso e nomeia o hub de menor viária.
                     df_final_alo = _validar_coerencia_viaria(df_final_alo)
                 # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos.
-                df_final_alo = _enriquecer_desambiguacao_homonimos(df_final_alo)
+                df_final_alo = _crono_fin("enriq_homonimos", _enriquecer_desambiguacao_homonimos, df_final_alo)
                 # [INTEGRIDADE - 133ª geração] Pós-passo ADITIVO: Índice de Integridade Geográfica + alerta por rota.
-                df_final_alo = _enriquecer_integridade_geografica(df_final_alo)
+                df_final_alo = _crono_fin("enriq_integridade", _enriquecer_integridade_geografica, df_final_alo)
                 # [IBGE-ROTULO - 146ª geração] Rótulos legíveis + retroalimentação Município/UF.
-                df_final_alo = _enriquecer_rotulos_ibge(df_final_alo)
+                df_final_alo = _crono_fin("enriq_rotulos_ibge", _enriquecer_rotulos_ibge, df_final_alo)
                 # [NOME-CONCORRENTE - 184ª geração] Passe FINAL: 'Concorrente Analisado' e 'Municipio Destino'
                 # SEMPRE pelo NOME do município (nunca o código IBGE), em TODAS as linhas e em qualquer modo —
                 # aplicado antes de montar o export e a tela, para cobrir inclusive as linhas que o alinhamento
@@ -42331,7 +42837,7 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 df_final_alo = _resolver_nomes_finais(df_final_alo)
                 # [XAI-ROTA - 184ª geração] Classificação da rota (🟢/🟡/🟠) + método EXPLÍCITO
                 # (✅ viária real / 📏 linha reta) + MOTIVO anexado às justificativas — em tela e planilha.
-                df_final_alo = _enriquecer_classificacao_rotas(df_final_alo)
+                df_final_alo = _crono_fin("enriq_classificacao_rotas", _enriquecer_classificacao_rotas, df_final_alo)
                 # [MOTOR-TEMPO - 184ª geração] Garante Tempo em toda linha com distância viária (nunca N/A).
                 df_final_alo = _garantir_tempo_estimado(df_final_alo)
                 # [CONSISTENCIA-FISICA - 184ª geração] Sinaliza incoerências físicas (viária<reta, velocidade).
@@ -42390,9 +42896,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 # (E zero com origem == destino é VÁLIDO: prova na própria cidade. Confundir os dois
                 #  foi o pecado original — usar zero como SENTINELA num campo onde ele é legítimo.)
                 # ═══════════════════════════════════════════════════════════════════════════════
-                df_final_alo, _rel_portao = _portao_final_distancias(df_final_alo)
+                df_final_alo, _rel_portao = _crono_fin("portao_distancias", _portao_final_distancias, df_final_alo)
                 st.session_state['portao_relatorio'] = _rel_portao
-                df_final_alo = _humanizar_identificadores(df_final_alo)
+                df_final_alo = _crono_fin("humanizar_ids", _humanizar_identificadores, df_final_alo)
                 # [HUB-MCDA - 130ª geração] Colunas da decisão multicritério (quando o modo está ativo): IGQ,
                 # custo efetivo do vencedor e do 2º, diferença % e justificativa XAI — por cliente (Origem).
                 # O tempo/balsa/modo/sinuosidade do vencedor já saem nas colunas de rota padrão do hub eleito.
