@@ -47,6 +47,125 @@
 # ==============================================================================
 #
 # HISTÓRICO DE VERSÕES:
+#   v314 (Rodada 1 · coerência) -> O VERIFICADOR DE INVARIANTE PASSA A RESPEITAR A GUARDA ANTI-FANTASMA (v313)
+#     Achado da re-auditoria: a v313 passou a MANTER de propósito alguns vencedores com viária maior que o 2º
+#     (quando o 2º é fantasma). Porém _verificar_invariante_viaria (184ª) ainda contava TODO vencedor > 2º como
+#     VIOLAÇÃO — e o painel promete "invariante garantido = prova ao usuário". Resultado: a v313 geraria FALSOS
+#     alarmes de violação exatamente nas linhas que ela protegeu. Correção (coerência): o verificador agora
+#     separa VIOLAÇÃO REAL (2º genuíno mais curto — devia ter trocado) de decisão PROTEGIDA (2º fantasma —
+#     vencedor genuíno mantido corretamente), reusando a mesma _v313_concorrente_e_genuino. O painel passa a
+#     mostrar as protegidas com um selo 🛡️ (transparência: o usuário VÊ a guarda agindo). Read-only; nenhuma
+#     decisão muda — só a CONTAGEM/EXPLICAÇÃO fica honesta. Verificado offline (test_v314.py): 2º genuíno mais
+#     curto conta violação; 2º fantasma/fallback/fluvial conta protegida; empate não conta nada. Invariantes:
+#     RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS, requirements INALTERADO.
+#   v313 (Rodada 1 · coerência da decisão) -> CORREÇÃO AUTORITATIVA FINAL AGORA RESPEITA A GUARDA ANTI-FANTASMA
+#     Achado da auditoria dos critérios de decisão: _forcar_menor_viaria_vencedor (184ª) roda DEPOIS do resgate
+#     (2a/2b/2c) e trocava vencedor↔concorrente por DISTÂNCIA PURA (Distancia > Distancia Concorrente), SEM
+#     nenhuma guarda de proveniência. Ou seja: podia COROAR um concorrente rota-fantasma (ex.: snap de 26 km
+#     para uma ilha) logo depois da 2b/2c tê-lo recusado — desfazendo a proteção na passagem FINAL e
+#     autoritativa. Correção: a troca só ocorre se o concorrente for viária GENUÍNA, pela MESMA guarda da
+#     2b/2c (nova função pura _v313_concorrente_e_genuino): (1) viária >= reta, (2) motor de rota real,
+#     (3) não-REGIC-fluvial-sem-balsa. NÃO regride o propósito original (184ª): para os casos legítimos
+#     rodoviário-vs-rodoviário o concorrente É genuíno e a troca acontece igual; só as trocas para FANTASMA
+#     são bloqueadas (logadas). Balsa curta legítima já é resolvida pelo resgate 2b ANTES desta passagem.
+#     Verificado offline (test_v313.py): concorrente rodoviário real → troca; viária<reta, fallback e
+#     REGIC-fluvial → bloqueados; dados ausentes → troca (fail-open). Invariantes: RotaPipeline 43, _SECOES 15,
+#     balloons 1, bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +1 função pura; guarda em 1 laço.
+#   v312 (Rodada 1 · §15 na Alocação + §11 árvore de decisão) -> aditivo/READ-ONLY (zero mudança de decisão).
+#     §15 (validação na Alocação): o alerta de qualidade da decisão, que vivia só no Comparador, passa a
+#       aparecer também na aba de Alocação — conta, via classificador de proveniência (v307), quantos locais
+#       vencedores NÃO têm rota viária genuína (fluvial/fallback/indeterminada) e quantos têm geometria muito
+#       indireta (V/R >= 1,9), destacando com st.error/st.warning. Memoizado por assinatura (len + versão) para
+#       não recomputar a cada rerun; defensivo (erro → silencioso).
+#     §11 (árvore de decisão por origem, COMPLETO): nova função pura _v312_arvore_decisao_origem que, para a
+#       origem selecionada na "Auditoria da Escolha", mostra a BUSCA que levou ao vencedor — todos os polos no
+#       raio, marcando 🏆 vencedor, 🥈 2º, ✅ considerados e ✂️ PODADOS por limite inferior (linha reta já >=
+#       viária do vencedor, não podiam vencer). É a prova VISUAL de otimalidade por branch-and-bound, e
+#       complementa a decomposição de custo (167ª) que já existia — agora funciona em QUALQUER modo (usa
+#       topk_completo). Integra a nota do resgate (2a/2b/2c) quando a origem foi refinada.
+#     Verificado offline (test_v312.py): a árvore poda corretamente por limite inferior e prova o ótimo; o
+#     resumo §15 classifica níveis ok/atencao/critico. Invariantes: RotaPipeline 43, _SECOES 15, balloons 1,
+#     bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +2 funções puras; wiring aditivo em 2 pontos.
+#   v311 (Rodada 1 · §21 + §15) -> SURFACING DAS COLUNAS DA FATIA 1 + ALERTA DE VALIDAÇÃO NO DASHBOARD
+#     Puramente ADITIVO/read-only (zero mudança de dado ou decisão). Duas frentes:
+#     §21 (surfacing): as 8 colunas de proveniência/validação/derrota da Fatia 1 JÁ iam para o .xlsx (a aba
+#       "Comparacao" escreve o DataFrame completo). Faltava (a) exibi-las na tabela on-screen "Comparação
+#       município a município" — adicionadas a _cols_show (guardado por 'if c in df.columns'); e (b) EXPLICÁ-LAS
+#       — 8 novas entradas no _dicionario_colunas_comparacao (O que é / De onde vem / Quando fica vazia / Como
+#       ler), atendendo "nenhum campo sem explicação".
+#     §15 (alerta visível): novo bloco no painel do Comparador conta as linhas com 'Validação Regra Viária' =
+#       critico / atencao e as destaca via st.error / st.warning, apontando para as colunas a auditar. Torna
+#       VISÍVEL o que a Fatia 1 já calculava por linha. Defensivo (try/except; se as colunas não existirem, some).
+#     Invariantes: RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS, requirements
+#     INALTERADO. +0 funções; +8 entradas no dicionário; +6 colunas on-screen; +1 bloco de alerta.
+#   v310 (Rodada 1 · Fatia 2c) -> GUARDA FLUVIAL REGIC (fecha o furo residual da 2b)
+#     A guarda anti-fantasma da 2b pegava fonte não-genuína e viária<reta, mas deixava escapar UM caso: rota
+#     de motor real, com viária>=reta, porém para um município que só tem acesso FLUVIAL (ilha) — um snap para
+#     o outro lado do rio com quilometragem "plausível". A 2c fecha isso cruzando o destino com a lista OFICIAL
+#     REGIC de municípios de acesso fluvial/isolado (_MUNICIPIOS_ACESSO_FLUVIAL, já embutida): se o destino é
+#     REGIC-fluvial e a rota NÃO tem balsa real, a "viária curta" é fantasma e é RECUSADA como menor viária.
+#     Como o resgate só tem o NOME do polo (não o Código IBGE), foi criado um índice inverso nome->códigos
+#     (a partir de _indice_ibge_por_codigo, cacheado 1x). FAIL-OPEN e conservador: balsa real, nome que não
+#     resolve, ou nome AMBÍGUO (homônimo fluvial vs não-fluvial) → NÃO bloqueia (preserva a decisão da 2b).
+#     Nunca coroa nada — só ACRESCENTA uma recusa quando há confiança. Verificado offline (test_v310_regic.py):
+#     destino REGIC-fluvial sem balsa é recusado; COM balsa é aceito (balsa é rede); homônimo ambíguo passa
+#     (fail-open); nome não-fluvial é intocado. Invariantes: RotaPipeline 43, _SECOES 15, balloons 1,
+#     bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +2 funções puras; wiring de 1 linha na 2b.
+#   v309 (Rodada 1 · Fatia 2b) -> MODO VIÁRIA ESTRITA: "BALSA É REDE" + GUARDA ANTI-FANTASMA
+#     Acata a orientação da Rodada 1: no modo "🛣️ Menor rota viária", a BALSA deixa de ser penalidade — a
+#     travessia é um trecho da rede e conta a VALOR DE FACE. Assim, travessia CURTA vence desvio rodoviário
+#     ENORME, e desvio rodoviário CURTO vence balsa LONGA — quem decide é a MENOR VIÁRIA GENUÍNA, não o custo
+#     efetivo com penalidades (que era exatamente a "métrica secundária" que o requisito proíbe de derrubar
+#     uma viária menor). Nova função pura _v308b_decidir_viaria substitui _avaliar_troca SOMENTE no resgate e
+#     SOMENTE no modo viária. GUARDA ANTI-FANTASMA (reusa o classificador de proveniência da Fatia 1): uma
+#     alternativa só é coroada se for viária GENUÍNA — motor de rota real E viária >= linha reta (lei física);
+#     rota-fantasma (snap p/ o outro lado do rio, sem travessia real) e fallback geodésico são recusados. Se o
+#     ATUAL for artefato e a alternativa for genuína, corrige (troca pela viária real). _fn_rota passou a
+#     devolver fluvial/fonte/status reais (antes fluvial=False fixo) para alimentar o classificador.
+#     Propriedades: gated ao modo viária (linha reta intocado) + REVERSÍVEL (_VIARIA_ESTRITA_ATIVA=False →
+#     decisão por custo efetivo, idêntica ao v308); MONOTÔNICO na viária genuína; FALLBACK TOTAL. Verificado
+#     offline (test_v309_viaria.py): travessia curta genuína (62 km) vence rodoviária mais longa (80 km);
+#     rota-fantasma (26 km, sem motor) é RECUSADA; balsa longa (100 km) perde para rodoviária curta (80 km).
+#     Invariantes: RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS, requirements
+#     INALTERADO. +1 função pura; wiring cirúrgico em _resgate_por_candidatos/_refinar_por_resgate_circuidade/
+#     _fn_rota + 1 call-site + 1 constante.
+#   v308 (Rodada 1 · Fatia 2a) -> RESGATE ADMISSÍVEL POR CIRCUIDADE (branch-and-bound) — vira as derrotas
+#     estruturais tipo Guajará-Mirim/Nova Mamoré. CAUSA-RAIZ confirmada: o resgate pós-alocação (238ª) só
+#     era acionado por ASSINATURA DE RISCO (V/R>=1.45 / balsa / fluvial) e só via o TOP-10 por linha reta.
+#     Um polo mais distante em RETA porém mais curto por ESTRADA (Porto Velho) ficava fora da lista E não
+#     disparava resgate (rota escolhida direta, V/R baixo) — nunca era roteado. Correção (teorema, não
+#     heurística): como viária >= linha reta SEMPRE, qualquer polo NÃO roteado com reta < viária-atual PODE
+#     vencer e agora É roteado (gatilho ADMISSÍVEL), usando a lista COMPLETA de polos (alo_topk_completo, já
+#     em session_state). A escolha só é dada como ótima quando nenhum polo não-roteado tem reta < viária.
+#     Propriedades de segurança: MONOTÔNICO (só troca por viária estritamente menor via _avaliar_troca — NUNCA
+#     piora a alocação), LIMITADO (_MAX_ADMISSIVEL_ROTEAR=40 por origem + teto global _max_resgates=500,
+#     priorizado por ganho potencial x inscritos), REVERSÍVEL (_RESGATE_ADMISSIVEL_ATIVO=False → idêntico ao
+#     v307), com FALLBACK TOTAL (qualquer erro preserva a linha). NÃO altera a filosofia de balsa/fluvial
+#     (isso é a Fatia 2b): nos casos rodoviário-vs-rodoviário (Grupo A) o custo efetivo ~ distância, então a
+#     troca acontece pela menor viária real. Gated ao modo "Menor rota viária"; modo linha reta intocado.
+#     Verificado offline (test_v308_admissivel.py): no cenário Nova Mamoré, o resgate roteia Porto Velho
+#     (antes ignorado) e troca 302 km -> 243 km. Invariantes: RotaPipeline 43, _SECOES 15, balloons 1,
+#     bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +0 funções novas; mudança cirúrgica em
+#     _refinar_por_resgate_circuidade / _resgate_por_candidatos + 1 call-site + 3 constantes.
+#   v307 (Rodada 1 · Fatia 1) -> CAMADA DE PROVENIÊNCIA E VALIDAÇÃO DA DECISÃO DE ROTA
+#     Primeira fatia da revisão do sistema de decisão de rotas. ADITIVA e READ-ONLY: não altera nenhuma
+#     decisão/resultado existente (não-regressão por construção). Introduz 5 funções PURAS (_v307_*) e
+#     as conecta ao Comparador de Estudos como COLUNAS NOVAS:
+#       §9  proveniência da distância (viária real / viária com balsa / fluvial-estimada / fallback
+#           geodésico / indeterminada) + confiabilidade + motor + status;
+#       §15/§356/§19  validação da REGRA "Menor Rota Viária": sinaliza quando o vencedor declarado tem
+#           viária MAIOR que o 2º sendo ambos rotas reais (erro de seleção), e quando o lado curto é
+#           artefato fluvial/fantasma (o vencedor acertou ao evitar) — SEM trocar a decisão;
+#       §12 classificação diagnóstica da derrota (circuidade_preselecao / candidato_nao_avaliado /
+#           artefato_fluvial / diferenca_malha / operacional_ruido) + se é EVITÁVEL;
+#       §21 rótulos honestos de ausência (sem célula vazia sem explicação).
+#     Orientação da Rodada 1 acatada: BALSA não é penalidade — travessia curta é rede legítima; só o
+#     desvio rodoviário enorme perde. Verificada offline contra os 13 casos reais de derrota (suíte
+#     test_casos_reais.py): separa corretamente Grupo A evitável (Guajará-Mirim/Nova Mamoré = erro de
+#     seleção §356) do Grupo B fluvial (Marajó, sem falso alarme contra a app). A mudança de DECISÃO
+#     (resgate por circuidade) fica para a Fatia 2 (v308), agora instrumentada por esta camada.
+#     Invariantes: RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS,
+#     requirements INALTERADO. +5 funções puras; wiring aditivo em 1 ponto (_comparar_alocacoes).
 #   v1.0–v2.3 → 13 rodadas (performance, precisão, escala, UX, FIX-LOTE)
 #   v2.4 → CORREÇÃO + ACELERAÇÃO DA ABA DE ALOCAÇÃO (FIX-ALOC)
 #   v2.5 → AUDITORIA TÉCNICA COMPLETA (linha por linha) — refinamentos + documentação
@@ -21039,6 +21158,48 @@ def _dicionario_colunas_comparacao():
          "Como ler": "Mede a CONFIANÇA no dado, não a qualidade do deslocamento. Score baixo = geocodificação "
                      "duvidosa."},
 
+        # ─── PROVENIÊNCIA E VALIDAÇÃO DA DECISÃO (v307/v309 · Fatia 1/2) ───
+        {"Coluna": "Proveniência Aplicação", "Grupo": "Proveniência da decisão",
+         "O que é": "Natureza da distância da aplicação: viária real, viária com balsa, fluvial/estimada ou fallback geodésico.",
+         "De onde vem": "Calculado pela camada de proveniência (v307) a partir do motor de rota, status e V/R.",
+         "Fica vazia quando": "Nunca — traz sempre um rótulo honesto (inclusive 'Indeterminada').",
+         "Como ler": "'Viária (rota real)' é comparável como estrada; 'Fluvial/estimada' e 'Fallback' NÃO são viária plena."},
+        {"Coluna": "Confiabilidade Distância (App)", "Grupo": "Proveniência da decisão",
+         "O que é": "Confiança na distância da aplicação: Alta, Média ou Baixa.",
+         "De onde vem": "Calculado (v307): motor real e geometria plausível → Alta; V/R elevado ou fallback → Média/Baixa.",
+         "Fica vazia quando": "Nunca.",
+         "Como ler": "Baixa/Média pede conferência antes de usar a distância para decisão."},
+        {"Coluna": "Validação Regra Viária", "Grupo": "Proveniência da decisão",
+         "O que é": "Resultado da validação cruzada da escolha: ok, atencao ou critico.",
+         "De onde vem": "Calculado (v307): compara vencedor × 2º considerando a proveniência de cada um.",
+         "Fica vazia quando": "Nunca.",
+         "Como ler": "'critico' = possível erro de seleção (2º tinha viária real menor) ou anomalia — investigar primeiro."},
+        {"Coluna": "Alerta da Decisão", "Grupo": "Proveniência da decisão",
+         "O que é": "Texto do alerta quando a validação cruzada aponta erro/atenção.",
+         "De onde vem": "Calculado (v307).",
+         "Fica vazia quando": "A decisão está consistente (nível 'ok').",
+         "Como ler": "Quando preenchida, explica em uma frase por que a decisão merece atenção."},
+        {"Coluna": "Ação Sugerida", "Grupo": "Proveniência da decisão",
+         "O que é": "Próximo passo recomendado quando há alerta (ex.: trocar vencedor↔2º, reprocessar par).",
+         "De onde vem": "Calculado (v307).",
+         "Fica vazia quando": "Não há alerta.",
+         "Como ler": "É uma sugestão de auditoria, não uma alteração automática — a decisão permanece sua."},
+        {"Coluna": "Classe da Divergência", "Grupo": "Proveniência da decisão",
+         "O que é": "Categoria da causa provável quando a referência venceu (circuidade, candidato não avaliado, artefato fluvial, malha, ruído).",
+         "De onde vem": "Calculado (v307) a partir de V/R, balsa e proveniência.",
+         "Fica vazia quando": "A aplicação venceu ou houve empate (mostra 'Não aplicável').",
+         "Como ler": "'circuidade_preselecao' e 'candidato_nao_avaliado' são EVITÁVEIS — alvo de correção."},
+        {"Coluna": "Divergência Evitável", "Grupo": "Proveniência da decisão",
+         "O que é": "Se a divergência era, em tese, evitável (Sim/Não).",
+         "De onde vem": "Calculado (v307).",
+         "Fica vazia quando": "A aplicação venceu ou houve empate (mostra 'Não aplicável').",
+         "Como ler": "Concentre a revisão nas linhas 'Sim' — são as que dão para recuperar."},
+        {"Coluna": "Diagnóstico da Divergência", "Grupo": "Proveniência da decisão",
+         "O que é": "Explicação em uma frase da causa provável da divergência.",
+         "De onde vem": "Calculado (v307).",
+         "Fica vazia quando": "A aplicação venceu ou houve empate.",
+         "Como ler": "Leia junto com 'Classe da Divergência' para decidir se vale reprocessar o caso."},
+
         # ─── ESTUDO CONCORRENTE (REF ·) ───
         {"Coluna": "REF · (qualquer coluna)", "Grupo": "Estudo concorrente",
          "O que é": "**TODA** coluna da sua planilha de referência, preservada.",
@@ -22417,6 +22578,52 @@ def _comparar_alocacoes(linhas, parse_tempo=None, limiar_empate_km=1.0):
                           and d["Vencedor Distancia"] not in ("—", "Empate")) else "Não")
         except Exception as _e_vm:
             logger.error(f"[MULTI-CMP] Falha no vencedor multicritério: {_e_vm}")
+        # [V307 · FATIA 1] Proveniência + validação da regra viária + classe da divergência.
+        # ADITIVO e defensivo: só cria chaves NOVAS em d, a partir de dados já presentes;
+        # não altera nenhum campo/decisão existente. Se algo falhar, o comparador segue igual.
+        try:
+            _da_km = d.get("Distancia Aplicacao")
+            _dr_km = d.get("Distancia Referencia")
+            _balsa_app = d.get("Balsa Aplicacao", "")
+            _fonte_app = d.get("Fonte Aplicacao", d.get("Motor Aplicacao", ""))
+            _vr_app = d.get("Razao V/R Aplicacao", d.get("VR Aplicacao"))
+            _prov_app = _v307_classificar_proveniencia_distancia(
+                _da_km, _fonte_app, d.get("Status Aplicacao", ""),
+                tem_balsa=_balsa_app, vr=_vr_app, fluvial=False)
+            _prov_ref = _v307_classificar_proveniencia_distancia(
+                _dr_km, d.get("Fonte Referencia", ""), d.get("Status Referencia", ""),
+                fluvial=_v307_sim(d.get("Fluvial Referencia", d.get("Acesso Referencia", ""))))
+            d["Proveniência Aplicação"] = _prov_app["rotulo"]
+            d["Confiabilidade Distância (App)"] = _prov_app["confiabilidade"]
+            # Validação da REGRA "Menor Rota Viária" (§356/§15/§19): o lado declarado
+            # vencedor honra a menor viária real? Sinaliza sem trocar nada.
+            _venc_lbl = d.get("Vencedor (Esforço Real)", d.get("Vencedor Distancia", "—"))
+            if _venc_lbl == "Aplicação":
+                _cv = _v307_validar_vencedor_cruzado(_da_km, _dr_km, _prov_app, _prov_ref)
+            elif _venc_lbl == "Referência":
+                _cv = _v307_validar_vencedor_cruzado(_dr_km, _da_km, _prov_ref, _prov_app)
+            else:
+                _cv = {"nivel": "ok", "alerta": False,
+                       "motivo": "Empate/sem dado — regra viária não aplicável.", "acao": ""}
+            d["Validação Regra Viária"] = _cv["nivel"]
+            d["Alerta da Decisão"] = _cv["motivo"] if _cv.get("alerta") else ""
+            d["Ação Sugerida"] = _cv.get("acao", "")
+            # Classe da divergência quando a REFERÊNCIA venceu (aprendizado §12).
+            if _venc_lbl == "Referência":
+                _nat = str(d.get("Justificativa", "")) + " " + str(d.get("Explicacao do Criterio", ""))
+                _cat, _evit, _exp = _v307_classificar_derrota(
+                    vr_app=_vr_app, tem_balsa_app=_balsa_app,
+                    fluvial_ref=_prov_ref["tipo"] == "fluvial_estimada",
+                    natureza=_nat, dif_km=d.get("Diferenca Abs (km)"))
+                d["Classe da Divergência"] = _cat
+                d["Divergência Evitável"] = "Sim" if _evit else "Não"
+                d["Diagnóstico da Divergência"] = _exp
+            else:
+                d["Classe da Divergência"] = _v307_rotulo_ausencia("na")
+                d["Divergência Evitável"] = _v307_rotulo_ausencia("na")
+                d["Diagnóstico da Divergência"] = ""
+        except Exception as _e_v307:
+            logger.error(f"[V307-PROVENIENCIA] Falha na camada de proveniência: {_e_v307}")
         out.append(d)
     return out
 
@@ -24945,6 +25152,23 @@ _VR_SEVERO = 2.00         # descasamento grave geometria×estrada
 _K_EXTRA_BASE = 6         # candidatos diretos extras a rotear no resgate (limitado!)
 _K_EXTRA_AMAZONIA = 10    # amplia onde a malha é esparsa
 _MARGEM_TROCA = 0.005     # só troca se a alternativa for ao menos 0,5% menor (evita ruído)
+# [V308 · FATIA 2a] GATILHO ADMISSÍVEL (branch-and-bound) — reforço do resgate por circuidade.
+# Fundamento (teorema, não heurística): viária >= linha reta SEMPRE. Logo, se um polo NÃO roteado tem
+# LINHA RETA menor que a viária do polo atualmente escolhido, ele PODE ter rota viária menor e PRECISA ser
+# avaliado. Só quando NENHUM polo não-roteado tem reta < viária-atual é que a escolha é PROVADAMENTE ótima.
+# Foi exatamente o que faltou em Guajará-Mirim/Nova Mamoré: Porto Velho é mais longe em reta que o polo
+# escolhido, porém MAIS CURTO por estrada — e nunca era roteado (fora do top-10 e sem assinatura de risco).
+# MONOTÔNICO (só troca por viária estritamente menor via _avaliar_troca), LIMITADO e REVERSÍVEL.
+_RESGATE_ADMISSIVEL_ATIVO = True   # False → comportamento idêntico ao v307 (só resgate por assinatura de risco)
+_MARGEM_ADMISSIVEL_KM = 0.5        # candidato só é "promissor" se a reta for ao menos isto menor que a viária atual
+_MAX_ADMISSIVEL_ROTEAR = 40        # teto de polos extras roteados por origem no gatilho admissível (custo de rede)
+# [V309 · FATIA 2b] MODO VIÁRIA ESTRITA — filosofia "balsa é rede, não penalidade".
+# No modo "🛣️ Menor rota viária", o resgate decide pela MENOR VIÁRIA GENUÍNA (a travessia de balsa conta a
+# VALOR DE FACE, sem penalidade: travessia curta vence desvio rodoviário enorme; desvio rodoviário curto
+# vence balsa longa). Guarda anti-fantasma: uma alternativa só compete se for viária GENUÍNA — motor de rota
+# real E viária >= linha reta (lei física). Rota-fantasma (snap para o outro lado do rio, sem travessia real)
+# e fallback geodésico NÃO são coroados. Reversível: False → decisão por custo efetivo (comportamento v308).
+_VIARIA_ESTRITA_ATIVA = True
 # penalidades operacionais em "km equivalentes" (para o custo efetivo do trade-off):
 _PEN_BALSA_KM = 25.0      # balsa: horário/clima/capacidade/risco
 _PEN_FLUVIAL_KM = 60.0    # acesso fluvial/isolado (sem rota rodoviária plena)
@@ -25055,6 +25279,133 @@ def _avaliar_troca(atual, alternativa):
                 _just.append(f"o ganho de {_dif} km não compensa a perda de robustez operacional")
         _res["motivo"] = "; ".join(_just) or "a escolha atual tem menor custo efetivo para o candidato"
     return _res
+
+
+_V309C_NOME_IDX = None  # cache do índice inverso {nome_norm: frozenset(codigos)} para a guarda fluvial REGIC
+
+
+def _v309c_indice_nome_para_codigos():
+    """[V310 · FATIA 2c] Índice inverso {nome_normalizado (unidecode/UPPER/strip): frozenset(codigos_ibge)},
+    construído UMA vez a partir de _indice_ibge_por_codigo(). Permite consultar o status REGIC-fluvial de um
+    município pelo NOME quando não há Código IBGE em mãos (é o caso do resgate, cujos candidatos vêm do
+    topk_map só com o nome do polo). Defensivo: qualquer falha devolve dict vazio (→ guarda fica inerte)."""
+    global _V309C_NOME_IDX
+    if _V309C_NOME_IDX is not None:
+        return _V309C_NOME_IDX
+    _idx = {}
+    try:
+        for _cod, _info in (_indice_ibge_por_codigo() or {}).items():
+            _nome = unidecode(str(_info.get("municipio", ""))).upper().strip()
+            if not _nome:
+                continue
+            _idx.setdefault(_nome, set()).add(str(_cod))
+        _idx = {_k: frozenset(_v) for _k, _v in _idx.items()}
+    except Exception:
+        _idx = {}
+    _V309C_NOME_IDX = _idx
+    return _idx
+
+
+def _v309c_destino_fluvial_sem_balsa(municipio_destino, tem_balsa, conjunto=None, indice_nome=None):
+    """[V310 · FATIA 2c] GUARDA FLUVIAL REGIC. Devolve True SOMENTE quando há CONFIANÇA de que a rota é
+    fantasma: o município de destino consta na lista oficial REGIC de acesso fluvial/isolado E a rota NÃO
+    tem balsa real (não há estrada de carro até a ilha; a 'viária curta' é um snap para o outro lado do rio).
+    FAIL-OPEN por segurança: balsa real, nome que não resolve, ou nome AMBÍGUO (homônimo entre um município
+    fluvial e um não-fluvial) → False (NÃO bloqueia; preserva a decisão da Fatia 2b). Nunca coroa nada — só
+    pode ACRESCENTAR uma recusa quando confiante. PURA (conjunto e índice injetáveis para teste)."""
+    try:
+        if tem_balsa:  # travessia real declarada → é rede legítima, jamais fantasma
+            return False
+        if conjunto is None:
+            if not FLUVIAL_LISTA_ATIVA:
+                return False
+            conjunto = _MUNICIPIOS_ACESSO_FLUVIAL
+        _nome = unidecode(str(municipio_destino or "")).upper().strip()
+        if not _nome:
+            return False
+        _idx = indice_nome if indice_nome is not None else _v309c_indice_nome_para_codigos()
+        _codigos = _idx.get(_nome)
+        if not _codigos:
+            return False  # nome não resolve → fail-open
+        # NÃO-ambiguidade obrigatória: todos os códigos daquele nome precisam ser REGIC-fluvial. Se algum não
+        # for, o nome é ambíguo (homônimo) e podemos estar diante do município NÃO-fluvial → fail-open.
+        return all(str(_c) in (conjunto or frozenset()) for _c in _codigos)
+    except Exception:
+        return False
+
+
+def _v308b_decidir_viaria(atual, alt, margem_km=0.5):
+    """[V309 · FATIA 2b] Decisão de troca no modo "🛣️ Menor rota viária". Regra do usuário: a BALSA NÃO é
+    penalidade — a travessia é um trecho da rede. Vence a MENOR VIÁRIA GENUÍNA (a balsa conta a valor de
+    face). Guarda ANTI-FANTASMA: a alternativa só compete se for viária genuína (motor real E viária >= reta);
+    rota-fantasma/fallback geodésico não são coroados. Se o ATUAL for artefato e a alternativa for genuína,
+    troca (corrige artefato). PURA/defensiva; mesmo formato de retorno de _avaliar_troca.
+
+      atual/alt = dict {nome, dist_km, reta_km, vr, tem_balsa, fluvial, fonte, tempo_min}
+    """
+    _res = {"trocar": False, "motivo": "", "km_salvo": None, "tempo_salvo_min": None,
+            "custo_atual": None, "custo_alt": None}
+    try:
+        _da = _num(atual.get("dist_km")); _db = _num(alt.get("dist_km"))
+        if _db is None:
+            _res["motivo"] = "alternativa sem rota válida"
+            return _res
+        # proveniência (genuinidade) da ALTERNATIVA — reusa o classificador da Fatia 1
+        _pb = _v307_classificar_proveniencia_distancia(
+            _db, alt.get("fonte", ""), alt.get("status", ""),
+            tem_balsa=alt.get("tem_balsa"), vr=alt.get("vr"), fluvial=alt.get("fluvial"))
+        _rb = _num(alt.get("reta_km"))
+        # genuína = comparável como viária E fisicamente sã (viária >= reta, tolerância 0,5 km)
+        _fisicamente_sa = (_rb is None or _db >= _rb - 0.5)
+        _comparavel_b = bool(_pb.get("comparavel_como_viaria"))
+        # [V310 · FATIA 2c] guarda fluvial REGIC (fail-open): destino oficialmente fluvial/isolado SEM balsa
+        # real → não há estrada até a ilha; a 'viária curta' é rota-fantasma. Recusa como 'menor viária'.
+        _fluvial_regic = _v309c_destino_fluvial_sem_balsa(alt.get("nome"), alt.get("tem_balsa"))
+        _genuina_b = _comparavel_b and _fisicamente_sa and not _fluvial_regic
+        if not _genuina_b:
+            if _fluvial_regic:
+                _res["motivo"] = ("destino consta na lista REGIC de acesso fluvial/isolado e a rota não tem "
+                                  "balsa real — 'viária' curta é rota-fantasma (recusada)")
+            elif not _fisicamente_sa:
+                _res["motivo"] = ("alternativa fisicamente impossível (viária " + ("%.1f" % _db) +
+                                  " km < linha reta " + ("%.1f" % _rb) + " km) — rota-fantasma recusada")
+            else:
+                _res["motivo"] = ("alternativa não é viária genuína (" + str(_pb.get("tipo_humano", "?")) +
+                                  ") — ignorada como 'menor viária' (guarda anti-fantasma)")
+            return _res
+        # proveniência do ATUAL
+        _pa = _v307_classificar_proveniencia_distancia(
+            _da, atual.get("fonte", ""), atual.get("status", ""),
+            tem_balsa=atual.get("tem_balsa"), vr=atual.get("vr"), fluvial=atual.get("fluvial"))
+        _atual_genuina = bool(_pa.get("comparavel_como_viaria"))
+        _ta, _tb = _num(atual.get("tempo_min")), _num(alt.get("tempo_min"))
+        # Caso 1: o ATUAL não é genuíno (fantasma/fallback) e a alternativa é real → corrige o artefato.
+        if not _atual_genuina and _da is not None:
+            _res["trocar"] = True
+            _res["km_salvo"] = round(_da - _db, 1)
+            _res["tempo_salvo_min"] = round(_ta - _tb, 0) if (_ta is not None and _tb is not None) else None
+            _res["motivo"] = ("substitui rota não-genuína (" + str(_pa.get("tipo_humano", "?")) +
+                              ") por viária real de " + ("%.1f" % _db) + " km")
+            return _res
+        # Caso 2: ambos genuínos → MENOR VIÁRIA vence (balsa a valor de face, SEM penalidade).
+        if _da is None or _db < _da - float(margem_km):
+            _res["trocar"] = True
+            _res["km_salvo"] = round(_da - _db, 1) if _da is not None else None
+            _res["tempo_salvo_min"] = round(_ta - _tb, 0) if (_ta is not None and _tb is not None) else None
+            _extra = ""
+            if alt.get("tem_balsa") and not atual.get("tem_balsa"):
+                _extra = " (inclui travessia de balsa — contabilizada como rede, sem penalidade)"
+            elif atual.get("tem_balsa") and not alt.get("tem_balsa"):
+                _extra = " (alternativa rodoviária substitui travessia mais longa)"
+            _res["motivo"] = ("menor rota viária real: " + ("%.1f" % _db) + " km" +
+                              (" vs " + ("%.1f" % _da) + " km" if _da is not None else "") + _extra)
+        else:
+            _res["motivo"] = ("rota atual já é a menor viária genuína (" +
+                              (("%.1f km" % _da) if _da is not None else "n/d") + ")")
+        return _res
+    except Exception:
+        return {"trocar": False, "motivo": "decisão viária abortada com segurança",
+                "km_salvo": None, "tempo_salvo_min": None, "custo_atual": None, "custo_alt": None}
 
 
 def _resgate_circuidade(origem, uf, coord_origem, candidatos, escolhido, fn_rota,
@@ -25189,7 +25540,8 @@ def _tempo_min(s):
         return None
 
 
-def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscritos=0, params=None):
+def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscritos=0, params=None,
+                            admissivel=False, k_override=None, viaria_estrita=False):
     """[RESGATE-CIRCUIDADE - 238ª] Variante do resgate que recebe uma LISTA JÁ ORDENADA de candidatos (ex.:
     do topk_map da alocação, ordenado por proximidade) — dispensa coordenadas. Roteia cada um pelo motor
     autoritativo (fn_rota) e adota o de menor CUSTO EFETIVO para o candidato, com as MESMAS garantias
@@ -25203,16 +25555,25 @@ def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscrito
         _vr = _num(escolhido.get("vr")); _balsa = bool(escolhido.get("tem_balsa")); _fluv = bool(escolhido.get("fluvial"))
         _reg["contexto"] = _classificar_contexto(uf, escolhido.get("reta_km"), _balsa, _fluv)
         _precisa, _motivo = _precisa_resgate(_vr, _balsa, _fluv)
-        if not _precisa:
+        if not _precisa and not admissivel:
             _reg["explicacao"] = "escolha estável (sem assinatura de risco); refinamento não acionado."
             return {"trocou": False, "destino_final": _nome_esc, "dist_final_km": _num(escolhido.get("dist_km")),
                     "registro": _reg}
+        if not _precisa and admissivel:
+            _motivo = ("gatilho admissível (branch-and-bound): há candidato mais próximo em linha reta que "
+                       "a viária atual — pode existir rota viária menor não avaliada")
         _reg["acionado"] = True; _reg["motivo_gatilho"] = _motivo
-        _k = _p.get("k_extra_amazonia", _K_EXTRA_AMAZONIA) if str(uf or "").upper()[:2] in _UF_AMAZONIA_RESC \
-            else _p.get("k_extra_base", _K_EXTRA_BASE)
+        if k_override is not None and int(k_override) > 0:
+            _k = int(k_override)
+        else:
+            _k = _p.get("k_extra_amazonia", _K_EXTRA_AMAZONIA) if str(uf or "").upper()[:2] in _UF_AMAZONIA_RESC \
+                else _p.get("k_extra_base", _K_EXTRA_BASE)
         _atual = {"nome": _nome_esc, "dist_km": _num(escolhido.get("dist_km")), "vr": _vr,
-                  "tem_balsa": _balsa, "fluvial": _fluv, "tempo_min": _num(escolhido.get("tempo_min"))}
+                  "tem_balsa": _balsa, "fluvial": _fluv, "tempo_min": _num(escolhido.get("tempo_min")),
+                  "reta_km": _num(escolhido.get("reta_km")), "fonte": escolhido.get("fonte", ""),
+                  "status": escolhido.get("status", "")}
         _melhor = dict(_atual); _melhor_troca = None
+        _usar_viaria = bool(viaria_estrita) and _VIARIA_ESTRITA_ATIVA
         for _nome in (cand_names or [])[:_k]:
             if str(_nome or "").strip().lower() == str(_nome_esc or "").strip().lower():
                 continue
@@ -25225,8 +25586,9 @@ def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscrito
             _reg["candidatos_avaliados"] += 1
             _alt = {"nome": _nome, "dist_km": _num(_r.get("dist_km")), "vr": _num(_r.get("vr")),
                     "tem_balsa": bool(_r.get("tem_balsa")), "fluvial": bool(_r.get("fluvial")),
-                    "tempo_min": _num(_r.get("tempo_min"))}
-            _av = _avaliar_troca(_melhor, _alt)
+                    "tempo_min": _num(_r.get("tempo_min")), "reta_km": _num(_r.get("reta_km")),
+                    "fonte": _r.get("fonte", ""), "status": _r.get("status", "")}
+            _av = _v308b_decidir_viaria(_melhor, _alt) if _usar_viaria else _avaliar_troca(_melhor, _alt)
             _reg["alternativas"].append({"nome": _nome, "dist_km": _alt["dist_km"], "tem_balsa": _alt["tem_balsa"],
                                          "trocaria": _av["trocar"], "motivo": _av["motivo"]})
             if _av["trocar"]:
@@ -25250,7 +25612,8 @@ def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscrito
                 "dist_final_km": _num(escolhido.get("dist_km")), "registro": _reg}
 
 
-def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, params=None):
+def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, params=None, topk_completo=None,
+                                    viaria_estrita=False):
     """[RESGATE-CIRCUIDADE - 238ª/241ª] PASSE PÓS-ALOCAÇÃO. Percorre o df_final_alo; para cada origem cujo
     destino escolhido exibe a assinatura de risco (V/R alta, balsa ou fluvial), roteia os candidatos mais
     diretos do topk_map pelo motor autoritativo e, se houver alternativa melhor PARA O CANDIDATO, atualiza a
@@ -25285,6 +25648,15 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
                 _topk_norm[str(_k).strip().lower()] = _v
         except Exception:
             _topk_norm = {}
+        # [V308 · FATIA 2a] índice normalizado da lista COMPLETA (todos os polos por reta) para o gatilho
+        # admissível. Se topk_completo não vier, cai no topk_map (comportamento v307 preservado).
+        _topkc = topk_completo if topk_completo else topk_map
+        _topkc_norm = {}
+        try:
+            for _k, _v in (_topkc or {}).items():
+                _topkc_norm[str(_k).strip().lower()] = _v
+        except Exception:
+            _topkc_norm = {}
         # mapa coluna(df) -> atributo(RotaPipeline) para atualização COMPLETA e coerente
         _MAP_RP = {
             "distancia": "distancia", "tempo": "tempo", "link da rota": "link_rota", "balsas": "balsas",
@@ -25313,22 +25685,57 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
                 _fonte = (str(df.at[_idx, _c_fonte]).lower()) if _c_fonte else ""
                 _fluvial = ("fluvial" in _fonte) or ("isolado" in _fonte) or ("sem rota" in _fonte)
                 _precisa, _ = _precisa_resgate(_vr, _balsa, _fluvial)
-                if not _precisa:
+                # [V308 · FATIA 2a] GATILHO ADMISSÍVEL: mesmo SEM assinatura de risco, se existe candidato
+                # NÃO roteado cuja LINHA RETA < viária atual, ele PODE ter rota viária menor (viária >= reta)
+                # e DEVE ser avaliado. Foi o que faltou em Guajará-Mirim/Nova Mamoré.
+                _admissivel = False
+                _cands_c = (_topkc_norm.get(_origem.strip().lower()) or _topk_norm.get(_origem.strip().lower()) or [])
+                if not _precisa and _RESGATE_ADMISSIVEL_ATIVO:
+                    try:
+                        for (_dd, _h) in _cands_c:
+                            if str(_h).strip().lower() == _destino.lower():
+                                continue
+                            _rr = _num(_dd)
+                            if _rr is not None and _rr < _dist - _MARGEM_ADMISSIVEL_KM:
+                                _admissivel = True
+                                break
+                    except Exception:
+                        _admissivel = False
+                if not _precisa and not _admissivel:
                     continue
                 _insc = _num(df.at[_idx, _c_insc], 0) if _c_insc else 0
                 _exc = max(_dist - _reta, 0.0)  # excesso de circuidade em km
-                _prio = (max(_exc, 15.0) if (_balsa or _fluvial) else _exc) * max(_num(_insc, 0) or 0.0, 1.0)
-                _candidatas.append((_prio, _idx, _origem, _destino, _dist, _reta, _vr, _balsa, _fluvial, _insc))
+                if _admissivel and not _precisa:
+                    # prioridade admissível: ganho POTENCIAL máximo = (viária atual - melhor reta candidata)
+                    # x inscritos. É um limite superior do que se pode economizar — dirige o orçamento de rede.
+                    try:
+                        _best_reta = min((_num(_dd) for (_dd, _h) in _cands_c
+                                          if str(_h).strip().lower() != _destino.lower()
+                                          and _num(_dd) is not None), default=_reta)
+                    except Exception:
+                        _best_reta = _reta
+                    _prio = max(_dist - (_best_reta if _best_reta is not None else _reta), 0.0) * max(_num(_insc, 0) or 0.0, 1.0)
+                else:
+                    _prio = (max(_exc, 15.0) if (_balsa or _fluvial) else _exc) * max(_num(_insc, 0) or 0.0, 1.0)
+                _candidatas.append((_prio, _idx, _origem, _destino, _dist, _reta, _vr, _balsa, _fluvial, _insc, _admissivel))
             except Exception:
                 continue
         _candidatas.sort(key=lambda x: x[0], reverse=True)  # maior impacto primeiro
 
         # FASE 2 [244ª]: roteia e atualiza as linhas de maior impacto, respeitando o teto.
-        for (_prio, _idx, _origem, _destino, _dist, _reta, _vr, _balsa, _fluvial, _insc) in _candidatas[:_max_resgates]:
+        for (_prio, _idx, _origem, _destino, _dist, _reta, _vr, _balsa, _fluvial, _insc, _admissivel) in _candidatas[:_max_resgates]:
             try:
                 _uf = (str(df.at[_idx, _c_uf]).strip() if _c_uf else "")
-                _cands = (topk_map.get(_origem) or _topk_norm.get(_origem.strip().lower()) or [])
-                _nomes = [h for (_dd, h) in _cands if str(h).strip().lower() != _destino.lower()]
+                if _admissivel:
+                    # [V308 · FATIA 2a] lista COMPLETA e branch-and-bound: só os polos cuja reta < viária
+                    # atual podem vencer (prefixo ordenado por reta), com teto de rede.
+                    _cands = (_topkc_norm.get(_origem.strip().lower()) or _topk_norm.get(_origem.strip().lower()) or [])
+                    _nomes = [h for (_dd, h) in _cands
+                              if str(h).strip().lower() != _destino.lower()
+                              and _num(_dd) is not None and _num(_dd) < _dist][:_MAX_ADMISSIVEL_ROTEAR]
+                else:
+                    _cands = (topk_map.get(_origem) or _topk_norm.get(_origem.strip().lower()) or [])
+                    _nomes = [h for (_dd, h) in _cands if str(h).strip().lower() != _destino.lower()]
                 if not _nomes:
                     continue
                 _origem_q = f"{_origem}, {_uf}" if _uf else _origem
@@ -25342,13 +25749,17 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
                         _rp = _router(_origem_q, _hub)
                         _cache_rp[_hub] = _rp
                         _d = _num(getattr(_rp, "distancia", None)); _rr = _num(getattr(_rp, "dist_linha_reta", None))
+                        _fonte_rp = str(getattr(_rp, "fonte_rota", "") or "")
+                        _status_rp = str(getattr(_rp, "status_linha_reta", "") or getattr(_rp, "motivo_roteamento", "") or "")
+                        _fluv_rp = any(_m in (_fonte_rp + " " + _status_rp).lower()
+                                       for _m in ("fluvial", "isolado", "sem rota", "sem malha"))
                         _out = {"dist_km": _d, "reta_km": _rr,
                                 "vr": (_d / _rr if (_d and _rr and _rr > 0) else None),
                                 "tem_balsa": str(getattr(_rp, "balsas", "")).strip().lower() == "sim",
-                                "fluvial": False, "tempo_min": _tempo_min(getattr(_rp, "tempo", "")),
+                                "fluvial": _fluv_rp, "tempo_min": _tempo_min(getattr(_rp, "tempo", "")),
                                 "lat": _num(getattr(_rp, "lat_destino", None)),
                                 "lon": _num(getattr(_rp, "lon_destino", None)),
-                                "fonte": getattr(_rp, "fonte_rota", "")}
+                                "fonte": _fonte_rp, "status": _status_rp}
                     except Exception:
                         _out = None
                     _cache[_hub] = _out
@@ -25356,8 +25767,13 @@ def _refinar_por_resgate_circuidade(df, topk_map, router=None, ativo=True, param
 
                 _esc = {"nome": _destino, "dist_km": _dist, "reta_km": _reta, "vr": _vr,
                         "tem_balsa": _balsa, "fluvial": _fluvial,
-                        "tempo_min": _tempo_min(df.at[_idx, _c_tempo]) if _c_tempo else None}
-                _res = _resgate_por_candidatos(_origem, _uf, _esc, _nomes, _fn_rota, inscritos=_insc, params=params)
+                        "tempo_min": _tempo_min(df.at[_idx, _c_tempo]) if _c_tempo else None,
+                        "fonte": (str(df.at[_idx, _c_fonte]) if _c_fonte else ""),
+                        "status": (str(df.at[_idx, _col.get("status da rota")]) if _col.get("status da rota") else "")}
+                _res = _resgate_por_candidatos(_origem, _uf, _esc, _nomes, _fn_rota, inscritos=_insc, params=params,
+                                               admissivel=_admissivel,
+                                               k_override=(len(_nomes) if _admissivel else None),
+                                               viaria_estrita=viaria_estrita)
                 _regs.append(_res["registro"])
                 if _res.get("trocou"):
                     _rp_novo = _cache_rp.get(_res["destino_final"])
@@ -33287,6 +33703,185 @@ _PARAMS_CUSTO_HUB = {
 
 
 
+# ==============================================================================
+# [V307 · FATIA 1] CAMADA DE PROVENIÊNCIA E VALIDAÇÃO DA DECISÃO DE ROTA
+# ------------------------------------------------------------------------------
+# Funções PURAS, DEFENSIVAS e READ-ONLY (não alteram nenhuma decisão existente).
+# Atendem, de forma ADITIVA, os requisitos da Rodada 1:
+#   §9  toda distância carrega metadados (tipo/motor/método/status/fallback);
+#   §11 auditoria "por que venceu / por que os outros perderam";
+#   §12 classificação diagnóstica da derrota (aprendizado com derrotas);
+#   §15 validação cruzada: vencedor com viária MAIOR que o 2º = erro crítico;
+#       vencedor >> 2º = anomalia; distância viária confundida com linha reta;
+#   §21 nenhum campo vazio sem explicação (rótulo honesto de ausência).
+# Orientação do usuário: BALSA NÃO É PENALIDADE — é um trecho da rede. Travessia
+# CURTA vence desvio rodoviário ENORME; quem decide é a distância/tempo real.
+# Esta fatia apenas CLASSIFICA e SINALIZA; a mudança de decisão (circuidade) é a
+# Fatia 2 (V308). Verificada offline contra os 13 casos reais de derrota.
+# ==============================================================================
+_V307_MOTORES_VIARIOS = {"GOOGLE", "OSRM", "GRAPHHOPPER", "ORS", "OSRM_FOSSGIS",
+                         "VALHALLA", "TOMTOM"}
+_V307_MARCAS_ESTIMADA = ("linha reta", "haversine", "geodés", "geodes", "estimad",
+                         "fallback", "sem rota", "sem malha", "reta")
+
+def _v307_num(v):
+    try:
+        if v is None or v == "":
+            return None
+        f = float(v)
+        return None if f != f else f
+    except (TypeError, ValueError):
+        return None
+
+def _v307_sim(v):
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("sim", "yes", "true", "1", "s")
+
+def _v307_classificar_proveniencia_distancia(dist_km, fonte_rota="", status_rota="",
+                                             tem_balsa=False, vr=None, fluvial=False):
+    """[V307 §9] Classifica UMA distância numa categoria auditável e devolve dict
+    com metadados prontos para exibir/gravar. NUNCA lança exceção.
+    tipo ∈ {viaria_real, viaria_com_balsa, fluvial_estimada, fallback_geodesico,
+            indeterminada}. 'comparavel_como_viaria' diz se pode disputar 'menor
+    viária'. Balsa real NÃO reduz comparabilidade (é rede, não penalidade)."""
+    try:
+        d = _v307_num(dist_km)
+        f = str(fonte_rota or "").strip()
+        f_up = f.upper()
+        s = str(status_rota or "").strip()
+        s_low = s.lower()
+        balsa = _v307_sim(tem_balsa)
+        _vr = _v307_num(vr)
+        estimada = any(m in f.lower() or m in s_low for m in _V307_MARCAS_ESTIMADA)
+        motor_viario = any(mv in f_up for mv in _V307_MOTORES_VIARIOS)
+        if d is None:
+            tipo, conf, rot = ("indeterminada", "Baixa",
+                               "Não disponível — distância não informada")
+        elif fluvial and not motor_viario:
+            tipo, conf, rot = ("fluvial_estimada", "Baixa",
+                               "Acesso fluvial/isolado — distância não corresponde a rota rodoviária plena")
+        elif estimada or (not motor_viario and s):
+            tipo, conf, rot = ("fallback_geodesico", "Baixa",
+                               "Fallback geodésico — nenhum motor retornou rota viária (linha reta)")
+        elif motor_viario and balsa:
+            tipo, conf, rot = ("viaria_com_balsa", "Alta",
+                               "Rota viária real (motor " + (f or "?") + ") com travessia de balsa — legítima")
+        elif motor_viario:
+            if _vr is not None and _vr >= 1.9:
+                conf, _ex = "Média", " · geometria muito indireta (V/R " + ("%.2f" % _vr) + "x) — conferir"
+            elif _vr is not None and _vr >= 1.45:
+                conf, _ex = "Média", " · rota indireta (V/R " + ("%.2f" % _vr) + "x)"
+            else:
+                conf, _ex = "Alta", ""
+            tipo, rot = "viaria_real", "Rota viária real (motor " + (f or "?") + ")" + _ex
+        else:
+            tipo, conf, rot = ("indeterminada", "Baixa",
+                               "Não identificado — sem motor de rota reconhecido")
+        _hum = {"viaria_real": "Viária (rota real)", "viaria_com_balsa": "Viária com balsa",
+                "fluvial_estimada": "Fluvial/estimada",
+                "fallback_geodesico": "Fallback geodésico (linha reta)",
+                "indeterminada": "Indeterminada"}[tipo]
+        return {"tipo": tipo, "tipo_humano": _hum, "confiabilidade": conf,
+                "motor": f or "N/D", "status": s or "N/D",
+                "comparavel_como_viaria": tipo in ("viaria_real", "viaria_com_balsa"),
+                "rotulo": rot}
+    except Exception:
+        return {"tipo": "indeterminada", "tipo_humano": "Indeterminada",
+                "confiabilidade": "Baixa", "motor": "N/D", "status": "N/D",
+                "comparavel_como_viaria": False,
+                "rotulo": "Não identificado — falha ao classificar proveniência"}
+
+def _v307_validar_vencedor_cruzado(dist_venc, dist_segundo, prov_venc=None,
+                                   prov_segundo=None, ratio_anomalia=3.0):
+    """[V307 §11/§15] Confere a coerência do vencedor contra o 2º colocado.
+    Retorna {nivel∈{ok,atencao,critico}, alerta, motivo, acao}. NÃO altera decisão.
+    Regras: (§356) dois viárias reais e vencedor mais LONGO → erro crítico; (§15)
+    vencedor >> 2º com ambos viários → anomalia; se o lado curto é fluvial/estimada,
+    o vencedor provavelmente ACERTOU ao evitar o artefato (atenção, não erro)."""
+    try:
+        dv = _v307_num(dist_venc)
+        d2 = _v307_num(dist_segundo)
+        pv = prov_venc or {}
+        p2 = prov_segundo or {}
+        venc_viaria = bool(pv.get("comparavel_como_viaria", True))
+        seg_viaria = bool(p2.get("comparavel_como_viaria", True))
+        if dv is not None and d2 is not None and d2 > 0 and dv / d2 >= ratio_anomalia:
+            if not seg_viaria:
+                return {"nivel": "atencao", "alerta": True,
+                        "motivo": ("O 2º colocado é bem mais curto (" + ("%.0f" % d2) + " km) porém é '" +
+                                   str(p2.get("tipo_humano", "fluvial/estimada")) + "' — a alternativa "
+                                   "curta é provável artefato (rota-fantasma/fluvial), não uma viária real. "
+                                   "O vencedor (" + ("%.0f" % dv) + " km) evitou o artefato."),
+                        "acao": "Confirmar acesso do 2º; manter vencedor se não houver rota rodoviária real."}
+            return {"nivel": "critico", "alerta": True,
+                    "motivo": ("Vencedor (" + ("%.0f" % dv) + " km) é " + ("%.1f" % (dv / d2)) +
+                               "x o 2º colocado (" + ("%.0f" % d2) + " km), ambos viários — provável "
+                               "rota-fantasma, balsa não declarada ou erro de coordenada."),
+                    "acao": "Reprocessar/roteirizar o par vencedor e conferir coordenadas."}
+        if venc_viaria and seg_viaria and dv is not None and d2 is not None and dv > d2 + 1e-6:
+            return {"nivel": "critico", "alerta": True,
+                    "motivo": ("O 2º colocado tem viária MENOR (" + ("%.1f" % d2) + " km) que o vencedor (" +
+                               ("%.1f" % dv) + " km), ambos rotas reais — pela metodologia Menor Rota "
+                               "Viária, o 2º deveria ter vencido (erro de seleção)."),
+                    "acao": "Trocar vencedor<->2º (metodologia Menor rota viária)."}
+        if not venc_viaria:
+            return {"nivel": "atencao", "alerta": True,
+                    "motivo": ("Distância do vencedor é '" + str(pv.get("tipo_humano", "?")) +
+                               "' — não é uma viária plenamente comparável."),
+                    "acao": "Rotular como fallback e conferir se há rota rodoviária real."}
+        return {"nivel": "ok", "alerta": False,
+                "motivo": "Vencedor consistente: menor viária real entre os avaliados.", "acao": ""}
+    except Exception:
+        return {"nivel": "ok", "alerta": False, "motivo": "", "acao": ""}
+
+def _v307_classificar_derrota(vr_app=None, tem_balsa_app=False, fluvial_app=False,
+                              fluvial_ref=False, natureza="", dif_km=None,
+                              ref_no_universo=None):
+    """[V307 §12] Classifica a CAUSA provável de uma derrota da app para a referência.
+    Retorna (categoria, evitavel:bool, explicacao). PURA."""
+    try:
+        _vr = _v307_num(vr_app)
+        nat = str(natureza or "").lower()
+        _dif = _v307_num(dif_km)
+        balsa = _v307_sim(tem_balsa_app)
+        if ref_no_universo is False:
+            return ("candidato_nao_avaliado", True,
+                    "O destino da referência não constava no universo de candidatos avaliado "
+                    "(pré-seleção o descartou antes do roteamento).")
+        if fluvial_ref or "fluvial" in nat or "isolado" in nat:
+            return ("artefato_fluvial", False,
+                    "Divergência por acesso fluvial/isolado: a distância 'curta' da referência "
+                    "não é rota rodoviária plena (possível artefato).")
+        if _vr is not None and _vr >= 1.45:
+            return ("circuidade_preselecao", True,
+                    "App escolheu polo de rota indireta (V/R " + ("%.2f" % _vr) + "x); um polo mais "
+                    "distante por reta pode ter rota rodoviária mais curta e direta que não foi roteada.")
+        if balsa and "balsa" in nat:
+            return ("circuidade_preselecao", True,
+                    "App escolheu rota com balsa mais longa; existe alternativa rodoviária mais curta "
+                    "não priorizada.")
+        if "motor" in nat or "malha" in nat:
+            if _dif is not None and _dif >= 40:
+                return ("candidato_nao_avaliado", True,
+                        "Grande diferença atribuída a 'malhas distintas' — conferir se o polo da "
+                        "referência foi realmente roteado (possível ausência no universo/matriz).")
+            return ("diferenca_malha", False,
+                    "Diferença legítima entre malhas cartográficas dos motores.")
+        return ("operacional_ruido", False,
+                "Diferença pequena/operacional, sem assinatura estrutural clara.")
+    except Exception:
+        return ("operacional_ruido", False, "Não classificado.")
+
+def _v307_rotulo_ausencia(contexto="generico"):
+    """[V307 §21] Rótulo honesto para célula que não pôde ser preenchida."""
+    return {"rota": "Não disponível — rota não retornada pelo motor",
+            "tempo": "Não disponível — tempo não armazenado neste fluxo",
+            "viaria": "Rota viária inexistente — usado fallback",
+            "validacao": "Aguardando validação", "na": "Não aplicável",
+            "generico": "Não identificado"}.get(contexto, "Não identificado")
+
+
 def _vencedor_multicriterio_comparacao(linha, params=None, limiar_empate_km=1.0):
     """[MULTI-CMP - 167ª geração] O COMPARADOR DEIXA DE SER SÓ QUILOMETRAGEM.
 
@@ -33358,6 +33953,89 @@ def _vencedor_multicriterio_comparacao(linha, params=None, limiar_empate_km=1.0)
                  f"outro ({abs(_km):.1f} km) — mas a rota mais curta é **mais lenta ou tem balsa**, e o "
                  "candidato sente isso. **A menor distância NÃO era a melhor solução.**")
     return _v, "custo efetivo (multicritério)", _exp
+
+
+# ==============================================================================
+# [V312] §11 (árvore de decisão por origem) + §15 (validação cruzada na Alocação)
+# Funções PURAS e READ-ONLY. Verificadas offline (test_v312.py).
+# ==============================================================================
+def _v312_arvore_decisao_origem(candidatos_reta, dist_vencedor, nome_vencedor, nome_2o=None,
+                                margem_km=0.5):
+    """[V312 · §11] ÁRVORE DE DECISÃO (busca) de uma origem, a partir dos polos ordenados por LINHA RETA
+    (topk_completo[origem]) e da viária do vencedor. Classifica por branch-and-bound (viária >= reta):
+      🏆 vencedor · 🥈 2º · ✅ considerado (reta < viária do vencedor, podia vencer) ·
+      ✂️ podado por limite inferior (reta >= viária do vencedor, NUNCA poderia vencer — prova de otimalidade).
+    Retorna {linhas, total, considerados, podados, otimo_provado, resumo}. PURO."""
+    _dv = _num(dist_vencedor)
+    _nv = str(nome_vencedor or "").strip()
+    _n2 = str(nome_2o or "").strip().lower() if nome_2o else None
+    _linhas, _consid, _podados = [], 0, 0
+    for _item in (candidatos_reta or []):
+        try:
+            _reta, _nome = _item[0], _item[1]
+        except (IndexError, TypeError):
+            continue
+        _r = _num(_reta); _nm = str(_nome or "").strip()
+        if not _nm or _r is None:
+            continue
+        _e_venc = _nm.lower() == _nv.lower()
+        _e_vice = (_n2 is not None and _nm.lower() == _n2)
+        if _dv is None:
+            _classe, _icone = "considerado", "✅"
+        elif _e_venc:
+            _classe, _icone = "vencedor", "🏆"
+        elif _r < _dv - margem_km:
+            _classe, _icone = "considerado", "✅"; _consid += 1
+        else:
+            _classe, _icone = "podado", "✂️"; _podados += 1
+        if _e_vice and _classe != "vencedor":
+            _classe, _icone = "vice", "🥈"
+        _linhas.append({
+            "Polo": _nm, "Linha reta (km)": round(_r, 1),
+            "Situação": {"vencedor": "Vencedor", "vice": "2º colocado",
+                         "considerado": "Considerado (podia vencer)",
+                         "podado": "Podado por limite inferior (não podia vencer)"}[_classe],
+            "Ícone": _icone, "_classe": _classe})
+    _total = len(_linhas)
+    _otimo = bool(_dv is not None and _nv)
+    if _otimo and _dv is not None:
+        _resumo = (f"{_total} polos no raio; {_podados} descartados por limite inferior "
+                   f"(linha reta ≥ {_dv:.1f} km — não podiam vencer) e {_consid} realmente disputaram. "
+                   f"O vencedor tem a menor viária entre os que podiam vencer — decisão provada por "
+                   f"branch-and-bound.")
+    else:
+        _resumo = f"{_total} polos no raio; árvore parcial (sem viária do vencedor)."
+    return {"linhas": _linhas, "total": _total, "considerados": _consid, "podados": _podados,
+            "otimo_provado": _otimo, "resumo": _resumo}
+
+
+def _v312_resumo_validacao_alocacao(registros_prov):
+    """[V312 · §15] Agrega a validação da Alocação a partir de dicts por linha {tipo, vr, refinado}.
+    Retorna contagens por proveniência + nível de alerta (ok/atencao/critico). PURO."""
+    _n = len(registros_prov or [])
+    _genuina = _balsa = _fluvial = _fallback = _indet = _vr_alto = _refinado = 0
+    for _r in (registros_prov or []):
+        _t = str((_r or {}).get("tipo", ""))
+        if _t == "viaria_real":
+            _genuina += 1
+        elif _t == "viaria_com_balsa":
+            _balsa += 1
+        elif _t == "fluvial_estimada":
+            _fluvial += 1
+        elif _t == "fallback_geodesico":
+            _fallback += 1
+        else:
+            _indet += 1
+        _vr = _num((_r or {}).get("vr"))
+        if _vr is not None and _vr >= 1.9:
+            _vr_alto += 1
+        if (_r or {}).get("refinado"):
+            _refinado += 1
+    _nao_viaria = _fluvial + _fallback + _indet
+    return {"total": _n, "viaria_genuina": _genuina + _balsa, "com_balsa": _balsa,
+            "fluvial": _fluvial, "fallback": _fallback, "indeterminada": _indet,
+            "nao_viaria": _nao_viaria, "vr_alto": _vr_alto, "refinado": _refinado,
+            "nivel": ("critico" if _nao_viaria else ("atencao" if (_vr_alto or _indet) else "ok"))}
 
 
 def _por_que_venceu(vencedor, segundo, params=None):
@@ -36052,20 +36730,64 @@ def _resolver_nome_municipio(valor, lat=0.0, lon=0.0):
 
 
 def _verificar_invariante_viaria(df):
-    """[SSOT-DECISAO - 184ª geração] Verifica o invariante 'vencedor = MENOR rota viária' no resultado FINAL
-    (modo viária): conta quantas rotas têm concorrente e, dessas, quantas ainda VIOLAM (vencedor com viária
-    maior que o 2º). Após a correção autoritativa, deve dar ZERO violações — serve de prova ao usuário.
-    Read-only; tolerância mínima de arredondamento. Retorna dict {com_concorrente, violacoes, corrigidas}."""
+    """[SSOT-DECISAO - 184ª/v314] Verifica o invariante 'vencedor = MENOR rota viária' no resultado FINAL
+    (modo viária): conta rotas com concorrente e, dessas, quantas VIOLAM (vencedor com viária maior que o 2º
+    GENUÍNO) e quantas são PROTEGIDAS pela guarda anti-fantasma v313 (2º mais curto porém fantasma — o
+    vencedor genuíno é mantido de propósito, e NÃO é violação). Após a correção autoritativa, 'violacoes'
+    deve dar ZERO. Read-only. Retorna dict {com_concorrente, violacoes, protegidas}."""
     try:
         if df is None or 'Distancia' not in df.columns or 'Distancia Concorrente' not in df.columns:
-            return {'com_concorrente': 0, 'violacoes': 0}
+            return {'com_concorrente': 0, 'violacoes': 0, 'protegidas': 0}
         _dv = pd.to_numeric(df['Distancia'], errors='coerce')
         _dc = pd.to_numeric(df['Distancia Concorrente'], errors='coerce')
         _tem = _dv.notna() & _dc.notna() & (_dc > 0)
-        _viol = _tem & (_dv > _dc + 0.05)
-        return {'com_concorrente': int(_tem.sum()), 'violacoes': int(_viol.sum())}
+        # [V314] candidatos a violação: vencedor com viária maior que o 2º. Mas nem todos são violação —
+        # a guarda v313 mantém DE PROPÓSITO o vencedor genuíno quando o concorrente mais curto é FANTASMA.
+        # Coerência com a correção autoritativa: separa violação REAL (concorrente genuíno, devia ter trocado)
+        # de decisão PROTEGIDA (concorrente fantasma). Sem isso, o "invariante" acusaria falsos alarmes.
+        _cand = _tem & (_dv > _dc + 0.05)
+        _c_reta_c = 'Linha Reta Concorrente' if 'Linha Reta Concorrente' in df.columns else None
+        _c_fonte_c = 'Motor Vencedor Concorrente' if 'Motor Vencedor Concorrente' in df.columns else None
+        _c_nome_c = 'Concorrente Analisado' if 'Concorrente Analisado' in df.columns else None
+        _viol_n, _prot_n = 0, 0
+        for _i in df.index[_cand]:
+            if _v313_concorrente_e_genuino(
+                    _dc.at[_i], _num(df.at[_i, _c_reta_c]) if _c_reta_c else None,
+                    df.at[_i, _c_fonte_c] if _c_fonte_c else "",
+                    df.at[_i, _c_nome_c] if _c_nome_c else ""):
+                _viol_n += 1   # concorrente genuíno mais curto e não trocou → violação REAL
+            else:
+                _prot_n += 1   # concorrente fantasma → vencedor genuíno mantido corretamente
+        return {'com_concorrente': int(_tem.sum()), 'violacoes': _viol_n, 'protegidas': _prot_n}
     except Exception:
-        return {'com_concorrente': 0, 'violacoes': 0}
+        return {'com_concorrente': 0, 'violacoes': 0, 'protegidas': 0}
+
+
+def _v313_concorrente_e_genuino(dist_conc, reta_conc, fonte_conc, nome_conc):
+    """[V313] O concorrente (2º colocado) é uma viária GENUÍNA, apta a substituir o vencedor na correção
+    autoritativa de 'menor viária'? Aplica a MESMA guarda anti-fantasma da 2b/2c, para a passagem final não
+    coroar a rota-fantasma que o resgate acabou de recusar:
+      (1) fisicamente sã (viária >= linha reta − 0,5 km);
+      (2) proveniência de MOTOR REAL (fallback/estimada reprova);
+      (3) não é destino REGIC-fluvial (sem balsa aqui → uma travessia curta LEGÍTIMA já teria sido escolhida
+          pelo resgate 2b ANTES desta passagem; o que chega aqui como 'curto' e fluvial é fantasma).
+    FAIL-OPEN: dados ausentes/erro → True (preserva o comportamento 184ª). PURA/testável."""
+    try:
+        _dc = _num(dist_conc); _rc = _num(reta_conc)
+        if _dc is not None and _rc is not None and _dc < _rc - 0.5:
+            return False  # (1) viária menor que a reta é fisicamente impossível → fantasma
+        _vr = (_dc / _rc) if (_dc and _rc and _rc > 0) else None
+        _prov = _v307_classificar_proveniencia_distancia(_dc, fonte_conc or "", "", tem_balsa=False,
+                                                         vr=_vr, fluvial=False)
+        # (2) bloqueia SOMENTE com evidência POSITIVA de fantasma (fallback/estimada). Fonte apenas
+        #     desconhecida ('indeterminada') NÃO bloqueia — preserva o propósito da 184ª (fail-open).
+        if _prov.get("tipo") in ("fallback_geodesico", "fluvial_estimada"):
+            return False
+        if _v309c_destino_fluvial_sem_balsa(nome_conc, tem_balsa=False):
+            return False  # (3) destino REGIC-fluvial sem balsa → rota-fantasma
+        return True
+    except Exception:
+        return True
 
 
 def _forcar_menor_viaria_vencedor(df):
@@ -36100,7 +36822,21 @@ def _forcar_menor_viaria_vencedor(df):
         if _n <= 0:
             return df
         _pares_ok = [(_a, _b) for _a, _b in _PARES if _a in df.columns and _b in df.columns]
+        # [V313] guarda anti-fantasma coerente com a 2b/2c: colunas do concorrente p/ aferir genuinidade.
+        _c_reta_c = 'Linha Reta Concorrente' if 'Linha Reta Concorrente' in df.columns else None
+        _c_fonte_c = 'Motor Vencedor Concorrente' if 'Motor Vencedor Concorrente' in df.columns else None
+        _c_nome_c = 'Concorrente Analisado' if 'Concorrente Analisado' in df.columns else None
+        _n_troca, _n_bloq = 0, 0
         for _i in df.index[_mask]:
+            # [V313] só promove o concorrente se ele for viária GENUÍNA — senão a "correção autoritativa"
+            # coroaria a rota-fantasma que a 2b/2c acabou de recusar. FAIL-OPEN (dados ausentes → troca).
+            if not _v313_concorrente_e_genuino(
+                    _dc.at[_i], _num(df.at[_i, _c_reta_c]) if _c_reta_c else None,
+                    df.at[_i, _c_fonte_c] if _c_fonte_c else "",
+                    df.at[_i, _c_nome_c] if _c_nome_c else ""):
+                _n_bloq += 1
+                continue
+            _n_troca += 1
             for _a, _b in _pares_ok:
                 df.at[_i, _a], df.at[_i, _b] = df.at[_i, _b], df.at[_i, _a]
             # [NOME-CONCORRENTE - 184ª geração] Após a troca, garante NOME (nunca código) em ambos, usando as
@@ -36124,8 +36860,12 @@ def _forcar_menor_viaria_vencedor(df):
                             df.at[_i, _rz] = round(float(_nv) / float(_nr), 2)
                     except Exception:
                         pass
+        if _n_bloq:
+            logger.warning("[SSOT-DECISAO] Guarda anti-fantasma (v313): %d troca(s) BLOQUEADA(s) — o concorrente "
+                           "mais curto NÃO é viária genuína (fluvial/fallback/fantasma); vencedor genuíno mantido.",
+                           _n_bloq)
         logger.warning("[SSOT-DECISAO] Correção autoritativa: %d rota(s) tiveram vencedor↔concorrente TROCADOS "
-                       "para respeitar 'menor rota viária' (o vencedor tinha viária real maior que o 2º).", _n)
+                       "para respeitar 'menor rota viária' (o vencedor tinha viária real maior que o 2º).", _n_troca)
         return df
     except Exception:
         logger.error("[SSOT-DECISAO] Falha na correção autoritativa de menor viária", exc_info=True)
@@ -37535,7 +38275,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "306"
+_VERSAO_APP = "314"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -42761,7 +43501,9 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     try:
                         with _perfil_fase("Refinamento por resgate (circuidade)"):
                             df_final_alo, _regs_resgate = _refinar_por_resgate_circuidade(
-                                df_final_alo, st.session_state.get('alo_topk_map') or {})
+                                df_final_alo, st.session_state.get('alo_topk_map') or {},
+                                topk_completo=st.session_state.get('alo_topk_completo') or {},
+                                viaria_estrita=bool(st.session_state.get('alo_multicriterio')))
                             st.session_state['alo_resgate'] = _agregar_resgates(_regs_resgate)
                     except Exception as _e_resg:
                         logger.error(f"[RESGATE-CIRCUIDADE] refinamento abortado (df preservado): {_e_resg}")
@@ -43297,6 +44039,53 @@ if _secao == _SECOES[2]:   # tab_alocacao
             elif _resg.get('n_acionados'):
                 st.caption(f"🧭 O refinamento por circuidade avaliou {_resg.get('n_acionados')} escolha(s) de "
                            f"perfil de risco; todas já eram as melhores para o candidato — nenhuma troca necessária.")
+            # [V312 · §15] VALIDAÇÃO CRUZADA DA ALOCAÇÃO — leva o alerta de qualidade da decisão (antes só no
+            # Comparador) para a própria Alocação. READ-ONLY: classifica a proveniência de cada vencedor e
+            # destaca quantos NÃO são viária genuína (fluvial/fallback) ou têm geometria suspeita. Memoizado
+            # por assinatura para não recomputar a cada rerun. Defensivo (erro → silencioso, painel intocado).
+            try:
+                if df_final_alo is not None and not getattr(df_final_alo, "empty", True):
+                    _assin_v15 = (len(df_final_alo), _VERSAO_APP)
+                    if st.session_state.get('alo_v15_assin') != _assin_v15:
+                        _col_v15 = {str(c).strip().lower(): c for c in df_final_alo.columns}
+                        _cd = _col_v15.get("distancia"); _cr = _col_v15.get("linha reta")
+                        _cf = _col_v15.get("fonte da rota"); _cb = _col_v15.get("balsas")
+                        _cs = _col_v15.get("status da rota"); _cref = _col_v15.get("refinado (resgate)")
+                        _regs_v15 = []
+                        for _rec in df_final_alo.to_dict("records"):
+                            _dist = _rec.get(_cd) if _cd else None
+                            _vrr = None
+                            try:
+                                _dn = float(_dist); _rn = float(_rec.get(_cr)) if _cr else 0.0
+                                _vrr = _dn / _rn if _rn > 0 else None
+                            except (TypeError, ValueError):
+                                _vrr = None
+                            _prov = _v307_classificar_proveniencia_distancia(
+                                _dist, _rec.get(_cf, "") if _cf else "", _rec.get(_cs, "") if _cs else "",
+                                tem_balsa=_rec.get(_cb, "") if _cb else "", vr=_vrr, fluvial=False)
+                            _regs_v15.append({
+                                "tipo": _prov["tipo"], "vr": _vrr,
+                                "refinado": (str(_rec.get(_cref, "")).strip().lower() == "sim") if _cref else False})
+                        st.session_state['alo_v15'] = _v312_resumo_validacao_alocacao(_regs_v15)
+                        st.session_state['alo_v15_assin'] = _assin_v15
+                    _v15 = st.session_state.get('alo_v15') or {}
+                    if _v15.get("nivel") == "critico":
+                        st.error(
+                            f"🚨 **{_fmt_num(_v15.get('nao_viaria', 0))} local(is) de prova vencedor(es) sem rota "
+                            f"viária genuína** ({_fmt_num(_v15.get('fluvial', 0))} fluvial/estimada · "
+                            f"{_fmt_num(_v15.get('fallback', 0))} fallback geodésico · "
+                            f"{_fmt_num(_v15.get('indeterminada', 0))} indeterminada). A distância desses não é "
+                            "comparável como estrada — confira **Fonte da Rota** e a **Auditoria da Escolha** abaixo.")
+                    elif _v15.get("nivel") == "atencao":
+                        st.warning(
+                            f"⚠️ **{_fmt_num(_v15.get('vr_alto', 0))} rota(s) com geometria muito indireta "
+                            "(V/R ≥ 1,9)** — podem ser desvios reais ou coordenada imprecisa; vale conferir na "
+                            "Auditoria da Escolha abaixo.")
+                    elif _v15.get("total"):
+                        st.caption(f"✅ Validação da decisão: {_fmt_num(_v15.get('viaria_genuina', 0))} de "
+                                   f"{_fmt_num(_v15.get('total', 0))} vencedores têm rota viária genuína.")
+            except Exception as _e_v15a:
+                logger.error(f"[V312-VALIDACAO-ALOC] alerta de validação da alocação falhou: {_e_v15a}")
             # [FASE2-RESUMO-ALOC - 184ª geração] RESUMO EXECUTIVO da alocação: KPIs no topo (municípios de
             # origem, polos utilizados, deslocamento médio/máximo ao polo) antes do detalhamento denso. A
             # resposta em 5 segundos. Defensivo: cada métrica só aparece se a coluna existir; erro →
@@ -43333,16 +44122,23 @@ if _secao == _SECOES[2]:   # tab_alocacao
                 _inv = st.session_state.get('alo_invariante_viaria') or {}
                 _corr = int(st.session_state.get('alo_correcoes_viaria', 0) or 0)
                 if _inv.get('com_concorrente'):
+                    _prot_inv = int(_inv.get('protegidas', 0) or 0)
                     if _inv.get('violacoes', 0) == 0:
                         st.success("✓ **Invariante garantido:** todos os **{}** locais com alternativa avaliada "
                                    "têm a **menor rota viária** entre o escolhido e o 2º colocado.{}".format(
                                        _inv['com_concorrente'],
                                        " {} ajuste(s) autoritativo(s) aplicado(s) para garantir isso.".format(_corr)
                                        if _corr > 0 else ""))
+                        if _prot_inv > 0:
+                            st.caption("🛡️ **{}** decisão(ões) foram **protegidas pela guarda anti-fantasma**: o "
+                                       "concorrente mais curto não é rota viária real (fluvial/fantasma), então o "
+                                       "local genuíno foi mantido — maior em km, porém a única estrada de verdade.".format(_prot_inv))
                     else:
-                        st.warning("⚠️ **{} de {}** locais ainda com o escolhido tendo viária maior que o 2º — "
-                                   "veja a coluna **Alerta Coerência Viária** na planilha.".format(
-                                       _inv['violacoes'], _inv['com_concorrente']))
+                        st.warning("⚠️ **{} de {}** locais ainda com o escolhido tendo viária maior que o 2º "
+                                   "**genuíno** — veja a coluna **Alerta Coerência Viária** na planilha.{}".format(
+                                       _inv['violacoes'], _inv['com_concorrente'],
+                                       " (Fora essas, {} foram protegidas contra concorrente fantasma — não são "
+                                       "violações.)".format(_prot_inv) if _prot_inv > 0 else ""))
                     # [APRENDIZADO - 184ª geração] Painel de padrões aprendidos com as derrotas/subotimalidades.
                     _pad = st.session_state.get('alo_padroes_derrota') or []
                     if _pad:
@@ -43973,6 +44769,55 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                "e **quanto** a melhor alternativa ficou atrás — auditoria técnica da decisão.")
                     _clientes = _dfp_alo['Origem'].dropna().astype(str).unique().tolist()
                     _cli_sel = st.selectbox("Município de origem dos candidatos", options=_clientes, index=0 if _clientes else None, key="disputa_cli")
+                    # [V312 · §11] ÁRVORE DE DECISÃO DA ORIGEM — a BUSCA que levou ao vencedor (complementa a
+                    # decomposição de custo abaixo). Mostra todos os polos no raio, marcando os que foram
+                    # CONSIDERADOS e os PODADOS por limite inferior (linha reta já ≥ viária do vencedor → não
+                    # podiam vencer): a prova visual de otimalidade por branch-and-bound. READ-ONLY, defensivo,
+                    # funciona em qualquer modo (usa topk_completo e o runner-up já prontos em session_state).
+                    if _cli_sel:
+                        with st.container():
+                            try:
+                                _topk_c11 = st.session_state.get('alo_topk_completo') or {}
+                                _cands11 = (_topk_c11.get(_cli_sel)
+                                            or _topk_c11.get(str(_cli_sel).strip()) or [])
+                                _venc11_nome, _venc11_dist = None, None
+                                try:
+                                    _row11 = _dfp_alo[_dfp_alo['Origem'].astype(str) == str(_cli_sel)]
+                                    if len(_row11):
+                                        _r0 = _row11.iloc[0]
+                                        _venc11_nome = str(_r0.get('Destino', '') or '')
+                                        _venc11_dist = _num(_r0.get('Distancia'))
+                                except Exception:
+                                    pass
+                                _vice11 = None
+                                try:
+                                    _rm11 = (st.session_state.get('alo_runner_map') or {}).get(_cli_sel)
+                                    if isinstance(_rm11, (list, tuple)) and len(_rm11) >= 2:
+                                        _vice11 = str(_rm11[1])
+                                except Exception:
+                                    _vice11 = None
+                                _arv11 = _v312_arvore_decisao_origem(
+                                    _cands11, _venc11_dist, _venc11_nome, nome_2o=_vice11)
+                                if _arv11["total"]:
+                                    st.markdown("##### 🌳 Árvore de decisão — a busca pelo melhor local "
+                                                "(por que os outros perderam)")
+                                    _df11 = pd.DataFrame([{"": _l["Ícone"], "Local de prova": _l["Polo"],
+                                                           "Linha reta (km)": _l["Linha reta (km)"],
+                                                           "Situação": _l["Situação"]}
+                                                          for _l in _arv11["linhas"]])
+                                    st.dataframe(_df11, use_container_width=True, hide_index=True,
+                                                 height=min(360, 60 + 32 * len(_df11)))
+                                    if _arv11["otimo_provado"]:
+                                        st.success("🔒 " + _arv11["resumo"])
+                                    else:
+                                        st.caption(_arv11["resumo"])
+                                    for _t11 in (st.session_state.get('alo_resgate') or {}).get('trocas') or []:
+                                        if str(_t11.get('origem', '')).strip().lower() == str(_cli_sel).strip().lower():
+                                            st.info("🧭 Esta origem foi **refinada pelo resgate por circuidade**: "
+                                                    + str(_t11.get('explicacao', '')))
+                                            break
+                            except Exception as _e_arv11:
+                                logger.error(f"[V312-ARVORE] árvore de decisão da origem falhou: {_e_arv11}")
                     # [HUB-MCDA - 130ª geração] Decisão multicritério (quando o modo opt-in rodou): ranking por
                     # CUSTO LOGÍSTICO EFETIVO (km-eq) + IGQ + justificativa XAI, para o cliente selecionado.
                     _mcda_alo = st.session_state.get('alo_mcda') or {}
@@ -45356,12 +46201,37 @@ if _secao == _SECOES[3]:   # tab_comparador
                 except Exception as _e_ef:
                     logger.error(f"[COMPARADOR] Falha no painel de faixas: {_e_ef}")
 
+            # [V311 · §15] ALERTA DE VALIDAÇÃO CRUZADA — torna VISÍVEL, no dashboard, o que a camada de
+            # proveniência (Fatia 1) já calcula por linha ('Validação Regra Viária'). Aditivo e defensivo:
+            # não altera nenhum dado nem decisão; apenas conta e destaca os casos críticos/atenção.
+            try:
+                _n_crit_v = sum(1 for l in _cmp
+                                if str(l.get("Validação Regra Viária", "")).strip().lower() == "critico")
+                _n_aten_v = sum(1 for l in _cmp
+                                if str(l.get("Validação Regra Viária", "")).strip().lower() == "atencao")
+                if _n_crit_v:
+                    st.error(
+                        f"🚨 **{_fmt_num(_n_crit_v)} decisão(ões) com POSSÍVEL ERRO DE SELEÇÃO** — em uma "
+                        "rota o 2º colocado tinha viária real MENOR que o vencedor, ou o vencedor é uma "
+                        "anomalia de magnitude (rota-fantasma / erro de coordenada). Filtre a coluna "
+                        "**Validação Regra Viária = critico** e leia **Alerta da Decisão** / **Ação "
+                        "Sugerida** na tabela “Comparação município a município”. São os casos a auditar primeiro.")
+                if _n_aten_v:
+                    st.warning(
+                        f"⚠️ **{_fmt_num(_n_aten_v)} decisão(ões) em ATENÇÃO** — em geral o vencedor evitou "
+                        "corretamente um artefato fluvial/fantasma (a alternativa curta não é estrada real), "
+                        "mas vale conferir. Filtre por **Validação Regra Viária = atencao**.")
+            except Exception as _e_v15:
+                logger.error(f"[V311-VALIDACAO] alerta de validação cruzada falhou: {_e_v15}")
+
             with st.expander("📋 Comparação município a município", expanded=False):
                 _cols_show = [c for c in ["Origem", "UF", "Inscritos", "Tipo de Distancia",
                                           "Destino Referencia", "Destino Aplicacao",
                                           "Mesmo Destino", "Distancia Referencia", "Distancia Aplicacao",
                                           "Diferenca Abs (km)", "Diferenca Pct (%)", "Faixa de Diferenca",
                                           "Vencedor Distancia", "Economia km x Inscritos", "Metodo Conciliacao",
+                                          "Validação Regra Viária", "Alerta da Decisão", "Proveniência Aplicação",
+                                          "Classe da Divergência", "Divergência Evitável",
                                           "Justificativa"]
                               if c in _df_c.columns]
                 st.dataframe(_df_c[_cols_show].sort_values("Economia km x Inscritos", ascending=False),
