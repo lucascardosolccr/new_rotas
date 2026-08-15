@@ -1,5010 +1,13 @@
 # ==============================================================================
-# VERSÃO: 3.37
-# DATA: 2026-08
-# DESCRIÇÃO: Motor Nacional de Inteligência Logística para Exames — Plataforma institucional de
-#            planejamento, análise e auditoria do deslocamento de candidatos até seus locais de prova
-#
-# ==============================================================================
-# MAPA DE ARQUITETURA (para manutenção — Etapa 7: explicabilidade)
+# Motor Nacional de Inteligência Logística para Exames — Plataforma integrada
+# VERSÃO (rótulo): 3.37   ·   SELO INTERNO: _VERSAO_APP = "317"   ·   DATA: 2026-08
 # ------------------------------------------------------------------------------
-# A aplicação é um Streamlit single-file organizado em camadas:
-#   1. CONFIGURAÇÃO E DADOS BASE (linhas ~30-1200): imports, executores globais
-#      (EXECUTOR_GLOBAL p/ pipeline, EXECUTOR_APIS p/ geocodificação, FILA_NOMINATIM
-#      rate-limited 1 req/s), caches em disco (DiskCache), carregamento IBGE cacheado
-#      (@st.cache_data, pickle 30 dias), bounding boxes dos 27 estados, helpers de UI.
-#   2. MOTOR SEMÂNTICO (classe MotorEnderecoCanônico, ~1227): normalização de texto
-#      (memoizada), resolução de contexto administrativo (memoizada), classificação de
-#      entrada. ParserGeograficoBR extrai CEP/número/complemento (memoizado).
-#   3. MOTOR GEODÉSICO (~1467-1565): validar_coordenada_brasil, calcular_distancia_
-#      linha_reta (GeographicLib Karney → Geopy → Haversine IUGG 6371.0088),
-#      _distancia_consenso_km (mesma matemática sem lock de métrica), cascata_postal.
-#   4. GEOCODIFICAÇÃO (~1660-2260): APIs paralelas (ArcGIS, Nominatim, Photon),
-#      consenso Bayesiano (processar_consenso_dinamico), cache L1/L2, reverse geocoding.
-#   5. ROTEAMENTO (~2260-2700): API_OSRM_Routing (alternatives=3, menor distância),
-#      extrair_dados_reais_google (scraper), regra de menor distância Google×OSRM (2%),
-#      calcular_pipeline_logistico (orquestra geo+rota), RotaPipeline NamedTuple (35
-#      campos), executar_pipeline_unificado, embrulhar_task_paralela.
-#   6. PROCESSAMENTO EM LOTE (~2715-2800): rodar_pipeline_lote, processar_chunk_rotas,
-#      _montar_dataframe_final, geocodificar_endpoints_paralelo,
-#      calcular_matriz_competitiva_vetorizada (alocação).
-#   7. INTERFACE (10 abas, ~3200+): Individual, Processamento (máquina de estados em
-#      chunks), Alocação (idem), Analytics (cross-filtering Altair), Calculadora,
-#      Classificação, Enciclopédia, Manual, Motores, Auditoria.
-#
-# FLUXO DE PROCESSAMENTO EM LOTE (abas Processamento e Alocação):
-#   clique único → FASE 1 (extrai pares únicos + pré-aquece geocodificação) →
-#   FASE 2 (processa chunks de 200 rotas, auto-continua via st.rerun, monitora ao
-#   vivo) → FASE 3 (monta DataFrame, recalcula Linha Reta, exporta). Checkpoint em
-#   session_state garante continuidade sem timeout de WebSocket e retomada após falha.
-#
-# INVARIANTES CRÍTICOS (não quebrar):
-#   - RotaPipeline: índices 0-34 alinhados (res[0]=distância, res[4]=linha_reta,
-#     res[19-22]=lat/lon origem/destino, res[28]=motivo, res[30]=status_linha_reta,
-#     res[31-34]=concorrência). Score = 0.35*origem + 0.35*destino + 0.30*rota.
-#   - Haversine usa raio IUGG 6371.0088 em todo lugar (individual e vetorizado).
-#   - Memoizações retornam cópias quando o chamador faz .update() (thread-safe, 50k).
-#   - cache_historico_lotes alimenta o estimador de tempo (não remover os campos).
-# ==============================================================================
-#
-# HISTÓRICO DE VERSÕES:
-#   v314 (Rodada 1 · coerência) -> O VERIFICADOR DE INVARIANTE PASSA A RESPEITAR A GUARDA ANTI-FANTASMA (v313)
-#     Achado da re-auditoria: a v313 passou a MANTER de propósito alguns vencedores com viária maior que o 2º
-#     (quando o 2º é fantasma). Porém _verificar_invariante_viaria (184ª) ainda contava TODO vencedor > 2º como
-#     VIOLAÇÃO — e o painel promete "invariante garantido = prova ao usuário". Resultado: a v313 geraria FALSOS
-#     alarmes de violação exatamente nas linhas que ela protegeu. Correção (coerência): o verificador agora
-#     separa VIOLAÇÃO REAL (2º genuíno mais curto — devia ter trocado) de decisão PROTEGIDA (2º fantasma —
-#     vencedor genuíno mantido corretamente), reusando a mesma _v313_concorrente_e_genuino. O painel passa a
-#     mostrar as protegidas com um selo 🛡️ (transparência: o usuário VÊ a guarda agindo). Read-only; nenhuma
-#     decisão muda — só a CONTAGEM/EXPLICAÇÃO fica honesta. Verificado offline (test_v314.py): 2º genuíno mais
-#     curto conta violação; 2º fantasma/fallback/fluvial conta protegida; empate não conta nada. Invariantes:
-#     RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS, requirements INALTERADO.
-#   v313 (Rodada 1 · coerência da decisão) -> CORREÇÃO AUTORITATIVA FINAL AGORA RESPEITA A GUARDA ANTI-FANTASMA
-#     Achado da auditoria dos critérios de decisão: _forcar_menor_viaria_vencedor (184ª) roda DEPOIS do resgate
-#     (2a/2b/2c) e trocava vencedor↔concorrente por DISTÂNCIA PURA (Distancia > Distancia Concorrente), SEM
-#     nenhuma guarda de proveniência. Ou seja: podia COROAR um concorrente rota-fantasma (ex.: snap de 26 km
-#     para uma ilha) logo depois da 2b/2c tê-lo recusado — desfazendo a proteção na passagem FINAL e
-#     autoritativa. Correção: a troca só ocorre se o concorrente for viária GENUÍNA, pela MESMA guarda da
-#     2b/2c (nova função pura _v313_concorrente_e_genuino): (1) viária >= reta, (2) motor de rota real,
-#     (3) não-REGIC-fluvial-sem-balsa. NÃO regride o propósito original (184ª): para os casos legítimos
-#     rodoviário-vs-rodoviário o concorrente É genuíno e a troca acontece igual; só as trocas para FANTASMA
-#     são bloqueadas (logadas). Balsa curta legítima já é resolvida pelo resgate 2b ANTES desta passagem.
-#     Verificado offline (test_v313.py): concorrente rodoviário real → troca; viária<reta, fallback e
-#     REGIC-fluvial → bloqueados; dados ausentes → troca (fail-open). Invariantes: RotaPipeline 43, _SECOES 15,
-#     balloons 1, bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +1 função pura; guarda em 1 laço.
-#   v312 (Rodada 1 · §15 na Alocação + §11 árvore de decisão) -> aditivo/READ-ONLY (zero mudança de decisão).
-#     §15 (validação na Alocação): o alerta de qualidade da decisão, que vivia só no Comparador, passa a
-#       aparecer também na aba de Alocação — conta, via classificador de proveniência (v307), quantos locais
-#       vencedores NÃO têm rota viária genuína (fluvial/fallback/indeterminada) e quantos têm geometria muito
-#       indireta (V/R >= 1,9), destacando com st.error/st.warning. Memoizado por assinatura (len + versão) para
-#       não recomputar a cada rerun; defensivo (erro → silencioso).
-#     §11 (árvore de decisão por origem, COMPLETO): nova função pura _v312_arvore_decisao_origem que, para a
-#       origem selecionada na "Auditoria da Escolha", mostra a BUSCA que levou ao vencedor — todos os polos no
-#       raio, marcando 🏆 vencedor, 🥈 2º, ✅ considerados e ✂️ PODADOS por limite inferior (linha reta já >=
-#       viária do vencedor, não podiam vencer). É a prova VISUAL de otimalidade por branch-and-bound, e
-#       complementa a decomposição de custo (167ª) que já existia — agora funciona em QUALQUER modo (usa
-#       topk_completo). Integra a nota do resgate (2a/2b/2c) quando a origem foi refinada.
-#     Verificado offline (test_v312.py): a árvore poda corretamente por limite inferior e prova o ótimo; o
-#     resumo §15 classifica níveis ok/atencao/critico. Invariantes: RotaPipeline 43, _SECOES 15, balloons 1,
-#     bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +2 funções puras; wiring aditivo em 2 pontos.
-#   v311 (Rodada 1 · §21 + §15) -> SURFACING DAS COLUNAS DA FATIA 1 + ALERTA DE VALIDAÇÃO NO DASHBOARD
-#     Puramente ADITIVO/read-only (zero mudança de dado ou decisão). Duas frentes:
-#     §21 (surfacing): as 8 colunas de proveniência/validação/derrota da Fatia 1 JÁ iam para o .xlsx (a aba
-#       "Comparacao" escreve o DataFrame completo). Faltava (a) exibi-las na tabela on-screen "Comparação
-#       município a município" — adicionadas a _cols_show (guardado por 'if c in df.columns'); e (b) EXPLICÁ-LAS
-#       — 8 novas entradas no _dicionario_colunas_comparacao (O que é / De onde vem / Quando fica vazia / Como
-#       ler), atendendo "nenhum campo sem explicação".
-#     §15 (alerta visível): novo bloco no painel do Comparador conta as linhas com 'Validação Regra Viária' =
-#       critico / atencao e as destaca via st.error / st.warning, apontando para as colunas a auditar. Torna
-#       VISÍVEL o que a Fatia 1 já calculava por linha. Defensivo (try/except; se as colunas não existirem, some).
-#     Invariantes: RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS, requirements
-#     INALTERADO. +0 funções; +8 entradas no dicionário; +6 colunas on-screen; +1 bloco de alerta.
-#   v310 (Rodada 1 · Fatia 2c) -> GUARDA FLUVIAL REGIC (fecha o furo residual da 2b)
-#     A guarda anti-fantasma da 2b pegava fonte não-genuína e viária<reta, mas deixava escapar UM caso: rota
-#     de motor real, com viária>=reta, porém para um município que só tem acesso FLUVIAL (ilha) — um snap para
-#     o outro lado do rio com quilometragem "plausível". A 2c fecha isso cruzando o destino com a lista OFICIAL
-#     REGIC de municípios de acesso fluvial/isolado (_MUNICIPIOS_ACESSO_FLUVIAL, já embutida): se o destino é
-#     REGIC-fluvial e a rota NÃO tem balsa real, a "viária curta" é fantasma e é RECUSADA como menor viária.
-#     Como o resgate só tem o NOME do polo (não o Código IBGE), foi criado um índice inverso nome->códigos
-#     (a partir de _indice_ibge_por_codigo, cacheado 1x). FAIL-OPEN e conservador: balsa real, nome que não
-#     resolve, ou nome AMBÍGUO (homônimo fluvial vs não-fluvial) → NÃO bloqueia (preserva a decisão da 2b).
-#     Nunca coroa nada — só ACRESCENTA uma recusa quando há confiança. Verificado offline (test_v310_regic.py):
-#     destino REGIC-fluvial sem balsa é recusado; COM balsa é aceito (balsa é rede); homônimo ambíguo passa
-#     (fail-open); nome não-fluvial é intocado. Invariantes: RotaPipeline 43, _SECOES 15, balloons 1,
-#     bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +2 funções puras; wiring de 1 linha na 2b.
-#   v309 (Rodada 1 · Fatia 2b) -> MODO VIÁRIA ESTRITA: "BALSA É REDE" + GUARDA ANTI-FANTASMA
-#     Acata a orientação da Rodada 1: no modo "🛣️ Menor rota viária", a BALSA deixa de ser penalidade — a
-#     travessia é um trecho da rede e conta a VALOR DE FACE. Assim, travessia CURTA vence desvio rodoviário
-#     ENORME, e desvio rodoviário CURTO vence balsa LONGA — quem decide é a MENOR VIÁRIA GENUÍNA, não o custo
-#     efetivo com penalidades (que era exatamente a "métrica secundária" que o requisito proíbe de derrubar
-#     uma viária menor). Nova função pura _v308b_decidir_viaria substitui _avaliar_troca SOMENTE no resgate e
-#     SOMENTE no modo viária. GUARDA ANTI-FANTASMA (reusa o classificador de proveniência da Fatia 1): uma
-#     alternativa só é coroada se for viária GENUÍNA — motor de rota real E viária >= linha reta (lei física);
-#     rota-fantasma (snap p/ o outro lado do rio, sem travessia real) e fallback geodésico são recusados. Se o
-#     ATUAL for artefato e a alternativa for genuína, corrige (troca pela viária real). _fn_rota passou a
-#     devolver fluvial/fonte/status reais (antes fluvial=False fixo) para alimentar o classificador.
-#     Propriedades: gated ao modo viária (linha reta intocado) + REVERSÍVEL (_VIARIA_ESTRITA_ATIVA=False →
-#     decisão por custo efetivo, idêntica ao v308); MONOTÔNICO na viária genuína; FALLBACK TOTAL. Verificado
-#     offline (test_v309_viaria.py): travessia curta genuína (62 km) vence rodoviária mais longa (80 km);
-#     rota-fantasma (26 km, sem motor) é RECUSADA; balsa longa (100 km) perde para rodoviária curta (80 km).
-#     Invariantes: RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS, requirements
-#     INALTERADO. +1 função pura; wiring cirúrgico em _resgate_por_candidatos/_refinar_por_resgate_circuidade/
-#     _fn_rota + 1 call-site + 1 constante.
-#   v308 (Rodada 1 · Fatia 2a) -> RESGATE ADMISSÍVEL POR CIRCUIDADE (branch-and-bound) — vira as derrotas
-#     estruturais tipo Guajará-Mirim/Nova Mamoré. CAUSA-RAIZ confirmada: o resgate pós-alocação (238ª) só
-#     era acionado por ASSINATURA DE RISCO (V/R>=1.45 / balsa / fluvial) e só via o TOP-10 por linha reta.
-#     Um polo mais distante em RETA porém mais curto por ESTRADA (Porto Velho) ficava fora da lista E não
-#     disparava resgate (rota escolhida direta, V/R baixo) — nunca era roteado. Correção (teorema, não
-#     heurística): como viária >= linha reta SEMPRE, qualquer polo NÃO roteado com reta < viária-atual PODE
-#     vencer e agora É roteado (gatilho ADMISSÍVEL), usando a lista COMPLETA de polos (alo_topk_completo, já
-#     em session_state). A escolha só é dada como ótima quando nenhum polo não-roteado tem reta < viária.
-#     Propriedades de segurança: MONOTÔNICO (só troca por viária estritamente menor via _avaliar_troca — NUNCA
-#     piora a alocação), LIMITADO (_MAX_ADMISSIVEL_ROTEAR=40 por origem + teto global _max_resgates=500,
-#     priorizado por ganho potencial x inscritos), REVERSÍVEL (_RESGATE_ADMISSIVEL_ATIVO=False → idêntico ao
-#     v307), com FALLBACK TOTAL (qualquer erro preserva a linha). NÃO altera a filosofia de balsa/fluvial
-#     (isso é a Fatia 2b): nos casos rodoviário-vs-rodoviário (Grupo A) o custo efetivo ~ distância, então a
-#     troca acontece pela menor viária real. Gated ao modo "Menor rota viária"; modo linha reta intocado.
-#     Verificado offline (test_v308_admissivel.py): no cenário Nova Mamoré, o resgate roteia Porto Velho
-#     (antes ignorado) e troca 302 km -> 243 km. Invariantes: RotaPipeline 43, _SECOES 15, balloons 1,
-#     bare-except 0, imports IDÊNTICOS, requirements INALTERADO. +0 funções novas; mudança cirúrgica em
-#     _refinar_por_resgate_circuidade / _resgate_por_candidatos + 1 call-site + 3 constantes.
-#   v307 (Rodada 1 · Fatia 1) -> CAMADA DE PROVENIÊNCIA E VALIDAÇÃO DA DECISÃO DE ROTA
-#     Primeira fatia da revisão do sistema de decisão de rotas. ADITIVA e READ-ONLY: não altera nenhuma
-#     decisão/resultado existente (não-regressão por construção). Introduz 5 funções PURAS (_v307_*) e
-#     as conecta ao Comparador de Estudos como COLUNAS NOVAS:
-#       §9  proveniência da distância (viária real / viária com balsa / fluvial-estimada / fallback
-#           geodésico / indeterminada) + confiabilidade + motor + status;
-#       §15/§356/§19  validação da REGRA "Menor Rota Viária": sinaliza quando o vencedor declarado tem
-#           viária MAIOR que o 2º sendo ambos rotas reais (erro de seleção), e quando o lado curto é
-#           artefato fluvial/fantasma (o vencedor acertou ao evitar) — SEM trocar a decisão;
-#       §12 classificação diagnóstica da derrota (circuidade_preselecao / candidato_nao_avaliado /
-#           artefato_fluvial / diferenca_malha / operacional_ruido) + se é EVITÁVEL;
-#       §21 rótulos honestos de ausência (sem célula vazia sem explicação).
-#     Orientação da Rodada 1 acatada: BALSA não é penalidade — travessia curta é rede legítima; só o
-#     desvio rodoviário enorme perde. Verificada offline contra os 13 casos reais de derrota (suíte
-#     test_casos_reais.py): separa corretamente Grupo A evitável (Guajará-Mirim/Nova Mamoré = erro de
-#     seleção §356) do Grupo B fluvial (Marajó, sem falso alarme contra a app). A mudança de DECISÃO
-#     (resgate por circuidade) fica para a Fatia 2 (v308), agora instrumentada por esta camada.
-#     Invariantes: RotaPipeline 43, _SECOES 15, balloons 1, bare-except 0, imports IDÊNTICOS,
-#     requirements INALTERADO. +5 funções puras; wiring aditivo em 1 ponto (_comparar_alocacoes).
-#   v1.0–v2.3 → 13 rodadas (performance, precisão, escala, UX, FIX-LOTE)
-#   v2.4 → CORREÇÃO + ACELERAÇÃO DA ABA DE ALOCAÇÃO (FIX-ALOC)
-#   v2.5 → AUDITORIA TÉCNICA COMPLETA (linha por linha) — refinamentos + documentação
-#   v2.6 → IDENTIFICAÇÃO GEOGRÁFICA + PAINEL DE ALOCAÇÃO (FIX-GEO)
-#   v2.7 → CONSISTÊNCIA DE FONTE ÚNICA DE ROTAS (FIX-FONTE)
-#   v2.8 → TRAÇADO REAL DA ROTA OSRM NO LINK E MAPA (FIX-OSRM-GEO)
-#   v2.9 → LINK OSRM COM TRAJETO GARANTIDO VIA GEOJSON (FIX-OSRM-LINK)
-#   v3.0 → PLANO DE CONTINGÊNCIA: LINK COMPARTILHÁVEL VIA GOOGLE MAPS (CONTINGENCIA-OSRM)
-#   v3.1 → EVOLUÇÃO ANALÍTICA: COMPARATIVO + ESTATÍSTICA DESCRITIVA
-#   v3.2 → ARQUITETURA DEFINITIVA DE ROTAS: GOOGLE MAPS AUDITÁVEL (ARQ-GOOGLE)
-#   v3.3 → PRIORIZAÇÃO DE MUNICÍPIOS NO LINK + REMOÇÃO DO OSM DA APRESENTAÇÃO
-#   v3.4 → EXPORTAÇÕES AVANÇADAS PARA GIS (EXPORT-GIS)
-#   v3.5 → MUNICÍPIO POR COORDENADAS + REMOÇÃO TOTAL DO OSRM
-#   v3.6 → RETORNO AO MODELO HÍBRIDO GOOGLE + OSRM, REESTRUTURADO E SUPERIOR (ARQ-HIBRIDO)
-#   v3.7 → MAPA DO GOOGLE COM TRAÇADO COMPLETO + NOMES GUIAM A APRESENTAÇÃO
-#   v3.8 → MAPA SEMPRE DESENHA A ROTA + LINK POR NOME (comparativo c/ versão antiga de referência)
-#   v3.69 (306a geracao) -> INSTRUMENTACAO DA FINALIZACAO (cronometra cada enriquecedor)
-#     Diagnostico seguro para localizar o gargalo do "trava no finalzinho": novo helper _crono_fin envolve
-#     cada enriquecedor da finalizacao (homonimos, integridade geografica, rotulos IBGE, classificacao de rotas,
-#     portao de distancias, humanizar identificadores) nos DOIS fluxos (Alocacao e Lote), registrando via _obs_fin
-#     o tempo/memoria de CADA etapa e emitindo AVISO acima do orcamento. No proximo estudo nacional, o log
-#     [FINALIZACAO/etapa] mostra exatamente onde o tempo e gasto — insumo para escalonar so o passo culpado.
-#     _crono_fin NAO altera resultados e NAO engole excecoes das etapas (propagam como antes). +1 funcao pura.
-#     Enriquecedores e pipeline byte-identicos (apenas o SITIO de chamada passa pelo cronometro). Invariantes:
-#     RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO.
-#     Suite test_crono_fin.py.
-#   v3.68 (305a geracao) -> ESCAPE POR TEMPO NA FINALIZACAO (anti-travamento "no finalzinho")
-#     A finalizacao (montagem + enriquecimento) roda numa passada sincrona; se for morta pelo WebSocket/memoria
-#     e REENTRAR, o watchdog so escapava por CONTAGEM (6 reentradas) — ate 6x o trabalho pesado antes de
-#     entregar o DF-seguro. Agora ha um escape ADICIONAL por TEMPO DE PAREDE (_FIN_WALL_BUDGET_S=90s) que age
-#     SO em reentrada (nunca na 1a passada, que sempre completa): se o tempo acumulado desde a 1a tentativa
-#     passa do orcamento, entrega o DF-seguro ja consolidado imediatamente. Bounded por tempo E por contagem.
-#     Aplicado aos DOIS fluxos (Alocacao e Lote). Marcador reescrito na 1a tentativa de cada estudo (sem estado
-#     obsoleto, sem limpeza extra). NAO degrada estudos que finalizam numa unica rerun (escape >=2a tentativa).
-#     Nota de arquitetura: xlsx e relatorio HTML JA sao gerados APOS o processamento e SOB DEMANDA (xlsx em fase
-#     propria 'gerar_planilha'/on-demand; HTML so ao clicar o botao) — desenho correto, mantido (construir
-#     durante o processamento seria pior, pois os dados so ficam finais no fim). +0 funcoes. Pipeline/montagem/
-#     roteamento byte-identicos. Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports
-#     identicos, requirements INALTERADO. Suite test_fin_watchdog.py.
-#   v3.67 (304a geracao) -> GARANTIA DEFINITIVA CONTRA O TRAVAMENTO da 300a ("trava em N restantes")
-#     Ataca a CAUSA-RAIZ e blinda em profundidade o invariante _total == len(_tarefas) nos DOIS loops de
-#     roteamento (Alocacao e Lote):
-#       (1) ORIGEM: _total passa a vir da LISTA REAL de tarefas (len(tarefas_priorizadas_*)) e nao de
-#           len(pares_unicos_*) — elimina qualquer divergencia ja na montagem.
-#       (2) RECONCILIACAO A CADA RERUN: ao carregar o loop, se _total > len(_tarefas) por QUALQUER motivo
-#           (checkpoint, poda, borda de dedup, refatoracao futura), _total e alinhado a lista real e
-#           persistido — tornando o travamento IMPOSSIVEL por construcao e corrigindo progresso/ETA.
-#       (3) INSTRUMENTACAO: log de aviso quando a reconciliacao age, para capturar a fonte se recorrer.
-#     Combinado com a finalizacao-no-esgotamento da 300a (mini-lote vazio -> finaliza), o roteamento SEMPRE
-#     converge. Ganhos colaterais de processamento: fim do "tail-spin" de milhares de reruns (velocidade no
-#     encerramento) e progresso/ETA fieis (qualidade/honestidade da telemetria). NENHUMA funcao nova; mudanca
-#     cirurgica em 4 pontos. Pipeline/roteamento/finalizacao byte-identicos. Invariantes: RotaPipeline 43,
-#     _SECOES 15, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_anti_trava.py.
-#   v3.66 (303a geracao) -> EXPORT EXCEL (.xlsx) DA ANALISE GEOGRAFICA (§18)
-#     A aba Analise Geografica ganha "📥 Baixar analise geografica (.xlsx)" (ao lado do CSV): planilha
-#     profissional estilizada (cabecalho institucional, freeze, autofilter) com as colunas do §18 — Origem, UF,
-#     Candidatos, Destino/Distancia 1º e 2º, Tempo 1º/2º (n/d honesto — nao armazenado em lote), Diferenca 1º→2º,
-#     Vencedor, Metodologia/tipo de distancia, Motor, Motivo da escolha, Impacto (km-candidato), Observacoes.
-#     Reusa xlsxwriter (ja no app) e os helpers _fmt_institucional/_estilizar_tabela_xlsx quando existem; sem
-#     dependencia nova. READ-ONLY sobre as rotas filtradas. +2 funcoes puras (_geo_montar_df_xlsx,_geo_xlsx_bytes)
-#     + const _GEOXLSX_COLS. Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports
-#     identicos, requirements INALTERADO. Suite test_geoxlsx.py.
-#   v3.65 (302a geracao) -> MAPA NO RELATORIO HTML DE LOCAIS (§10)
-#     O relatorio HTML de Locais ganha a secao "🗺️ Analise Geografica Visual": KPIs (origens, locais de prova,
-#     candidatos, distancia media, DESLOCAMENTO MEDIO POR CANDIDATO, P90, balsa, estimadas/sem-rota), MAPA
-#     INTERATIVO embutido via <iframe srcdoc> (origens azuis dimensionadas por candidatos, locais vermelhos,
-#     tracado REAL da rota viaria decodificado da geometria ja calculada, conectores honestos §9), resumo
-#     1o x 2o (segundos colocados) e tabela dos casos mais criticos (maiores distancias + alertas). Reusa os
-#     builders geograficos (294a-298a) e as coords/geometrias REAIS (§15) — nao recomputa nada. Aparece so
-#     quando ha coordenadas; senao a secao e omitida (relatorio identico ao anterior). +1 funcao pura
-#     (_geo_html_locais), sem aspas aninhadas (compat <3.12). Invariantes: RotaPipeline 43, _SECOES 15,
-#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_geohtml_locais.py.
-#   v3.64 (301a geracao) -> MAPA DAS DIVERGENCIAS NO RELATORIO HTML do Comparador (§10/§11)
-#     O relatorio HTML do Comparador ganha a secao "🗺️ Analise Geografica das Divergencias": KPIs (nº de
-#     divergencias, aplicacao/referencia superior, impacto km-candidato), respostas analiticas (onde perdemos/
-#     vencemos, quanto impactou, quais sao metodologicas), MAPA INTERATIVO embutido via <iframe srcdoc>
-#     (origem azul dimensionada por candidatos, destino da aplicacao verde, destino da referencia roxo,
-#     conectores honestos §9) e tabela dos casos mais impactantes. Reusa _geodiv_dataset/_agregado/_mapa (299a)
-#     e as coords REAIS ja processadas (§15) — nao recomputa nada. So aparece quando o usuario processou as
-#     rotas divergentes (diagnostico_div preenchido); default None -> export identico ao anterior. +1 funcao
-#     pura (_geodiv_html), sem aspas aninhadas (compat <3.12). Invariantes: RotaPipeline 43, _SECOES 15,
-#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_geodiv_html.py.
-#   v3.63 (300a geracao) -> CORRECAO DE TRAVAMENTO REAL na finalizacao ("trava em N restantes", ex. 2720/2732)
-#     CAUSA-RAIZ: no loop de roteamento continuo, quando a lista REAL de tarefas (alo_tarefas) esgota mas
-#     alo_total conta MAIS (pares equivalentes/filtrados que nunca viraram tarefa concreta — os 12 "fantasma"
-#     do print), o slice _tarefas[_idx_local:...] fica vazio e o `if not _mini: break` saia SEM avancar o indice.
-#     Resultado: alo_chunk_idx travado < alo_total, _ir_finalizar=False e a app reexecutava PARA SEMPRE presa em
-#     "N restantes" (so escapando apos ~milhares de reruns pelo teto _TETO_EXEC — minutos/horas parecendo travada;
-#     o anti-estagnacao nao ajudava porque o break do slice vazio precede o ramo de pulo forcado). FIX cirurgico:
-#     ao detectar tarefas reais esgotadas com _idx_local < _total, salta _idx_local=_total e persiste, indo direto
-#     a finalizacao (fantasmas recebem fallback como qualquer par nao roteado). Provado por simulacao do loop
-#     (antes: trava; depois: finaliza em 1 rerun; caso normal len==total inalterado). +0 funcoes; mudanca de 1
-#     ponto no loop. Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos,
-#     requirements INALTERADO, pipeline/finalizacao/disjuntor intocados. Suite test_fix_fantasma.py.
-#   v3.62 (299a geracao) -> ANALISE GEOGRAFICA DAS DIVERGENCIAS no Comparador de Estudos (§4/§5/§6/§7/§8/§9/§16)
-#     Nova secao no painel de divergencias do Comparador: MAPA aplicacao x referencia (origem azul dimensionada
-#     por candidatos, destino da APLICACAO em verde, destino da REFERENCIA em roxo) reusando as coordenadas REAIS
-#     ja processadas em cmp_diag_divergencias['analises'] (§15 — nao inventa; sem coord de origem nao plota).
-#     Tracados sao CONECTORES honestos (geometria das rotas nao armazenada no lote §9). Inclui FILTROS (categoria/
-#     balsa/sem-rota/referencia-melhor) e ORDENACAO (dif km/%/candidatos/km-candidato/tempo/divergencia motores §6),
-#     IMPACTO por candidatos (beneficiados/prejudicados/km-candidato §7), LEITURA DO ANALISTA por divergencia (§16),
-#     comparacao app x ref lado a lado (§8) e tabela+export CSV. READ-ONLY, reusa a analise de divergencias
-#     existente — NAO recomputa nada, NAO toca _analisar_divergencia_par nem o pipeline. +8 funcoes puras _geodiv_*.
-#     Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO.
-#     Suite test_geodiv.py. Pendentes p/ proximos incrementos: §10/§11 (mapas nos relatorios HTML), §18 (export Excel).
-#   v3.61 (298a geracao) -> EXPLORADOR 1o x 2o COLOCADO na aba Analise Geografica (disputa vencedor x concorrente)
-#     Ao selecionar uma rota: mostra a DISPUTA 1o x 2o num mapa (origem + rota viaria REAL do vencedor em verde +
-#     2o colocado como CONECTOR laranja tracejado) com interpretacao automatica (por que o vencedor foi escolhido,
-#     respeitando a metodologia viaria; alerta se o 2o seria mais perto -> auditar selecao) e anomalias. Reusa a
-#     coordenada REAL do 2o polo buscando onde ele foi vencedor (NAO inventa §8); a geometria da rota do 2o NAO
-#     foi armazenada, entao e mostrada como conector explicitamente rotulado (NAO recalcula as cegas §9/§15).
-#     Tambem: visao AGREGADA das disputas (nº com 2o, apertadas, 2o mais perto, economia km-candidato se migrasse,
-#     distancia media vencedor vs 2o). +4 funcoes puras (_geo_polo_coords,_geo_duelo,_geo_duelo_agregado,
-#     _geo_mapa_duelo). Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports identicos,
-#     requirements INALTERADO. Suite test_geo_duelo.py.
-#   v3.60 (297a geracao) -> KPIs ENRIQUECIDOS + DOWNLOAD DO MAPA na aba Analise Geografica (§8/§10/§16)
-#     (1) Resumo agora inclui DESLOCAMENTO MEDIO POR CANDIDATO (media ponderada km-candidato), P90 e P95 da
-#     distancia, e contagem de rotas estimadas/sem-rota (qualidade), com insight comparando a media por
-#     candidato vs por municipio (§8/§10). (2) O mapa (individual ou rede) agora pode ser BAIXADO como HTML
-#     interativo autocontido (§16). READ-ONLY, sobre o conjunto ja filtrado. +2 funcoes puras
-#     (_geo_pct,_geo_kpis_extra). Invariantes: RotaPipeline 43, _SECOES 15, baloes 1x, bare-except 0, imports
-#     identicos, requirements INALTERADO. Suite test_geo_kpis.py.
-#   v3.59 (296a geracao) -> REDE DE ATENDIMENTO (CLUSTERING §10/§15) + ANALISE DO 2o COLOCADO (§11)
-#     Na aba Analise Geografica: (1) modo "Rede de atendimento (agregada)" — clustering em GRADE feito no
-#     Python (arredonda coords, agrega origens por celula com nº de candidatos e destino dominante), desenhado
-#     como celulas azuis ligadas ao destino por fluxo teal. Mantem o mapa legivel/rapido em grandes volumes SEM
-#     plugin/CDN novo (§15). (2) Detalhe da rota agora mostra o 2o COLOCADO/alternativa (Polo do concorrente +
-#     Distancia Concorrente): 2o destino, distancia, diferenca e alerta se o 2o seria mais perto (auditar
-#     selecao). _geo_analise_dataset e _geo_rota_detalhe estendidos (aditivo). +2 funcoes puras
-#     (_geo_clusters,_geo_mapa_rede). READ-ONLY, nao refaz roteamento. Invariantes: RotaPipeline 43, _SECOES 15,
-#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_geo_rede.py.
-#   v3.58 (295a geracao) -> ANALISE GEOGRAFICA VISUAL: ABA DEDICADA + FILTROS + GRAFICOS + SELECAO DE ROTA
-#     Promove a Analise Geografica (294a) de secao na Auditoria para ABA DEDICADA (indice 14 em _SECOES, grupo
-#     Analisar) e a enriquece: FILTROS (UF/origem/destino/faixa de distancia/balsa/alerta/estimada/sem-rota,
-#     §4/§5), GRAFICOS nativos (rotas e candidatos por faixa, top destinos, por UF, por motor, %fallback, §9),
-#     SELECAO DE ROTA para analise detalhada (distancia/linha reta/razao/km-candidato/motor/alertas + mapa da
-#     rota isolada, §11), alem de KPIs/mapa/alertas/tabela/export/tutorial ja existentes. Tudo READ-ONLY sobre
-#     os dados ja calculados (nao refaz roteamento §15, nao inventa localizacao §14). +5 funcoes puras
-#     (_geo_faixa_idx,_geo_filtrar,_geo_charts_data,_geo_rota_label,_geo_rota_detalhe). _SECOES: 14 -> 15
-#     (mudanca estrutural intencional). Invariantes: RotaPipeline 43, baloes 1x, bare-except 0, imports
-#     identicos, requirements INALTERADO. Suite test_geo_tab.py.
-#   v3.57 (294a geracao) -> ANALISE GEOGRAFICA VISUAL (nova secao read-only, reaproveita dados calculados)
-#     Nova secao na aba Auditoria que transforma o resultado tabular em analise geografica: KPIs (origens,
-#     destinos, candidatos, distancia media/max, balsa, alertas), MAPA Leaflet autocontido (origens azuis
-#     dimensionadas por candidatos, destinos vermelhos, tracado REAL quando ha geometria, conector tracejado
-#     honesto quando nao ha — §3/§21), tabela de ALERTAS geograficos (viaria<reta, muito longa, balsa,
-#     estimada, sem rota — §12), tabela completa + export CSV (§16), tutorial (§17). Reaproveita coords reais/
-#     geometria/distancia/candidatos JA calculados (decodifica polyline via _decodificar_polyline) — NAO refaz
-#     roteamento (§15) e NAO inventa localizacao (mostra a fonte da coordenada — §14). Paleta acessivel a
-#     daltonicos. +5 funcoes puras (_geo_col,_geo_num,_geo_analise_dataset,_geo_mapa_leaflet + consts _GEO_*).
-#     Sem nova dependencia (Leaflet ja usado). Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x,
-#     bare-except 0, imports identicos, requirements INALTERADO. Suite test_geo_analise.py.
-#   v3.56 (293a geracao) -> CORRECAO DE 2 BUGS REAIS NO VALIDADOR RAPIDO (mapa do GraphHopper/vencedor)
-#     BUG 1 (data-URI como texto): os expanders do GraphHopper e do Valhalla passavam o retorno de
-#     _gerar_mapa_leaflet_rota (um data:text/html;base64,...) DIRETO para components.html, que renderizava a
-#     STRING como texto. Agora decodificam antes via _decodificar_mapa_datauri (mesmo padrao do mapa principal).
-#     BUG 2 (mapa do OSRM quando GraphHopper vence): o pipeline preenche link_embed (mapa principal) SEMPRE com
-#     a geometria do OSRM. _mapa_vencedor_singleshot reconstroi o mapa principal a partir da geometria DO
-#     VENCEDOR (GraphHopper/Valhalla) e ajusta o link do visualizador; se o vencedor nao tem geometria propria,
-#     mantem o atual (nao fabrica). Fix no RENDER (nao toca o pipeline). +2 funcoes puras
-#     (_decodificar_mapa_datauri, _mapa_vencedor_singleshot). Invariantes: RotaPipeline 43, _SECOES 14,
-#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_mapa_fix.py.
-#   v3.55 (292a geracao) -> PLAUSIBILIDADE DE VELOCIDADE POR MOTOR (Validador Rapido, read-only)
-#     Completa a camada de sanidade do painel "Fonte da Verdade": velocidade media implicita (distancia/tempo)
-#     por motor, com flag 🔴 Suspeita (>130 km/h, dado quebrado) / 🟠 Atencao (<8 km/h, possivel balsa/urbano) /
-#     ✅ Plausivel. Terceira perna do triangulo de validacao (distancia x linha reta, concordancia entre
-#     motores, e agora tempo x distancia). Todos os tempos ja vem em minutos (comparativo tempo_g_min/
-#     tempo_o_min; GH/VL tempo_min). +3 funcoes puras (_fv_min_val, _fv_min_por_motor,
-#     _fv_velocidade_plausibilidade). NAO altera pipeline, mapa, link ou selecao. Invariantes: RotaPipeline 43,
-#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_velocidade.py.
-#   v3.54 (291a geracao) -> CONCORDANCIA ENTRE MOTORES + SANIDADE VIARIA x LINHA RETA (Validador Rapido, read-only)
-#     Estende o painel "Fonte da Verdade" (290a) com duas checagens de validacao de alto valor: (1) CONCORDANCIA
-#     entre TODOS os motores de uma vez (min/mediana/max, amplitude km e %, nivel: alta/moderada/alta divergencia)
-#     — visao unica que complementa a comparacao par-a-par-vs-Google ja existente; (2) SANIDADE viaria x linha
-#     reta por motor: sinaliza 🔴 o fisicamente impossivel (viaria < linha reta) e 🟠 sinuosidade extrema
-#     (viaria > 3x a linha reta). Deriva das distancias que cada motor produziu (fontes dedicadas) + linha reta
-#     (campo 4). +2 funcoes puras (_fv_kms_por_motor, _fv_concordancia_sanidade). NAO altera pipeline, mapa,
-#     link ou selecao. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos,
-#     requirements INALTERADO. Suite test_concordancia.py.
-#   v3.53 (290a geracao) -> PAINEL "FONTE DA VERDADE" NO VALIDADOR RAPIDO (§22/§25, read-only, aditivo)
-#     Novo expander no Validador Rapido (Single-Shot) que responde "qual motor produziu cada dado?": tabela
-#     por motor (Google/OSRM/GraphHopper/Valhalla) mostrando SOMENTE o dado DELE — distancia, tempo, geometria
-#     (propria/nao), link e status — derivado dos campos DEDICADOS do RotaPipeline (comparativo_provedores p/
-#     Google+OSRM, dados_graphhopper[41], dados_valhalla[42], link_rota[2]=Google, link_osrm_viewer[36]). NUNCA
-#     preenche o dado ausente de um motor com o de outro: mostra 'Nao retornado pela fonte' (§17). Inclui
-#     tabela de comparacao pos-separacao (§24). Precede a auditoria de isolamento por leitura de codigo
-#     (DIAGNOSTICO_ISOLAMENTO_MOTORES_SINGLESHOT_V289.md): a associacao dado<->fonte ja era estruturalmente
-#     correta; este painel a torna VISIVEL e auditavel. +3 funcoes puras (_fv_km,_fv_linha,
-#     _fonte_verdade_singleshot + const _FV_NAO). NAO altera pipeline, mapa, link ou selecao existentes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements
-#     INALTERADO. Suite test_fonte_verdade.py.
-#   v3.52 (289a geracao) -> §17 ORIGEM DO PROBLEMA: DADO x ROTEAMENTO x ALGORITMO (rotulo consolidado, read-only)
-#     Nova analise READ-ONLY na aba Auditoria que CONSOLIDA a taxonomia de divergencias ja existente
-#     (_classificar_divergencia, 236a) em 5 CLASSES ACIONAVEIS + empate: Dado (coordenadas/geocodificacao),
-#     Roteamento (motor/geometria), Algoritmo (selecao/ranking — o que da p/ corrigir), Metodologico (criterio)
-#     e Legitimo (infraestrutura real). Consome diag['distribuicoes']['por_categoria'] da sessao
-#     (cmp_diag_divergencias) — NAO recomputa nada, NAO toca em _classificar_divergencia nem no pipeline XAI.
-#     Separa os casos que a aplicacao pode corrigir (Algoritmo) do ruido e da diferenca legitima. +2 funcoes
-#     puras (_classe_problema_17, _resumo_classe_problema + const _CLASSE17_ORDEM). Invariantes: RotaPipeline 43,
-#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_classe17.py.
-#   v3.51 (288a geracao) -> 3 ANALISES: PERCENTIS §13 + SELO DE CONFIANCA §12 + DIAGNOSTICO CAUSAL §18
-#     Tres analises READ-ONLY na aba Auditoria, aditivas e defensivas: (1) §13 PERCENTIS de distancia (P50/P90/
-#     P95/Max) com versao PONDERADA POR CANDIDATO (dimensiona a cauda real); (2) §12 SELO DE CONFIANCA
-#     consolidado por rota (Alta/Media/Baixa/Critica/Nao avaliavel) com REGRAS EXPLICITAS e configuraveis,
-#     unificando validacoes que ja existiam espalhadas; (3) §18 DIAGNOSTICO CAUSAL (classifica cada rota pela
-#     causa que a tornaria vulneravel: estimada/fallback/balsa/divergencia/viaria-confirmada). Derivam so de
-#     colunas existentes (Distancia, Fonte da Rota, Diferenca Motores %, Score, Balsas, coluna de candidatos).
-#     +7 funcoes (_a3_col,_pct_ponderado,_percentis_distancia,_selo_confianca_serie,_resumo_selo_confianca,
-#     _diagnostico_causal + const _A3_CAND_COLS). Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x,
-#     bare-except 0, imports identicos, requirements INALTERADO. Suite test_analises3.py.
-#   v3.50 (287a geracao) -> ANALISE PONDERADA KM-CANDIDATO (§13) (nova analise segura e aditiva, alto valor decisorio)
-#     Nova analise READ-ONLY na aba Auditoria: pondera a distancia pela QUANTIDADE de candidatos por origem.
-#     Mostra deslocamento medio POR CANDIDATO (ponderado) vs POR MUNICIPIO (simples), o km-candidato TOTAL, um
-#     insight interpretando a diferenca, e o RANKING de origens por km-candidato (onde a carga real se
-#     concentra) com download CSV. Insight central: 300km com 2 candidatos << 80km com 500 candidatos. Deriva
-#     so de colunas ja existentes (Distancia + coluna de candidatos resolvida como o resto da app: Inscritos/
-#     Candidatos/QT_INSCRITOS/Qtd Candidatos). DEGRADA com aviso quando nao ha coluna de candidatos. +4 funcoes
-#     (_kmc_col,_resumo_km_candidato,_ranking_km_candidato + const _KMC_*). Invariantes: RotaPipeline 43,
-#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_km_candidato.py.
-#   v3.49 (286a geracao) -> TABELA DE PERFORMANCE POR MOTOR (§17) (nova analise segura e aditiva)
-#     Nova analise READ-ONLY na aba Auditoria: por motor (Google/OSRM/GraphHopper/Valhalla) mostra quantas
-#     rotas RESPONDEU, quantas VENCEU (menor rota viaria valida) e %, quantas vezes deu a MENOR rota, e a
-#     distancia media das que venceu -- mais o total de DIVERGENCIAS CRITICAS (>=50% entre motores). Responde
-#     objetivamente ao §17 (algum motor deixando de participar/vencer?) e complementa a observabilidade dos
-#     disjuntores (285a). Tabela nativa ordenavel + download CSV + nota didatica §21. Deriva so de colunas ja
-#     existentes (Distancia X (km), Fonte da Rota, Diferenca Motores (%)). +2 funcoes (_montar_performance_
-#     motores,_divergencias_criticas_motores) +1 const _PERF_MOTORES. Invariantes: RotaPipeline 43, _SECOES 14,
-#     baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_perf_motores.py.
-#   v3.48 (285a geracao) -> OBSERVABILIDADE DOS DISJUNTORES (passo 1 seguro da auditoria de resiliencia; §4/§17)
-#     Painel READ-ONLY na aba Auditoria que expoe o estado ATUAL dos disjuntores dos motores (Google + OSRM/
-#     GraphHopper/ORS/Valhalla): estado (ativo/testando/suspenso), chamadas puladas por motor, falhas seguidas
-#     do Google. Le o estado que JA existe (_GOOGLE_CB_ESTADO, _motor_cb_status_resumo) -- NAO muda NENHUMA
-#     decisao de disjuntor/roteamento. Responde objetivamente ao §4 ('algum motor deixando de participar?') e
-#     §17 (performance por motor) e prepara a correcao guiada por dados do Achado A (timeout vs bloqueio), que
-#     exige o app rodando. Nota didatica §21. +2 funcoes (_mnil_cb_pill,_render_disjuntores_status) +1 const
-#     _MNIL_CSS_CB. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos,
-#     requirements INALTERADO. Suite test_cb_panel.py.
-#   v3.47 (284a geracao) -> DE-DUPLICACAO SEGURA DOS st.metric (agora que o header cobre tudo)
-#     Fecha o item 'trocar st.metric por cards' SEM risco de regressao. Em vez de REMOVER os st.metric antigos
-#     (arriscado as cegas -- se o header falhasse, ficaria sem metrica), eles passam a ser FALLBACK: so aparecem
-#     se o header de KPIs NAO renderizar (_kpi_html vazio). No caso normal some a redundancia; no caso de falha
-#     do header, as metricas nativas reaparecem -> ZERO perda possivel. Reversivel. Aplicado no painel de
-#     conclusao do Lote e da Alocacao. _kpi_html/_kpi_html_alo inicializados como '' antes do try (evita
-#     NameError). Sem funcao nova/removida. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0,
-#     imports identicos, requirements INALTERADO.
-#   v3.46 (283a geracao) -> HEADER DE KPIs COMPLETO (Tempo, Polos, Precisao viaria) — habilita remocao segura dos st.metric
-#     Enriquecimento ADITIVO do header de KPIs .mnil: +3 cards (Locais de aplicacao/Polos, Precisao viaria %,
-#     Tempo total) derivados do resumo ja passado + tempo via session_state. Novo param OPCIONAL tempo_seg
-#     (default None -> retrocompativel). Agora o header cobre TUDO que os st.metric antigos mostravam
-#     (Candidatos/Rotas/Municipios/Polos/Precisao/Tempo), tornando-os redundantes — a remocao deles pode ser
-#     feita com seguranca APOS validacao na tela. Layout validado via Chromium (3 linhas, responsivo). +1 funcao
-#     (_mnil_dur). 2 call sites atualizados (kwarg tempo_seg). Invariantes: RotaPipeline 43, _SECOES 14, baloes
-#     1x, bare-except 0, imports identicos, requirements INALTERADO.
-#   v3.45 (282a geracao) -> STATUS RICO NA RESILIENCIA (§15) + RODAPE/SELO .mnil (fase visual, incremento 6)
-#     Dois incrementos aditivos e validados: (1) a caption de resiliencia ('N rotas adiadas por lentidao de
-#     rede') passa a um bloco de status RICO 'att' com estrutura o-que-aconteceu/o-que-a-app-fez/o-que-voce-
-#     pode-fazer -- com a caption original como FALLBACK (else+except). (2) rodape/selo .mnil sempre ao fim da
-#     pagina (marca + geracao + dominio). SOBRE O ITEM 'trocar st.metric por cards': os cards padronizados JA
-#     existem (header de KPIs, 278a/280a); a REMOCAO dos st.metric antigos NAO foi feita as cegas porque eles
-#     ainda carregam Tempo/Polos/Precisao que o header nao tem -- apagar perderia info sem validacao na tela.
-#     +1 funcao (_render_rodape_mnil). Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0,
-#     imports identicos, requirements INALTERADO.
-#   v3.44 (281a geracao) -> MENSAGENS DE STATUS RICAS (§15) (fase visual, incremento 5 do caminho b)
-#     Componente reutilizavel _render_status_rico (variantes ok/att/err) com metricas + estrutura 'o que
-#     aconteceu / o que a app fez / o que voce pode fazer'. Variantes VALIDADAS via Chromium antes da fiacao.
-#     Primeira aplicacao: o st.success generico da conclusao do Lote passa a um banner RICO com as metricas
-#     reais (municipios/candidatos/rotas/% conciliadas). SEGURANCA: a mensagem original permanece como
-#     FALLBACK (try/except e ramo else) -> se o banner falhar ou faltar dado, o sucesso antigo aparece. +4
-#     funcoes (_mnil_int,_render_status_rico,_status_sucesso_lote) namespaced. Invariantes: RotaPipeline 43,
-#     _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO. Suite test_status_rico.py.
-#   v3.43 (280a geracao) -> HEADER DE KPIs TAMBEM NA ALOCACAO (fase visual, incremento 4 do caminho b; §18)
-#     Estende o header de KPIs .mnil (validado na 278a) ao topo dos resultados da ALOCACAO, reusando o MESMO
-#     componente _render_kpi_header_lote com o _resumo_fin ja computado ali. Consistencia visual entre Lote e
-#     Alocacao (§18). ADITIVO: uma unica chamada apos 'Processamento concluido' do bloco de alocacao; os
-#     st.metric/captions existentes seguem intactos abaixo. Sem funcao nova (reuso puro). Defensivo. Invariantes:
-#     RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements INALTERADO.
-#   v3.42 (279a geracao) -> CARTAO DE VEREDITO DE ALOCACAO (fase visual, incremento 3 do caminho b; §10/§11)
-#     Incremento VALIDADO NA TELA (render via Chromium). Responde 'por que ESTE local / por que NAO o 2o / e
-#     se usassemos o 2o': cartao read-only que projeta UMA decisao ja calculada. Reusa tokens .mnil (§18) e o
-#     vocabulario de exame. ADITIVO: expander na aba Auditoria com seletor de municipio, GUARDADO (so com
-#     colunas de alocacao) e defensivo. Helpers com prefixo _mnil_ (sem colisao com _col/_kpi aninhados).
-#     +4 funcoes (_mnil_num,_mnil_col,_extrair_decisao_alocacao,_render_veredito_card) +1 const _MNIL_CSS_VEREDITO.
-#     Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports identicos, requirements
-#     INALTERADO. Suite test_veredito.py (exit 0).
-#   v3.41 (278a geracao) -> IDENTIDADE VISUAL (.mnil) + HEADER DE KPIs DO LOTE (fase visual, incremento 1 do caminho b)
-#     Incremento visual VALIDADO NA TELA (preview via Chromium, aprovado antes da fiacao). Tokens .mnil
-#     (petroleo+teal, Space Grotesk+Inter tabular, assinatura de contorno) + _render_kpi_header_lote() ADITIVO
-#     e READ-ONLY (deriva do df + _lote_resumo). Helpers com prefixo _mnil_ (sem colisao com o _kpi aninhado
-#     existente). CSS namespaced em .mnil. Uma unica chamada apos 'Processamento concluido'; st.metric/captions
-#     antigos intactos abaixo. Defensivo: df vazio/erro -> ''. +3 funcoes (_mnil_fmt_int,_mnil_kpi,
-#     _render_kpi_header_lote) +1 constante _MNIL_CSS. Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x,
-#     bare-except 0, imports de topo identicos, requirements INALTERADO. Suite test_kpi_header.py (exit 0).
-#   v3.40 (277a geracao) -> LINGUAGEM DO DOMINIO EM TEXTOS VISIVEIS + AUDITORIA UX/UI (rodada de UX, SEGURA)
-#     Rodada de UX pedida no brief. HONESTIDADE DE ESCOPO: o app ja e MUITO didatico (renderizar_guia_aba entrega,
-#     em cada aba, um guia "Como usar" completo; ha glossario, enciclopedia e auditoria XAI). E ha uma restricao
-#     real: este ambiente NAO renderiza Streamlit, entao uma reforma visual/navegacao as cegas violaria a regra
-#     no 1 (zero regressao) -- o proprio historico registra que mudancas de HTML/nav causaram o removeChild. Por
-#     isso esta leva NAO mexe em CSS/navegacao/componentes; entrega o que e SEGURO e VERIFICAVEL:
-#       - LINGUAGEM DO DOMINIO (secao 3 do brief): a app usava vocabulario de LOGISTICA COMERCIAL em textos
-#         visiveis (entregas, deposito, centros de distribuicao/CD, frete, mercadoria, "porta do cliente").
-#         Corrigidos 11 textos de PROSE PURA (guias + narrativas + help/labels) para a linguagem correta:
-#         candidato, municipio de origem, local de aplicacao da prova, deslocamento. SEGURANCA: so literais de
-#         exibicao, sem tocar placeholders de f-string, chaves de dict, nomes de coluna exportados nem
-#         session_state. Verificado por contagem: chaves de dict "hub", colunas "UF Cliente"/"UF Hub"/"IGQ Hub"/
-#         "Justificativa Hub" e chaves alo_hub* INALTERADAS.
-#       - NAO FEITO DE PROPOSITO (documentado na auditoria): o rename coordenado de hub->polo/local e das COLUNAS
-#         "UF Cliente"/"UF Hub" etc. e alto valor mas alto risco (quebra exportacoes e logica de alocacao) e EXIGE
-#         o loop de renderizacao/exportacao do dono. Recomendado, nao executado as cegas.
-#     ENTREGA PARALELA: AUDITORIA_UXUI_V277.md -- auditoria de UX/UI completa (problemas + roteiro do trabalho
-#     visual/nav que precisa de renderizacao), como o brief pede no resumo final.
-#     Invariantes: RotaPipeline 43, _SECOES 14, baloes 1x, bare-except 0, imports de topo identicos, 0 funcao
-#     nova/removida, requirements INALTERADO. Suite test_linguagem_dominio.py (exit 0).
-#   v3.39 (276ª geração) → 📒 LIVRO-RAZÃO DE RASTREABILIDADE + RODADA 3 (PERFORMANCE) MEDIDA E HONESTA\n#     RODADA 3 (performance): perfilei os candidatos reais e a conclusão honesta é que o caminho QUENTE já está\n#     otimizado — _regex_palavra já é @lru_cache (203ª), MotorEnderecoCanônico é singleton de módulo (regex no\n#     import), .apply/closures restantes rodam 1×/estudo ou em caminho frio. O único desperdício medido (chave\n#     do cache da aba Analytics via to_json, ~56ms/rerun em 50k linhas) foi DESCARTADO com transparência: o\n#     conserto guardaria ~15MB de JSON em session_state permanentemente — e o requirements documenta que a\n#     pressão de memória no Streamlit Cloud alimenta o removeChild/restart. Trocar 42ms/rerun por 15MB fixos\n#     FERE "jamais sacrifique memória/confiabilidade por velocidade". Zero mudança de performance nesta leva.\n#     ENTREGA DE VALOR (Oportunidade 1 da auditoria R1): LIVRO-RAZÃO DE RASTREABILIDADE — nova exportação\n#     auditável, 1 linha por rota, consolidando motor que respondeu, motores consultados, divergência entre\n#     motores, motivo, confiança, tempos por etapa e status. É PROJEÇÃO READ-ONLY do df final (mesma filosofia\n#     da coluna Situação do Cálculo): não recalcula nada, não acessa rede, deriva só de colunas já existentes.\n#     Aditivo e defensivo (df None/vazio/colunas ausentes -> nunca levanta). UI contida na aba Auditoria\n#     (expander + preview + download .csv utf-8-sig). +2 funções puras, +2 constantes, +1 bloco de UI.\n#     TESTES: nova suíte test_livro_razao.py (pandas real, sem runtime Streamlit) — deriva livro-razão de um df\n#     sintético e valida colunas, motores consultados, níveis de confiança, defensividade e CSV. Invariantes:\n#     RotaPipeline 43, _SECOES 14, balões 1×, bare-except 0, imports de topo idênticos, requirements INALTERADO.\n#   v3.38 (275ª geração) → 🔊 OBSERVABILIDADE DOS SILÊNCIOS DE TELEMETRIA (R2 do plano de evolução)
-#     Rodada 2 do brief de auditoria — correções de MAIOR valor e MENOR risco, 100% ADITIVAS. A auditoria R1
-#     (AUDITORIA_R1_V274.md) concluiu, com honestidade, que o app já é maduro: 0 except nu, 0 API Streamlit
-#     descontinuada, 0 chave hardcoded, 0 função morta, iterrows só em caminho frio, e já tem correção auto
-#     de lat/lon trocada + detecção de rota suspeita (Tukey). Portanto R2 NÃO reescreve nada — fecha 3 lacunas:
-#       • ACHADO A (observabilidade): dos 219 `except: pass`, a MAIORIA é fallback de rede LEGÍTIMO (logar seria
-#         ruído — mantidos). Só os 4 que engoliam ESCRITAS DE OBSERVABILIDADE passaram a `logger.debug(exc_info)`:
-#         reset e registro de _TELEMETRIA (latência por rota), concordância GOOGLE_GEO e telemetria multi-motor.
-#         Fluxo BYTE-IDÊNTICO (o except ainda engole a exceção e segue); só o painel de auditoria deixa de
-#         subnotificar em silêncio. `except: pass` 219 → 215. bare-except segue 0.
-#       • ACHADO C (documentação): comentário explicando que "componente == 0.0 = coordenada ausente" é
-#         suposição deliberada e SEGURA para a bbox do Brasil. NENHUMA mudança de comportamento.
-#       • ACHADO B (requirements): cabeçalho re-datado ("auditado até a 275ª; inalterado desde a 142ª").
-#         DEPENDÊNCIAS INALTERADAS — nenhuma inclusão/remoção/atualização.
-#     Invariantes preservados: RotaPipeline 43, _SECOES 14, balões 1×, bare-except 0, imports de topo
-#     idênticos ao baseline, nenhuma função nova, nenhuma função removida.
-#   v3.37 (274ª geração) → 🔎 AUDITORIA (R1) + OBSERVABILIDADE DOS SILÊNCIOS (R2) + INTEGRAÇÃO DADO→EXPORT
-#     Rodada 1 (auditoria estratégica pedida no brief): mapeei as ~45,7k linhas e concluí, com honestidade, que
-#     o app já é MADURO e fortemente defendido — 55 funções de validação/consenso, detecção de troca lat/lon,
-#     consistência IBGE, disjuntores por motor, exportações profissionais, retomada em disco, etc. O entregável
-#     da auditoria é o documento AUDITORIA_R1_V273.md (backlog priorizado por valor×segurança, com recomendação
-#     EXPLÍCITA contra rewrites arriscados sem ganho medido — Polars/DuckDB/refatoração de funções grandes).
-#     Rodada 2 (correções de maior valor e menor risco):
-#       • OBSERVABILIDADE DOS SILÊNCIOS: triagem dos 223 `except: pass`. Achado honesto — a maioria é defensiva
-#         LEGÍTIMA (ex.: a cascata geodésica GeographicLib→Geopy→Haversine, onde logar seria ruído). Só os que
-#         escondiam uma verificação/aviso REAL foram tratados: o portão geográfico do consenso (fail-open) e 3
-#         diagnósticos de validação da planilha comparativa agora registram em `logger.debug` (exc_info) — sem
-#         mudar o fluxo. Erros que sumiam agora são rastreáveis.
-#       • LIMITAÇÃO declarada: um teste end-to-end que suba o app inteiro exige o runtime do Streamlit, que não
-#         instala neste ambiente. Entreguei o melhor teste de INTEGRAÇÃO DE COMPONENTE viável e real.
-#     TESTES: nova suíte test_integracao_export.py (15 checagens, exit 0) que liga a coluna de qualidade da 273ª
-#     ('Situação do Cálculo') ao styler institucional da 272ª e gera um .xlsx REAL (xlsxwriter), verificando com
-#     openpyxl que a coluna auditável chega à planilha legível, como TEXTO, sem mascarar zero, sem perder colunas
-#     e com o padrão institucional aplicado. As oito suítes anteriores (266ª–273ª) foram reapontadas ao V274 e
-#     seguem verdes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline, nenhuma função nova, requirements INALTERADO.
-#   v3.36 (273ª geração) → 🚦 "ZERO NUNCA É AUSÊNCIA SILENCIOSA": coluna 'Situação do Cálculo' nas planilhas
-#     Continuação do aprimoramento das planilhas, atacando o item mais crítico de CORREÇÃO do brief (#28/#29):
-#     uma rota não calculada virava Distancia=0.0 — indistinguível de um 0 REAL (origem = destino, prova na
-#     própria cidade). Mudar o número armazenado seria regressão grave (agregações, ordenação, cadeia de
-#     enriquecimento e abas de estatística assumem float). Solução SEGURA e ADITIVA: uma coluna nova, VETORIZADA
-#     e derivada só de colunas já existentes (Distancia, Fonte da Rota, Status da Rota, Municipio Origem/Destino),
-#     que rotula cada linha de forma auditável — SEM tocar em nenhum número:
-#       • ✓ Rota viária calculada
-#       • ≈ Estimativa em linha reta (sem rota viária disponível)   ← distingue estimada de efetivamente calculada
-#       • ✓ 0 km — mesmo município (prova na própria cidade)         ← 0 REAL, explicitamente marcado como válido
-#       • ⚠️ Distância não calculada — verificar (não é 0 real)      ← ausência NUNCA mascarada como 0
-#       • ⚠️ Não calculada (erro de processamento)
-#     Aplicada no builder COMPARTILHADO (_montar_dataframe_final) → cobre Lote e Alocação de uma vez, antes do
-#     downcast de dtypes (vira categórica de baixa cardinalidade). Defensiva: sem colunas/df vazio/None → não
-#     levanta. A coluna é auto-explicativa (o próprio texto explica), então aparece já legível na planilha.
-#     TESTES: nova suíte test_situacao_calculo.py (16 checagens, exit 0) com pandas real: os 5 casos rotulados
-#     corretamente; NÃO-REGRESSÃO (só 1 coluna nova, nenhum valor existente alterado, 0.0 continua 0.0);
-#     defensividade (colunas ausentes/vazio/None); e a fiação no builder. As sete suítes anteriores (266ª–272ª)
-#     foram reapontadas ao V273 e seguem verdes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline, +1 helper puro, requirements INALTERADO.
-#   v3.35 (272ª geração) → 📊 PLANILHAS EXCEL: FORMATAÇÃO NUMÉRICA INSTITUCIONAL + CONSISTÊNCIA NAS ABAS SECUNDÁRIAS
-#     Revisão do padrão das planilhas exportáveis. HONESTIDADE DE ESCOPO: a arquitetura de Excel já era madura
-#     (styler central _estilizar_tabela_xlsx com cabeçalho destacado, largura automática, congelamento,
-#     autofiltro, zebra e setup de impressão; capa; resumo executivo; metodologia; referências ABNT; glossário;
-#     dicionário de dados; painel executivo; gráficos nativos; estatísticas descritivas). Esta rodada NÃO
-#     reconstruiu isso — fez melhorias ADITIVAS e SEGURAS que faltavam, guiadas pela regra "zero não é falha" e
-#     não-regressão:
-#       • FORMATOS NUMÉRICOS COM UNIDADE na fábrica central (_fmt_institucional): 'km' (#,##0.0" km" →
-#         "187,4 km") e 'pct' (#,##0.0"%" → "32,0%"), somados aos já existentes 'int'/'num'. Valor inalterado —
-#         só a exibição (separadores conforme a localidade do Excel do usuário).
-#       • _estilizar_tabela_xlsx ganhou parâmetro OPT-IN `formatos_col`: aplica o formato numérico por coluna às
-#         células de dado. SEM ele, comportamento byte-idêntico ao anterior (não-regressão comprovada em teste).
-#       • _num_formatos_por_coluna: heurística CONSERVADORA (nome + dtype numérico) que só marca colunas de
-#         MEDIDA reconhecidas (distância→km, percentual→%, contagem→milhar) e IGNORA códigos/identificadores
-#         (IBGE, CEP, lat/lon) e numéricos ambíguos (ano, razão, score, sinuosidade) — evita "2.024,0" ou
-#         mascarar um código como "3.550.308".
-#       • CONSISTÊNCIA: as abas analíticas SECUNDÁRIAS do Lote (Resumo Executivo, Distribuição de Distâncias,
-#         Síntese por UF, Status das Rotas) — antes escritas como DataFrame CRU — passaram pelo MESMO styler
-#         institucional, com os formatos numéricos por coluna. As abas principais (Rotas do Lote, Locais da
-#         Alocação) e o helper reutilizável _escrever_aba_estilizada (Comparador + abas científicas) também
-#         passaram a aplicar os formatos numéricos automaticamente e de forma conservadora.
-#     TESTES: nova suíte test_excel_estilo.py (25 checagens, exit 0) que GERA um .xlsx real com o xlsxwriter (a
-#     partir do styler REAL extraído) e verifica com openpyxl: cabeçalho estilizado, congelamento, autofiltro,
-#     formatos km/%/milhar nas colunas certas, códigos IBGE preservados sem separador, valores íntegros, nº de
-#     colunas/linhas preservado, e a NÃO-REGRESSÃO (sem opt-in, nenhuma formatação numérica extra). As seis
-#     suítes anteriores (266ª–271ª) foram reapontadas ao V272 e seguem verdes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline, +1 helper puro, requirements INALTERADO.
-#   v3.34 (271ª geração) → ⚡ OTIMIZAÇÃO DE PERFORMANCE/MEMÓRIA DA FINALIZAÇÃO (guiada por medição, não por chute)
-#     Profilei a cadeia de encerramento antes de mexer. Achado honesto: ela já estava bem otimizada (normalizador
-#     memoizado, 14 enriquecedores vetorizados, itertuples consciente de RAM), então persegui só ganhos SEGUROS e
-#     MEDIDOS — e, no caminho, um BUG LATENTE de memória amplificado pelo próprio watchdog da 266ª:
-#       • LOG DE AUDITORIA (memória + correção): st.session_state['logs_auditoria'] era lazy-init e NUNCA
-#         limpo. Numa REENTRADA da finalização (o watchdog permite algumas tentativas) ou em vários estudos na
-#         mesma sessão, ele DUPLICAVA todas as N linhas (auditoria com cada linha repetida 2–6× e memória
-#         crescendo ~12MB por reentrada num estudo nacional). Agora é RESETADO a cada (re)construção do
-#         DataFrame — reflete exatamente o estudo atual, sem duplicatas, memória limitada a 1 estudo. Correção
-#         de bug + economia de dezenas de MB nos casos de reentrada/multi-estudo. (Tab Individual não usa a
-#         chave; o processador legado tem reset próprio — sem regressão.)
-#       • _grau_ambiguidade_homonimos (CPU): o cálculo IBGE + ordenação passou a ser MEMOIZADO por nome
-#         DISTINTO (núcleo _core que devolve TUPLA IMUTÁVEL — seguro p/ cache; a função pública devolve um dict
-#         NOVO a cada chamada). Chamado 2× por linha na finalização, com municípios repetindo muito → passa a
-#         computar 1× por nome. Saída BYTE-IDÊNTICA (verificado contra implementação de referência).
-#       • MEDIÇÕES QUE DESCARTEI (transparência): cachear _info_municipio_ibge ficou MAIS LENTO (0,52×) — não
-#         aplicado; eliminar as 11 cópias da cadeia de enriquecimento renderia ~0,23s/~11MB, mas exigiria mutar
-#         in-place com risco de regressão em outros chamadores (Lote/Individual) — NÃO aplicado sob a regra de
-#         não-regressão absoluta. Preferi honestidade a um ganho arriscado.
-#     TESTES: nova suíte test_perf_finalizacao.py (sem runtime Streamlit) — 11 checagens, exit 0: saída idêntica
-#     à referência; segurança do cache (dict sempre novo — mutar um não contamina o próximo); eficácia (1000×2
-#     chamadas → só 2 consultas à base); e a guarda de regressão do reset do log. As cinco suítes anteriores
-#     (266ª–270ª) foram reapontadas ao V271 e seguem verdes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline, +1 helper puro (núcleo memoizado), requirements INALTERADO.
-#   v3.33 (270ª geração) → 🔌 CIRCUIT BREAKER (DISJUNTOR) PARA TODOS OS MOTORES — corta lentidão/timeout na origem
-#     Ataque a MONTANTE das redes de segurança das rodadas anteriores: em vez de só absorver a lentidão, evita
-#     que ela aconteça. O Google já tinha disjuntor; os demais motores (OSRM primário, GraphHopper, ORS,
-#     OSRM/FOSSGIS, Valhalla) NÃO — então, quando um deles saía do ar ou degradava, CADA rota do lote pagava o
-#     timeout inteiro dele, injetando a lentidão que alimentava os timeouts de WebSocket e os pulos de janela.
-#       • DISJUNTOR GENÉRICO reusando a MÁQUINA DE ESTADOS CONSAGRADA do Google (_circuit_breaker_google — pura,
-#         padrão Nygard "Release It!"), uma instância por motor, protegida por lock (chamadas vêm de várias
-#         threads do pool). Falhas em série → ABRE → o motor é PULADO por um cooldown (~45s), enquanto os demais
-#         motores + fallback geodésico assumem; após o cooldown, uma chamada de teste (meio-aberto) o recupera
-#         automaticamente. Limiar 5 falhas seguidas; sucesso zera o contador.
-#       • FIAÇÃO no dispatch multi-motor: OSRM primário (guarda no submit ao pool + no fallback serial, com
-#         registro do resultado) e GraphHopper/ORS/OSRM_FOSSGIS/Valhalla via _chamar_motor_cb (pula se aberto,
-#         registra sucesso/falha, isola exceção → None). Helpers novos: _motor_pode_chamar, _motor_registrar,
-#         _chamar_motor_cb, _motor_sucesso_rota, _motor_cb_status_resumo (telemetria de status/skips).
-#       • OBSERVABILIDADE: log WARNING quando um motor ABRE (começa a ser pulado) e INFO quando RECUPERA;
-#         contador de chamadas puladas por motor (para um futuro painel de telemetria).
-#       • NÃO-REGRESSÃO byte-a-byte quando os motores estão saudáveis: disjuntor fechado é 100% transparente;
-#         sem falhas em série, nada é pulado. Motores opcionais desligados continuam None como antes.
-#     TESTES: nova suíte test_disjuntor_motores.py (sem runtime Streamlit) — 31 checagens, exit 0: _motor_sucesso_
-#     rota; a máquina completa (fecha→abre em 5 falhas→cooldown→meio-aberto→recupera; sucesso intercalado zera o
-#     contador); _chamar_motor_cb (pula quando aberto sem chamar a func, registra quando fechado, isola exceção);
-#     isolamento por motor; smoke de concorrência (8 threads); e a fiação no dispatch. As quatro suítes anteriores
-#     (266ª–269ª) foram reapontadas ao V270 e seguem verdes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline, +5 helpers puros, requirements INALTERADO.
-#   v3.32 (269ª geração) → 💾 CHECKPOINT EM DISCO + RETOMADA DE ESTUDO (sobrevive a refresh/queda/restart)
-#     Último grande gap de confiabilidade: o estado do estudo vivia só em st.session_state — POR SESSÃO e POR
-#     PROCESSO. Um refresh do navegador, uma queda de conexão longa ou um restart do servidor (deploy, OOM)
-#     PERDIAM um estudo nacional inteiro em andamento, obrigando a recomeçar o roteamento do zero (minutos de
-#     chamadas de rede jogados fora). Agora o progresso é PERSISTIDO em disco de forma incremental e a app
-#     oferece RETOMAR de onde parou. Tudo aditivo e defensivo (rede de segurança, nunca caminho crítico):
-#       • 7 helpers de checkpoint (_ckpt_dir/_salvar/_snapshot/_carregar/_apagar/_restaurar/_info_retomavel),
-#         definidos ANTES de todas as abas. Persistem via diskcache.Cache (dependência JÁ existente — zero dep
-#         nova) num diretório PERSISTENTE (./cache_checkpoints, padrão dos caches do app; /tmp seria apagado no
-#         próprio restart que queremos cobrir).
-#       • SNAPSHOT incremental e THROTTLED (~15s) do progresso a cada passada de roteamento, nas DUAS abas
-#         (Lote: prefixo 'lote_'; Alocação: prefixo 'alo_', na fase cara de roteamento). Captura tudo que a
-#         retomada precisa (resultados já calculados, índice, tarefas, insumos, fase).
-#       • CARTÃO DE RETOMADA no topo de cada aba: se houver estudo interrompido compatível, mostra
-#         "X/Y rotas (Z%), interrompido há …" com botões ▶️ Retomar de onde parou / 🗑️ Descartar.
-#       • COMPATIBILIDADE POR VERSÃO: só retoma checkpoint gravado pela MESMA _VERSAO_APP (evita restaurar
-#         estado incompatível após um deploy). Checkpoint APAGADO em conclusão, cancelamento e novo estudo.
-#     TESTES: nova suíte test_checkpoint_retomada.py (sem runtime Streamlit; Cache falso) — 30 checagens, exit 0:
-#     round-trip salvar→carregar→restaurar, snapshot só do prefixo certo, rejeição por versão incompatível,
-#     throttle, recusa de estudo vazio/concluído, defensividade e a fiação no app (snapshot/deleção/cartões).
-#     As três suítes anteriores (266ª/267ª/268ª) foram reapontadas ao V269 e seguem verdes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline (Cache já era importado; tempfile/os locais), +7 helpers puros, requirements INALTERADO.
-#   v3.31 (268ª geração) → 🛡️ BLINDAGEM ANTI-TRAVA DO PROCESSAMENTO (não só do encerramento) + FIX CRÍTICO DE ORDEM
-#     As rodadas 266ª/267ª mataram a trava na FINALIZAÇÃO das duas abas. Esta fecha os vetores de trava que
-#     restavam DURANTE o processamento — para que o problema jamais volte, venha de onde vier:
-#       • ESPERA DE CHUNK COM ORÇAMENTO DE TEMPO: processar_chunk_rotas passou a aguardar os Futures com
-#         as_completed(timeout=...). Cada rota já tinha timeout de HTTP, mas um Future que nunca completa
-#         (worker saturado, fila de motor presa) fazia a espera ser INFINITA — travando a execução, derrubando
-#         o WebSocket e reentrando no mesmo chunk a cada reconexão (a "trava no meio do processamento"). Agora a
-#         função SEMPRE retorna em tempo limitado; o que não concluir é adiado (fallback geodésico + 2ª passada
-#         de recuperação na finalização). Orçamento generoso (_CHUNK_WAIT_*): nunca abandona chunk saudável.
-#       • WATCHDOG DE ESTAGNAÇÃO (_watchdog_progresso): detector por parede aplicado aos laços do Lote
-#         (processamento e pré-aquecimento). Se o índice fica preso além do orçamento (execuções mortas pelo
-#         WebSocket na mesma janela), PULA a janela travada e DURABILIZA o avanço na hora — garante progresso
-#         mesmo que a execução seguinte também seja interrompida. Rotas puladas caem no fallback; um aviso de
-#         resiliência informa quantas. (A aba de Alocação já tinha proteção equivalente por contagem — mantida.)
-#       • PRÉ-AQUECIMENTO do Lote: a onda de geocodificação também passou a esperar com orçamento — geocode
-#         preso não segura mais a etapa (pendências reprocessam na próxima passada, idempotente).
-#       • FIX CRÍTICO DE ORDEM (NameError latente): os helpers de finalização (usados pela aba de Lote desde a
-#         267ª) estavam definidos DEPOIS da aba de Lote no arquivo. Como o Streamlit executa de cima para baixo,
-#         um Lote em finalização chamaria _obs_fin/_resumo_finalizacao/_render_checklist_finalizacao antes de
-#         existirem → NameError em produção. Realocados para ANTES de TODAS as abas. Nova checagem de regressão
-#         de ORDEM na suíte garante que isso nunca mais aconteça.
-#     TESTES: nova suíte test_antitrava_processamento.py (sem runtime Streamlit) — 35 checagens, exit 0: testa o
-#     _watchdog_progresso real (avanço normal, estagnação curta×longa, pulo com teto, novo estudo sem pulo falso,
-#     fases independentes, defensivo), a semântica da espera com orçamento (chunk saudável, com preso, todo
-#     preso → jamais infinito), a presença dos timeouts no código e a ORDEM de definição dos helpers. As três
-#     suítes anteriores (Alocação 266ª, Lote 267ª) foram reapontadas ao V268 e seguem verdes.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline (TimeoutError de futures importado LOCALMENTE), +1 helper puro, requirements INALTERADO.
-#   v3.30 (267ª geração) → 🧯 FINALIZAÇÃO ROBUSTA NA ABA DE LOTE (mesmo padrão da Alocação/266ª) + PLANILHA DESACOPLADA
-#     Estende à aba "Estudo em Lote" a blindagem de encerramento criada na 266ª para a Alocação. A finalização
-#     do Lote tinha o MESMO padrão de trava (todo o trabalho pesado — montagem + enriquecimento — numa passada
-#     síncrona AINDA na fase 'processar', com transição só no rerun final; interrupção → reentra e reexecuta →
-#     "trava em 100%") e era AINDA MAIS frágil: construía a planilha .xlsx SÍNCRONA e INLINE na finalização, e a
-#     EXIBIÇÃO dependia de 'planilha_pronta' — logo um OOM/timeout no build do .xlsx impedia ATÉ os resultados de
-#     aparecerem. Correções (todas ADITIVAS; caminho feliz preservado — mesma planilha, mesmas colunas):
-#       • WATCHDOG DE ENCERRAMENTO (lote_fin_tentativas): acima de _MAX_FIN_TENT (6) entrega o DF-seguro já
-#         consolidado e encerra em modo degradado — jamais trava.
-#       • DF-SEGURO (lote_df_seguro): referência de custo zero ao DataFrame base entregável, guardada antes do
-#         enriquecimento; o watchdog o entrega se um passo for interrompido.
-#       • PLANILHA DESACOPLADA (FASE 3b) + HÍBRIDA: a construção do .xlsx sai da finalização e vira sob demanda.
-#         Estudo PEQUENO (≤ _LIMITE_PLANILHA_AUTO=600 linhas) → gera automaticamente (conveniência); GRANDE/
-#         nacional → sob demanda (botão), à prova de OOM. A exibição passa a depender de 'lote_resultado_pronto'
-#         (marcador ESPECÍFICO do Lote), não mais da planilha — os resultados aparecem SEMPRE, na hora.
-#       • DESACOPLAMENTO planilha × HTML × resultados: falha no .xlsx mostra aviso + "tentar de novo" e nunca
-#         impede resultados nem o relatório HTML (já sob demanda); e vice-versa. Botão de planilha em 3 estados
-#         (pronta / falhou→retry / sob demanda→gerar).
-#       • PAINEL HONESTO: ao terminar o roteamento, o painel de "100% · ETA 0" dá lugar ao CHECKLIST de
-#         encerramento (reusa _render_checklist_finalizacao da 266ª). Conclusão elegante com os números do
-#         estudo (tempo, candidatos, rotas, municípios, destinos, precisão viária, motores).
-#       • OBSERVABILIDADE: _obs_fin() loga tempo + memória RSS + tamanho do DF por etapa (montagem, planilha,
-#         finalização) com aviso acima do orçamento — reusa a infra da 266ª (sem dependência nova).
-#       • LIMPEZA: novos marcadores (lote_fin_tentativas, lote_df_seguro, lote_finalizacao_degradada,
-#         lote_resumo_final, lote_planilha_erro, lote_planilha_auto, lote_resultado_pronto) entram no
-#         cancelamento e no reset de novo lote (que agora também zera planilha_pronta/relatorio_html_lote).
-#     TESTES: nova suíte test_finalizacao_lote.py (sem runtime Streamlit) — 42 checagens, exit 0: simulador fiel
-#     da máquina do Lote (preaquecer→processar→FASE 3a→{gerar_planilha|exibição}) cobrindo pequeno(auto)/grande
-#     (lazy)/nacional, pré-aquecimento, interrupção que converge, hang de rede one-shot, patológico→degradado,
-#     falha de planilha e de HTML (desacoplamento), simultâneos, cancelamento e a garantia anti-trava. A suíte
-#     da Alocação (266ª) foi reapontada ao V267 e segue verde (49/49) — sem regressão na Alocação.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline, helpers reusados da 266ª (nenhum novo), requirements INALTERADO.
-#   v3.29 (266ª geração) → 🧯 FINALIZAÇÃO ROBUSTA DA ALOCAÇÃO: fim definitivo do "trava em 100%"
-#     PROBLEMA (reproduzido no estudo nacional de 2.781 municípios): a aba "Locais de Aplicação" chegava a
-#     100% e ficava PRESA no painel "Alocação Contínua em Andamento" — sem botão de planilha, sem relatório
-#     HTML, sem erro. CAUSA-RAIZ medida no código: a FASE 3 (finalização) roda TODO o trabalho pesado
-#     (re-roteamentos síncronos + enriquecimento O(n) sobre milhares de linhas) numa ÚNICA execução, AINDA na
-#     fase 'processar', e só troca de fase no st.rerun() do fim. Se essa execução é interrompida ANTES do rerun
-#     (timeout de WebSocket num estudo nacional, Future de rede travado, pressão de memória), a máquina volta a
-#     'processar', REDESENHA o painel de 100% e RE-EXECUTA tudo — travamento perpétuo. A correção 260ª/261ª só
-#     tirou o build do .xlsx dali; o trabalho pesado pré-commit continuava dentro de 'processar', sem watchdog
-#     e sem idempotência (a 2ª passada do Google, até 400 re-rotas, reexecutava a cada reentrada).
-#     CORREÇÃO (toda ADITIVA; caminho feliz byte-idêntico — só muda o CONTROLE de fluxo e a APRESENTAÇÃO):
-#       • WATCHDOG DE ENCERRAMENTO: conta reentradas da finalização; acima de _MAX_FIN_TENT (6, finito e
-#         generoso) ENTREGA o DF-seguro já consolidado e vai a 'concluido' em modo degradado — JAMAIS trava.
-#       • DF-SEGURO: logo após a montagem base (_montar_dataframe_final), guarda uma REFERÊNCIA (custo zero) ao
-#         DataFrame completo e entregável, antes do enriquecimento analítico. Se um passo é interrompido, o
-#         watchdog entrega esse DF — resultados essenciais preservados.
-#       • ONE-SHOT da 2ª passada do Google: marcada como feita ANTES de rodar (como o retry-viária já fazia),
-#         então reentradas não repetem os 400 re-roteamentos de rede — convergem rápido.
-#       • PAINEL HONESTO: ao chegar ao fim do roteamento, o painel de "100% · tempo restante 0" dá lugar a um
-#         CHECKLIST de encerramento (consolidar → enriquecer → montar → planilha → HTML → downloads), com ✔/⏳/○.
-#       • CONCLUSÃO ELEGANTE: tela final com "✅ Processamento concluído", checklist do que ficou pronto e os
-#         números do estudo (tempo total, candidatos, rotas, municípios, polos, precisão viária, motores).
-#       • OBSERVABILIDADE ESTRUTURADA: _obs_fin() loga tempo + memória RSS + tamanho do DF por etapa e emite
-#         AVISO acima do orçamento (_FIN_ETAPA_WARN_S). Memória via stdlib `resource` (import PREGUIÇOSO —
-#         imports de topo permanecem idênticos ao baseline). Alimenta também o perfil de fases (Monitor APIs).
-#       • DESACOPLAMENTO reforçado: planilha (FASE 3b sob demanda/auto) e relatório HTML (sob demanda) seguem
-#         100% independentes — a falha de um nunca impede o outro nem os resultados (retry preservado).
-#       • LIMPEZA: os novos marcadores (alo_fin_tentativas, alo_df_seguro, alo_2pass_google_feito,
-#         alo_finalizacao_degradada, alo_resumo_final) entram no cancelamento e no reset de novo estudo.
-#     TESTES: nova suíte test_finalizacao_alocacao.py (sem runtime Streamlit) — 49 checagens, exit 0. Testa os
-#     4 helpers REAIS (extraídos por AST) e um SIMULADOR FIEL da máquina de estados: pequeno(auto)/grande(lazy)/
-#     nacional; interrupção de enriquecimento converge; hang de rede one-shot; patológico → entrega degradada;
-#     falha de planilha e de HTML (desacoplamento nos dois sentidos); simultâneos; cancelamento; e a GARANTIA
-#     de que a máquina NUNCA fica presa em 'processar'.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports de topo idênticos ao
-#     baseline (resource é stdlib, importado preguiçosamente), +4 helpers puros, requirements INALTERADO.
-#   v3.28 (265ª geração) → 🌐 SELF-HOST SIMÉTRICO: OSRM_URL + GRAPHHOPPER_URL (apontar os 3 motores à instância própria)
-#     Habilita o caminho que destrava a participação NACIONAL em toda rota: apontar OSRM e GraphHopper para
-#     instâncias PRÓPRIAS (Docker + PBF do Brasil), simétrico ao VALHALLA_URL que já existia. Antes, só o
-#     Valhalla era configurável; OSRM estava fixo em router.project-osrm.org (público) e o GraphHopper na API
-#     cloud graphhopper.com (com chave/cota). Mudanças, todas com DEFAULT = comportamento atual (zero regressão):
-#       • Novos secrets OSRM_URL (default http://router.project-osrm.org) e GRAPHHOPPER_URL (default
-#         https://graphhopper.com/api/1), ambos .rstrip("/") e com fallback. Helpers _osrm_instancia_propria() e
-#         _graphhopper_instancia_propria() (detectam se a URL NÃO é o servidor público/cloud).
-#       • OSRM: os 3 clientes (route, table/MATRIZ da Alocação, nearest) passam a usar {OSRM_URL}. Numa instância
-#         própria, some o rate-limit do servidor público — decisivo na fase de matriz do lote nacional.
-#       • GraphHopper: cliente usa {GRAPHHOPPER_URL}/route e só anexa &key= quando há chave; numa instância
-#         própria roda SEM chave e SEM cota (participa de toda rota, como o OSRM). Gates do orquestrador, do
-#         registro em _motores_resultados e da exibição no Monitor passam a aceitar "chave OU instância própria".
-#     VERIFICADO: com os defaults, as URLs do OSRM e do GraphHopper são BYTE-IDÊNTICAS às anteriores → sem
-#     secret definido, nada muda. Com secret próprio: OSRM/GraphHopper apontam ao host do usuário; GraphHopper
-#     sem &key=. Assim, os TRÊS motores keyless-capazes (OSRM, GraphHopper, Valhalla) ficam prontos para virar
-#     peers de TODA rota do lote nacional, bastando subir os contêineres e definir os 3 secrets.
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports idênticos ao baseline,
-#     handbook intacto (123.793 chars, s33), requirements INALTERADO.
-#   v3.27 (264ª geração) → 🧭 VALHALLA: PARIDADE DE EXIBIÇÃO COMPLETA (Validador Rápido + Diagnóstico & Auditoria)
-#     Fecha a última pendência da 263ª: os DOIS painéis de exibição que faltavam para o Valhalla ficar 100%
-#     idêntico ao GraphHopper também na tela (o dado, a coluna, o consenso, a telemetria, o Monitor e o rótulo
-#     de vencedor já estavam prontos). Ambos leem o campo dados_valhalla (índice 42) via _parsear_dados_valhalla
-#     — a mesma fonte que alimenta as colunas da planilha. Tudo ADITIVO, só aparece quando o Valhalla respondeu.
-#       • VALIDADOR RÁPIDO: novo expander "🧭 Rota do Valhalla (motor sem chave, em paridade)" com métricas
-#         próprias (distância, tempo, balsa), divergência Valhalla × Google (mesmo _metricas_divergencia do
-#         GraphHopper/OSRM) e link de navegação. Espelha a seção do GraphHopper logo acima.
-#       • DIAGNÓSTICO & AUDITORIA: novo bloco dedicado "🧭 Rota do Valhalla" com as métricas próprias + o MAPA
-#         da GEOMETRIA EXATA do Valhalla desenhado no Leaflet autocontido (_gerar_mapa_leaflet_rota, provedor
-#         "Valhalla", cor cyan #0891b2 — distinta do roxo do GraphHopper) + link. Mesmo padrão do bloco do
-#         GraphHopper (que desenha a geometria dele) — o traçado é o do PRÓPRIO Valhalla, não estimado.
-#     Ambos os painéis rotulam o link como navegação por coordenadas (o traçado real do Valhalla é o do mapa
-#     Leaflet, pela geometria); a instância própria participa de toda rota como o OSRM (lembrete no rodapé).
-#     NÃO-REGRESSÃO: quando o Valhalla não respondeu, dados_valhalla vazio → parse None → nenhum painel aparece,
-#     comportamento idêntico ao anterior. Sem mudança de esquema (RotaPipeline segue 43, campo já existia na
-#     263ª). Invariantes: _SECOES 14, balões 1×, sem bare-except, imports idênticos ao baseline, handbook
-#     intacto (123.793 chars, s33), requirements INALTERADO. Diff = apenas os 2 painéis + versão/histórico.
-#     RESSALVA (herdada): o cliente do Valhalla ainda não foi testado contra o endpoint real — valide no seu
-#     ambiente (ligue o toggle ou aponte a instância própria, rode 2–3 rotas conhecidas). Com isto, o Valhalla
-#     está em PARIDADE TOTAL com o GraphHopper em toda a aplicação: dado, coluna, consenso, telemetria, Monitor,
-#     rótulo de vencedor, seção no Validador e bloco no Diagnóstico com mapa próprio.
-#   v3.26 (263ª geração) → 🧭 VALHALLA PEER COMPLETO EM TODA A APLICAÇÃO + PLANILHA HÍBRIDA + STORYTELLING DO LOTE
-#     PEDIDO: (1) que o Valhalla funcione em TODO o âmbito do app, exatamente como Google/OSRM/GraphHopper —
-#     tudo que eles fazem, o Valhalla faz; (2) planilha híbrida por tamanho (auto p/ estudos pequenos, sob
-#     demanda p/ grandes); (3) storytelling no topo do Lote. Tudo ADITIVO, invariantes preservados.
-#     ── 1. VALHALLA PEER COMPLETO ──────────────────────────────────────────────────────────────────────────
-#     ENQUADRAMENTO HONESTO: fazer o Valhalla rodar em TODA rota do lote nacional automaticamente (igual ao
-#     OSRM) só é fisicamente viável apontando VALHALLA_URL para uma INSTÂNCIA PRÓPRIA — na pública o fair-use
-#     ≤1 req/s tornaria o lote lento E seria abuso de um servidor comunitário. Solução: o app agora DETECTA a
-#     instância própria e, nela, o Valhalla vira peer completo SOZINHO (toda rota, paralelo, sem throttle, sem
-#     depender do toggle); na pública, continua opt-in por fair-use. Mudanças:
-#       • _valhalla_instancia_propria() (VALHALLA_URL não é o host público do FOSSGIS) + _valhalla_ativo()
-#         (própria → sempre; pública → toggle). Cliente API_Valhalla_Routing RESTRUTURADO: instância própria →
-#         chamada DIRETA (paralela, sem throttle, como o OSRM); pública → FILA_VALHALLA + _throttle_valhalla
-#         (fair-use). Orquestrador passa a gatilhar por _valhalla_ativo() (não mais só pelo flag).
-#       • RECONHECIMENTO DE VENCEDOR na UI (o mesmo bug que o GraphHopper tinha antes da 220ª): _eh_contendor_ui,
-#         _nome_vencedor_ui e _motor_curto ganharam VALHALLA — sem isso, uma rota vencida pelo Valhalla seria
-#         rotulada/mapeada como Google. Agora o Valhalla vence e é exibido como Valhalla (mapa Leaflet próprio).
-#       • DADOS PRÓPRIOS + PLANILHA (paridade com GraphHopper): novo campo RotaPipeline 'dados_valhalla' (índice
-#         42, default "" — ADITIVO no fim, RotaPipeline 42→43), helpers _montar_/_parsear_dados_valhalla (mesmo
-#         formato '‖' do GraphHopper). O orquestrador captura os dados do PRÓPRIO Valhalla (km/tempo/balsa/
-#         geometria + link de navegação por coordenadas) e os passa nas 2 construções do RotaPipeline. 4 colunas
-#         novas na planilha ('Distancia/Tempo/Balsa/Link Rota Valhalla'), ao lado das de Google/OSRM/GraphHopper
-#         — preservadas pela rede de segurança do reindex (114ª). Consenso, telemetria, Monitor SLA, participação
-#         do vencedor, Scorecard por Motor e _PRIOR já contemplavam o Valhalla desde a 262ª.
-#     ── 2. PLANILHA HÍBRIDA POR TAMANHO ────────────────────────────────────────────────────────────────────
-#       A 261ª tornou a planilha da Alocação 100% sob demanda (blindagem anti-OOM). Agora é HÍBRIDA: estudos
-#       PEQUENOS (≤ _LIMITE_PLANILHA_AUTO = 600 municípios) geram a planilha AUTOMATICAMENTE ao finalizar (a
-#       FASE 3a dispara a FASE 3b já na próxima passada — conveniência sem clique, memória segura nesse porte);
-#       estudos GRANDES/nacionais permanecem SOB DEMANDA (blindagem intacta). Limiar é constante ajustável.
-#     ── 3. STORYTELLING NO TOPO DO LOTE ────────────────────────────────────────────────────────────────────
-#       Novo bloco "📖 A história deste lote" no TOPO do resultado do Lote (antes do Resumo Executivo): conta em
-#       PROSA corrida quantas rotas, distância média/mediana, % medido × estimado, motor que mais venceu,
-#       município mais distante, trajetos com balsa e sinuosidade. Reusa EXATAMENTE as regras métricas do Resumo
-#       Executivo (para nunca contradizê-lo). Cada frase é defensiva (só entra se a coluna existir); erro → some.
-#     RESSALVAS HONESTAS: (a) o cliente do Valhalla foi escrito conforme a API documentada e validado
-#     isoladamente (gating próprio×público, codec, parsing), mas NÃO testado contra o endpoint real (rede do
-#     ambiente de build restrita) — valide no seu ambiente. (b) "peer completo em TODA rota do lote" pressupõe
-#     instância PRÓPRIA (a pública é opt-in/fair-use). (c) FICA PENDENTE (oferecido p/ a próxima) a paridade de
-#     EXIBIÇÃO restante do GraphHopper: seção "Rota do Valhalla" no Validador Rápido + bloco dedicado no
-#     Diagnóstico & Auditoria (o dado/coluna/consenso/telemetria/rótulo de vencedor JÁ estão prontos).
-#     Invariantes: RotaPipeline 43, _SECOES 14, balões 1×, sem bare-except, imports idênticos ao baseline,
-#     handbook intacto (123.793 chars, s33), requirements INALTERADO.
-#   v3.25 (262ª geração) → 🧭 VALHALLA COMO 3º MOTOR KEYLESS DO CONSENSO VIÁRIO [VALHALLA]
-#     PEDIDO: recuperar a participação do Google (hoje bloqueado no scraper interno) via VPN/proxy rotativo +
-#     fingerprint, E integrar o Valhalla ao consenso. DECISÃO HONESTA sobre a 1ª parte: NÃO implementada a
-#     camada de evasão (VPN/proxy residencial/spoof de TLS-fingerprint) — seu propósito é contornar o bloqueio
-#     anti-bot do Google (violação de ToS + circunvenção de proteção técnica), é uma corrida armamentista que
-#     se perde, gera custo/risco jurídico às instituições de exame e apoia-se numa fonte adversarial e instável.
-#     O app JÁ raspa o endpoint interno /maps/preview/directions (por isso foi bloqueado); escalar evasão é o
-#     caminho errado. Via LÍCITA do Google já existe no código: API_Google_Directions_Oficial (Routes API — só
-#     precisa de chave gratuita). E o consenso keyless robusto (OSRM+Valhalla+GraphHopper+ORS) torna o Google
-#     dispensável. 2ª parte IMPLEMENTADA: Valhalla (open-source, dados OSM) entra como 3º motor keyless real,
-#     ESPELHANDO o padrão já provado do OSRM_FOSSGIS (motor público keyless opt-in). Mudanças (todas ADITIVAS):
-#       • Config VALHALLA_URL (secret; padrão = instância pública do FOSSGIS). Para escala NACIONAL, aponte-a
-#         para uma instância PRÓPRIA (self-host Docker — receita no docstring de API_Valhalla_Routing) e rode
-#         sem throttle. Fila FILA_VALHALLA (max_workers=1) + _throttle_valhalla (≤1 req/s, fair-use FOSSGIS).
-#       • Cliente API_Valhalla_Routing(lat_o,lon_o,lat_d,lon_d): GET {VALHALLA_URL}/route?json=... (costing auto,
-#         units km), extrai distância/tempo do PRÓPRIO motor (nunca estimados), converte a geometria polyline
-#         P6→P5 (reusa _decodificar_polyline/_codificar_polyline_de_coords do app), detecta balsa nas manobras,
-#         header identificável (X-Client-Id). Falha/timeout/status≠0 → None. Telemetria "VALHALLA".
-#       • Orquestrador: Valhalla vira mais um voto em _motores_resultados/_todos_motores e nos DOIS laços de
-#         _cands_contendor — disputa a MENOR viária válida exatamente como os demais, com outlier/consenso já
-#         existentes. OPT-IN via _ler_flag_runtime('usar_valhalla') pelo MESMO motivo do OSRM_FOSSGIS (a
-#         instância pública tem fair-use ≤1 req/s → no lote nacional só roda ligado). Desligado → None →
-#         contendor idêntico ao atual (NÃO-REGRESSÃO byte-a-byte). Prioridade de consenso _PRIOR["VALHALLA"]=5.
-#       • Monitor APIs: VALHALLA entra na Tabela Mestre de SLA (_apis_sla) e no painel de participação do
-#         vencedor (_rotulos); o Scorecard por Motor e o _normalizar_motor já o rotulavam. Toggle na barra
-#         lateral ("🧭 3º motor de rota sem chave — Valhalla (consenso OSM)"), com aviso de fair-use/self-host.
-#     RESSALVA HONESTA: o cliente foi escrito conforme a API documentada do Valhalla e VALIDADO isoladamente
-#     (codec P6→P5 confere com o exemplo canônico do Google; parsing OK/balsa/sem-balsa/erro/lixo), mas NÃO foi
-#     testado contra o endpoint real (a rede do ambiente de build é restrita) — convém você validar no seu
-#     ambiente. Invariantes preservados; requirements INALTERADO. Diff = apenas adições do Valhalla + versão.
-#   v3.24 (261ª geração) → 🔒 PLANILHA 100% SOB DEMANDA: BLINDAGEM DEFINITIVA CONTRA OOM [PLANILHA-LAZY]
-#     Continuação da 260ª. Na 260ª a planilha .xlsx passou a ser gerada numa FASE dedicada (rerun próprio),
-#     eliminando o loop de travamento e reduzindo memória. Restava um risco: se a construção pesada da
-#     planilha (∼15 abas + gráficos + loop sobre todos os registros) estourasse a RAM do contêiner, ele
-#     morria e o session_state se perdia. SOLUÇÃO DEFINITIVA: a planilha agora é 100% SOB DEMANDA — a
-#     finalização NUNCA a constrói. Mudanças (o construtor de Excel em si ficou byte-a-byte intocado):
-#       • FASE 3a agora vai DIRETO à exibição (marca alo_resultado_pronto, alo_fase='concluido', encerra
-#         alo_em_andamento) — os resultados aparecem na hora, sem nenhuma construção de arquivo.
-#       • A FASE 3b (o construtor .xlsx da 260ª, idêntico) deixa de ser automática e passa a ser disparada
-#         SÓ pelo botão '📊 Gerar planilha completa (.xlsx)' na exibição — exatamente o padrão sob demanda
-#         que o relatório HTML já usava. A construção pesada só roda no clique explícito do usuário.
-#       • Exibição passa a depender de alo_resultado_pronto (não mais da planilha pronta); download vira
-#         3 estados (pronta→baixar / falhou→aviso+retry / ainda não→gerar). Novo estudo limpa os marcadores.
-#     GARANTIA: a construção pesada do .xlsx NUNCA ocorre na finalização automática — logo o OOM não pode
-#     mais travar o encerramento nem derrubar o contêiner sem ação do usuário. Se a geração sob demanda
-#     falhar, os resultados e o relatório HTML seguem intactos e há retry. topk/resultados/params/mcda ficam
-#     em sessão até a geração (memória modesta) e são liberados no sucesso. Invariantes preservados;
-#     construtor Excel byte-a-byte idêntico à 260ª; requirements INALTERADO. Máquina de estados provada por
-#     simulação (finaliza em ≤2 reruns; nunca constrói planilha sozinha; falha/retry corretos).
-#   v3.23 (260ª geração) → 🛡️ FINALIZAÇÃO DESACOPLADA DA ALOCAÇÃO: FIM DO TRAVAMENTO EM 100% [FINALIZACAO-DESACOPLADA]
-#     SINTOMA (produção): a aba 'Locais de Aplicação' chegava a 100% (todos os registros, ETA 0) e FICAVA
-#     PRESA no painel 'Alocação Contínua em Andamento' — sem botão de download da planilha e sem relatório HTML.
-#     CAUSA-RAIZ (medida no código, não suposta): a planilha .xlsx inteira (~15 abas, com um loop sobre TODOS
-#     os registros e gráficos nativos) era construída de forma SÍNCRONA na FASE 3, DEPOIS de o painel de 100%
-#     ser desenhado e ANTES de df_processado ser commitado. Se essa construção pesada travava/estourava memória/
-#     lançava exceção, df_processado nunca era setado e alo_em_andamento nunca era limpo → a máquina de estados
-#     RE-ENTRAVA na FASE 3 a cada rerun, eternamente a 100%. O ramo de exibição (download + relatório) só é
-#     alcançado DEPOIS disso — por isso 'sumia'. O relatório HTML já era sob demanda; só a planilha era eager.
-#     CORREÇÃO — finalização em DUAS FASES (nada removido; comportamento de sucesso idêntico):
-#       • FASE 3a (montagem): monta e enriquece o DF e COMMITA df_processado/tempo/linhas IMEDIATAMENTE, mais a
-#         pré-computação da comparação de estratégias; então passa o bastão (alo_fase='gerar_planilha') e rerun.
-#         Os RESULTADOS nunca mais se perdem por falha/lentidão na planilha.
-#       • FASE 3b (planilha): num RERUN DEDICADO, com painel elegante ('✅ Rotas calculadas · ✔ Consolidados ·
-#         ⏳ Gerando planilha'), monta a .xlsx dentro de try/except. Sucesso → bytes; falha → sentinela b'' +
-#         alo_planilha_erro (resultados/relatório seguem disponíveis; nada trava). Rerun dedicado ainda REDUZ o
-#         pico de memória (intermediários do enriquecimento são coletados entre os reruns), atacando o OOM.
-#       • BOTÃO DE DOWNLOAD blindado: só aparece com planilha real; se falhou, exibe aviso + '🔄 tentar gerar de
-#         novo' (re-entra só na FASE 3b, sem reprocessar o estudo — insumos preservados em caso de falha).
-#     GARANTIAS: a UI nunca mais fica presa a 100%; a planilha e o relatório HTML são sempre desacoplados (um
-#     nunca bloqueia o outro). Invariantes preservados; bloco Excel movido byte-a-byte; requirements INALTERADO.
-#   v3.22 (259ª geração) → 📊 BI FASE 3: HANDBOOK SINCRONIZADO + PROCEDÊNCIA NO RELATÓRIO DO LOTE + EXPLORADOR INTERATIVO [BI-FASE3]
-#     As 3 recomendações da 258ª, executadas — cada uma medida antes para NÃO duplicar o que já existe:
-#     (1) HANDBOOK REGENERADO (o item que eu havia deixado como tarefa isolada). O blob gzip+base64 foi
-#         decodificado (120.342 → 123.793 chars de HTML), recebeu a nova SEÇÃO 33 "Visualização & Business
-#         Intelligence" (no idioma HTML das demais + entrada no índice lateral) e foi reencodado. PROVA: o
-#         roundtrip decode→encode→decode é IDÊNTICO; as 32 seções originais seguem intactas; o arquivo continua
-#         parseando. Legendas "28/30/32 seções" ao vivo sincronizadas para 33. O adendo nativo da 258ª segue
-#         como ponte, agora com o próprio blob atualizado — a dívida do handbook, paga na fonte.
-#     (2) PROCEDÊNCIA NO RELATÓRIO DO LOTE. _fig_fontes_rota_report (Plotly) leva a leitura de confiabilidade
-#         (medida × estimada) que a tela ganhou na 258ª ao relatório HTML do Lote, como nova seção "Procedência
-#         das Rotas". MEDIDO ANTES: o relatório JÁ tinha distribuição de distâncias (seções dist+boxplot+violin)
-#         — por isso só a procedência foi adicionada, SEM duplicar o histograma. Coerência tela↔export fechada
-#         também para o Lote. Cores/idioma do relatório; embutido via o _emb() existente.
-#     (3) EXPLORADOR INTERATIVO DE FONTES no Lote (o "KPIs clicáveis"). Expander OPT-IN recolhido (padrão "sob
-#         demanda" do app, que minimiza a superfície de rerun na view mais pesada — a mesma disciplina do
-#         iframe do handbook). Gráfico SIMPLES de fontes (a 157ª documentou que on_select exige gráfico
-#         não-composto): clicar numa fonte filtra uma mini-tabela daquelas rotas. MEDIDO ANTES: o Painel
-#         Estratégico já é o dashboard de cross-filter do df_processado, mas NÃO tem gráfico de fonte da rota —
-#         então este drill-down é aditivo, não duplicado. Usa o padrão on_select PROVADO do app (mesma leitura
-#         de seleção via session_state). Isolado: não toca a Visão Gráfica nem a prévia principal.
-#     PROVA GERAL: _fig_fontes_rota_report e o gráfico de seleção renderizados/validados no sandbox (Estimativa
-#     é âmbar, medidas verde; spec simples aceita on_select; edge cases → None). NÃO-REGRESSÃO: 1 função nova +
-#     1 seção de relatório + 1 expander interativo + 1 seção no blob do handbook; nada removido/alterado em
-#     pipeline/dados/tabelas/exports. RotaPipeline 42 (idêntico), 0 função removida, imports de topo idênticos,
-#     requirements INALTERADO, _SECOES 14, balloons 1, bare 0. RESSALVA HONESTA: o comportamento de rerun do
-#     on_select no explorador não é 100% verificável no sandbox (não renderizo a reconciliação do Streamlit);
-#     por isso ele é OPT-IN e usa o padrão já provado do Painel — recomenda-se conferência no ambiente real.
-#   v3.21 (258ª geração) → 📊 BI FASE 2: LOTE GANHA GRÁFICOS + LEITURA AUTOMÁTICA + COERÊNCIA TELA↔RELATÓRIO + DOCS [BI-LOTE+REPORT+DOCS]
-#     Rodada em 4 frentes, todas provadas antes de integrar (Altair→PNG e Plotly→to_html no sandbox):
-#     (A) ESTUDO EM LOTE ganha 2 gráficos onde só havia tabelas (a 2ª seção sem visual do mapeamento):
-#         _grafico_distribuicao_distancias (histograma da coluna 'Distancia' — a FORMA do deslocamento, cauda
-#         longa que a média esconde) e _grafico_fontes_rota (barras de procedência: verde = rota medida
-#         Google/OSRM/GraphHopper, âmbar = estimativa geodésica — leitura direta de confiabilidade). Novo
-#         container "📊 Visão Gráfica do Lote" logo após o Resumo Executivo, ambos com _leitura_grafico de
-#         conclusão dinâmica (mediana/P90; % de rotas medidas). Colunas já prontas no df — não recalcula nada.
-#     (B) _leitura_grafico ("📖 Como ler / 🔎 O que diz") sob os 2 gráficos do Comparador (257ª), reusando o
-#         helper que o app já tinha — conclusão calculada dos dados (o híbrido poupa X km migrando N municípios;
-#         vencemos em N estados, maior ganho em UF). Uniformiza a linguagem visual pedida.
-#     (C) COERÊNCIA TELA↔RELATÓRIO: os 2 gráficos do Comparador vão agora ao relatório HTML da comparação, em
-#         PLOTLY (idioma dos demais gráficos do relatório, que já carrega Plotly — ZERO dependência nova).
-#         _fig_planos_comparacao_report e _fig_estados_divergente_report, embutidos via o _emb() existente após
-#         a seção "Distribuição de Vitórias", computados das MESMAS linhas conciliadas pelas MESMAS funções
-#         puras da tela (_plano_hibrido / _rankings_comparacao) — o que se vê na tela é o que sai no documento.
-#     (D) DOCUMENTAÇÃO (handbook+manual+enciclopédia+corporativa): seguindo a convenção do próprio app (o blob
-#         do handbook é defasado de propósito; o adendo NATIVO é a ponte viva), 3 painéis ADITIVOS documentando
-#         a camada de BI — novo adendo "Novidades 257-258" no Manual, novo bloco na Enciclopédia Core, e novo
-#         expander "Camada de Visualização e BI" na Documentação Corporativa. O adendo da 184ª segue intacto.
-#     PROVA: 4 gráficos renderizados e conferidos (2 Altair visualmente sem colisão de rótulos; 2 Plotly por
-#         estrutura+to_html — híbrido verde é a menor barra, PA verde/AM vermelho) + 13 edge cases retornam
-#         None sem exceção. NÃO-REGRESSÃO: 4 funções novas + 4 pontos de render/2 seções de relatório + 3
-#         painéis de doc; nada removido/alterado em pipeline/dados/tabelas/exports. RotaPipeline 42 (idêntico),
-#         0 função removida, imports de topo idênticos (altair e plotly já importados), requirements INALTERADO,
-#         _SECOES 14, balloons 1, bare 0. PERFORMANCE: agregações O(n) sob demanda; gráficos só quando a seção
-#         está aberta; relatório inalterado no custo (Plotly já era carregado). Fecha a Fase 2 do plano de BI.
-#   v3.20 (257ª geração) → 📊 BI DEDICADO NO COMPARADOR: 2 GRÁFICOS ONDE ANTES SÓ HAVIA TABELAS [BI-COMPARADOR]
-#     Melhoria de BI escolhida por EVIDÊNCIA: mapeada a densidade de visualização por aba, o Comparador de
-#     Estudos era a 2ª maior seção de análise e a mais densa em dados SEM UM ÚNICO gráfico — dezenas de
-#     tabelas, zero visual. Em vez de forçar gráficos em tudo, dois visuais bem escolhidos onde um gráfico
-#     BATE uma tabela, cada um renderizado e conferido visualmente no sandbox (Altair→PNG) antes de integrar:
-#     (1) COMPARAÇÃO DE PLANOS (_grafico_planos_comparacao): barras horizontais do custo total de deslocamento
-#         (km-candidato) dos 3 planos — só o nosso, só o do concorrente, e o híbrido. O híbrido é ≤ aos dois
-#         POR CONSTRUÇÃO; a barra verde (a mais curta) torna a vantagem óbvia num relance. Renderizado logo
-#         após as 3 métricas do híbrido, transformando três números soltos numa decisão visual. HORIZONTAL de
-#         propósito: rótulo por linha, sem a colisão de rótulos que a versão vertical sofria em tela estreita.
-#     (2) DIVERGENTE POR ESTADO (_grafico_estados_divergente): para cada UF, a economia ponderada (km ×
-#         candidatos) — verde à direita = nós poupamos; vermelho à esquerda = a referência leva mais perto.
-#         Responde num relance a pergunta geográfica 'onde cada estudo vence?' que só existia como tabela.
-#         Ordenado por magnitude, recorta os 18 estados de maior |economia| (com até 27 UFs, tabela vira
-#         parede e 27 barras viram emaranhado). Renderizado logo após a tabela 'Estados — quem mais ganha'.
-#     Ambas as funções são PURAS e consomem EXATAMENTE as chaves que _plano_hibrido() e _rankings_comparacao()
-#     já produzem (custo_so_nosso/dele/hibrido_km_candidato; estados[].UF/economia_km_candidato) — não
-#     recalculam nada, só desenham. Números em pt-BR (_fmt_num). DEFENSIVAS: dict/lista None/vazio/lixo/sem
-#     sinal → None e o gráfico simplesmente não aparece (tabela intacta). PROVA: 10 edge cases retornam None
-#     sem exceção + render visual dos dois PNGs confirmando rótulos sem colisão, cores e narrativa corretas.
-#     NÃO-REGRESSÃO: 2 funções novas + 2 pontos de render, ambos sob os try/except que já existiam nos painéis;
-#     nada alterado no pipeline/dados/tabelas/exports (as tabelas seguem idênticas — os gráficos são CAMADA
-#     visual aditiva ao lado delas). RotaPipeline 42 (idêntico), 0 função removida, imports de topo idênticos
-#     (altair já importado), requirements INALTERADO, _SECOES 14, balloons 1, bare 0. PERFORMANCE: 2 agregações
-#     O(n) triviais sobre dados já em memória, sob demanda na aba (só quando o painel do concorrente/rankings
-#     está aberto). Fecha a lacuna de BI da seção mais data-rich do app usando 100% de dados existentes.
-#   v3.19 (256ª geração) → 🔄 RECONCILIAÇÃO PÓS-DIAGNÓSTICO NO COMPARADOR (atualiza a info após reprocessar) [POS-DIAGNOSTICO]
-#     Atende o pedido direto: "atualizar as informações na aba de comparação após processar as divergências".
-#     PROBLEMA: ao clicar em "Processar rotas divergentes", o diagnóstico roteia de novo (fresco) a escolha
-#     da referência e passa a SABER coisas que o placar do topo (calculado sobre os dados ORIGINAIS) não
-#     reflete — quantas divergências se confirmaram como vantagem real da referência, o impacto ponderado,
-#     e o veredito líquido. Isso ficava só nas sub-abas densas do diagnóstico; faltava a PONTE clara entre
-#     "o que a tela mostrava" e "o que agora sabemos". NOVA função pura _resumo_pos_diagnostico_divergencias
-#     (diag): consolida do dict já produzido (sem rede, sem rerotear) — KPIs (divergências rerroteadas,
-#     confirmadas p/ aplicação, onde a referência é melhor, candidatos em rota pior) + narrativa curta que
-#     RECONCILIA com o placar ("confirma" vs. "merece ajuste fino") + agregado de km/impacto + ressalva
-#     honesta sobre rotas sem roteamento fresco. Sinaliza houve_ajuste (referência venceu algo) p/ trocar o
-#     título e sugerir o plano híbrido. INTEGRAÇÃO (aditiva): (1) na ABA, um painel de destaque logo acima
-#     do diagnóstico detalhado, renderizado a cada rerun enquanto o diagnóstico existir na sessão — some
-#     quando não há; (2) no RELATÓRIO HTML da comparação, o mesmo veredito no topo da seção de diagnóstico
-#     (markdown→<b> convertido), mantendo tela e export coerentes. PURA/defensiva: diag inválido/vazio/lixo
-#     → estrutura vazia e nada aparece. PROVA: teste isolado (cenário confirmado e cenário com ajuste),
-#     render visual do painel, edge cases; 16 asserts novos (BLOCO M). NÃO-REGRESSÃO: nova função + 2 pontos
-#     de render; nada alterado no pipeline/roteamento/placar (que segue como estava — a reconciliação é uma
-#     CAMADA de leitura, não recomputa o topo). RotaPipeline 42 (idêntico), 0 função removida, imports de
-#     topo idênticos, requirements INALTERADO, _SECOES 14, balloons 1, bare 0. Suíte com 152 asserts.
-#   v3.18 (255ª geração) → 🔬 SCORECARD POR MOTOR NO MONITOR APIs (observabilidade de qualidade) [TELEMETRIA-POR-MOTOR]
-#     Após análise arquitetural (a infra de APIs/rede já é madura: multi-motor, consenso, circuit breaker,
-#     timeouts em 100% das chamadas, retry tunado, 8 caches, paralelismo), o único ganho real e SEM nova
-#     dependência era EXPOR dados que já são coletados mas não mostrados. A telemetria observacional grava,
-#     por rota, as distâncias de TODOS os motores (não só do vencedor) — mas o painel só agregava vencedores.
-#     NOVA função pura _agregar_telemetria_por_motor(buf): deriva um scorecard por motor — respostas (em
-#     quantas rotas devolveu distância válida), vitórias e taxa de vitória, distância média, concordância
-#     (% dentro de ±10% da mediana do consenso) e VIÉS mediano vs. consenso (negativo = tende a encurtar;
-#     positivo = a alongar). Revela padrões acionáveis: ex. "Google vence porque devolve rotas ~4% mais
-#     curtas; OSRM concorda 100% mas vence menos; GraphHopper é mais ruidoso e responde menos". Integrado
-#     como tabela "🔬 Scorecard por Motor" na aba Monitor APIs, logo após o bloco de consenso multi-motor
-#     (mesma fonte, _tm_buf). PURA e defensiva: buffer vazio/None/lixo → [] e nada aparece; 100%
-#     observacional, não afeta nenhuma decisão de roteamento. Atende o item "score de qualidade por API /
-#     dashboards internos" do pedido de reengenharia usando dados existentes. 15 asserts novos (BLOCO L).
-#     NÃO-REGRESSÃO: nova função + 1 bloco de render; nada alterado no pipeline. RotaPipeline 42 (idêntico),
-#     0 função removida, imports de topo idênticos, requirements INALTERADO, _SECOES 14, balloons 1, bare 0.
-#     Suíte com 136 asserts. PERFORMANCE: agregação O(n) sobre buffer limitado (≤5000), sob demanda na aba.
-#   v3.17 (254ª geração) → 📊 BI FASE 5: URL COMPARTILHÁVEL + TOOLTIPS MAPA/SUNBURST + KPIs CLICÁVEIS + SPARKLINES [BI-FASE5]
-#     Fecha as 4 recomendações da Fase 5, cada uma testada em navegador real (Playwright) + JS revalidado (node):
-#     (1) FILTRO PERSISTIDO NA URL (hash): cada mudança de filtro grava o estado em location.hash via
-#         history.replaceState; ao abrir o link, _lerHash() restaura UF/fonte/balsa/polo/busca/candidatos/km
-#         e o painel reaparece com a MESMA visão. Defensivo (hash inválido é ignorado; setSel só aplica opção
-#         existente). Provado: filtrar→"#uf=PA&b=Sim"→recarregar restaura idêntico.
-#     (2) TOOLTIPS NO MAPA E NO SUNBURST (antes só nas barras): mapa grava _hitp (x,y,raio,dados) e
-#         _bindHoverMapa mostra município/UF/km/candidatos/polo do ponto mais próximo; sunburst grava _hits
-#         (segU=anéis de UF, segP=anéis de Polo) e _bindHoverSun detecta o setor por coordenada polar
-#         (anel interno→UF+%, anel externo→UF→Polo). Reusa o #biTip e fmt() pt-BR da Fase 4.
-#     (3) KPIs CLICÁVEIS: "Rotas com balsa" e "Rotas estimadas" viraram filtros de 1 clique (alternam
-#         on/off, com destaque visual .pbi-kpi-on e emoji 🔎). _optExiste garante no-op seguro se a opção
-#         "Estimada" não existir nos dados. Provado: clique filtra 30→15 e o 2º clique restaura.
-#     (4) SPARKLINES NOS CABEÇALHOS: mini-histograma de distribuição (canvas) sob "Distância (km)" e
-#         "Candidatos", recalculado a cada filtro em _desenharSpark (nb≈√n bins) — leitura instantânea da
-#         forma da distribuição sem sair da tabela.
-#     PROVA: teste headless confirmou os 4 itens (hash grava+restaura; tooltips de mapa e sunburst com texto
-#         correto; KPI filtra/destaca/alterna; 2 sparklines desenhados) + 7/7 gráficos renderizando, ZERO
-#         erro de JS. 14 asserts novos (BLOCO K). Cobre os DOIS relatórios (mesma _painel_interativo_bi_html).
-#     NÃO-REGRESSÃO: tudo contido no painel; nada alterado no pipeline/dados/exports. RotaPipeline 42
-#         (idêntico), 0 função removida, imports de topo idênticos, requirements INALTERADO, _SECOES 14,
-#         balloons 1, bare 0. Suíte com 121 asserts. PERFORMANCE: inalterada (100% client-side, sob demanda).
-#   v3.16 (253ª geração) → 🧠 STORYTELLING ANALÍTICO AO VIVO ("Leitura do Analista") [STORYTELLING-DASH]
-#     Atende os itens 6 e 14 do plano (textos analíticos automáticos / inteligência analítica). A base já
-#     tinha storytelling nos relatórios (184ª) e insights (_insights_automaticos_html); o que FALTAVA era uma
-#     leitura analítica AO VIVO no Painel Estratégico e uma leitura transversal complementar no relatório.
-#     NOVA função _narrativa_analitica_dashboard(df): lê o recorte e escreve como um analista experiente —
-#     (1) panorama (volume, candidatos, UFs/regiões, média vs mediana com detecção de cauda longa);
-#     (2) concentração/Pareto por UF ponderada por km·candidato (quantos estados = 80% do esforço);
-#     (3) piores casos nomeados + percentil 95; (4) impacto de balsa/acesso fluvial; (5) confiabilidade
-#     (％ estimativa geodésica vs rota medida); (6) qualidade média (Score) e rotas a reprocessar. PURA,
-#     defensiva (falha → [] e nada aparece), números em pt-BR, e degrada com elegância quando faltam colunas.
-#     INTEGRAÇÃO (aditiva): renderizada no Painel Estratégico logo após os KPIs (recalcula a cada filtro,
-#     lendo o MESMO df_cf dos gráficos) E como seção "Leitura do Analista" no relatório HTML principal (com
-#     uf_col="UF Origem"). PROVA: teste isolado + render visual (lê como analista, com números em negrito e
-#     enquadramento acionável); 15 asserts novos (BLOCO J) cobrindo conteúdo e edge cases (df vazio/1 linha/
-#     só-Distancia/None nunca quebram). NÃO-REGRESSÃO: nova função + 2 pontos de chamada, nada alterado no
-#     pipeline. RotaPipeline 42 (idêntico), 0 função removida, imports de topo idênticos, requirements
-#     INALTERADO, _SECOES 14, balloons 1, bare 0. Suíte com 107 asserts. PERFORMANCE: leitura O(n) do recorte,
-#     desprezível ante o processamento; sem novas dependências.
-#   v3.15 (252ª geração) → 📊 BI FASE 4: TOOLTIPS + EXPORT CSV + TABELA ORDENÁVEL [BI-FASE4]
-#     Evolução aditiva do Painel Executivo Interativo, três recursos de BI que faltavam, cada um
-#     testado em navegador real (Playwright) + JS revalidado por parser (node --check):
-#     (1) TOOLTIPS AO PASSAR O MOUSE: agora dá para LER o valor exato de uma barra sem precisar clicar
-#         (o clique filtra; o hover só informa). _hbar passou a gravar valor+unidade nas hit-regions;
-#         helper _bindHover(cv) mostra um tooltip fixo (fmt pt-BR, ex.: "PA — 382,8 km") nos 3 gráficos de
-#         barra (Polos, UF, Piores casos). Div #biTip com CSS próprio; some no mouseleave.
-#     (2) EXPORT CSV DOS DADOS FILTRADOS: botão "⬇️ Baixar dados (CSV)" gera CSV das linhas do filtro
-#         atual (respeita as colunas presentes), com escape de aspas/;/quebra, separador ';' e BOM UTF-8
-#         (Excel abre com acentos corretos). Complementa o export PNG dos gráficos já existente.
-#     (3) TABELA DRILL-DOWN ORDENÁVEL: clicar no cabeçalho ordena por aquela coluna (asc↔desc no 2º
-#         clique), com indicador visual (↑/↓) e ordenação numérica p/ km/candidatos, alfabética p/ texto.
-#         Cabeçalhos ganharam data-k + class sortable; estado _sortK/_sortD; renderTab aplica a ordenação.
-#     PROVA: teste headless confirmou 7/7 gráficos renderizando, tooltip visível com valor correto, CSV
-#         baixado (31 linhas, BOM, header) e ordenação asc/desc correta com indicador — tudo com ZERO erro
-#         de JS. Cobre os DOIS relatórios (mesma _painel_interativo_bi_html). 13 asserts novos (BLOCO I).
-#     NÃO-REGRESSÃO: contido no painel; nenhuma mudança em dados/pipeline/exports existentes. RotaPipeline
-#         42 (idêntico), 0 função removida, imports de topo idênticos, requirements INALTERADO, _SECOES 14,
-#         balloons 1, bare 0. Suíte com 92 asserts. PERFORMANCE: inalterada (tudo client-side, sob demanda).
-#   v3.14 (251ª geração) → 🔎 VARREDURA DE GARGALOS/BUGS + HARDENING PREVENTIVO [AUDIT-DEFENSIVA]
-#     Auditoria ampla à caça de bugs/gargalos reais (não só os relatados). RESULTADO: a base já é muito
-#     robusta — 20 classes de bug varridas (colisão de ID, category, divisão por zero, iloc[0] sem guarda,
-#     mutable defaults, == None, split()[N], iterrows em loop quente, KeyError, redefinição de constante...)
-#     e a GRANDE maioria já estava protegida. Correções/melhorias ADITIVAS aplicadas:
-#     (1) HARDENING de +3 acessos diretos a tuplas de rota que restavam (mesma classe do ERRO 2 da 250ª):
-#         res_g_runner[0]/[2] (auditoria do 2º colocado) e _res_g[0] (reprocessamento) → agora via _route_val,
-#         com _km_g validado antes da barreira física. Agora NENHUM res*[N] de motor é indexado direto.
-#     (2) _route_val passou a rejeitar índice negativo (evita wrap-around surpresa do Python) — robustez;
-#         na prática só se usam índices fixos 0-4, mas o contrato fica à prova de uso indevido futuro.
-#     (3) LIMPEZA de código morto: a 1ª de DUAS definições de _secao_abstract_html (184ª, só-PT) era
-#         redefinição silenciosa — a 2ª (218ª, bilíngue PT+EN) sempre a sobrescrevia antes de qualquer
-#         chamada. Removida (44 linhas mortas) SEM mudança de comportamento (o Python já só usava a 2ª).
-#         Elimina o único caso de função top-level duplicada do arquivo.
-#     VERIFICAÇÕES: JS do painel executivo revalidado por parser (node --check) — sintaxe OK; painel testado
-#         sob condições extremas (df vazio, 1 linha, colunas mínimas, distâncias todas-NaN) — robusto, sem
-#         crash; edge cases dos helpers (_set_col_seguro com mask vazio/coluna inexistente/df None/valor None;
-#         _route_val idx negativo/grande) — todos tratados. NÃO-REGRESSÃO: RotaPipeline 42 (idêntico), 0
-#         função removida (só a duplicata morta), imports de topo idênticos, requirements INALTERADO, _SECOES
-#         14, balloons 1, bare 0. Suíte com 79 asserts (8 novos no BLOCO H). PERFORMANCE: inalterada.
-#   v3.13 (250ª geração) → 🛠️ CORREÇÃO DEFINITIVA DE 2 ERROS CRÍTICOS DE EXECUÇÃO [FIX-CATEGORICAL+PIPELINE]
-#     Investigação de causa-raiz (não remendo) de dois TypeError que derrubavam o app, cada um reproduzido
-#     e corrigido em duas camadas (preventiva + defensiva), com testes que impedem a volta silenciosa.
-#     ── ERRO 1: "Cannot setitem on a Categorical with a new category" em
-#        df_final.loc[mask,'Status Linha Reta']="Calculada via Haversine Vetorizado". CAUSA: o otimizador de
-#        memória _otimizar_dtypes_memoria (197ª) convertia colunas string de baixa cardinalidade para
-#        'category'; 'Status Linha Reta' virava categórica e, ao receber um rótulo NOVO depois, o pandas
-#        recusava. FIX (1-preventivo): denylist estendida com as colunas ESCRITAS após a construção
-#        ('Status Linha Reta', 'Status da Rota', 'Fonte da Rota', 'Modo/Acesso', 'Justificativa...', etc.) —
-#        ficam string; as demais SEGUEM otimizadas (mantém ~60% de economia). FIX (2-defensivo): helper
-#        _set_col_seguro(df,mask,col,valor) — antes de qualquer .loc, garante que o rótulo é categoria válida
-#        (add_categories, ou cai p/ object); blinda QUALQUER escrita, inclusive futuras. Auditoria: TODAS as
-#        atribuições .loc[mask,'col']=string do app agora passam por _set_col_seguro (as de 'Linha Reta' são
-#        float, imunes). Cobre df_final, df_final_alo e 'Alerta Coerência Viária'.
-#     ── ERRO 2: "'NoneType' object is not subscriptable" em km_rota=res_google[0]. CAUSA: entrava-se em
-#        'if res_google or res_osrm:' com ≥1 motor, mas a BARREIRA FÍSICA (_viaria_fisicamente_possivel)
-#        podia descartar AMBOS logo depois (→ None); a decisão caía num else que assumia "Google venceu" e
-#        indexava res_google=None. FIX (arquitetural): else→'elif _route_ok(res_google)' + flag
-#        _venc_definido; quando nenhum motor VÁLIDO vence, o bloco de resultado é pulado e a execução cai no
-#        fallback geodésico estimado que já existia (comportamento correto e auditável). CONTRATO DEFENSIVO:
-#        _route_ok(res) valida (sequência indexável, ≥5 posições, distância>0) e _route_val(res,idx,default)
-#        faz acesso seguro — aplicados nos branches vencedores de Google E OSRM (paridade). Reproduzidos os
-#        cenários que quebravam (Google descartado / ambos descartados / tupla curta): todos agora caem no
-#        estimado sem crash; os caminhos que já funcionavam seguem idênticos. Cobre executar_pipeline_unificado
-#        (já guardado por 'res and len(res)>=31').
-#     PROVA: suíte de não-regressão agora com 71 asserts (16 novos no BLOCO G) — reprodução dos dois bugs,
-#        validação dos helpers, e verificação de que o código usa as novas estruturas. NÃO-REGRESSÃO:
-#        RotaPipeline 42 (idêntico), 0 função removida, imports de topo idênticos, requirements INALTERADO,
-#        _SECOES 14, balloons 1, bare 0. PERFORMANCE: vetorização/paralelismo preservados; _set_col_seguro só
-#        age quando a coluna é categórica (custo ~zero no caminho normal); economia de memória mantida.
-#   v3.12 (249ª geração) → 📊 BI FASE 3: CROSS-FILTER POR CLIQUE NOS GRÁFICOS + CHIPS DE FILTRO ATIVO [BI-FASE3]
-#     Evolução aditiva do Painel Executivo Interativo, escolhida por diagnóstico: os gráficos NÃO eram
-#     clicáveis (faltava o recurso que DEFINE um BI interativo) e não havia visão do filtro ativo.
-#     (1) CROSS-FILTER POR CLIQUE: clicar numa barra do gráfico "Polos mais demandados" filtra por aquele
-#         destino; clicar no "Distância média por UF" filtra por aquele estado (toggle: clicar de novo limpa).
-#         Implementação: _hbar passou a gravar as hit-regions (cv._hit = faixas y↔rótulo); _bindBarClick(cv,cb)
-#         mapeia o clique ao rótulo e dispara o filtro existente (elPolo/elUF) + upd(). Reusa 100% da máquina
-#         de filtros que já existia — nada novo no pipeline de dados. (2) CHIPS DE FILTRO ATIVO: barra #biChips
-#         mostra cada filtro em vigor (UF, Polo, Fonte, Balsa, mín. candidatos, distância máx., busca) como um
-#         chip removível (× por chip) + "Limpar todos" quando há 2+. renderChips() roda dentro do upd() via
-#         _safe, então acompanha qualquer mudança de filtro (inclusive as vindas de clique no gráfico). a11y:
-#         cada × tem aria-label. PROVA: teste headless (Playwright) — clique no gráfico de UF filtrou 40→8
-#         registros, criou o chip "UF: RR", e remover o chip restaurou os 40; ZERO erro de JS; + 6 asserts
-#         novos (F10–F15) na suíte. Cobre os DOIS relatórios (mesma _painel_interativo_bi_html).
-#     NÃO-REGRESSÃO: contido no painel; nenhuma mudança em dados/exports. RotaPipeline: 42 (idêntico).
-#     Imports de topo: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 14. balloons: 1. bare: 0.
-#   v3.11 (248ª geração) → 🐛 FIX DO PAINEL EXECUTIVO (visualizações não apareciam) + 📊 BI FASE 2 [BI-FIX+FASE2]
-#     Atende o pedido: (A) o Painel Executivo Interativo dos relatórios NÃO renderizava os gráficos;
-#     (B) evoluir a plataforma BI. CAUSA RAIZ do bug (diagnosticada e PROVADA em navegador headless):
-#     COLISÃO DE ID — o <select> do filtro de UF e o <canvas> do gráfico de UF usavam o MESMO id="biUF".
-#     document.getElementById("biUF") retornava o <select>, então desenharUF() chamava getContext() num
-#     <select> → TypeError "cv.getContext is not a function" → abortava upd() no meio, deixando EM BRANCO
-#     o gráfico de UF e TODOS os seguintes (sunburst, Sankey, mapa) + a tabela. FIX cirúrgico: canvas
-#     renomeado p/ id="biUFc" (o select segue "biUF"); elUFc reaponta p/ "biUFc". BLINDAGEM (impede a
-#     classe inteira do bug voltar): cada desenho passou a ser chamado via _safe(fn,arg) com try/catch —
-#     uma falha isolada de um gráfico não derruba mais os demais. Cobre os DOIS relatórios (principal e
-#     comparação) porque ambos usam a MESMA _painel_interativo_bi_html. BI FASE 2 (aditivo): (1) NOVO
-#     gráfico "🎯 Piores casos" — Top 12 municípios por deslocamento no filtro (barras, ranking acionável);
-#     (2) "🖼️ Baixar gráficos (PNG)" — compõe os 7 gráficos numa imagem e baixa (offline, canvas→PNG).
-#     _hbar ganhou parâmetro opcional maxN (default 8 — retrocompatível) p/ o novo gráfico usar 12.
-#     PROVA: teste headless (Playwright) confirma 7/7 canvases com pixels pintados, ZERO erro de JS e o
-#     download do PNG; + 10 asserts novos no BLOCO F da suíte (sem colisão de ID, _safe presente, Fase 2)
-#     que impedem regressão silenciosa. NÃO-REGRESSÃO: mudança contida no painel (renome de 1 id + blindagem
-#     + 2 adições). RotaPipeline: 42 (idêntico). Imports de topo: IDÊNTICOS. Requirements: INALTERADO.
-#     _SECOES: 14. balloons: 1. bare: 0.
-#   v3.10 (247ª geração) → ⚡ SEÇÃO INSTITUCIONAL: PERFORMANCE + ACESSIBILIDADE + IMPRESSÃO [DEV-ABOUT-2]
-#     Rodada 2 — refinamentos ADITIVOS e de baixo risco sobre a seção "Sobre o Desenvolvedor" (V246),
-#     escolhidos por DIAGNÓSTICO (não por achismo): o resto do código já é maduro (imports locais são
-#     lazy-loading proposital; cache e tratamento de erro extensos — refatorar seria risco sem benefício).
-#     (1) PERFORMANCE: memoização determinística de _dev_about_html (saída ~40 KB reconstruída a cada
-#         relatório). A função é PURA (depende só de compacto/data_str + constantes imutáveis) — verificado
-#         por AST. Cache em dict simples (thread-safe p/ saída idempotente; não usa @st.cache_data porque
-#         roda fora do contexto Streamlit, dentro dos montadores de relatório). Chave VERSÃO-AWARE (nunca
-#         serve HTML com versão obsoleta). MEDIDO: 1ª geração ~7,8ms → cache hit ~0,003ms (~2400× no
-#         repeat; os 6 pontos de chamada se beneficiam automaticamente). (2) ACESSIBILIDADE (a11y):
-#         role='region' + aria-label na seção; aria-label no botão LinkedIn; aria-hidden no ícone SVG
-#         decorativo; alt descritivo em foto e QR. (3) IMPRESSÃO: @media print (fundo sólido sem glow,
-#         sombras removidas, break-inside:avoid nos cartões e timeline) — o relatório já imprimia; a seção
-#         agora também. (4) prefers-color-scheme:dark — respeita o tema do SO antes de qualquer toggle JS.
-#         Tudo com escopo .devab (zero efeito no resto do relatório). PROVA: suíte de não-regressão (36
-#         asserts) segue verde + testes novos (memoização idêntica/hit/versão-aware, presença dos atributos
-#         a11y, CSS de impressão) + render visual em modo impressão. NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline:
-#         42 (idêntico). Imports de topo: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 14. balloons: 1. bare: 0.
-#   v3.9 (246ª geração) → 👨‍💻 SEÇÃO INSTITUCIONAL "SOBRE O DESENVOLVEDOR" [DEV-ABOUT]
-#     Rodada 1 do plano de evolução contínua. Apresentação institucional do desenvolvedor (Lucas Cardoso
-#     Cruz) e da filosofia da plataforma, presente de forma consistente em TODAS as superfícies: (1) NOVA
-#     seção nativa no menu (14ª seção, grupo "Aprender") — cartão com foto, bio, missão/visão/propósito,
-#     12 áreas de especialidade com barras, Nossa Filosofia, diferenciais (XAI), timeline, valores, botão
-#     LinkedIn + QR Code; (2) PÁGINA INICIAL — apresentação compacta colapsável abaixo das boas-vindas;
-#     (3) RELATÓRIOS HTML — seção institucional (glassmorphism, dark-mode nativo) ao final dos 4 caminhos
-#     (principal, comparação e os 2 fallbacks resilientes), com versão e data de geração; (4) PLANILHAS —
-#     aba "Sobre o Desenvolvedor" (foto, valores, tecnologias, LinkedIn clicável + QR) nos 10 exports;
-#     (5) MANUAL e ENCICLOPÉDIA — chamada contextual para a seção. ENGENHARIA: módulo autocontido com
-#     prefixos _dev_/_DEV_ (zero colisão); assets (foto WebP 340px ~5,5KB + QR PNG do LinkedIn) embutidos
-#     em base64 → OFFLINE e SEM dependência nova (requirements INALTERADO). QR verificado (decodifica p/ o
-#     perfil). Todos os 3 builders são DEFENSIVOS (try/except) — se a seção falhar, app/relatório/planilha
-#     seguem normais. A aba Excel é IDEMPOTENTE (não duplica). PROVA: suíte de não-regressão nova (36
-#     asserts) confirma RotaPipeline IDÊNTICO (42 campos), imports de topo IDÊNTICOS, 0 função/classe
-#     removida, 13 seções originais preservadas, balloons=1, bare-except=0; + testes funcionais dos 3
-#     builders (HTML balanceado, Excel idempotente, render Streamlit) e render visual (claro+escuro).
-#     NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42. Imports de topo: IDÊNTICOS. Requirements: INALTERADO.
-#     _SECOES: 13 → 14 (só adição). balloons: 1. bare: 0.
-#   v3.8 (245ª geração) → 🎯 RESGATE POR CIRCUIDADE: GATILHO 1,45× + TETO PRIORIZADO POR IMPACTO [RESGATE-2]
-#     Evolução de DECISÃO pedida no doc de aprendizado (para a app perder menos e beneficiar mais o
-#     candidato). Duas mudanças no passe de resgate (V238), feitas com disciplina e testadas:
-#     (1) GATILHO de V/R baixado de 2,00× para 1,45× — captura mais derrotas evitáveis do tipo Pauini/Ipixuna
-#         (rota indireta cujo vencedor rodoviário direto não era avaliado). Antes, 1,45 era arriscado em runs
-#         nacionais (dispararia em muitas linhas); agora é seguro por causa da mudança (2).
-#     (2) TETO PRIORIZADO POR IMPACTO — o passe virou DUAS FASES: FASE 1 varre todas as linhas (custo baixo,
-#         só calcula V/R) e coleta as de assinatura de risco com uma PRIORIDADE = excesso de circuidade (km)
-#         × candidatos (piso p/ balsa/fluvial); ordena por impacto; FASE 2 roteia e atualiza apenas as TOP
-#         max_resgates (padrão 500). Assim o orçamento de rede (OSRM/Google) é gasto nos casos de MAIOR
-#         benefício potencial ao candidato, não nos primeiros da lista — o que torna o gatilho 1,45 viável
-#         nacionalmente sem estourar quota/tempo. Toda a lógica de resgate anterior é preservada (monotônico:
-#         só troca se for melhor; atualização COMPLETA da linha; topk normalizado; fallback total; flag
-#         _RESGATE_CIRCUIDADE_ATIVO). PROVA: teste novo de priorização (teto=1 com 2 assinaturas → só a de
-#         maior km×candidatos é resgatada; a de baixo impacto não consome o orçamento) + os testes de resgate
-#         e do passe (Mostardas→Viamão, Axixá→Bacabeira, atualização coerente de link/tempo/município)
-#         intactos. HONESTIDADE: o efeito em produção depende de um run seu (rede); no sandbox valida-se a
-#         lógica com mocks; _RESGATE_CIRCUIDADE_ATIVO=False restaura o comportamento sem resgate.
-#     NÃO-REGRESSÃO: mudança contida no passe (reversível pela flag). RotaPipeline: 42. Imports: IDÊNTICOS.
-#     Requirements: INALTERADO. _SECOES: 13. balloons: 1. bare: 0.
-#   v3.8 (244ª geração) → 🗂️ ANÁLISE DE DIVERGÊNCIAS EM CARTÕES (didática) [CARTOES-DIVERGENCIA]
-#     Atende o pedido central do doc: a análise, após processada, estava "confusa, desorganizada, com pouca
-#     didática, difícil de interpretar" (parágrafos densos de texto corrido). SOLUÇÃO: reestruturação da
-#     APRESENTAÇÃO em CARTÕES escaneáveis — cada divergência num cartão com hierarquia visual clara: veredito
-#     em destaque (cor por quem venceu), rota app→ref com distâncias, frase didática de 1 linha, chips de
-#     métricas (Δkm, Δtempo, candidatos, IQ app vs ref, categoria), badge Evitável/Justificável e recomendação
-#     destacada. Ordenados por impacto (Δkm × candidatos). No painel (st.container por cartão, com st.info na
-#     recomendação) e no HTML (seção no TOPO das divergências, antes do texto denso; CSS com dark mode). NÃO
-#     recalcula nada — distila os campos que a análise JÁ tem (236/237); o texto técnico completo (parecer)
-#     segue disponível logo abaixo. MAPA DE COBERTURA do resto do doc: aprendizado com derrotas + padrões
-#     recorrentes (§4/§5/§12), resgate por circuidade (§6), tratamento fluvial e instrumentação da árvore de
-#     decisão / rastreamento do portão de descarte (§6/§8), e a explicação do raciocínio (§3) JÁ existiam
-#     (V237/V238/V239 + Etapa B) — o próprio doc cita a saída desses recursos. Não reconstruídos. Melhoria de
-#     DECISÃO nesta geração: nenhuma alteração no motor (o resgate do §6 já está implementado desde a 238ª;
-#     mexer de novo sem um caso concreto novo seria risco sem benefício). PROVA: suíte nova (dados do cartão,
-#     veredito/cores/badges, frase com balsa, HTML balanceado + ordenação, painel) com os casos REAIS do doc
-#     (Pauini/Curralinho/Ipixuna) + as 15 anteriores intactas. NÃO-REGRESSÃO: 100% ADITIVO (cartões no topo;
-#     seção densa preservada abaixo). RotaPipeline: 42. Imports: IDÊNTICOS. Requirements: INALTERADO.
-#     _SECOES: 13. balloons: 1. bare: 0.
-#   v3.8 (243ª geração) → 🔗 LAUDO DE DIVERGÊNCIAS: LINKS DAS ROTAS + MARGEM DE INVERSÃO [LAUDO-DIVERGENCIA]
-#     Atende o doc de aprimoramento do laudo de divergências. MAPA DE COBERTURA: motor vencedor/perdedor +
-#     diferença entre motores, índices de qualidade/robustez/confiança/risco/isolamento/balsa/sinuosidade/
-#     acessibilidade, parecer detalhado, comparativos, motivo granular por motor, telemetria por motor e
-#     árvore de decisão ("por que venceu / por que os demais perderam") JÁ existiam (236/237/239/240 + Etapa
-#     B). NOVO nesta geração: (§2/§3) LINKS das rotas de cada estudo — Google Maps (direções e satélite),
-#     OpenStreetMap, OSRM e visualização de coordenadas (origem/destino) — para o usuário abrir o trajeto
-#     exato considerado por cada estudo; e (§6) MARGEM DE INVERSÃO da decisão: por quanto o destino de menor
-#     rota viária venceu e o que inverteria (quantos km a rota do perdedor precisaria encurtar). Requisito de
-#     dados: threading ADITIVO de coord_origem nos fatos e de coords+IBGE na análise (novas chaves; nada
-#     removido). Refletido nas 3 saídas: painel (expanders com links por município), HTML (tabela "Laudo
-#     técnico — rotas e margem" com links que abrem em nova aba) e planilha (aba "Diag - Rotas e Margem" com
-#     hyperlinks clicáveis). Integração: 1 bloco + 5 chamadas de uma linha; enriquecimento idempotente.
-#     REVISÃO CRÍTICA DO MOTOR DA MENOR ROTA VIÁRIA (§8/§9/§10) — conclusão: o motor JÁ segue a filosofia
-#     pedida no §10 (menor viária PREDOMINANTE; multicritério só valida/qualifica exceções): fora da
-#     tolerância de 4% vence sempre a menor distância (_selecionar_vencedor_rota, tol=0.04); DENTRO do empate
-#     técnico desempata por sem-balsa e depois confiabilidade; e o descasamento geometria×estrada que cortava
-#     o vencedor direto na pré-seleção JÁ foi tratado pelo resgate por circuidade (238ª). Não se justificou
-#     um redesenho (seria risco sem benefício e feriria o §10). NÃO foi alterada a lógica de decisão nesta
-#     geração — apenas ADICIONADAS evidências (links/margem). PROVA: suíte nova (margem, links com coords
-#     corretas, HTML/Excel/painel, defensivo) + as 14 anteriores intactas. NÃO-REGRESSÃO: 100% ADITIVO.
-#     RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 13. balloons: 1. bare: 0.
-#   v3.8 (242ª geração) → 📊 PLATAFORMA BI DOS RELATÓRIOS — FASE 1 [BI-PLATFORM]
-#     Início da evolução dos relatórios HTML em plataforma de BI (o pedido completo — dark/filtros/drill-down/
-#     30+ gráficos/mapas/Sankey/artigo científico completo — é multi-fase; esta é a fase 1, real e testada).
-#     Camada-plataforma JS/CSS VANILLA autossuficiente (sem libs, offline) injetada no montador dos DOIS
-#     relatórios principais (Locais de Aplicação e Comparador) — logo, padroniza os dois de uma vez. Adiciona
-#     SOBRE o que já existe, sem duplicar tema (usa a classe .dark já presente) e sem conflito com o sort/
-#     filtro/colapso do script interativo: (1) navegação lateral com SCROLL-SPY (destaca a seção em vista) +
-#     BREADCRUMB; (2) botão VOLTAR AO TOPO; (3) BUSCA GLOBAL (realça ocorrências no relatório inteiro e salta
-#     para a 1ª, com contagem); (4) EXPORTAÇÃO CSV por tabela (BOM UTF-8, ; como separador); (5) GRÁFICOS SVG
-#     de barras gerados client-side das tabelas numéricas (rótulo=1ª coluna textual, valor=1ª numérica).
-#     Também levou o script interativo (sort/filtro/colapso) ao relatório PRINCIPAL, que não o tinha. Init
-#     IDEMPOTENTE (guard). Degradação graciosa: sem JS, o relatório segue estático e legível.
-#     PROVA: teste FUNCIONAL com jsdom (DOM real) — scroll-spy, busca (realça/limpa), CSV (cabeçalho+dados),
-#     gráfico SVG (nº de barras correto) e idempotência verificados; + node --check. As 14 suítes Python
-#     seguem verdes.
-#     ROADMAP honesto (fases seguintes, quando priorizado): filtros globais cruzando gráficos; mais tipos de
-#     gráfico (linha/área/pizza/rosca/Pareto/dispersão/boxplot) e os pesados (Sankey/Sunburst/Treemap) —
-#     estes exigem dados pré-computados embutidos por módulo e/ou uma lib de charting; mapas coropléticos
-#     (exigem malhas geográficas + lib de mapa, inviáveis de forma fiel num HTML leve autossuficiente);
-#     drill-through entre datasets; expansão do artigo científico e da Leitura Automática. NÃO prometido
-#     como pronto — sinalizado no que cada fase requer. HONESTIDADE: o efeito VISUAL só se confirma abrindo o
-#     HTML no navegador; o teste jsdom cobre a LÓGICA, não a estética.
-#     NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO.
-#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
-#   v3.8 (241ª geração) → 🧰 HARDENING: REVISÃO, CORREÇÃO DE BUGS E GARGALOS [HARDENING]
-#     Rodada de auditoria/robustez sobre o que foi construído (236→240). Correções:
-#     (A) BUG DE COERÊNCIA no resgate por circuidade (importante): ao trocar o destino, o passe atualizava
-#         apenas distância/reta/balsa/coords, deixando STALE tempo, fonte, score, município e — pior — o
-#         LINK DA ROTA apontando para o destino ANTIGO (levava ao lugar errado). Agora a linha é atualizada
-#         de forma COMPLETA e COERENTE a partir da RotaPipeline nova (mapa coluna→atributo), inclusive
-#         recomputando o link do mapa OSRM pelas coordenadas novas. Verificado por teste.
-#     (B) GARGALO no gatilho do resgate: _VR_GATILHO era 1,35 — como rotas normais têm V/R ~1,3-1,5, o passe
-#         dispararia (roteando K candidatos) em uma fração enorme das linhas num run nacional, sobrecarregando
-#         OSRM/Google. Elevado para 2,00 (mira o descasamento geometria×estrada GENUÍNO; as derrotas reais
-#         tinham V/R ≥ 3,4). Somado a um TETO configurável (max_resgates, padrão 500) que limita o pior caso.
-#     (C) topk lookup NORMALIZADO (casing/espaços) — evita no-op silencioso do resgate por divergência de
-#         chave entre df["Origem"] e o topk_map.
-#     (D) TELEMETRIA por-run: _TELEMETRIA.reset() no início do orquestrador do comparador — a latência passa a
-#         refletir só o roteamento daquele diagnóstico (antes acumulava entre execuções).
-#     (E) ESTILO das tabelas interativas: o CSS injetado passou a estilizar .dvt/.tbl-wrap (bordas, cabeçalho
-#         fixo, zebra, hover) — antes as tabelas ordenáveis/filtráveis ficavam sem formatação.
-#     VARREDURA DE BUGS PRÉ-EXISTENTES (análise estática com pyflakes/AST) — 3 NameErrors latentes CORRIGIDOS:
-#     (F) `_he` indefinido em 5 funções de relatório (_caixa_explicativa, _secao_qualidade_dados_html,
-#         _narrativa_storytelling_alocacao/_comparacao, _bloco_glossario_html): usavam `_he` (html.escape) sem
-#         `import html as _he` local — quebravam as caixas explicativas, narrativas, glossário e a seção de
-#         qualidade dos dados do relatório (o próprio histórico já apontava o fix, nunca aplicado). Corrigido
-#         com o import local, seguindo a convenção que 23 outras funções já usam. Imports de MÓDULO inalterados.
-#     (G) `modo_oficial` indefinido em calcular_pipeline_logistico (barreira de colisão de centróide): a função
-#         forcar_geocodificacao_hierarquica_estrita(texto, modo_oficial=None) tem o parâmetro opcional e não
-#         havia variável no escopo → passava-se um nome inexistente (NameError naquele ramo raro). Corrigido
-#         para usar o default (None).
-#     (H) `_nom_c` indefinido no bloco de Alocação com Capacidade (UI): quebrava o plano realista quando havia
-#         coluna de capacidade. Definido com o MESMO padrão do app (_dfp_cob['Municipio Origem']/['Origem']).
-#     Também confirmado por varredura: 0 argumentos default mutáveis, 0 bare-except, 0 nomes indefinidos
-#     remanescentes. (Os 17 `iterrows` restantes estão em renderização sobre fatias pequenas — não são gargalo;
-#     não tocados por não-regressão.) HONESTIDADE: sem rede/Streamlit no sandbox, cobre-se o que é detectável
-#     ESTATICAMENTE; bugs que só aparecem em execução com dados reais não são capturáveis aqui.
-#     (I) BUG do Abstract (TypeError silencioso): _secao_abstract_html tem 2 definições (a 2ª sombreia a 1ª).
-#         A 2ª (ativa) só aceitava (df), mas a chamada em ~7919 passa (df, titulo) → TypeError, ENGOLIDO pelo
-#         try/except defensivo do relatório → a seção "Abstract" (resumo científico) sumia silenciosamente do
-#         HTML. Corrigido: a def ativa agora aceita `titulo` opcional; o Abstract volta a renderizar. As duas
-#         chamadas (7540 e 7919) foram verificadas sem TypeError. A 1ª definição (dead code, sombreada)
-#         permanece — NÃO removida por não-regressão (ambíguo se alguém pretende revivê-la); apenas reportada.
-#     Ferramentas usadas na varredura: pyflakes + ruff (regras de bug: F8xx, B0xx, PLE/PLW, comparações),
-#     análise de closures em loop (B023 — todas verificadas como falso-positivo, usadas na própria iteração),
-#     defaults mutáveis (0), asserts em produção (0), concat de string O(n²) sobre dados grandes (0),
-#     df.apply(axis=1) (só em df agregado), iterrows (só em fatias pequenas — não gargalo).
-#     NÃO-REGRESSÃO: correções aditivas/reversíveis (flag _RESGATE_CIRCUIDADE_ATIVO intacta). RotaPipeline: 42
-#     campos. Imports: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 13. balloons únicos: 1. bare-except: 0.
-#   v3.8 (240ª geração) → 📡 TELEMETRIA POR MOTOR (PRECISÃO REAL) + RELATÓRIO HTML INTERATIVO [TELEMETRIA/INTERATIVO]
-#     Atende os dois itens pendentes do doc de auditoria. (1) TELEMETRIA POR MOTOR: KPIs de PRECISÃO reais a
-#     partir da ATRIBUIÇÃO REAL das rotas (campos Motor Aplicação/Referência já calculados) — por motor:
-#     rotas, vitórias/derrotas, TAXA DE VITÓRIA, divergência média; + LATÊNCIA por motor via acumulador
-#     THREAD-SAFE (_TelemetriaAPI, com Lock) alimentado por um gancho de UMA LINHA no wrapper de roteamento
-#     do COMPARADOR (_reprocessar_rotas_divergentes) — a função de rota do NÚCLEO fica INTACTA (zero risco à
-#     alocação). KPIs-resumo: motor mais preciso/participativo/rápido. Refletido em painel, HTML (bloco
-#     "Telemetria por motor") e planilha (aba "Diag - Telemetria"). (2) RELATÓRIO HTML INTERATIVO: script JS
-#     VANILLA autossuficiente (sem libs, roda offline ao abrir) embutido no relatório do comparador —
-#     tabelas ORDENÁVEIS (clique no cabeçalho, numérico-aware), FILTRO/busca por tabela e seções
-#     COLAPSÁVEIS (clique no título). Degradação graciosa: sem JS, o relatório segue legível e estático.
-#     Injetado junto ao _bi_js já existente, antes de </body>. PROVA: 2 suítes novas — telemetria
-#     (acumulador thread-safe sob 8 threads × 8000 rotas sem perda; KPIs de precisão; latência; render
-#     HTML/Excel/painel) e JS (node --check + teste FUNCIONAL com DOM mockado: ordenação asc/desc e filtro
-#     verificados) — mais as 13 anteriores intactas. Integração: 2 blocos + 5 chamadas de uma linha + 1
-#     gancho de latência + 1 injeção de script. NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42 campos.
-#     Imports: IDÊNTICOS (threading já era usado; import local no módulo). Requirements: INALTERADO.
-#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
-#   v3.8 (239ª geração) → 🔎 AUDITORIA AVANÇADA DO COMPARADOR (BI/XAI) [DIVERGENCIA-XAI-3]
-#     Atende o doc "auditoria inteligente das divergências" com incrementos NOVOS sobre o motor já entregue
-#     (236/237). MAPA DE COBERTURA: investigação automática, parecer, recomendação, aprendizado, motivo da
-#     derrota, distribuições e a EVOLUÇÃO DO MOTOR já existiam (236/237/238); a 239ª ADICIONA: (9) KPIs de
-#     EXTREMOS e PRECISÃO — maior derrota/vitória/economia, maior diferença de tempo, maior sinuosidade,
-#     municípios mais problemáticos, ranking de motores (vitórias×derrotas), precisão por UF/acesso; (8)
-#     recortes por FAIXA — distância, sinuosidade (V/R), candidatos e diferença de tempo; (3) motivo
-#     GRANULAR atribuído ao motor ("Google/OSRM encontrou rota menor"); (4) ÁRVORE DE DECISÃO por
-#     divergência (por que a app escolheu A, por que a ref escolheu B, quem beneficia o candidato), em texto
-#     e HTML. Refletido nas 3 saídas: painel (extremos, ranking, precisão, faixas, árvores em expanders),
-#     relatório HTML (KPIs de extremos, precisão, faixas, árvores) e planilha (6 abas novas: KPIs Extremos,
-#     Motores, Precisao, Problematicos, Faixas, Arvore). Integração cirúrgica: 1 bloco + 4 chamadas de uma
-#     linha; enriquecimento idempotente. HONESTIDADE — itens do doc NÃO implementados e por quê: telemetria
-#     por API (tempo de resposta/tentativas/fallback/status) não é rastreada na camada de rota do comparador
-#     (exigiria instrumentar o roteador); "concorrente/runner-up" é conceito da alocação, ausente na
-#     conciliação de dois estudos; e visualizações interativas pesadas (sankey/sunburst/treemap/drill-down/
-#     filtros dinâmicos) exigem app JS — num HTML estático foram entregues gráficos/tabelas ricos, não um SPA.
-#     PROVA: 2 suítes novas (núcleo avançado; renderização HTML/Excel/painel) + as 11 anteriores intactas.
-#     NÃO-REGRESSÃO: 100% ADITIVO. RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO.
-#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
-#   v3.8 (238ª geração) → 🧭 EVOLUÇÃO DA ESCOLHA DO DESTINO: RESGATE POR CIRCUIDADE [RESGATE-CIRCUIDADE]
-#     Etapas B+C do programa. Etapa B (árvore de decisão / rastreamento do descarte, item 9): motor que
-#     reconstrói o caminho da decisão e aponta em QUAL portão o vencedor da referência foi cortado — Portão 1
-#     (contagem por linha reta), 2 (matriz OSRM/shortlist), 3 (poda por dominância), 4 (sobreviveu → critério/
-#     medição) ou 0 (fora do universo) —, reusando FIELMENTE as funções reais de poda. Entregue como
-#     ferramenta OFFLINE (mod_trace.py + rastrear_arvore_decisao.py) que roda no ambiente do usuário (precisa
-#     de rede/base embarcada). Conclusão do rastreamento: como a dominância mantém o líder direto quando é o
-#     mínimo da matriz, as derrotas evitáveis só vêm dos Portões 1/2 — e o resgate funciona para ambos.
-#     Etapa C (a evolução do motor): REFINAMENTO PÓS-ALOCAÇÃO. Quando o destino escolhido exibe a assinatura
-#     de risco das derrotas reais (V/R alta, balsa ou acesso fluvial), roteia os candidatos mais diretos do
-#     topk_map pelo motor AUTORITATIVO (contornando a pré-seleção que cortou o vencedor) e adota o de menor
-#     CUSTO EFETIVO para o candidato — distância real + penalidades operacionais (balsa/fluvial/circuidade em
-#     km-equivalentes). É o "algoritmo que pensa": no caso 46 km rodoviário × 45 km com balsa, escolhe o
-#     rodoviário (custo efetivo 47 < 71). Quando a escolha da app já é a melhor mesmo sendo mais longa (evita
-#     balsa/isolamento), isso é sinalizado com o motivo e o nº de candidatos beneficiados. GARANTIAS: (a)
-#     MONOTÔNICO — só troca se for comprovadamente melhor para o candidato; nunca piora; na dúvida mantém;
-#     (b) LIMITADO — só dispara na assinatura de risco (raro → custo desprezível de rede/quota); (c)
-#     EXPLICÁVEL — registro com km/tempo salvos, candidatos beneficiados e motivo, refletido na interface
-#     (resumo do refinamento na conclusão da alocação); (d) REVERSÍVEL — flag _RESGATE_CIRCUIDADE_ATIVO=True;
-#     desligá-la restaura EXATAMENTE o comportamento da 237ª. Encaixe cirúrgico: 1 passe novo na cadeia de
-#     pós-processamento já existente (após _montar_dataframe_final), no mesmo padrão de _forcar_menor_viaria_
-#     vencedor/_segunda_passada_google. Colunas do resultado atualizadas na troca (destino, distância, reta,
-#     balsa, coords) + colunas novas "Refinado (Resgate)"/"Motivo do Refinamento". Validado em Mostardas
-#     (Camaquã→Viamão, −161 km, 400 candidatos) e Axixá (→Bacabeira, 38 km) com dados reais.
-#     PROVA: 2 suítes novas (motor de resgate: gatilho, custo efetivo, trade-off, casos reais, defensivo;
-#     passe pós-alocação com df sintético de colunas reais + roteador mock) — o efeito em produção depende de
-#     uma execução do usuário (rede), documentado. NÃO-REGRESSÃO: aditivo e reversível. RotaPipeline: 42
-#     campos. Imports: IDÊNTICOS. Requirements: INALTERADO. _SECOES: 13. balloons únicos: 1. bare-except: 0.
-#   v3.8 (237ª geração) → 🧠 APROFUNDAMENTO DA ANÁLISE DE DIVERGÊNCIAS + PERÍCIA DAS DERROTAS [DIVERGENCIA-XAI-2]
-#     Etapa A do programa pedido (aprofundar a análise; A e B em sequência). Fundamentado nos 204 casos reais
-#     de Divergências.xlsx: das 23 derrotas (referência superior), ~9 têm a ASSINATURA EVITÁVEL — a aplicação
-#     escolheu um destino de V/R (viário/linha-reta) alta (Boa Vista do Ramos 25,8×; Novo Aripuanã 7,2×;
-#     Gurupá 6,4×; Mostardas 3,8×; Axixá 3,6×; Careiro 3,5×), geometricamente próximo porém rodoviariamente
-#     indireto, e o vencedor direto foi cortado ANTES do roteamento; as demais são ruído de geocodificação
-#     (quase-empates). NOVO (tudo PURO e testado, opera sobre os dicts `analise` da 236ª): (11) Índice de
-#     Confiança da Escolha 0-100 por solução (coerência viário×reta, consenso entre motores, estabilidade,
-#     ausência de balsa, robustez); (12) classificação automática das derrotas em EVITÁVEL (algorítmica /
-#     descasamento geometria×estrada), operacional/fluvial, geocodificação/ruído, por motor — dizendo se a
-#     app poderia ter vencido e COMO; (1/10) decomposição HEURÍSTICA da diferença por fator (sinuosidade /
-#     balsa / motor / geocodificação — rotulada como estimativa, pois a exata exigiria as geometrias);
-#     (13) aprendizado com as derrotas — detecta padrões ("X% das derrotas têm V/R alta", concentração
-#     amazônica) e emite SUGESTÕES concretas de melhoria do algoritmo (resgate por circuidade, com limiar de
-#     gatilho estimado a partir dos próprios dados); (15) novos KPIs (escolhas ótimas, taxa de derrotas
-#     evitáveis/justificáveis, ganho potencial em km e ponderado por candidatos, consenso entre motores,
-#     escolhas robustas), cada um com helper+fórmula+interpretação+aba de referência. Dobrado nas 3 saídas:
-#     painel (KPIs + tabela de derrotas classificadas + aprendizado), relatório HTML (blocos na seção de
-#     divergências) e planilha (4 abas novas: "Diag - KPIs", "Diag - Derrotas", "Diag - Confianca",
-#     "Diag - Aprendizado"). Integração cirúrgica: 1 bloco inserido + 4 chamadas de uma linha; enriquecimento
-#     idempotente no orquestrador. PRÓXIMO — Etapa B: árvore de decisão / rastreamento do descarte (item 9),
-#     ferramenta offline mirando os ~9 casos evitáveis, para confirmar em QUAL portão (contagem por reta /
-#     margem da matriz / poda por dominância) o vencedor foi cortado, antes de qualquer mudança no núcleo.
-#     PROVA: 3 suítes novas (núcleo do aprofundamento; renderização HTML/Excel/painel; verificação do arquivo
-#     integrado) + as 5 suítes da 236ª intactas. NÃO-REGRESSÃO: 100% ADITIVO (as novas seções só aparecem com
-#     diagnóstico processado). RotaPipeline: 42 campos. Imports: IDÊNTICOS. Requirements: INALTERADO.
-#     _SECOES: 13. balloons únicos: 1. bare-except: 0.
-#   v3.8 (236ª geração) → 🔬 MOTOR DE ANÁLISE INTELIGENTE DAS DIVERGÊNCIAS (XAI) NO COMPARADOR [DIVERGENCIA-XAI]
-#     Pedido: o Comparador deixava de só dizer "quem venceu" e passa a EXPLICAR tecnicamente CADA divergência
-#     de destino entre a aplicação e o estudo de referência — como plataforma de auditoria/explicabilidade.
-#     SOLUÇÃO — arquitetura "inteligência PURA, rede só na borda". Novo bloco 100% testável: normalização de
-#     FATOS de rota (_fatos_rota_divergencia); Índice de Qualidade da Escolha 0-100 reaproveitando o
-#     framework multicritério já validado (_indices_compostos_hub → 0.42·acess+0.33·efic+0.25·robu);
-#     classificação automática da natureza da divergência; hipóteses técnicas; parecer didático por caso;
-#     diagnóstico do gargalo interno quando a REFERÊNCIA vence; recomendações acionáveis; e agregação
-#     data-driven (insights, ranking de causas, distribuições UF/região/vencedor/acesso/balsa/motor,
-#     maiores perdas/ganhos, oportunidades). A ÚNICA operação de rede vive no orquestrador
-#     _reprocessar_rotas_divergentes: para cada município divergente, ROTEIA origem→destino_ref pelos MESMOS
-#     motores (calcular_pipeline_logistico, cache L1/L2) para caracterizar a escolha da referência com os
-#     mesmos sinais ricos que a app já tem; o lado da app usa os valores JÁ armazenados (decisão real).
-#     Após comparar surge o botão "Processar rotas divergentes" → painéis interativos na aba + nova seção
-#     "Diagnóstico Inteligente das Divergências" no relatório HTML + 8 novas abas "Diag - …" na planilha
-#     (com explicações didáticas e gráficos nativos). Threading aditivo: _montar_xlsx_comparacao e
-#     _gerar_relatorio_comparacao_html ganham diagnostico_div=None (default None → export idêntico ao da
-#     235ª quando não processado).
-#     HONESTIDADE: quando o estudo de referência não informa a UF do polo, herda-se a UF da origem (exames
-#     tendem a ser intraestaduais), SINALIZADO na UI/relatório; homônimos entre UFs seguem como risco a
-#     auditar. Se o roteamento fresco falhar, usa-se a distância que já constava do estudo (sem sinais ricos),
-#     também sinalizado. Descoberta colateral registrada: _caixa_explicativa referencia um _he global que NÃO
-#     existe em escopo de módulo (provado por AST + execução) — a nova seção HTML NÃO depende dela (caixa
-#     inline autossuficiente). Correção mínima sugerida (não aplicada p/ respeitar não-regressão dos 24 pontos
-#     de uso): tornar `import html as _he` a 1ª linha de _caixa_explicativa.
-#     PROVA (4 suítes novas, funções puras isoladas por AST): núcleo (extração/índice/classificação/parecer/
-#     hipóteses/agregação/defensivo) + saída HTML (validade estrutural, tags balanceadas, conteúdo do spec,
-#     defensivo) + saída Excel (8 abas, gráficos nativos, integridade openpyxl, abas pré-existentes
-#     preservadas, defensivo) + orquestrador com roteador MOCK (filtragem de divergentes, mapeamento
-#     RotaPipeline→fatos, lado app dos valores armazenados, agregação, progresso, fallback) + smoke do painel
-#     com st mockado. Rede real não é testável no sandbox (isolada na borda, documentada).
-#     NÃO-REGRESSÃO: recurso 100% ADITIVO. Sem diagnóstico processado, o comportamento é idêntico ao da 235ª.
-#     Nada removido/alterado nos fluxos existentes. RotaPipeline: 42 campos. Imports IDÊNTICOS. Requirements:
-#     INALTERADO. _SECOES: 13. balloons únicos: 1. bare-except: 0.
-#   v3.8 (235ª geração) → 🛡️ PROTEÇÃO AO CANDIDATO: descarta "atalho fantasma" que faria o polo parecer perto por erro [PROTEGE-CANDIDATO]
-#     Pedido: menor rota ainda mais inteligente/robusta, SEM prejudicar o candidato que precisa do melhor
-#     deslocamento. O maior risco a esse objetivo é a app ADOTAR um valor curto ERRADO: como a escolha é
-#     "menor distância", uma medição curta e equivocada (snap que pula p/ outra via, ponto trocado, rota que
-#     "atravessa" um rio/serra) faz um polo DISTANTE parecer PERTO — e o candidato é alocado a um local cujo
-#     trajeto REAL é muito maior. É o oposto do que ele precisa.
-#     SOLUÇÃO — guarda PURO _rota_curta_suspeita + filtro na seleção do contendor. Descarta um candidato só
-#     quando TODOS os sinais de erro coincidem: (a) reta informativa (≥15 km); (b) IMPLAUSIVELMENTE DIRETO
-#     (sinuosidade km/reta < 1,12 — quase linha reta); (c) MUITO menor que os pares (< 0,75× a mediana deles);
-#     (d) CONTRADIÇÃO INDEPENDENTE: o Google (base própria, não-OSM) também mede bem mais (> 1,25× o curto).
-#     O PONTO CRÍTICO DE SEGURANÇA (aprendido na 234ª): OSRM/GraphHopper/ORS compartilham a base OSM e podem
-#     errar JUNTOS — um "atalho" que falta no OSM some nos três. Então NÃO se pode rejeitar um valor curto só
-#     porque os pares OSM discordam (o curto pode ser o CORRETO). Por isso o Google é obrigatório como juiz
-#     independente: SEM Google, o guarda NUNCA rejeita (retorna False) — preserva a rota curta possivelmente
-#     certa. E é FAIL-OPEN: se (hipoteticamente) todos virassem suspeitos, mantém os originais — nunca fica
-#     sem rota. AUDITÁVEL: quando dispara, o critério registra "descartado valor curto suspeito, contradito
-#     pelo Google".
-#     PROVA (verify_protege_candidato + teste de integração): caso-alvo (210 km vs pares 420/430 e Google 440
-#     → descarta 210, vence 420); SEM Google → mantém o menor (não rejeita); Google corrobora o curto → mantém
-#     (atalho real); curto porém sinuoso → mantém; só um pouco menor que pares → mantém; reta<15 km → mantém;
-#     contradição fraca (<25%) → mantém; defensivo (nulos/vazios → não rejeita); fail-open. 22 provas
-#     cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: só atua com Google presente E contradição forte E padrão físico de erro; caso contrário o
-#     comportamento é idêntico ao da 234ª. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
-#   v3.8 (234ª geração) → 🧭 CRITÉRIO DE MENOR ROTA MAIS INTELIGENTE: desempate por confiabilidade em empate técnico [CRITERIO-VENCEDOR]
-#     Melhoria nos CRITÉRIOS de escolha da menor rota viária, pedida pelo usuário. Diagnóstico: a escolha era
-#     `min(distância)` puro, com dois pontos fracos — (1) num EMPATE TÉCNICO (distâncias praticamente iguais) a
-#     decisão vira arbitrária (ruído de float) e podia cair numa rota com BALSA havendo opção rodoviária
-#     equivalente (pior p/ logística de prova); (2) o candidato marginalmente menor podia vir de geometria
-#     implausível.
-#     SOLUÇÃO — nova função PURA _selecionar_vencedor_rota(candidatos, dist_linha_reta, tol=0.04):
-#       • fora da tolerância de empate, vence SEMPRE a menor distância (princípio "menor rota viária"
-#         preservado — nunca troca por uma rota nitidamente mais longa);
-#       • DENTRO do empate técnico (≤4% acima do menor), desempata por: (1) SEM balsa antes de COM balsa
-#         (confiabilidade operacional — balsa tem horário/capacidade/clima); (2) sinuosidade ANÔMALA (desvio
-#         >25% da mediana dos empatados) é demovida; (3) entre os plausíveis, a MENOR distância decide.
-#     SEGURANÇA (independência dos motores): NÃO usa "consenso" para preferir valores mais ALTOS — OSRM/
-#     GraphHopper/ORS compartilham a base OSM e podem errar JUNTOS; preferir o corroborado poderia rejeitar
-#     uma rota curta CORRETA (ex.: Google acerta trecho que falta no OSM). Por isso o critério só reordena
-#     EMPATES. AUDITÁVEL: o rótulo da fonte passa a mostrar o motivo do desempate (ex.: "GRAPHHOPPER (empate
-#     técnico → evita balsa (+2.0 km vs. menor))"); no caso normal o rótulo é IDÊNTICO ao anterior
-#     ("OSRM (Menor Distância)").
-#     PROVA (verify_criterio_vencedor, 9+ casos): vencedor claro→menor; +5% fora→menor mesmo com balsa; empate
-#     +balsa→sem-balsa; +4% exato conta como empate; empate sem-balsa→menor; três plausíveis→menor; defensivo
-#     (vazio/único/tupla inválida). Detecção de vencedor (_eh_contendor_ui) segue reconhecendo o motor no
-#     rótulo. 21 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: o caminho puro-min é o fallback; rótulo normal idêntico; só muda a escolha em empate
-#     técnico real. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
-#   v3.8 (233ª geração) → 🗺️ PARTE 3/3: MAPA DE CONCENTRAÇÃO em canvas — cross-filtering dos gráficos COMPLETO [BI-CANVAS-MAPA]
-#     Fecha a trilogia (partes 1/3 sunburst, 2/3 Sankey, 3/3 mapa) de reconstruir os gráficos Plotly em canvas
-#     para o cross-filtering. Esta é a parte que eu havia sinalizado como a mais delicada.
-#     • As linhas do painel agora carregam COORDENADAS (la/lo), detectadas de Lat/Lon Origem e VALIDADAS
-#       (só coords plausíveis dentro do Brasil; 0,0 e lixo são descartados). Flag TEM_GEO controla a exibição.
-#     • desenharMapa(F): projeção EQUIRETANGULAR com bounds fixos do Brasil (lon -74..-34, lat -34..6),
-#       preservando proporção; um CONTORNO SIMPLIFICADO do Brasil (~57 pontos lon/lat embutidos) desenhado como
-#       referência geográfica; PONTOS das origens com tamanho ∝ candidatos e COR ∝ distância (escala
-#       verde→amarelo→vermelho, _corDist); LEGENDA de cor e contagem de origens. Recalculado do MESMO F —
-#       cross-filtra com todos. Resize redesenha.
-#     HONESTIDADE (como prometido): é um scatter geográfico com contorno SIMPLIFICADO do país e projeção
-#     equiretangular — NÃO uma projeção cartográfica precisa nem fronteira oficial. O objetivo é legibilidade
-#     geográfica robusta e offline (sem biblioteca de mapa), não fidelidade cartográfica milimétrica. O mapa
-#     Plotly (Scattergeo) do relatório, quando presente, segue como o mapa "de verdade"; este é o INTERATIVO.
-#     PROVA: node --check confirma JS SINTATICAMENTE VÁLIDO; teste dedicado confere o canvas, a função, o
-#     contorno BR, a projeção (PX/PY), a embutidura+validação das coords, a legenda, o balanceamento e o
-#     defensivo (sem coords → TEM_GEO=false + aviso; coords 0,0/fora do Brasil descartadas). 20 provas
-#     cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: contido na função do painel; classes .pbi-; sem coords o mapa some com aviso e o resto
-#     segue. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
-#     >>> Agora os 5 gráficos do painel (histograma, polos, UF, sunburst, Sankey, mapa) CROSS-FILTRAM juntos,
-#     ao vivo, com os KPIs e a tabela auditável. Cross-filtering do painel COMPLETO. <<<
-#   v3.8 (232ª geração) → 🌊 PARTE 2/3: SANKEY reconstruído em canvas, entra no cross-filtering [BI-CANVAS-SANKEY]
-#     Parte 2 de 3 da reconstrução dos gráficos Plotly em canvas. O SANKEY (fluxo UF → Polo) — o mais
-#     trabalhoso dos três, por exigir layout de nós em duas colunas + fitas curvas.
-#     • desenharSank(F): nós de ORIGEM (top 6 UFs) empilhados à esquerda e nós de DESTINO (top 8 polos) à
-#       direita, cada retângulo com altura ∝ ao seu total; FITAS (ribbons) curvas via bezier ligando cada UF a
-#       cada polo, largura ∝ ao fluxo de candidatos daquele par UF→Polo. Fitas semitransparentes na cor da UF
-#       (_rgba), empilhadas sem sobreposição (offsets por nó). Escala recomputada só com os nós exibidos, para
-#       coerência visual. Rótulos nos nós.
-#     • Entra no cross-filtering: no upd(), "…;desenharSun(F);desenharSank(F);renderTab(F);" — recalculado do
-#       MESMO F que todos os outros. Resize também redesenha.
-#     Sem Plotly, robusto e offline. O Sankey Plotly pré-renderizado (quando presente) segue como panorama;
-#     agora há a versão INTERATIVA no painel.
-#     PROVA: node --check confirma JS SINTATICAMENTE VÁLIDO; teste dedicado confere o canvas, a função, a
-#     agregação de fluxos (UF||Polo), o empilhamento de nós, as fitas bezier, o balanceamento e o defensivo
-#     (sem UF/Polo → aviso). verify_bi_interativo estendido (e generalizei a asserção da 231ª que casava a
-#     linha exata do upd() — teste desatualizado, não regressão). 20 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: contido na função do painel; classes .pbi-; sem colunas, mostra aviso. Imports IDÊNTICOS.
-#     RotaPipeline: 42 campos. Requirements: INALTERADO. FALTA a Parte 3/3: Mapa de concentração em canvas
-#     (a mais delicada — desenhar o Brasil sem lib exige contorno embutido; avaliarei a abordagem mais robusta).
-#   v3.8 (231ª geração) → 🌅 PARTE 1/3: SUNBURST reconstruído em canvas, entra no cross-filtering [BI-CANVAS-SUNBURST]
-#     Começa (por partes, como combinado) a reconstrução dos gráficos Plotly em canvas para que ENTREM no
-#     cross-filtering. Parte 1 de 3: o SUNBURST (composição da demanda UF → Polo).
-#     • desenharSun(F): sunburst de DOIS ANÉIS em <canvas> puro — anel interno = UF (fatia proporcional ao
-#       total de candidatos, ou contagem se não houver), anel externo = Polos DENTRO de cada UF (subfatias no
-#       arco do pai). Paleta de 12 cores por UF; polos herdam tons mais claros da cor da UF (_lighten). Buraco
-#       central mostra o total. Rótulos nas fatias grandes.
-#     • Entra no cross-filtering: no upd(), "…;desenharUF(F);desenharSun(F);renderTab(F);" — recalculado do
-#       MESMO conjunto filtrado F que os demais gráficos, KPIs e tabela. Resize também redesenha.
-#     Sem Plotly, portanto robusto e offline. O sunburst Plotly pré-renderizado segue existindo como panorama
-#     estático mais abaixo no relatório; agora há uma versão INTERATIVA no painel.
-#     PROVA: node --check confirma JS SINTATICAMENTE VÁLIDO; teste dedicado confere o canvas, a função, a
-#     agregação de 2 níveis (UF→Polo), o total central, o balanceamento e o defensivo (sem UF/Polo → aviso, não
-#     quebra). verify_bi_interativo estendido (e corrigi uma asserção velha da 230ª que casava a linha exata do
-#     upd() — era teste desatualizado, não regressão). 20 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: alterações contidas na função do painel; classes .pbi-; sem colunas, mostra aviso. Imports
-#     IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO. PRÓXIMAS PARTES: 2/3 Sankey (fluxo
-#     origem→polo) e 3/3 Mapa (concentração) em canvas.
-#   v3.8 (230ª geração) → 🔗 CROSS-FILTERING COMPLETO no painel: 3 gráficos em canvas recalculados por filtro [BI-INTERATIVO++]
-#     Fecha o pedido de reconstruir os gráficos do painel em canvas/JS para cross-filtering completo. Antes
-#     (229ª) só o histograma reagia aos filtros; agora são TRÊS gráficos, todos redesenhados a cada filtro a
-#     partir do MESMO conjunto filtrado F:
-#     • HISTOGRAMA das distâncias (já existia, 229ª);
-#     • POLOS MAIS DEMANDADOS — barras horizontais por candidatos (ou contagem), top 8, ordenado;
-#     • DISTÂNCIA MÉDIA POR UF — barras horizontais (soma/contagem por UF), top 8, ordenado.
-#     Uma função genérica _hbar(cv,pairs,unidade,cor1,cor2) desenha as barras horizontais (rótulo + barra com
-#     gradiente + valor). No upd(), a linha "desenharHist(kms);desenharPolos(F);desenharUF(F);renderTab(F);"
-#     recalcula os 3 gráficos + KPIs + tabela auditável do mesmo F — ou seja, TODOS os elementos do painel
-#     cross-filtram juntos, ao vivo, no navegador. Grid responsivo (.pbi-charts) que vira 1 coluna no celular.
-#     Tudo em canvas puro (SEM Plotly), portanto robusto e offline; resize redesenha os 3.
-#     PROVA: node --check confirma o JS SINTATICAMENTE VÁLIDO; teste dedicado confere os 3 canvas, as funções
-#     de desenho, as agregações (polos por candidatos; UF por distância média), o balanceamento de
-#     chaves/parênteses/colchetes, JSON válido e o comportamento defensivo. verify_bi_interativo estendido. 20
-#     provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: alterações contidas na função do painel; classes .pbi- (sem colisão); sem colunas, os
-#     gráficos mostram "sem dados" e o resto segue. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements:
-#     INALTERADO. Agora o cross-filtering dos GRÁFICOS do painel está completo (os Plotly pré-renderizados
-#     seguem como panorama estático abaixo — reconstruí-los seria refazer sunburst/sankey/mapa no cliente).
-#   v3.8 (229ª geração) → 🎛️ PAINEL BI EXPANDIDO: +filtros (Polo, mín. candidatos, busca) + HISTOGRAMA ao vivo [BI-INTERATIVO+]
-#     O pedido "reprojetar todos os relatórios em artigo+BI" já foi atendido em grande parte nas rodadas
-#     218-228 (7 seções científicas, painel interativo, gráficos avançados, modo escuro, KPI tooltips no
-#     relatório principal E no Comparador; abas analíticas nas 3 planilhas). INVENTÁRIO honesto do que ainda
-#     faltava do painel interativo: ele tinha só 4 filtros e recalculava KPIs+tabela, mas NÃO um gráfico. Esta
-#     rodada fecha exatamente esse gap:
-#     • +3 FILTROS (agora 7): Polo (destino), Mín. de candidatos (slider com máximo derivado dos dados) e BUSCA
-#       textual por município — além dos já existentes UF, Fonte/Motor, Balsa e Distância.
-#     • HISTOGRAMA AO VIVO: um gráfico de distribuição das distâncias desenhado em <canvas> que se RECALCULA a
-#       cada mudança de filtro (barras com gradiente, eixos km). É a peça "filtros atualizam GRÁFICO" — feita
-#       em canvas puro (sem Plotly), portanto robusta e offline.
-#     Agora os filtros governam KPIs + HISTOGRAMA + tabela auditável, tudo ao vivo no navegador.
-#     PROVA (verify_bi_interativo estendido): os 7 filtros presentes; canvas + função de desenho; filtrar()
-#     aplica Polo/candidatos/busca; slider com max derivado; JS balanceado (chaves/parênteses); JSON válido;
-#     defensivo (painel mínimo funciona; filtros sem coluna são omitidos). 20 provas cumulativas + testes
-#     HTML/Excel OK.
-#     NÃO-REGRESSÃO: alterações contidas na função do painel; classes .pbi- (sem colisão); se faltarem colunas,
-#     os filtros somem e o resto segue. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO.
-#     ESCOPO HONESTO: recalcular ao vivo os GRÁFICOS PLOTLY (sunburst/sankey/mapa) continua sendo outro
-#     projeto — reconstruí-los no cliente é frágil. O histograma em canvas entrega a interatividade de gráfico
-#     de forma robusta; os Plotly seguem como panorama estático abaixo.
-#   v3.8 (228ª geração) → 📊 PLANILHA DO COMPARADOR: aba Estatísticas Descritivas (Aplicação × Referência) [EXPORT-ESTATISTICAS-COMPARADOR]
-#     Pedido: dar à planilha do Comparador o mesmo tratamento analítico das outras. CONSTATAÇÃO HONESTA ao
-#     investigar: a planilha do Comparador JÁ ERA a mais completa das três — Capa que já é um DASHBOARD com 8
-#     KPIs (conciliação, vitórias app/ref, empates, km-a-menos, beneficiados) + explicação + alertas derivados
-#     dos dados; e já tinha Metodologia, Glossário, Dicionário de Dados, Relatório Executivo, Pareto,
-#     Distribuição, guias por aba e 20+ abas. Forçar _abas_cientificas_alocacao ali COLIDIRIA nos nomes
-#     'Metodologia'/'Glossario' (o xlsxwriter rejeita aba duplicada → quebraria o export) e DUPLICARIA
-#     Pareto/Distribuição/Dashboard. Ou seja: aplicar o pacote inteiro pioraria, não melhoraria.
-#     O QUE FALTAVA de verdade (gap real, sem colisão): uma aba de ESTATÍSTICAS DESCRITIVAS. Adicionei
-#     _aba_estatisticas_comparacao: média, mediana, moda, desvio, variância, CV, mín, Q1, Q3, P90, P95, P99 e
-#     máx — das distâncias, com o estudo da APLICAÇÃO e o de REFERÊNCIA LADO A LADO (o contraste é exatamente o
-#     propósito do Comparador). Reusa o helper _estatisticas_descritivas_serie. Com explicação didática.
-#     PROVA: gerei um XLSX de comparação (linhas com Distancia Aplicacao/Referencia) e reli com openpyxl — a aba
-#     traz as 2 colunas comparadas, 28 valores, métricas (mediana/P95/CV) e a explicação; defensiva (sem linhas
-#     ou sem colunas de distância → aba não é criada). 20 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: 100% ADITIVO e isolado em try (falha não afeta as outras abas); as 20+ abas do Comparador
-#     seguem idênticas. SEM colisão de nome ('Estatisticas Descritivas' é nova ali). Imports IDÊNTICOS.
-#     RotaPipeline: 42 campos. Requirements: INALTERADO.
-#   v3.8 (227ª geração) → 📗 PLANILHA DO LOTE ganha as abas analíticas (Dashboard + Metodologia + científicas) [EXPORT-DASHBOARD-LOTE]
-#     Fecha o item que ficou pendente na 226ª: levar as MESMAS abas analíticas da planilha de Locais também
-#     para a planilha do LOTE (aba Processamento). O Lote já tinha Capa, Rotas, Resumo Executivo, Distribuição
-#     de Distâncias, Síntese por UF e Status das Rotas — mas não as abas científicas.
-#     SOLUÇÃO (zero código novo, reuso total): _montar_planilha_lote_xlsx agora chama _abas_cientificas_alocacao
-#     (a mesma função já provada), anexando ao Lote: Painel Executivo (Dashboard), Metodologia, Estatísticas
-#     Descritivas, Índices de Qualidade, Insights & Recomendações, Qualidade dos Dados e Glossário — cada uma
-#     com sua explicação didática e gráficos nativos.
-#     SEM COLISÃO de nomes: o Lote usa 'Resumo Executivo'; a científica usa 'Painel Executivo' (abas distintas,
-#     coexistem). Chamada ISOLADA em try próprio: se falhar, as abas do Lote acima já estão escritas e o arquivo
-#     segue válido (a 'Rotas' bruta permanece idêntica p/ compatibilidade).
-#     PROVA: gerei um XLSX no formato do Lote e reli com openpyxl — as abas próprias do Lote (Rotas, Resumo
-#     Executivo) convivem com as analíticas (Painel Executivo, Metodologia, Glossário, Estatísticas...), sem
-#     colidir. 20 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: 100% ADITIVO; forward-reference válida (ambas são defs de módulo, resolvidas em runtime).
-#     Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO. Agora Lote e Locais têm o MESMO
-#     conjunto de abas analíticas.
-#   v3.8 (226ª geração) → 📗 PLANILHA: abas Painel Executivo (Dashboard) + Metodologia na planilha de Locais [EXPORT-DASHBOARD]
-#     Passo (c) do plano: enriquecer as planilhas Excel com abas analíticas + explicação didática. A planilha de
-#     Locais já tinha (215ª) 5 abas científicas — Estatísticas Descritivas, Índices de Qualidade, Insights &
-#     Recomendações, Qualidade dos Dados e Glossário. Esta rodada acrescenta as 2 que faltavam do pedido:
-#     • PAINEL EXECUTIVO (DASHBOARD): KPIs num relance, em cartões — municípios, candidatos, polos, deslocamento
-#       médio/mediano, P90/P95, maior/menor, rotas com balsa, rotas estimadas × roteadas, e KM-CANDIDATO
-#       (esforço logístico total = distância ponderada por candidatos). Com explicação didática de como ler.
-#     • METODOLOGIA: 10 etapas em linguagem simples — geocodificação, motores (Google/OSRM/GraphHopper),
-#       escolha do vencedor, consenso/divergência, fallback geodésico, linha reta × viária, balsa/isolados,
-#       tempo, auditoria e municípios sem rota — mais a lista de motores acionados.
-#     Cada nova aba tem EXPLICAÇÃO DIDÁTICA (como o pedido exige "sob cada tabela"). Reusa os formatos já
-#     existentes da função; entram DEPOIS do Glossário, sem tocar nas abas anteriores.
-#     PROVA: gerei um XLSX real e reli com openpyxl — as 8 abas presentes (5 científicas + Rotas + Painel
-#     Executivo + Metodologia); o Painel traz os KPIs (mediana, km-candidato) e a explicação; a Metodologia
-#     traz as etapas (geocodificação→vencedor→fallback→auditoria) e cita os motores. test_excel estendido com
-#     essa checagem. 20 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: 100% ADITIVO; cada aba isolada em try (erro numa não derruba as outras nem o arquivo); a
-#     aba 'Rotas' (dado bruto) permanece idêntica p/ compatibilidade. Imports IDÊNTICOS. RotaPipeline: 42
-#     campos. Requirements: INALTERADO. Concluídos os 3 passos do plano (a: Comparador; b: gráficos; c: Excel).
-#   v3.8 (225ª geração) → 📈 LOTE DE GRÁFICOS AVANÇADOS no relatório principal: Pareto + curva acumulada + mapa de concentração [GRAFICOS-AVANCADOS]
-#     Passo (b) do plano: um lote ESPECÍFICO e disciplinado de gráficos novos de alto valor no relatório de
-#     Locais de Aplicação (que também é o de Lote). Escolhi 3 que NÃO existiam e respondem perguntas executivas
-#     reais (o relatório já tinha box, violin, sankey, scatter, sunburst, treemap):
-#     • PARETO DOS POLOS: barras (volume por polo, ordenado) + linha de % acumulado + marca dos 80% — mostra a
-#       concentração 80/20 (quantos polos concentram a maior parte da operação).
-#     • CURVA ACUMULADA (ECDF) DE DISTÂNCIA: responde diretamente "que % de candidatos percorre até X km", com
-#       marcas na mediana e no P90.
-#     • MAPA DE CONCENTRAÇÃO DE CANDIDATOS: Scattergeo com tamanho ∝ candidatos na origem e cor = distância —
-#       destaca o ponto "grande e quente" (muita gente + muito longe) e aglomerados que pedem novo polo.
-#     Cada gráfico vem com CAIXA EXPLICATIVA didática (o que é, como ler, que decisão apoia). Nova seção
-#     "Análises Visuais Avançadas" no sumário.
-#     ROBUSTEZ: função _graficos_avancados_html PURA e DEFENSIVA — cada bloco só entra se as colunas existirem
-#     (Pareto exige destino; ECDF exige distância; mapa exige coords+candidatos); erro num bloco não derruba os
-#     outros; sem nada → ''. Plotly com include_plotlyjs=False (o relatório já carrega o Plotly antes) +
-#     amostragem da ECDF acima de 2.000 pontos (curva idêntica, arquivo enxuto).
-#     PROVA DEDICADA (verify_graficos_avancados): os 3 gráficos presentes, tipos corretos (Bar+linha, Scattergeo),
-#     ≥3 explicações, e defensivo (só distância → só ECDF; só destino → Pareto por municípios). 20 provas
-#     cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: 100% ADITIVO; os gráficos e seções anteriores seguem intactos; a seção só aparece se gerar
-#     algo. Imports IDÊNTICOS. RotaPipeline: 42 campos. Requirements: INALTERADO. Falta o passo (c): enriquecer
-#     as planilhas Excel com abas analíticas + explicação sob cada tabela.
-#   v3.8 (224ª geração) → 📊📰 PAINEL INTERATIVO + SEÇÕES CIENTÍFICAS levados ao Comparador (Lote já os tinha) [BI-INTERATIVO-COMPARADOR]
-#     Passo (a) do plano: levar o painel interativo (223ª) + as seções científicas (218ª) aos OUTROS relatórios.
-#     DESCOBERTA que enxugou o trabalho: o relatório de LOTE (aba Processamento) e o de Locais de Aplicação usam
-#     a MESMA função _gerar_relatorio_html — ou seja, o Lote JÁ recebeu, desde a 223ª, o painel interativo e as
-#     7 seções científicas. Restava só o COMPARADOR (função própria _gerar_relatorio_comparacao_html).
-#     ENTREGA no Comparador (tudo REUSANDO helpers já provados):
-#     • PAINEL EXECUTIVO INTERATIVO no topo: um adaptador converte as linhas da conciliação para o formato do
-#       painel (Origem→Município, Distancia Aplicacao→Distância, UF, Inscritos, Modo) usando o lado APLICAÇÃO
-#       como estudo primário, e chama a MESMA _painel_interativo_bi_html (filtros vivos + KPIs + tabela
-#       auditável). Defensivo: sem linhas → não aparece.
-#     • SEÇÕES CIENTÍFICAS universais (aplicam-se a qualquer estudo de roteamento): Fundamentação Teórica e
-#       Limitações do Estudo, complementando a Metodologia/Referências que o Comparador já tinha. (Não injetei
-#       as seções específicas de ALOCAÇÃO — Introdução/Abstract sobre distribuir candidatos — porque o
-#       Comparador é outro tipo de documento; seria semanticamente errado. Honestidade de escopo.)
-#     COLISÃO DE CSS evitada: o Comparador já possuía um BI próprio usando classes .bi-* ; renomeei TODAS as
-#     classes do meu painel para prefixo .pbi-* (só dentro da função), para os dois coexistirem sem conflito
-#     visual. IDs do painel já eram únicos.
-#     PROVA: verify_bi_interativo segue OK; checagem dedicada confirma o painel adaptado + Fundamentação +
-#     Limitações plugados no Comparador, o adapter mapeando as colunas certas, e ZERO classe .bi-* colidente no
-#     painel (só .pbi-*). 19 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: 100% ADITIVO; o Comparador original (Veredito, Placar, Conciliação, Economia, BI próprio)
-#     segue intacto; o painel/seções só entram quando há dados. Imports IDÊNTICOS. RotaPipeline: 42 campos.
-#     Requirements: INALTERADO. PRÓXIMO (b/c): lote de novos gráficos/mapas e enriquecimento das planilhas.
-#   v3.8 (223ª geração) → 📊 PAINEL EXECUTIVO INTERATIVO no relatório HTML: filtros vivos + KPIs + tabela auditável [BI-INTERATIVO]
-#     Avança o pedido de "Dashboard BI / sistema interativo" com a peça que faltava e que eu vinha adiando com
-#     honestidade: interatividade REAL no relatório autocontido. _painel_interativo_bi_html() injeta no TOPO do
-#     relatório de Locais de Aplicação um painel executivo onde:
-#       • FILTROS (UF de origem, motor/fonte da rota, depende de balsa, distância máxima via slider) recalculam
-#         AO VIVO, no navegador, sem recarregar nada;
-#       • KPIs se atualizam na hora (municípios no filtro, candidatos, distância mediana/média, P95, máxima,
-#         rotas com balsa, rotas estimadas);
-#       • TABELA AUDITÁVEL — botão "Ver registros" abre exatamente as linhas que compõem os números do filtro
-#         (a peça "KPI → registros", tornando cada indicador rastreável até a origem).
-#     Implementação ROBUSTA: dados embutidos como JSON + JavaScript baunilha (SEM dependência de Plotly), então
-#     é à prova de falha e 100% offline. Cap defensivo de 6.000 linhas p/ não inflar o arquivo. Design escuro
-#     de dashboard (cards, slider, tabela sticky) alinhado ao resto do relatório (inclusive modo escuro global).
-#     PROVA DEDICADA (verify_bi_interativo): JSON embutido válido (N linhas), todos os filtros/KPIs/tabela
-#     presentes, JS balanceado (chaves/parênteses), defensivo (sem colunas mínimas → nada; com origem+distância
-#     → funciona), cap de 6.000 aplicado, plugado como 1ª seção. 19 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: 100% ADITIVO e autocontido — se faltarem as colunas mínimas, retorna '' e o relatório fica
-#     idêntico ao anterior; os gráficos Plotly e todas as seções científicas (218ª) seguem intactos logo abaixo.
-#     Imports IDÊNTICOS. RotaPipeline: 42 campos (intacto). Requirements: INALTERADO.
-#     ESCOPO HONESTO (repito, sem enganar): recalcular AO VIVO os GRÁFICOS Plotly pré-renderizados exigiria
-#     reconstruí-los no navegador a partir do JSON — grande e frágil; não o fiz nesta rodada e não finjo que
-#     fiz. Os filtros governam KPIs + tabela auditável (o coração de BI); os gráficos Plotly permanecem como
-#     panorama geral. Aplicar este painel também aos relatórios de Lote e Comparador é o próximo passo natural
-#     (têm geradores próprios) — faço na sequência, com o mesmo cuidado e prova.
-#   v3.8 (222ª geração) → 🩹 CORREÇÃO DA CONFLAÇÃO OSRM×GraphHopper + GraphHopper 1ª classe em TODA a app [GRAPHHOPPER-PARIDADE-FIX]
-#     O usuário reportou (corretamente) 4 bugs reais da 220ª/221ª:
-#       (a) valores do GraphHopper apareciam rotulados como OSRM no validador;
-#       (b) mapa do Google aparecia rotulado "Rota comparativa — OSRM";
-#       (c) a seção "Rota do GraphHopper" mostrava link do Google Maps;
-#       (d) Diagnóstico & Auditoria só comparava Google×OSRM, sem GraphHopper.
-#     CAUSA RAIZ (arquitetural, antiga): a app nasceu com modelo de 2 motores — "Google × contendor", onde a
-#     variável res_osrm é REATRIBUÍDA ao vencedor da vaga de contendor. Quando o GraphHopper vence, res_osrm
-#     passa a conter os dados DELE, mas continua rotulado "OSRM". E a detecção de vencedor da UI
-#     (_eh_osrm_ui = "OSRM" in fonte_rota) não reconhecia "GraphHopper (Menor Distância)" → caía em
-#     é_google=True → mostrava o mapa do Google como principal e rotulava errado o comparativo.
-#     CORREÇÕES (todas provadas, cirúrgicas):
-#     1) AUDITORIA distingue OSRM REAL × GraphHopper: _montar_auditoria_motores ganhou km_osrm_real (o OSRM
-#        original, preservado em _motores_resultados["OSRM"] ANTES da reatribuição) e um BLOCO PRÓPRIO do
-#        GraphHopper (km/tempo/balsa/link deles). As 2 chamadas passam esses dados. A divergência do consenso
-#        passa a usar o OSRM real, não o contendor. Fim da conflação na auditoria.
-#     2) DETECÇÃO DE VENCEDOR na UI reconhece QUALQUER contendor (OSRM/GraphHopper/ORS) via _eh_contendor_ui +
-#        _nome_vencedor_ui. GraphHopper deixa de ser tratado como Google; o mapa principal passa a ser a
-#        geometria do vencedor real, e todos os rótulos ("venceu", "comparativo", downloads, visualizador)
-#        usam o NOME REAL do motor.
-#     3) LINK do GraphHopper agora é o mapa do PRÓPRIO GraphHopper (graphhopper.com/maps), não Google — no
-#        validador e na auditoria.
-#     4) DIAGNÓSTICO & AUDITORIA ganhou bloco do GraphHopper (distância/tempo/balsa + divergência × Google +
-#        link), lido do bloco dedicado da auditoria. Agora os TRÊS motores aparecem, cada um com seus valores.
-#     PROVA DEDICADA (verify_graphhopper_paridade estendido): com GraphHopper vencendo, o bloco OSRM mostra o
-#     OSRM real e o bloco GraphHopper mostra os dados dele (link GH); a detecção classifica GraphHopper como
-#     contendor (≠ Google); rótulos/observação corretos. 18 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: sem GRAPHHOPPER_API_KEY, bloco graphhopper=None e a UI se comporta EXATAMENTE como antes
-#     (Google×OSRM); km_osrm_real ausente → usa km_osrm (compatibilidade). Imports IDÊNTICOS. RotaPipeline: 42
-#     campos (intacto). Requirements: INALTERADO.
-#   v3.8 (221ª geração) → 🔀 COMPARADOR: seletor Oficial×Viário + Estudo 2 recarregável + Sankey/mapa dos alterados [DUPLO-CENARIO-COMPARADOR]
-#     Fecha o pedido do duplo cenário (217ª) com as 3 peças que faltavam, todas testadas:
-#     (1) SELETOR DE CENÁRIO no Comparador de Estudos: entendido como o Comparador carrega o estudo — ele usa
-#         st.session_state['df_processado'] (o estudo OFICIAL da alocação) contra a base de referência. Agora,
-#         quando a alocação produziu a comparação de estratégias e há municípios que mudaram, aparece um radio
-#         "Comparar usando: Oficial / Puramente Viário". Ao escolher Viário, o estudo da app vira a versão
-#         puramente viária ANTES de toda a comparação — todas as análises passam a refletir esse cenário.
-#     (2) ESTUDO 2 RECARREGÁVEL: _df_estudo_puramente_viaria() constrói o DataFrame do Estudo 2 do df oficial +
-#         comparação (troca polo+distância SÓ dos municípios alterados; original intacto por cópia). Botão na
-#         aba Locais de Aplicação gera uma PLANILHA INDEPENDENTE (.xlsx com aba de dados + aba de comparação)
-#         que pode ser recarregada no Comparador como base de referência. Só aparece quando há alterados.
-#     (3) SANKEY + MAPA EXCLUSIVOS dos alterados: _graficos_comparacao_estrategias_html() gera (a) um Sankey do
-#         fluxo polo-oficial → polo-viário dos municípios que mudaram e (b) um mapa (Scattergeo, Brasil) das
-#         origens alteradas — plugados na seção "Comparação entre Estratégias" do relatório HTML. Plotly com
-#         include_plotlyjs=False (o relatório já carrega o Plotly antes).
-#     PROVA DEDICADA (verify_comparador_cenario): Estudo 2 troca só o alterado e não muta o original; Sankey e
-#     mapa gerados com Plotly quando há alterados e vazios quando não há; seletor/export/gráficos presentes e
-#     plugados. 18 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: tudo ADITIVO e condicionado a "houve mudança entre estratégias" — sem mudanças (ou sem a
-#     comparação calculada), o Comparador, a aba de alocação e o relatório ficam idênticos ao anterior; o
-#     seletor/botão/gráficos nem aparecem. Imports IDÊNTICOS ao baseline. RotaPipeline: 42 campos (intacto).
-#     Requirements: INALTERADO.
-#   v3.8 (220ª geração) → 🚗 GRAPHHOPPER EM PARIDADE com Google/OSRM: dados + link + mapa no validador e na planilha [GRAPHHOPPER-PARIDADE]
-#     Antes o GraphHopper competia pela menor rota, mas seus dados PRÓPRIOS não apareciam separadamente — quando
-#     vencia, era rotulado como o contendor genérico; quando perdia, sumia. Agora ele tem tratamento de 1ª
-#     classe, igual a Google e OSRM, INDEPENDENTEMENTE de quem vence a disputa.
-#     ARQUITETURA (aditiva, baixo acoplamento):
-#     - Novo campo RotaPipeline 'dados_graphhopper' (índice 41, default "") — ADITIVO, preserva todos os índices
-#       0-40. Codifica 'km‖tempo‖balsa‖link‖geometria' (separador ‖ para a polyline sobreviver ao round-trip).
-#       Helpers _montar_/_parsear_dados_graphhopper (à prova de parsing). RotaPipeline: 41 → 42 campos.
-#     - Captura: logo após a consulta ao GraphHopper na disputa, guarda os dados dele (km, tempo, balsa,
-#       geometria) + monta um link de navegação Google Maps por coordenadas (sempre traça, igual ao OSRM).
-#       Preenchido nas DUAS construções (viária e geodésica). Defensivo: sem chave/sem resposta → vazio.
-#     ENTREGAS (paridade total com Google/OSRM):
-#     - VALIDADOR RÁPIDO: nova seção "Rota do GraphHopper" com métricas próprias (distância, tempo, balsa),
-#       MAPA da geometria exata (Leaflet autocontido, mesmo builder do OSRM) e LINK de navegação. Só aparece
-#       quando o GraphHopper respondeu.
-#     - PLANILHA EXPORTÁVEL: 4 colunas novas — 'Distancia GraphHopper (km)', 'Tempo GraphHopper (min)',
-#       'Balsa GraphHopper', 'Link Rota GraphHopper' — ao lado das de Google/OSRM.
-#     PROVA DEDICADA (verify_graphhopper_paridade): round-trip dos dados preserva link e polyline; campo
-#     presente e preenchido nas 2 construções; 4 colunas na planilha; seção no validador com mapa Leaflet;
-#     captura independente do vencedor. Tudo defensivo (sem chave → campo vazio → nada muda).
-#     NÃO-REGRESSÃO (16 provas cumulativas + testes HTML/Excel + prova dedicada): campo ADITIVO (índices 0-40
-#     intactos); sem GRAPHHOPPER_API_KEY o comportamento é idêntico ao anterior (campo vazio, seção/colunas não
-#     aparecem). Imports IDÊNTICOS ao baseline. Requirements: INALTERADO. RotaPipeline documentado: 42 campos.
-#   v3.8 (219ª geração) → 🧯🔒 ARROWINVALID NUNCA MAIS: guard GLOBAL no st.dataframe + sanitizador reforçado [FIX-ARROW-GLOBAL]
-#     O erro "pyarrow.lib.ArrowInvalid" voltou porque a correção da 212ª dependia de embrulhar CADA ponto de
-#     exibição à mão (_tornar_arrow_safe em volta do st.dataframe) — e há 75+ chamadas st.dataframe na app.
-#     Bastava UMA escapar (ou o usuário estar numa versão antiga) para a TELA INTEIRA quebrar. Além disso, a
-#     heurística da 212ª só stringificava coluna com >1 tipo — deixava passar coluna de TIPO ÚNICO exótico
-#     (Decimal, date+Timestamp, objetos de classe, object toda-None) que o pyarrow também rejeita.
-#     DUAS correções, ambas provadas:
-#     (1) GUARD GLOBAL: um monkey-patch instala uma versão de st.dataframe que roteia TODO DataFrame por
-#         _tornar_arrow_safe automaticamente, ANTES de renderizar. Agora é IMPOSSÍVEL qualquer ponto de exibição
-#         (qualquer aba, agora ou no futuro) quebrar a tela com ArrowInvalid — sem precisar embrulhar nada à mão.
-#         Idempotente (não reempilha em reruns), defensivo (cai no original em erro), só toca em DataFrame.
-#     (2) SANITIZADOR REFORÇADO: além da coerção conservadora (que PRESERVA colunas numéricas/booleanas), agora
-#         faz VERIFICAÇÃO REAL — testa pa.Table.from_pandas e, se ainda falhar, stringifica toda coluna 'object'
-#         e, no limite extremo, o DataFrame inteiro. Corrige QUALQUER patologia, inclusive as de tipo único que
-#         a 212ª não pegava.
-#     PROVA DEDICADA: 7 patologias que quebram o Arrow (misto int/str, aninhados, Decimal, temporais mistos,
-#     object all-None, objetos de classe) → todas viram convertíveis; numéricas limpas preservadas; guard
-#     intercepta e é idempotente. Só afeta a EXIBIÇÃO — dados e exports (Excel/Parquet/HTML) intactos.
-#     NÃO-REGRESSÃO (16 provas cumulativas + testes HTML/Excel): DataFrame já-limpo passa inalterado; nenhuma
-#     lógica de negócio muda. Imports IDÊNTICOS ao baseline (pyarrow já era dependência — é o que lança o erro).
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#   v3.8 (218ª geração) → 📰 RELATÓRIO HTML COMO ARTIGO CIENTÍFICO: front/back matter + modo escuro + ajuda nos KPIs [ARTIGO-CIENTIFICO]
-#     Completa a estrutura de artigo científico do relatório HTML de Locais de Aplicação. Já havia (214ª/217ª):
-#     capa, resumo executivo com KPIs, muitos gráficos (boxplot, violin, sankey, sunburst, mapa), estatísticas
-#     descritivas, índices, insights, recomendações, metodologia, glossário e comparação de estratégias. Esta
-#     rodada ADICIONA as 7 seções formais que faltavam para o artigo ficar completo:
-#     FRONT MATTER (antes do resumo): (1) Resumo/Abstract PT+EN gerado dos números; (2) Introdução (problema,
-#     importância, impacto); (3) Fundamentação Teórica (conceitos em linguagem acessível: distância viária,
-#     linha reta, geocodificação, roteamento, sinuosidade, etc.).
-#     BACK MATTER (após metodologia/glossário): (4) Discussão (pontos fortes e limitações GERADOS dos dados);
-#     (5) Conclusões (geradas dos dados); (6) Limitações do Estudo (APIs, dados, malha, cartografia); (7)
-#     Referências (IBGE, OSM, OSRM, Google, Karney 2013, Tukey 1977, Hirschman 1964).
-#     UX: (a) MODO ESCURO — botão flutuante + CSS body.dark + toggle JS, tudo autocontido e offline; (b) AJUDA
-#     nos KPIs — tooltip CSS (ícone “?” com dica ao passar o mouse), sem dependências.
-#     Todas as 7 seções são funções PURAS e DEFENSIVAS (df vazio/sem colunas → None; erro numa não derruba o
-#     relatório) e entram no SUMÁRIO navegável. Injetadas na ORDEM correta de artigo (abstract→introdução→
-#     fundamentação→…→discussão→conclusões→limitações→referências).
-#     PROVA: teste dedicado gera as 7 seções (HTML válido, conteúdo correto — Abstract EN, conceitos, refs
-#     acadêmicas) e confirma o comportamento defensivo. 16 provas cumulativas + testes de HTML e Excel OK.
-#     NÃO-REGRESSÃO: tudo ADITIVO; relatório e processamento existentes intactos; modo escuro é sobreposição de
-#     CSS (não altera o claro). Imports IDÊNTICOS ao baseline. RotaPipeline: 41 campos (intacto). Requirements:
-#     INALTERADO.
-#     ESCOPO HONESTO: entregue o que é robusto e de alto valor num HTML autocontido — estrutura de artigo, modo
-#     escuro e ajuda nos KPIs. O que o pedido pede e NÃO cabe com segurança num HTML estático (cross-filtering
-#     interativo que recalcula TODOS os gráficos/KPIs/mapas ao vivo, e drill-down de cada KPIs aos registros)
-#     é um projeto à parte, grande e frágil com Plotly pré-renderizado — seria irresponsável fingir entregá-lo
-#     agora; melhor fazê-lo depois, com cuidado. O mesmo padrão vale para os relatórios de Lote e Comparador,
-#     que têm geradores próprios e podem receber estas seções na sequência.
-#   v3.8 (217ª geração) → 🔀 DUPLO CENÁRIO: Estudo Oficial × Estudo Puramente Viário + comparação auditável [DUPLO-CENARIO]
-#     Implementa o 2º cenário de decisão pedido, com máximo reuso e zero re-roteamento. INSIGHT-CHAVE: o motor
-#     oficial (_selecionar_hub_multicriterio, "VIÁRIA-PADRÃO 184ª") JÁ escolhe pela MENOR VIÁRIA; a diferença
-#     para o "puramente viário" está nas SALVAGUARDAS: rota com sinuosidade >4× (desvio fluvial fantasma) é
-#     rebaixada, rota real vence estimativa geodésica, e balsa/tempo desempatam. O ESTUDO 2 remove essas
-#     salvaguardas e escolhe SEMPRE a menor rota calculada.
-#     ARQUITETURA (baixo acoplamento, alta coesão, sem duplicar roteamento):
-#     - _reatribuir_hubs_puramente_viaria(topk_map, resultados): reusa os MESMOS pares já roteados e reelege por
-#       menor viária pura (desempate por tempo). Zero chamada de rede nova.
-#     - _comparar_estrategias_alocacao(): compara Oficial × Viário por município — vencedor de cada, se mudou,
-#       Δ km, e o CRITÉRIO que causou a mudança, com _motivo_mudanca_estrategia() gerando a explicação
-#       automática ("possuía a menor rota, mas era acesso fluvial/isolado — sinuosidade 5×", "rota estimada",
-#       "travessia por balsa", "desempate por qualidade"). Agrega: nº mudados, %, e contagem por critério.
-#     - A comparação é calculada UMA vez ao final da alocação e guardada em sessão (alo_comparacao_estrategias).
-#     ENTREGA (reusa toda a infra de export/relatório):
-#     - Planilha: nova aba "Comparação de Estratégias" (KPIs, mudanças por critério, tabela dos municípios
-#       alterados com Δ km e explicação) — total transparência, nada de caixa-preta.
-#     - Relatório HTML: nova seção "Comparação entre Estratégias de Escolha" (intro didática, KPIs, tabela,
-#       exemplos explicados, parecer automático — decisões robustas se 0 mudaram, ou revisão manual se houve).
-#     PROVA DEDICADA: cenário construído onde o candidato mais curto é fluvial (sinuosidade 5×) → oficial escolhe
-#     o plausível, puramente viário escolhe o mais curto, mudança detectada e explicada corretamente; aba Excel
-#     e seção HTML geradas e defensivas (vazio/None → não quebra). 16 provas cumulativas + testes HTML/Excel OK.
-#     NÃO-REGRESSÃO: tudo ADITIVO — o estudo oficial e todos os relatórios/exports existentes seguem idênticos;
-#     a comparação só aparece quando há dados. Imports IDÊNTICOS ao baseline. RotaPipeline: 41 campos (intacto).
-#     Requirements: INALTERADO.
-#     ESCOPO HONESTO: entregue o núcleo robusto e auditável (2º estudo derivado + comparação + colunas de
-#     motivo + estatísticas + aba Excel + seção HTML). Itens maiores do pedido (seletor de cenário na aba
-#     Comparador de Estudos, exportar o 2º estudo como planilha independente carregável, Sankey/mapas
-#     exclusivos da comparação) ficam como próximo incremento — cada um com validação própria, sem empilhar
-#     tudo de uma vez (a lição desta sessão).
-#   v3.8 (216ª geração) → 🛡️ MELHORIAS DE ROBUSTEZ (auditoria dirigida a evidência) [ROBUSTEZ-REDE + ROBUSTEZ-DADOS]
-#     Auditoria focada em robustez (não em hipótese). Achei e corrigi 2 lacunas REAIS, cada uma provada:
-#     (1) OSRM /nearest em FAIL-FAST: era a ÚLTIMA chamada ao servidor OSRM público que ainda usava a sessão
-#         com retry-storm (5 tentativas + backoff). Num servidor rate-limitado, podia levar ~40s por chamada.
-#         Passa a usar session_osrm_publico (fail-fast, timeout curto) — como a matriz e o roteamento já usavam
-#         desde a 207ª. Se falhar, o chamador segue sem o "snap" viário (degradação graciosa). Fecha o último
-#         ponto em que o servidor público podia arrastar o processamento.
-#     (2) ESTATÍSTICA IGNORA NÃO-FINITOS: _estatisticas_descritivas_serie (214ª) agora filtra inf/-inf além de
-#         NaN. Um infinito (ex.: razão anômala a montante) contaminaria média/desvio/percentis e apareceria
-#         como "inf" no relatório/planilha. Agora só valores finitos entram — números sempre limpos.
-#     COMO FORAM ENCONTRADAS: varredura de TODAS as chamadas HTTP (nenhuma sem timeout; só o /nearest estava na
-#     sessão errada) + teste de estresse das funções novas com dados imperfeitos (NaN, lixo textual, 1 linha,
-#     divisão por zero, infinitos). O resto do caminho quente já se mostrou robusto: isolamento de erro por
-#     rota (embrulhar_task_paralela com fallback geodésico + fallback do fallback), chunk isolado, timeouts.
-#     NÃO-REGRESSÃO (14 provas cumulativas + prova dedicada de robustez + testes de HTML e Excel): caso normal
-#     idêntico; só o comportamento sob falha/dado-sujo melhora. RotaPipeline: 41 campos (intacto). Requirements:
-#     INALTERADO.
-#     HONESTIDADE: parei em 2 correções REAIS e verificadas em vez de empilhar mudanças por empilhar — a app já
-#     está bem endurecida no essencial, e churn sem evidência foi justamente o que gerou regressão nesta sessão.
-#   v3.8 (215ª geração) → 📈 PLANILHA EXCEL ANALÍTICA/CIENTÍFICA: 5 abas novas com gráficos e explicações [EXPORT-CIENTIFICO]
-#     Espelha no Excel as seções científicas que a 214ª trouxe ao HTML. A planilha de Locais de Aplicação já
-#     era rica (Capa, gráficos nativos, "Como Ler", Pareto, ranking de estados, mapa de calor, Resumo Executivo,
-#     Síntese UF, Competitividade dos Polos, Concorrentes, Distribuição, Municípios Críticos, dashboards). Esta
-#     rodada ADICIONA 5 abas analíticas novas, via _abas_cientificas_alocacao():
-#     (1) ESTATÍSTICAS DESCRITIVAS: tabela completa (média, mediana, moda, desvio, variância, CV, quartis,
-#         P90/P95/P99, min/máx) para distância e tempo + GRÁFICO NATIVO de percentis + explicação didática.
-#     (2) ÍNDICES DE QUALIDADE: cartões 0-100 (Qualidade da Distribuição, Acessibilidade, Eficiência,
-#         Confiabilidade, Integridade) + GRÁFICO DE BARRAS nativo com data labels + como ler.
-#     (3) INSIGHTS E RECOMENDAÇÕES: achados automáticos (concentração, outliers Tukey, balsa) e sugestões
-#         operacionais em texto.
-#     (4) QUALIDADE DOS DADOS: % rota viária real vs estimada, % coordenadas oficiais IBGE, cobertura.
-#     (5) GLOSSÁRIO: definições dos termos técnicos.
-#     As novas abas entram no ÍNDICE NAVEGÁVEL (sumário clicável). Gráficos são NATIVOS do Excel (add_chart do
-#     xlsxwriter), não imagens. Reusa os helpers puros da 214ª (_estatisticas_descritivas_serie) + versões TEXTO
-#     dos insights/recomendações para célula.
-#     PROVA REAL: gerei um .xlsx de teste e validei com openpyxl que as 5 abas existem, têm o conteúdo correto e
-#     os 2 gráficos nativos embutidos; e que DataFrame vazio não quebra o export (defensivo por aba).
-#     NÃO-REGRESSÃO (14 provas cumulativas + teste do HTML + teste do Excel): abas ADITIVAS; export existente
-#     intacto; cada aba isolada em try (erro numa não derruba as outras). Imports IDÊNTICOS ao baseline.
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#   v3.8 (214ª geração) → 📊 RELATÓRIO HTML NÍVEL EXECUTIVO/CIENTÍFICO: novas seções analíticas [RELATORIO-CIENTIFICO]
-#     Eleva o relatório HTML da aba Locais de Aplicação com 6 seções analíticas NOVAS, somadas às já existentes
-#     (storytelling, distribuição, boxplot, violin, sankey, sunburst, mapa, qualidade):
-#     (1) ÍNDICES DE QUALIDADE LOGÍSTICA (dashboard executivo): cartões 0-100 com barra de progresso e fórmula
-#         explícita — Qualidade da Distribuição, Acessibilidade (P90), Eficiência Logística (reta/viária),
-#         Confiabilidade (% rota viária real), Integridade Geográfica, + HHI de concentração por polo.
-#     (2) ESTATÍSTICAS DESCRITIVAS: tabela completa (média, mediana, moda, desvio, variância, CV, quartis,
-#         P90/P95/P99, min/máx) para distância e tempo, com box de interpretação.
-#     (3) DESCOBERTA AUTOMÁTICA DE INSIGHTS: detecção por regras estatísticas (concentração por UF, polos
-#         sobre/subutilizados, outliers por Tukey 1,5×IQR, dependência de balsa) em texto explicativo.
-#     (4) RECOMENDAÇÕES OPERACIONAIS: candidatos a novos polos, redistribuição de sobrecarga, consolidação de
-#         ociosos, contingência de balsa — geradas dos padrões dos dados.
-#     (5) COBERTURA E CONFIABILIDADE DOS DADOS: % rota viária real vs estimada, % coordenadas oficiais (IBGE),
-#         integridade média, cobertura de roteamento.
-#     (6) METODOLOGIA + GLOSSÁRIO: seções tipo artigo científico (geocodificação, roteamento, consenso,
-#         fallback, limitações; e definições dos termos técnicos).
-#     Todas as seções são funções PURAS e DEFENSIVAS (DataFrame vazio/sem colunas → None, nunca levantam; erro
-#     numa seção não derruba o relatório) + CSS próprio (cartões de índice, listas de insights/recomendações,
-#     tabelas). PROVADO por teste que gera HTML válido, é defensivo e produz índices coerentes (0-100).
-#     NÃO-REGRESSÃO (14 provas cumulativas + teste dedicado do relatório): as seções são ADITIVAS; o relatório
-#     e o processamento existentes seguem intactos. Imports IDÊNTICOS ao baseline (usa pd/np já importados).
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     ESCOPO HONESTO: entregue o subconjunto de MAIOR valor e testável do pedido (dezenas de itens). Itens mais
-#     exóticos (Sankey já existe; mas Moran's I, hotspot/kernel, PCA/K-Means/regressão, mapas estáticos
-#     embutidos, e a expansão multi-abas do Excel) ficam como incremento seguinte — cada um exige validação
-#     própria, e empilhar tudo de uma vez traria risco de regressão (a lição desta sessão).
-#   v3.8 (213ª geração) → ⏱️ PERFIL DE TEMPO POR ETAPA: medir onde o processamento gasta o tempo [PERFIL-EXECUCAO]
-#     Resposta ao pedido de "otimização baseada em EVIDÊNCIA, não hipótese". Em vez de arriscar mais uma
-#     re-arquitetura agressiva do caminho quente (que, comprovadamente nesta sessão, causou travamentos — ver
-#     205ª), esta rodada entrega a FERRAMENTA que faltava para otimizar com dados: um profiler leve que mede o
-#     tempo de RELÓGIO de cada ETAPA macro (matriz, montagem do DataFrame; extensível) e mostra no painel
-#     "Monitor APIs" (nova seção "Perfil de Tempo por Etapa"): tempo total, %, execuções, média e pior caso por
-#     etapa. Assim dá para ver o gargalo REAL antes de mexer — encerrando o "otimizar às cegas".
-#     SEGURANÇA (a lição da sessão): o context manager _perfil_fase é OBSERVACIONAL e DEFENSIVO — provado por
-#     teste que ele (1) mede corretamente, (2) NUNCA suprime exceções do bloco (não engole erros) e (3) NUNCA
-#     altera o resultado do bloco. Modelado na telemetria de APIs existente (buffer em RAM + flush em disco),
-#     thread-safe; qualquer falha do cronômetro só significa "não mediu", nunca quebra o processamento.
-#     NÃO-REGRESSÃO (14 provas cumulativas + prova dedicada): o processamento é idêntico — só passou a ser
-#     MEDIDO em 3 pontos de chamada (2 montagens de DataFrame + matriz), cada um envolto sem mudar a lógica.
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     HONESTIDADE: isto não "acelera" sozinho — é o instrumento para as PRÓXIMAS otimizações serem dirigidas a
-#     dados reais. O maior ganho de velocidade que resta continua sendo estrutural (OSRM próprio: roteamento
-#     local em ms, sem servidor público, sem cota) — o profiler vai, inclusive, quantificar isso quando você medir.
-#   v3.8 (212ª geração) → 🧯 CORRIGE O ERRO DE TELA "pyarrow ArrowInvalid" no st.dataframe [FIX-ARROW]
-#     SINTOMA (traceback do usuário): st.dataframe(df_processado) quebrava a tela inteira com
-#     pyarrow.lib.ArrowInvalid. CAUSA: o Streamlit converte o DataFrame para Arrow (pa.Table.from_pandas);
-#     uma coluna 'object' com tipos MISTOS (ex.: número e string na mesma coluna, ou células que são
-#     list/tuple/dict — como geometria/coordenadas) faz o pyarrow levantar ArrowInvalid e a página toda cai.
-#     CORREÇÃO: helper _tornar_arrow_safe(df) aplicado SÓ NA EXIBIÇÃO — coage as colunas problemáticas para
-#     string numa CÓPIA, deixando numéricas/booleanas intactas. Os dados ARMAZENADOS e os EXPORTS
-#     (Excel/Parquet/HTML) NÃO são tocados — só a renderização da tabela na tela fica segura.
-#     NÃO-REGRESSÃO (guarantees + prova dedicada que REPRODUZ o ArrowInvalid e mostra a correção): DataFrame
-#     já-limpo passa inalterado; colunas numéricas limpas continuam numéricas; nenhuma lógica/valor de negócio
-#     muda. Aplicado aos 2 pontos de st.dataframe(df_processado) (Lote e Alocação). Defensivo: se algo falhar,
-#     devolve o original (pior caso = comportamento anterior). RotaPipeline: 41 campos (intacto). Requirements:
-#     INALTERADO.
-#   v3.8 (211ª geração) → ⏱️ ORÇAMENTO DE TEMPO DA MATRIZ: a Alocação nunca mais fica presa em "0 registros" [MATRIZ-ORCAMENTO]
-#     O disjuntor da 208ª cobria "servidor OSRM público FORA" (falha total). NÃO cobria "servidor LENTO":
-#     quando o público responde mas devagar (2-3s/chamada), a fase de matriz de 4.946 origens levava ~25min
-#     PRESA, com 0 registros na tela (a matriz roda ANTES da contagem, síncrona). Este era o travamento que
-#     persistia. CORREÇÃO DEFINITIVA: ORÇAMENTO DE TEMPO (wall-clock) para a matriz — no máximo 60-120s
-#     (adaptativo ao volume). Ao estourar, a matriz PARA e usa o PARCIAL; as origens não cobertas caem no
-#     ranking por LINHA RETA (offline, já existe) — o downstream JÁ trata origem ausente da matriz (usa
-#     dest_to_hub por linha reta), então é degradação graciosa, não perda. O vencedor final segue roteado por
-#     Google/OSRM/GraphHopper. Cobre TODOS os casos: servidor rápido → matriz completa; lento OU fora →
-#     parcial + linha reta, e a Alocação PROSSEGUE.
-#     NÃO-REGRESSÃO (guarantees + prova dedicada): servidor rápido = matriz 100% (idêntico ao atual); só muda
-#     o comportamento sob lentidão/falha (travar → seguir com parcial). Toda origem continua coberta (matriz OU
-#     linha reta). RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     ISTO ENCERRA A SÉRIE DE TRAVAMENTOS: a matriz agora tem disjuntor por FALHA (208ª) + orçamento por TEMPO
-#     (211ª) + fail-fast na rede (207ª). O servidor público não pode mais prender a aplicação de nenhuma forma.
-#     A cura estrutural definitiva continua sendo o OSRM próprio (sem servidor público no caminho).
-#   v3.8 (210ª geração) → ⚡ VELOCIDADE COM CHAVE: sem scraper doomed + cache da API oficial [PERF-GOOGLE-OFICIAL]
-#     Dois ganhos REAIS de velocidade que só passaram a fazer sentido agora que há chave oficial do Google:
-#     (1) SKIP DO SCRAPER BLOQUEADO: quando HÁ GOOGLE_MAPS_API_KEY, o Google vem SÓ da API oficial. Antes, se a
-#         API oficial não retornasse (cota/transiente), o código caía para o SCRAPER — que em IP de datacenter
-#         (Streamlit Cloud) está BLOQUEADO, então eram 2 tentativas doomed (~10-24s por rota com retries/timeouts)
-#         sem chance de sucesso. Agora, com chave, não cai no scraper: se a API oficial não responde, OSRM/
-#         GraphHopper assumem (como já assumiriam). Elimina chamadas de rede inúteis no caminho quente. Sem
-#         chave, o scraper continua sendo o caminho (comportamento histórico preservado).
-#     (2) CACHE DA API OFICIAL POR COORDENADA: pares origem→destino idênticos (arredondados a ~11m) não
-#         re-chamam a API PAGA — cache hit = zero rede e zero cota. Economiza CUSTO (menos chamadas cobradas) e
-#         TEMPO em reruns/lotes com pares repetidos. Lossless (mesma tupla). Grava por 30 dias em cache_google.
-#     NÃO-REGRESSÃO (15 provas cumulativas + prova dedicada): sem chave, tudo idêntico ao histórico (scraper
-#     roda as 2 tentativas); com chave, decisão idêntica (a API oficial já era a fonte do Google) — só remove
-#     trabalho inútil e evita recomputar. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     GANHO: nas rotas onde a API oficial não retorna, elimina ~10-24s de scraper doomed; nos pares repetidos,
-#     troca uma chamada de rede paga por um hit de cache instantâneo.
-#   v3.8 (209ª geração) → 🩺 CAUSA RAIZ DO "NÃO PROCESSA COM CHAVE": Retry-After congelava o worker [HOTFIX-CHAVES-TRAVAM]
-#     DIAGNÓSTICO CONFIRMADO POR TESTE DO USUÁRIO: com as chaves (Google oficial + GraphHopper) o app parava de
-#     processar TUDO — inclusive o Validador Rápido de rota única; SEM as chaves, voltava a funcionar. Isso
-#     descartou matriz/lote/escala e isolou a causa nas CHAMADAS COM CHAVE. Causa raiz: as APIs com chave
-#     usavam a sessão HTTP padrão, cujo Retry tinha respect_retry_after_header=True (default do urllib3). A
-#     chave GRATUITA do GraphHopper estoura a cota rápido e responde 429 com header 'Retry-After' (que pode ser
-#     dezenas/centenas de segundos, às vezes até 3600). O urllib3 OBEDECIA o header e DORMIA dentro da chamada
-#     — congelando o worker por minutos/horas. Como isso acontecia em TODA rota, o app inteiro "não processava".
-#     CORREÇÃO (3 camadas): (1) GraphHopper e (2) Google oficial passam a usar a sessão FAIL-FAST
-#     (session_osrm_publico): 429 fora do forcelist → não retenta 429; respect_retry_after_header=False →
-#     nunca dorme por ordem do servidor; timeout curto. Assim, chave com cota estourada = engine ignorado
-#     NAQUELA rota (None), não app travado. (3) Defesa em profundidade: a sessão PRINCIPAL também recebeu
-#     respect_retry_after_header=False, para que NENHUM servidor (geocoder etc.) possa forçar um sono longo.
-#     NÃO-REGRESSÃO (guarantees + prova dedicada): sem chave, nada muda; com chave saudável, funciona igual
-#     (só não dorme mais por Retry-After); o backoff próprio (curto) segue tratando erros transitórios reais.
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     LIÇÃO: toda chamada a API externa (ainda mais com chave de tier gratuito) precisa de fail-fast e de
-#     IGNORAR Retry-After grande — senão o servidor remoto pode, sozinho, travar a aplicação inteira.
-#   v3.8 (208ª geração) → 🚦 DISJUNTOR DA MATRIZ: a Alocação nunca mais trava esperando o OSRM público [MATRIZ-DISJUNTOR]
-#     CAUSA RAIZ do travamento em "0 registros" (refinando o diagnóstico da 207ª): a fase de MATRIZ da Alocação
-#     roda SÍNCRONA na thread principal, dentro de um st.spinner, ANTES de qualquer registro ser contado — e
-#     consulta o servidor OSRM PÚBLICO para TODAS as origens (ex.: 2.439). Se esse servidor está lento/fora,
-#     mesmo com o fail-fast da 207ª (6s/chamada), 2.439 origens × timeout ÷ workers = a fase de matriz leva
-#     MINUTOS mostrando "0 registros" na tela (o contador só anda DEPOIS da matriz, na fase de chunks). Não era
-#     travamento de código — era a matriz esperando um servidor de terceiros indisponível.
-#     CORREÇÃO — disjuntor PRECOCE: a matriz monitora a amostra do 1º lote; se ~25 origens falharem com 0
-#     sucesso (servidor claramente fora), ABORTA imediatamente (não tenta as 2.439). A matriz é só REFINAMENTO:
-#     o ranking por LINHA RETA (topk_map, offline, instantâneo) já existe, e o roteamento final continua com
-#     Google (oficial) + GraphHopper. Assim a Alocação PROSSEGUE em segundos em vez de empacar.
-#     NÃO-REGRESSÃO (guarantees + prova dedicada do disjuntor): servidor SAUDÁVEL → matriz completa, não aborta
-#     (idêntico ao atual); servidor PARCIAL → usa o que conseguir, não aborta; só aborta quando está claramente
-#     fora. Fallback já existente ("matriz vazia → fluxo par-a-par + B&B") assume, agora COM Google/GraphHopper
-#     por chave. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     Combinado com a 207ª (fail-fast no OSRM público) e a solução definitiva (OSRM próprio), fecha o buraco:
-#     o servidor público deixa de ser capaz de TRAVAR o app — no máximo é ignorado quando falha.
-#   v3.8 (207ª geração) → 🚑 CORRIGE O TRAVAMENTO REAL: SERVIDOR PÚBLICO DO OSRM COM FAIL-FAST [HOTFIX-OSRM-HANG]
-#     DIAGNÓSTICO CORRETO (a 206ª tratou o suspeito errado): o app travava em 0 registros na FASE DE MATRIZ da
-#     Alocação — e essa fase chama API_OSRM_Table → servidor PÚBLICO router.project-osrm.org, um caminho que
-#     NÃO passa pelas minhas mudanças recentes (204/205/206) nem pelas chaves. O servidor de DEMONSTRAÇÃO do
-#     OSRM não tem garantias: quando fica lento ou devolve 429 (rate-limit), a sessão padrão (Retry total=5,
-#     backoff 0.5 + timeout 8) fazia UM bloco levar ~40-50s; no 1º lote de centenas de origens, isso EMPACAVA
-#     tudo (cronômetro congelado, 0 registros). Não era regressão de código — é a fragilidade do servidor
-#     público gratuito.
-#     CORREÇÃO: sessão FAIL-FAST dedicada ao OSRM público (session_osrm_publico: Retry total=1, sem backoff,
-#     timeout (connect 3s, read 6s)) usada na MATRIZ e no ROTEAMENTO OSRM. Se o servidor estiver ruim, cada
-#     chamada falha em segundos e o fluxo DEGRADA graciosamente (fallback par-a-par / ranqueia pelo que houver
-#     / Google assume) em vez de travar. Quando o servidor responde, o resultado é IDÊNTICO — só muda o
-#     comportamento sob falha (travar → degradar).
-#     NÃO-REGRESSÃO (guarantees cumulativas): mesma URL, mesma resposta quando o servidor funciona; RotaPipeline
-#     41 campos; requirements INALTERADO.
-#     A LIÇÃO E A SAÍDA DEFINITIVA: enquanto o roteamento depender do servidor PÚBLICO gratuito, ele é um ponto
-#     único de fragilidade (fora do nosso controle). O OSRM PRÓPRIO (Docker) elimina isso de vez — sem servidor
-#     público no caminho, sem rate-limit, sem travar. É a correção estrutural; este hotfix é o paliativo robusto.
-#   v3.8 (206ª geração) → 🚑 REVERTE O FAN-OUT DA 205ª (que travou o app) + BLINDA O TIMEOUT DO GOOGLE OFICIAL [HOTFIX-205]
-#     A 205ª paralelizou TODOS os motores secundários (OSRM+GraphHopper+ORS+FOSSGIS) submetendo cada um ao
-#     EXECUTOR_APIS de dentro de CADA worker do pipeline. PROBLEMA em produção (Streamlit Cloud, 1 vCPU): o
-#     EXECUTOR_APIS tem só min(24, cpu*3)=3 workers ali, mas o EXECUTOR_GLOBAL tem max(8, cpu*4)=8 workers de
-#     pipeline. Com as chaves ativas, cada um dos 8 passou a exigir ~4 slots do pool de 3 (+ os 3 da
-#     geocodificação) → contenção severa no pool minúsculo, que na prática TRAVOU o processamento (0 registros).
-#     Um erro MEU: a paralelização foi validada em isolamento, mas não sob a realidade de 1 CPU + pool
-#     compartilhado geocodificação↔roteamento. REVERTIDO para o comportamento PROVADO da 204ª: só o OSRM
-#     primário roda em paralelo com o Google (198ª); GraphHopper/ORS rodam na própria thread do worker (sem
-#     multiplicar a carga do pool). Mais lento que o ideal, mas ROBUSTO — não trava.
-#     BLINDAGEM ADICIONAL: a API oficial do Google agora usa timeout (connect=4s, read=8s) — uma conexão presa
-#     ou chave com rate-limit não bloqueia mais o worker indefinidamente.
-#     NÃO-REGRESSÃO (18 provas cumulativas): idêntico à 204ª no roteamento (que já era estável) + timeout mais
-#     seguro. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     LIÇÃO REGISTRADA: paralelismo aninhado (pool dentro de pool) precisa ser dimensionado à MENOR máquina
-#     alvo (1 vCPU), não à máquina de teste. Reintroduzir o fan-out exige um executor DEDICADO ao roteamento
-#     (separado da geocodificação) e limite de concorrência — fica para quando houver CPU/host próprio.
-#   v3.8 (204ª geração) → 🔑 API OFICIAL DO GOOGLE (ROUTES API) COMO MOTOR PRINCIPAL — LÍCITA, SEM BLOQUEIO [GOOGLE-OFICIAL]
-#     O caminho DENTRO DOS TOS para restaurar o Google como motor principal a partir de qualquer IP (inclusive
-#     datacenter/Streamlit Cloud, onde o scraper é bloqueado). Nova função API_Google_Directions_Oficial usa a
-#     Routes API (POST routes.googleapis.com/directions/v2:computeRoutes — sucessora da Directions legada,
-#     obrigatória p/ projetos novos desde mar/2025) e devolve a MESMA tupla de 7 campos do scraper, populando
-#     res_google. Integração: se GOOGLE_MAPS_API_KEY existir em st.secrets, a API oficial é a fonte PRINCIPAL
-#     do Google; o scraper vira fallback; o OSRM segue como consenso/fallback final. A decisão NÃO muda — o
-#     resultado oficial entra na lógica que já prioriza o Google (margem de 2% a favor), então o Google volta a
-#     VENCER quando responde. routingPreference=TRAFFIC_UNAWARE mantém a chamada na SKU 'Essentials' (cota grátis
-#     maior / mais barata).
-#     NÃO-REGRESSÃO (17 provas cumulativas + prova dedicada): SEM a chave, API_Google_Directions_Oficial retorna
-#     None imediatamente → o fluxo cai no scraper exatamente como antes → comportamento 100% idêntico ao atual.
-#     As 2 chamadas de fallback ao scraper permanecem intactas. Telemetria registra como GOOGLE_MAPS (aparece no
-#     Monitor APIs). Tupla validada: km no índice 0 (compatível com a decisão), tempo formatado, geometria
-#     (encodedPolyline) para o mapa. Timeout curto; qualquer falha HTTP/parse → None (fallback intacto).
-#     PONTO DE PLUGAGEM: usuário obtém a chave no Google Cloud Console, ativa a Routes API, e configura
-#     GOOGLE_MAPS_API_KEY em st.secrets (Streamlit) — SEM expor a chave no código/GitHub. Requirements: INALTERADO.
-#     RotaPipeline: 41 campos (intacto).
-#   v3.8 (203ª geração) → 🔧 BUG DE CACHE DE REGEX CORRIGIDO: _regex_palavra REALMENTE cacheia agora [PERF-REGEX]
-#     Auditoria de velocidade focada no MICRO (loop interno). ACHADO REAL: _regex_palavra tinha docstring
-#     dizendo "compilado e CACHEADO para evitar recompilação", mas o corpo NÃO tinha cache — recompilava o
-#     regex a cada chamada. Correção: @_lru_cache(maxsize=1024). Beneficia os 5 chamadores (normalizador de
-#     geocodificação _resolver_contexto_administrativo, remoção de UF do texto) — no lote, o mesmo punhado de
-#     termos (27 siglas de UF, 27 nomes de estado) é comparado em todo endereço → o cache elimina milhares de
-#     recompilações. PROVADO: 2,5× mais rápido NESSA ETAPA (539.973 cache hits vs 27 compilações em 20k
-#     endereços × 27 siglas), com match byte-a-byte IDÊNTICO (lossless).
-#     HONESTIDADE SOBRE A ESCALA: é um ganho REAL mas MODESTO no total — regex é fração pequena do tempo, e a
-#     geocodificação já é 99% offline O(1). O tempo dominante do lote continua sendo a LATÊNCIA DE REDE do
-#     roteamento externo; o ganho de ordem de magnitude ainda depende do OSRM próprio (Docker). Não inflei
-#     isso como "grande evolução" — é a limpeza honesta de um micro-desperdício que estava lá.
-#     NÃO-REGRESSÃO (16 provas cumulativas + prova dedicada de match idêntico): o cache devolve o MESMO
-#     re.Pattern; zero mudança de comportamento. Não mexi nos 2 loops que constroem regex dinâmico inline
-#     (9721-9729) porque rotear pelo helper mudaria case-sensitivity (risco semântico) para uma função que já
-#     é memoizada — ganho marginal não justificava o risco. RotaPipeline: 41 campos (intacto). Requirements:
-#     INALTERADO.
-#   v3.8 (202ª geração) → 🤖 NÚCLEO ADAPTATIVO: O "MODO GOOGLE AGRESSIVO" VIRA NATIVO E AUTOMÁTICO [CORE-ADAPTATIVO]
-#     Pedido: absorver os "disjuntores/modos especiais" no núcleo, automáticos e sem perda de velocidade.
-#     AUDITORIA HONESTA primeiro (o que já é nativo vs o que é opt-in POR BOM MOTIVO):
-#       • JÁ ERA NATIVO/automático (sempre liga, sem toggle): validação física da rota
-#         (_viaria_fisicamente_possivel), consenso/outlier entre motores (_consenso_motores_rota — descarta
-#         "18 vs 430 km"), menor-rota-da-resposta-do-Google (_menor_distancia_google_multirota), resgate por
-#         Código IBGE, validação de coordenada/município/UF, escolha do motor de MENOR viária. ~80% da
-#         inteligência que o pedido lista JÁ acontece sozinha.
-#       • OPT-IN por um motivo real (tornar always-on = REGRESSÃO que o próprio pedido proíbe): (a) 2º motor
-#         OSRM FOSSGIS — a política do FOSSGIS proíbe uso pesado e limita ≤1 req/s; ligar sempre num lote
-#         nacional violaria a política e ainda DEIXARIA O LOTE MAIS LENTO; (b) geocodificação via Google —
-#         depende do scraper (bloqueável) e adiciona latência sem ganho quando o IP está bloqueado. Estes
-#         PERMANECEM opt-in — automatizá-los cegamente feriria velocidade/política, contra o objetivo.
-#     ── O QUE FOI ABSORVIDO NO NÚCLEO (com ganho, sem regressão) ──
-#       O "Modo Google agressivo" deixa de ser toggle e vira POLÍTICA ADAPTATIVA automática
-#       (_google_politica_adaptativa), decidida pela SAÚDE do Google (disjuntor):
-#         · Google saudável (respondendo) → paciência AUTOMÁTICA (timeout 8s, 3 perfis, priming de sessão) →
-#           maximiza a participação do Google exatamente quando compensa;
-#         · Google falhando (bloqueado) → FAST-FAIL (4s, 1 tentativa) → MESMO custo do default antigo → SEM
-#           lentidão no lote. O toggle vira só OVERRIDE opcional (força paciência) — não é mais necessário.
-#     NÃO-REGRESSÃO (provada em 6 checagens + 16 cumulativas): no caso mais comum do lote nacional (Google
-#     bloqueado), o custo é idêntico ao default antigo (4s,1) → velocidade preservada; quando o Google
-#     responde, participa mais SEM o usuário configurar nada. RotaPipeline: 41 campos (intacto). Requirements:
-#     INALTERADO.
-#   v3.8 (201ª geração) → 🔍 AUDITORIA DO HISTÓRICO ANTIGO (1–184) + REMOÇÃO DE CÓDIGO MORTO VERIFICADO [AUDITORIA-HIST]
-#     Estende a autoauditoria da 200ª ao CABEÇALHO inteiro (as ~152 gerações documentadas). Diagnóstico
-#     honesto do padrão evolutivo + limpeza APENAS do que é PROVADAMENTE morto (mesma disciplina da 200ª).
-#     ── DIAGNÓSTICO DO HISTÓRICO (padrão real, com evidência) ──
-#       O histórico mostra THRASH significativo: o MESMO bug foi "resolvido definitivamente" várias vezes —
-#       removeChild teve "causa raiz eliminada" 3× (132ª, 137ª, 142ª); auto-correções de performance que o
-#       próprio autor introduziu e depois consertou (139ª "a bomba que EU plantei", 153ª "REINCIDI PELA 3ª
-#       VEZ", 158ª); código IBGE re-corrigido em 108/113/114/146/156; vazamento de estado entre sessões (147ª).
-#       Ou seja: como nas MINHAS rodadas (196/199), parte relevante da "evolução" foi consertar regressões
-#       anteriores. PORÉM — e isso é o mais importante — o CÓDIGO ATUAL está enxuto: das 380 funções, só 5
-#       nunca eram chamadas. O thrash ficou no caminho, não no resultado. DISTBRASIL (removido na 110ª) está
-#       100% ausente do código vivo (só resta em comentários históricos). Sem dispatch dinâmico por nome
-#       (getattr só em df.empty/writer.book) → nenhuma chamada oculta.
-#     ── LIMPEZA APLICADA (só o comprovadamente morto, spans exatas por AST) ──
-#       Removidas 6 definições órfãs (0 referências em código vivo, ~302 linhas): _enriquecer_por_codigo_ibge,
-#       _escrever_aba_pro (versão antiga, distinta da VIVA _escrever_aba_profissional), o 1º _PALETA_XLSX
-#       (sombreado — existe um 2º VIVO usado pelo relatório), _fmts_xlsx, _tipo_da_coluna, e o famoso
-#       _selecionar_hub_por_viaria (69ª — "escrita mas NUNCA ligada", como o próprio histórico admitia).
-#     ── O QUE NÃO FIZ (e por quê — honestidade) ──
-#       NÃO purguei o núcleo antigo com base em leitura de cabeçalho. Diferente das MINHAS mudanças (que
-#       construí com arnês de teste), as ~152 gerações são o núcleo funcional; recortá-las por interpretação
-#       arriscaria as regressões que o próprio pedido proíbe. Removi só o que PROVEI estar morto (AST + 0 refs
-#       + sem dispatch dinâmico), exatamente como na 200ª. Funcionalidade preservada integralmente.
-#     NÃO-REGRESSÃO (15 provas cumulativas passando + parse AST + código vivo íntegro): _PALETA_XLSX vivo e
-#     _escrever_aba_profissional preservados; refs restantes aos órfãos são só COMENTÁRIOS históricos.
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#   v3.8 (200ª geração) → 🔍 AUTOAUDITORIA CRÍTICA DAS GERAÇÕES 185–199 + LIMPEZA DE PESO MORTO [AUDITORIA-199-B]
-#     Revisão honesta e baseada em evidências de TODAS as mudanças que fiz (185–199), classificando cada uma
-#     como ganho real, ganho condicional ou peso morto. Veredito resumido (detalhe na resposta ao usuário):
-#       • GANHO REAL comprovado: PERF-LOTE(185), SHORTLIST-AMPLO(185), CACHE-COORD-GOOGLE(188), CONSENSO/
-#         OUTLIER(194), MEM-DTYPES(197, −66% memória), PERF-TELEMETRIA(196, fix O(n²) MEU), PERF-PARALELO(198),
-#         FLAGS-RUNTIME(199, fix de bug MEU). Estes ficam.
-#       • GANHO CONDICIONAL (só rende se o Google não estiver com bloqueio DURO de IP): GOOGLE-MULTIROTA(186),
-#         MULTIROTA-TEMPO(187), GOOGLE-GEOCODE(189), REGRESSAO-FIX(193), ANTIBLOQUEIO(194). São opt-in/OFF por
-#         padrão ou só atuam quando o Google responde → inócuos quando dormentes. Mantidos, com honestidade
-#         sobre o limite. TELEMETRIA(195): observabilidade útil, custo já corrigido na 196.
-#       • PESO MORTO para este usuário: MOTOR-KEYED(191) GraphHopper/ORS — o usuário decidiu NÃO usar chave.
-#         Eram chamados a cada rota só para retornar None e poluíam consenso/SLA com entradas vazias.
-#     ── CORREÇÃO APLICADA ──
-#       Guarda por chave: GraphHopper/ORS só são consultados/registrados se a chave existir; sem chave, ZERO
-#       trabalho por rota e nada aparece no SLA. As FUNÇÕES e os secrets ficam como PONTO DE PLUGAGEM para o
-#       caminho robusto recomendado (OSRM/Valhalla self-hosted ou qualquer motor com chave) — configurar a
-#       chave reativa tudo, sem editar código.
-#     META-LIÇÃO HONESTA: ~9 das 15 rodadas perseguiram participação do Google — esforço cujo retorno é
-#     CONDICIONAL ao IP não estar bloqueado. O caminho de maior retorno real e incondicional (OSRM próprio)
-#     ficou como recomendação. Registrado para não repetir o padrão.
-#     NÃO-REGRESSÃO (15 provas cumulativas passando): sem chave, o comportamento é idêntico (as guardas só
-#     PULAM código que já retornava None). RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#   v3.8 (199ª geração) → 🔧 TOGGLES AGORA VALEM NO LOTE: SNAPSHOT THREAD-SAFE DAS FLAGS [FLAGS-RUNTIME]
-#     Corrige um BUG LATENTE descoberto durante a 198ª. Os toggles 'Modo Google agressivo', '2º motor OSRM' e
-#     'validar geocod. c/ Google' eram lidos via st.session_state DENTRO de funções que rodam nos WORKERS do
-#     ThreadPoolExecutor (motores de rota/geocodificação) durante o LOTE. O Streamlit NÃO garante acesso a
-#     session_state fora da thread principal → no lote, os toggles caíam no DEFAULT (desligado) mesmo o usuário
-#     tendo ligado. Ou seja: o 'Modo Google agressivo' — feito justamente para o lote — provavelmente NÃO
-#     estava valendo no lote. O código já resolvia isso para outro parâmetro (_pref_modo_oficial, capturado na
-#     thread principal); aqui generalizamos.
-#     ── A CORREÇÃO ──
-#       _capturar_flags_runtime() roda na THREAD PRINCIPAL (na sidebar, após os 3 widgets, a cada rerun) e grava
-#       os valores em _FLAGS_RUNTIME (protegido por lock). Os 4 pontos de leitura passaram a usar
-#       _ler_flag_runtime(), que lê o snapshot em QUALQUER thread, com FALLBACK a session_state (preserva a aba
-#       individual 100%). Como o lote se auto-continua via st.rerun(), a sidebar re-renderiza e o snapshot fica
-#       sempre fresco.
-#     NÃO-REGRESSÃO (provada em 5 checagens + 15 cumulativas): ANTES, worker lia [False×4] (toggle perdido);
-#     DEPOIS, [True×4] (respeitado). Aba individual mantém fallback a session_state. Desligar reflete no próximo
-#     snapshot. Defensivo: qualquer falha → False (nunca levanta). RotaPipeline: 41 campos (intacto).
-#     EFEITO PRÁTICO: agora, ligar 'Modo Google agressivo' + '2º motor OSRM' realmente atua no processamento em
-#     lote — que é onde o usuário mais quer o Google participando. Requirements: INALTERADO.
-#   v3.8 (198ª geração) → ⚡ GOOGLE ∥ OSRM: ROTA POR ROTA EM PARALELO (menos latência) [PERF-PARALELO]
-#     Item 1 restante da 197ª. Antes, no pipeline de rota, o scraper do Google e o OSRM primário rodavam em
-#     SEQUÊNCIA — no modo Google agressivo (timeout 12s) + OSRM (6s), o pior caso era ~18s/rota. Agora o OSRM
-#     é submetido ao EXECUTOR_APIS e roda EM PARALELO com o Google → pior caso ~= o maior dos dois (~12s).
-#     ── SEGURANÇA/NÃO-REGRESSÃO (provada em 4 checagens + 14 cumulativas) ──
-#       (1) EQUIVALÊNCIA: paralelizar muda só o TEMPO, não os VALORES — res_google/res_osrm são exatamente os
-#       mesmos → a decisão da MENOR VIÁRIA é IDÊNTICA (0 divergências em 300 cenários serial vs paralelo).
-#       (2) Exceção na thread do OSRM → None (mesmo efeito do try/except serial), sem travar. (3) ~30% mais
-#       rápido quando o Google é o caminho lento. (4) Sem deadlock com pools aninhados (o MESMO padrão que o
-#       app já usa: geocodificação já submete ao EXECUTOR_APIS de dentro do pipeline). API_OSRM_Routing NÃO lê
-#       st.session_state (seguro fora da thread principal). Disjuntor do Google é thread-safe (_LOCK_GOOGLE_CB).
-#       Fallback: se o pool recusar o submit, o OSRM roda serial (nunca é pulado). Cache-hit segue instantâneo.
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#   v3.8 (197ª geração) → 🧠 MENOS MEMÓRIA SEM MUDAR NADA: DTYPES CATEGÓRICOS + DOWNCAST LOSSLESS [MEM-DTYPES]
-#     Implementa o item 1 da 196ª (adiado por rodadas por risco) — agora COM O ARNÊS DE TESTE prometido, que
-#     prova célula a célula que planilhas e HTMLs saem IDÊNTICOS. _otimizar_dtypes_memoria() no builder
-#     compartilhado _montar_dataframe_final (cobre Lote E Alocação):
-#       • strings de baixa cardinalidade → 'category' (VALORES idênticos; muda só o armazenamento);
-#       • int64 → menor inteiro que couber (lossless);
-#       • floats INTOCADOS (zero perda de precisão nos resultados);
-#       • DENYLIST protege as chaves de groupby/merge (UF, Município, Vencedor, Cód IBGE, Origem, Destino…):
-#         ficam string, então TODOS os groupby/merge do app continuam idênticos (groupby em categórico mudaria
-#         a semântica por incluir categorias vazias — evitado de propósito).
-#     GANHO MEDIDO: ~66% menos memória no DataFrame de resultado (provado em 8.000 linhas representativas),
-#     aliviando o pico de RAM em estudos nacionais e o objeto persistido em session_state.
-#     NÃO-REGRESSÃO (provada em 7 checagens + 13 cumulativas): Excel idêntico célula a célula, HTML idêntico,
-#     floats byte-a-byte iguais, groupby nas chaves idêntico (simples e multi-chave), DataFrame pequeno (<100
-#     linhas) intocado. Também validados na prática: sorted(unique) p/ multiselect, isin, ==, value_counts,
-#     .str e to_excel — todos funcionam igual em categórico. Defensiva: qualquer falha devolve o df original.
-#     Compatível com pandas 2.x (object) e 3.x (dtype 'str' nativo — detecção via is_string_dtype).
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#   v3.8 (196ª geração) → ⚡ AUDITORIA DE PERFORMANCE + FIX O(n²) DA TELEMETRIA MULTI-MOTOR [PERF-TELEMETRIA]
-#     Auditoria de desempenho de toda a cadeia. Achado principal e HONESTO: o maior gargalo NOVO era um que
-#     NÓS introduzimos na 195ª — _registrar_telemetria_motores gravava a lista inteira em DISCO a cada rota
-#     (re-serialização O(n) por rota → O(n²) no lote). Corrigido: buffer EM RAM com flush periódico (a cada 50
-#     rotas + no fim do lote + antes do painel ler), o MESMO padrão que registrar_telemetria já usava.
-#     GANHO MEDIDO: ~49× menos custo de serialização em lotes grandes (provado em simulação 1k/10k/50k).
-#     ── DIAGNÓSTICO DO RESTANTE DA ARQUITETURA (honesto) ──
-#       O resto do caminho quente já estava bem otimizado por rodadas anteriores e não foi mexido para não
-#       arriscar regressão: leitura de Excel CACHEADA por conteúdo (185ª, nas duas abas); matriz de proximidade
-#       VETORIZADA (NumPy broadcasting); geocodificação PARALELA + resgate IBGE offline O(1); rede com pool
-#       keep-alive (32) + retry/backoff; telemetria de APIs com flush a cada 50; caches em disco (diskcache) +
-#       LRU; leitura de planilha por hash. NÃO inventei "otimizações" sem ganho comprovado — a regra do projeto
-#       é não implementar o que não melhora de fato e não arriscar regressão. O ganho real desta rodada é
-#       eliminar o O(n²) recém-introduzido.
-#     NÃO-REGRESSÃO (provada em 12 checagens cumulativas): a telemetria continua 100% observacional e com o
-#     MESMO conteúdo — só muda QUANDO grava (RAM→disco em lote), não O QUE grava. Memória limitada a 5000.
-#     RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#   v3.8 (195ª geração) → 📊 OBSERVABILIDADE TOTAL: TELEMETRIA E DASHBOARD MULTI-MOTOR [TELEMETRIA-MOTORES]
-#     Responde ao pedido de "observabilidade total / nada deve ficar oculto" — e, sobretudo, dá a MÉTRICA que
-#     o usuário mais quer: "o Google voltou a ser o motor principal?". Tudo keyless, observacional, sem
-#     regressão. NOTA DE HONESTIDADE sobre o escopo do prompt: ele pede "elevar o Google ao máximo" MAS também
-#     proíbe explicitamente violar os ToS e contornar bloqueios. São objetivos em tensão para um scraper de
-#     endpoint interno. Fiquei do lado LEGÍTIMO (o que o próprio prompt endossa): otimização de sessão/rede/
-#     cache/consenso/telemetria — NÃO técnicas de evasão de bloqueio. As melhorias legítimas de sessão já
-#     vieram na 193ª (paciência) e 194ª (priming de consentimento + consenso/outlier); esta fecha com medição.
-#     ── O QUE ──
-#       _registrar_telemetria_motores() grava, por rota decidida (observacional, buffer circular de 5000, thread
-#       -safe): motor vencedor, distância de cada motor, confiabilidade, outliers, % de concordância e razão
-#       viária/geodésica. Novo painel em Monitor APIs: PARTICIPAÇÃO de cada motor como vencedor (Google vs
-#       OSRM vs FOSSGIS), concordância média, razão média, outliers descartados — com veredito automático
-#       ("Google é principal" ≥50% / "participa" ≥15% / "baixo, ligue o modo agressivo" <15%).
-#     NÃO-REGRESSÃO (provada em 6 checagens + 11 cumulativas): 100% observacional — nunca altera a decisão de
-#     rota (que segue sendo a menor viária válida); memória limitada; fail-open total. RotaPipeline: 41 campos
-#     (intacto). Requirements: INALTERADO.
-#     LIMITE HONESTO REAFIRMADO: sem chave e sem evasão de ToS (que o usuário proíbe), o Google só participa
-#     onde o IP não está bloqueado. O dashboard agora MOSTRA exatamente esse percentual — transparência, não
-#     promessa. Colunas multi-motor na planilha/HTML exportáveis: próxima rodada (dados já no buffer).
-#   v3.8 (194ª geração) → 🛡️ ANTI-BLOQUEIO DO GOOGLE + CONSENSO/OUTLIER ENTRE MOTORES [GOOGLE-ANTIBLOQUEIO / CONSENSO-MOTORES]
-#     Duas frentes pedidas: (a) reduzir bloqueio do Google keyless; (b) consenso inteligente que descarta o
-#     absurdo ("Google 430 km vs OSRM 18 km"). Tudo keyless, aditivo, sob não-regressão.
-#     ── 1. ANTI-BLOQUEIO: PRIMING DE SESSÃO/CONSENTIMENTO ──
-#       A [G21] removeu o cookie CONSENT fixo (expirado) e deixou o scraper SEM cookie de consentimento — o
-#       que faz IP de datacenter bater no "muro de consentimento". _primar_sessao_google() faz um WARM-UP
-#       (visita leve ao google.com) e deixa o PRÓPRIO Google gravar seus cookies (SOCS/CONSENT/NID) na sessão
-#       reutilizada — técnica sustentável, SEM token forjado (não repetimos o erro do token fixo). Roda 1×/
-#       sessão, só no modo Google agressivo, thread-safe, fail-open. Reutilização de sessão + gestão de cookies
-#       + a sessão já tinha retry/backoff (total=5, backoff_factor=0.5) e pool keep-alive.
-#     ── 2. CONSENSO / OUTLIER / CONFIABILIDADE ──
-#       _consenso_motores_rota() usa a MEDIANA das distâncias como âncora robusta; marca outlier quem foge
-#       >60% da mediana (curto demais = provável snap/homônimo; longo demais = desvio). Outliers são
-#       DESCARTADOS da disputa (o "18 km vs 430 km" some sozinho) e cada motor recebe um score de
-#       confiabilidade (100 dentro de ±20% da mediana, degradando até 20 no outlier).
-#     NÃO-REGRESSÃO (provada em 7+5 checagens): motor ÚNICO nunca é outlier; se o filtro zerar tudo, FAIL-OPEN
-#     volta aos válidos (nunca perde rota); rota impossível já saía antes; modo agressivo OFF → priming não
-#     roda → comportamento idêntico. RotaPipeline: 41 campos (intacto). Requirements: INALTERADO.
-#     HONESTIDADE: o priming REDUZ a chance de bloqueio; não garante. Se o IP tiver bloqueio duro, ainda cai
-#     no OSRM — mas agora com consenso/outlier protegendo a escolha. Colunas de auditoria multi-motor na
-#     planilha/HTML: recomendação priorizada da próxima rodada (dados já capturados em _motores_resultados).
-#   v3.8 (193ª geração) → 🗺️ RECUPERAR A PARTICIPAÇÃO DO GOOGLE: A REGRESSÃO ERA NOSSA [GOOGLE-REGRESSAO-FIX]
-#     O usuário contestou (com razão) a alegação de "teto keyless". Investiguei o HISTÓRICO e ele estava certo:
-#     a queda de participação do Google NÃO é só bloqueio de IP — é uma REGRESSÃO ARQUITETURAL que NÓS mesmos
-#     introduzimos na 184ª. Documentado no próprio código:
-#     ── DIAGNÓSTICO DA REGRESSÃO (em qual versão, o quê, por quê) ──
-#       VERSÃO: 184ª geração. O QUE MUDOU: (1) timeout do scraper do Google CORTADO de 15s→4s; (2) tentativas
-#       reduzidas de 3→1-2 (adaptativo); (3) ADICIONADO um disjuntor (circuit breaker) que suspende o Google
-#       por 45s após falhas seguidas. POR QUÊ: acelerar o lote quando o Google está bloqueado (evitar esperar
-#       45s/par). EFEITO COLATERAL (a regressão): quando o Google está LENTO/INTERMITENTE — não bloqueado de
-#       vez — esse "desistir rápido" o tira do jogo muito mais que o comportamento paciente antigo. Ou seja: a
-#       184ª otimizou velocidade às custas da participação do Google.
-#     ── A CORREÇÃO: MODO GOOGLE AGRESSIVO (opt-in) ──
-#       Devolve a paciência pré-184ª: timeout 12s, 3 tentativas com perfis de navegador diferentes, e IGNORA o
-#       disjuntor. Com isso o Google tenta muito mais e volta a vencer rotas SE o ambiente permitir acesso
-#       intermitente. Custa velocidade (por isso opt-in). A aba Monitor APIs (taxa de falha GOOGLE_MAPS) revela
-#       o regime: se cair, o Google voltou; se seguir ~100%, é bloqueio duro de IP (aí só a API oficial).
-#     NÃO-REGRESSÃO (provada em 5 checagens): modo OFF reproduz EXATAMENTE os parâmetros do V192 (4s, 1-2 tent,
-#     disjuntor respeitado) — byte-a-byte. Só o modo ON muda o comportamento. RotaPipeline: 41 campos (intacto).
-#     HONESTIDADE: eu estava errado ao apresentar "dois OSRM" como teto absoluto — havia uma regressão nossa a
-#     desfazer. Corrigido. O limite honesto restante é só o bloqueio duro de IP, que nenhum código resolve.
-#     Requirements: INALTERADO.
-#   v3.8 (192ª geração) → 🧭 CONSENSO KEYLESS ENTRE DOIS MOTORES OSRM (FOSSGIS) [OSRM-CONSENSO]
-#     O usuário optou por NÃO usar chave de API (tiers gratuitos pequenos demais). Então: máxima robustez
-#     SEM chave. A única melhoria de precisão real e legítima sem chave é um SEGUNDO motor viário independente.
-#     ── O QUE ──
-#       API_OSRM_FOSSGIS_Routing consulta routing.openstreetmap.de/routed-car — um deployment OSRM
-#       INDEPENDENTE do router.project-osrm.org (Mapbox): outro patrocinador, outra infra, outro perfil de
-#       rota. Dá uma 2ª estimativa viária REAL, sem chave. Entra na competição multi-motor (191ª): entre OSRM
-#       primário + FOSSGIS, a MENOR rota viária válida vence e fornece TODOS os seus dados. É o consenso
-#       keyless que o usuário pediu.
-#     ── POLÍTICA DE USO (respeitada — ponto crítico) ──
-#       FOSSGIS exige ≤1 req/s e PROÍBE uso pesado. Por isso: (1) chamadas SERIALIZADAS e throttled por
-#       FILA_OSRM2/_throttle_osrm2 (≤1 req/s, igual ao Nominatim); (2) User-Agent identificável; (3) no LOTE é
-#       OPT-IN, DESLIGADO por padrão — num estudo nacional, martelar o 2º servidor a cada rota seria "uso
-#       pesado" e faria bloquearem a app. Ligar é escolha consciente para estudos menores/casos críticos.
-#     NÃO-REGRESSÃO (provada em 6 checagens): tupla idêntica à do OSRM; opt-in OFF → FOSSGIS None → contendor
-#     é EXATAMENTE o OSRM primário (byte-a-byte); motor com distância impossível é descartado; throttle
-#     respeita ≤1 req/s. FOSSGIS aparece no SLA do Monitor APIs. Sem chave nenhuma.
-#     NOTA HONESTA: sem chave, o Google segue bloqueável a partir do IP do servidor (só a API oficial resolve
-#     isso de vez). Este é o teto realista de precisão keyless: dois motores OSRM independentes em consenso.
-#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto).
-#   v3.8 (191ª geração) → 🚗 MOTORES DE ROTA COM CHAVE (GraphHopper/ORS) + DISJUNTOR MAIS TOLERANTE [MOTOR-KEYED]
-#     Responde ao relato de "~100% OSRM". CAUSA RAIZ confirmada no código: o scraper do Google, sem chave, é
-#     bloqueado a partir do IP do servidor; o disjuntor (3 falhas → suspende 45s) então o mantinha desligado
-#     o estudo inteiro. Duas frentes, sem martelar servidores de demonstração:
-#     ── 1. DISJUNTOR MAIS TOLERANTE ──
-#       Limiar de falhas 3→5: timeouts transitórios deixam de sidelinar o Google tão cedo. Muda só SE o Google
-#       é TENTADO — nunca o resultado (o Google ainda precisa vencer pela menor distância).
-#     ── 2. MOTORES COM CHAVE (a saída real e robusta) ──
-#       Novos motores API_GraphHopper_Routing e API_ORS_Routing (tier gratuito COM CHAVE). Diferente do OSRM
-#       demo (não-comercial, ≤1 req/s, bloqueável), têm cota própria e NÃO são bloqueados como o scraper.
-#       Entram na COMPETIÇÃO pela MENOR ROTA VIÁRIA: entre OSRM+GraphHopper+ORS, o de menor distância
-#       fisicamente válida vira o "contendor" que disputa com o Google — e o VENCEDOR fornece TODOS os seus
-#       dados (distância/tempo/geometria/balsa), nunca misturados. Geometria via _codificar_polyline_de_coords
-#       (algoritmo oficial do Google, validado contra o exemplo de referência) → o mapa desenha a rota do motor
-#       vencedor igual à do OSRM. GRAPHHOPPER/ORS aparecem na tabela de SLA do Monitor APIs.
-#     NÃO-REGRESSÃO (provada): sem chaves, os dois motores retornam None → o contendor é EXATAMENTE o OSRM →
-#     comportamento byte-a-byte idêntico ao atual. Motor com distância impossível é descartado do páreo.
-#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). Chaves via st.secrets (GRAPHHOPPER_API_KEY,
-#     ORS_API_KEY) — cadastro gratuito, sem editar código. OSRM segue como fallback keyless.
-#   v3.8 (190ª geração) → 📊 MÉTRICA DE CONCORDÂNCIA DO GOOGLE + PESO NO CONSENSO [GOOGLE-CONCORDANCIA]
-#     Implementa os itens 1 e 2 das recomendações da 189ª (o item 3 — API oficial — depende de chave que o
-#     usuário não tem, e fica adiado). Torna o recurso opt-in da 189ª MENSURÁVEL e melhor integrado.
-#     ── 1. GOOGLE COMO VOTO PONDERADO NO CONSENSO ──
-#       GOOGLE_GEO ganha peso 0.80 em DEFAULT_WEIGHTS (par do Nominatim), em vez do fallback 0.5. Só afeta o
-#       resultado quando o usuário LIGOU o opt-in (sem o toggle, não há candidato GOOGLE_GEO → peso não é
-#       usado → comportamento byte-a-byte idêntico). O item 1 ("estender ao roteamento de destino") já é
-#       automático: destinos passam pelo MESMO chokepoint de geocodificação, então o voto do Google já
-#       reforça a coordenada do polo quando ligado.
-#     ── 2. MÉTRICA DE CONCORDÂNCIA (Monitor APIs) ──
-#       Registra, quando o Google participou, se a coordenada dele ficou ≤1 km do VENCEDOR do consenso
-#       (concorda) ou não (diverge). Painel novo em "Monitor APIs" mostra participações, concordância,
-#       divergência e a TAXA — a métrica para o usuário DECIDIR se vale manter o Google ligado (alta = útil;
-#       baixa = ruído). GOOGLE_GEO também entra na tabela de SLA. Tudo OBSERVACIONAL: a decisão de rota/
-#       geocodificação já foi tomada antes; a métrica não altera nenhum resultado.
-#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback de ROTA.
-#   v3.8 (189ª geração) → 🧪 GEOCODIFICAÇÃO PELO GOOGLE (OPT-IN, SEM CHAVE, FALHA INÓCUA) [GOOGLE-GEOCODE]
-#     O usuário AUTORIZOU EXPLICITAMENTE o trade-off de ToS/fragilidade e pediu "a forma mais segura possível,
-#     reduzindo ao máximo a fragilidade". A engenharia não tenta tornar o scraping robusto (impossível para
-#     endpoint interno) — torna a FALHA DELE INÓCUA. API_Google_Geocode entra como VOTO ADICIONAL no consenso
-#     Bayesiano/DBSCAN (junto com ArcGIS/Nominatim/Photon/TomTom), NUNCA como palavra final.
-#     ── 6 CAMADAS DE SEGURANÇA (provadas em 6 verificações) ──
-#       1. OPT-IN, OFF por padrão (st.session_state['usar_google_geocode']). Desligado → no-op sem rede → app
-#          BYTE-A-BYTE a de antes. 2. NUNCA AUTORITATIVO: concorda→confiança sobe; diverge→outlier rebaixado
-#          pelo consenso; falha→ausência. 3. DISJUNTOR COMPARTILHADO (_google_pode_chamar): em rate-limit, NEM
-#          CHAMA. 4. CACHE PERSISTENTE por consulta normalizada+UF (1 consulta por localidade). 5. SANIDADE:
-#          só aceita dentro do Brasil (validar_coordenada_brasil) e da bbox da UF de contexto — descarta salto
-#          para outra UF (homônimo-seguro). 6. TIMEOUT curto + UA rotativo + TUDO em try/except → qualquer
-#          falha de rede/layout/parse vira None.
-#       DEGRADAÇÃO GRACIOSA: se o Google bloquear/mudar de layout, a geocodificação segue idêntica pelas
-#       demais fontes, sem perda. A UI mostra o aviso do trade-off quando o recurso é ligado.
-#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback de ROTA.
-#   v3.8 (188ª geração) → 🗃️ CACHE DO GOOGLE POR COORDENADA: MAIS GOOGLE, MENOS RATE-LIMIT [CACHE-COORD-GOOGLE]
-#     Forma ROBUSTA e 100% dentro dos ToS de ampliar a participação do Google sem chave: reusar melhor o que
-#     ele JÁ respondeu. A chave de cache antiga era por TEXTO — então "Ariquemes", "Ariquemes, RO" e a
-#     coordenada crua da MESMA rota davam 3 misses e 3 chamadas ao scraper, triplicando a exposição ao
-#     rate-limit. Como a rota do Google depende só das coordenadas, uma 2ª camada de cache POR COORDENADA
-#     unifica essas variações num único acerto → mais cache hit, menos martelamento, participação do Google
-#     mais ESTÁVEL (menos rotas caindo no fallback OSRM por bloqueio momentâneo).
-#     ── SEGURANÇA ──
-#       HOMÔNIMO-SEGURO: a chave é a coordenada física (arredondada a 5 casas ~1 m — o MESMO padrão do cache
-#       da matriz), nunca o nome; "São Domingos/GO" e "São Domingos/SC" têm coordenadas distintas → chaves
-#       distintas → jamais servem a rota um do outro. ADITIVO: a chave de TEXTO é consultada PRIMEIRO
-#       (precedência preservada); em miss o fluxo é idêntico; sem coordenada válida, nenhuma chave nova é
-#       criada. O resultado é gravado nas DUAS chaves no sucesso. Provado em 5 verificações (homônimo, hit por
-#       texto diferente, aditividade, precedência, estabilidade do arredondamento).
-#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback.
-#     NOTA: o item de "scraping de geocodificação do Google" NÃO foi implementado — depende de aval explícito
-#     do trade-off de ToS/fragilidade, que não foi dado. Seguiu-se pela via robusta (cache), conforme o padrão.
-#   v3.8 (187ª geração) → ⏱️ TEMPO DA MESMA ROTA (coerência distância×tempo do Google) [MULTIROTA-TEMPO]
-#     Continuação direta da 186ª. Quando a app adota a rota mais CURTA que o Google devolveu (186ª), o TEMPO
-#     precisa ser o DAQUELA rota — não o da 1ª (recomendada). Antes, distância e tempo podiam vir de rotas
-#     DIFERENTES da mesma resposta. Agora _tempo_google_mais_proximo pareia por PROXIMIDADE de offset: o
-#     rótulo de duração mais próximo (na string) do rótulo de distância escolhido é o da mesma rota.
-#     ── SEGURANÇA (por que não regride) ──
-#       Pareamento CONSERVADOR: usa os mesmos padrões de tempo já existentes; se não houver token de tempo, ou
-#       o mais próximo estiver ALÉM de uma janela de segurança, devolve None → o tempo ATUAL é mantido
-#       byte-a-byte. A DISTÂNCIA (a métrica de DECISÃO) e sua garantia monotônica da 186ª ficam intactas: o
-#       tempo é campo secundário de exibição e nunca altera a escolha da rota. findall→finditer só para obter
-#       a posição do rótulo (necessária ao pareamento); a lógica de seleção da menor distância é a mesma.
-#       Provado em 20.000 cenários: 0 violações de distância; tempo pareado em ~99% dos casos com tempo perto.
-#     Requirements: INALTERADO. RotaPipeline: 41 campos (intacto). OSRM segue só como fallback.
-#   v3.8 (186ª geração) → 🛰️ GOOGLE MAIS DECISIVO SEM CHAVE: MENOR ROTA DA PRÓPRIA RESPOSTA [GOOGLE-MULTIROTA]
-#     FOCO (escolhido pelo usuário): extrair MAIS sinal da resposta de rota que o Google JÁ devolve —
-#     ampliando a participação do Google na decisão da MENOR ROTA VIÁRIA, SEM chave de API, SEM ampliar o
-#     scraping para novos endpoints e SEM tocar nos ToS além do que a app já faz. OSRM segue só como fallback.
-#     ── O QUE MUDOU (e por que é a coisa certa) ──
-#       A resposta de /maps/preview/directions traz VÁRIAS rotas. O parser antigo adotava a PRIMEIRA distância
-#       casada — que o Google apresenta como a rota RECOMENDADA (tipicamente a mais RÁPIDA), não a mais CURTA.
-#       Como o objetivo declarado é a MENOR viária — e a app JÁ faz exatamente isto para o OSRM (min entre
-#       alternatives=3) — passamos a aplicar o MESMO critério ao Google, usando dado que já veio na mesma
-#       resposta. Zero chamada nova, zero endpoint novo, zero risco adicional de ToS/bloqueio.
-#     ── GARANTIA DE NÃO-REGRESSÃO (monotônica, provada em 20.000 cenários) ──
-#       _menor_distancia_google_multirota só adota uma alternativa ESTRITAMENTE MENOR que a atual E
-#       fisicamente possível (viária ≥ linha reta, mesma tolerância da app). Com <2 rotas, ou nenhuma menor e
-#       válida, retorna None → o valor atual é mantido BYTE-A-BYTE. A distância reportada pelo Google só pode
-#       DIMINUIR em direção à rota mais curta real; nunca aumentar. O parsing inline antigo ficou intacto; a
-#       normalização foi extraída para _parse_km_google (idêntica) só para ser reusada no refino.
-#     Requirements: INALTERADO. Score/geometria/balsa preservados. RotaPipeline: 41 campos (intacto).
-#   v3.8 (185ª geração) → 🎯 MAIS PRECISÃO NA MENOR ROTA VIÁRIA + LEITURA DE PLANILHA MAIS RÁPIDA [PRECISAO-VIARIA]
-#     FOCO DA RODADA (escolhido pelo usuário): aproximar a app do Google na identificação da MENOR ROTA VIÁRIA,
-#     SEM chave paga, e acelerar o processamento de planilhas — tudo sob NÃO-REGRESSÃO ABSOLUTA.
-#     ── AUDITORIA HONESTA PRIMEIRO ──
-#       A 184ª já implementara o essencial: matriz viária /table/v1 (até 60 polos/origem numa só chamada),
-#       prova de otimalidade branch-and-bound (viária ≥ reta → poda exata), retry-viária, motor-validação,
-#       mitigação de snap, sanidade física e decisão Google-prioritária. RECUSEI reescrever o motor: seria
-#       risco sem ganho. Implementei só o que a 184ª deixou na mesa, com ganho REAL e risco baixo.
-#     ── 1. 🎯 SHORTLIST DA MATRIZ MAIS AMPLO (precisão) ──
-#       A ordem da matriz vem do OSRM; seu snap na malha OSM esparsa pode INFLAR a distância de um polo e
-#       empurrar o verdadeiro vencedor para fora de um shortlist estreito ANTES que o Google (autoritativo) o
-#       avalie. Margem 1,15→1,20 e teto 3→4: mais candidatos genuinamente próximos chegam à decisão do Google.
-#       GARANTIA MONOTÔNICA (provada em 5.000 cenários aleatórios): o shortlist novo é SEMPRE superset do antigo
-#       → o vencedor final só pode empatar ou MELHORAR, nunca piora. Custo contido pela poda por dominância
-#       geométrica, que mantém em 1 chamada todos os casos onde o líder já é provadamente ótimo — o Google só
-#       roteia a mais nos casos AMBÍGUOS, exatamente onde a precisão está em jogo.
-#     ── 2. ⚡ LEITURA DE PLANILHA CACHEADA TAMBÉM NO LOTE (desempenho) ──
-#       A aba Estudo em Lote reparsava o Excel do zero a cada rerun (o motor é time-boxed e faz dezenas de
-#       reruns/estudo). Passou a reusar _ler_planilha_upload (cache por conteúdo) que a Alocação já usava desde
-#       a 184ª — fechando uma INCONSISTÊNCIA. Resultado idêntico (mesmo engine calamine, cópia por cache_data).
-#     Requirements: INALTERADO. Score imutável. 0 except nus novos. RotaPipeline: 41 campos (intacto).
-#   v3.8 (170ª geração) → 📘 A PLANILHA PASSA A SE EXPLICAR [GUIA-PLANILHA]
-#     "A planilha de download precisa de explicações dentro dela." Correto: ela tinha **22 abas e NENHUMA
-#     se explicava**. O usuário abria "Ranking Estados" e não havia UMA LINHA dizendo o que aquilo era.
-#     ── 1. GUIA NO TOPO DE CADA ABA (e não no fim — eis o porquê) ──
-#       O pedido dizia "ao final de cada tabela". Mas a aba de Comparação tem **5.571 linhas**: pôr a
-#       explicação no fim obrigaria o usuário a rolar até a linha 5.573 para descobrir o que está lendo.
-#       **A explicação tem que chegar ANTES do dado.** Quem abre a aba lê o guia imediatamente.
-#       Cada aba responde, em ordem: **o que é · que perguntas responde · como ler · como decidir com ela ·
-#       que alertas observar** — com formatação real (título, seções, alertas em vermelho).
-#     ── 2. 📘 O GUIA DE INTERPRETAÇÃO — e o que o torna ÚTIL ──
-#       Qualquer um escreve "revise as localidades com divergência". Isso **não ajuda ninguém**.
-#       **Aqui os alertas e as recomendações são DERIVADOS DOS DADOS REAIS DO USUÁRIO.** Testado: com 180
-#       conciliações por similaridade, 471 registros fora e 12 incomparáveis, o guia diz **"180"**,
-#       **"471"** e **"12"** — e diz O QUE FAZER com cada um.
-#       **Um guia que não olha para os seus dados é ENFEITE. Este olha.**
-#       Estrutura: **confiança** (posso confiar? vem PRIMEIRO) → **resultado em português** (traduzido para
-#       escala humana: "cada candidato anda 12,4 km a menos") → **alertas dos seus dados** → **recomendações
-#       acionáveis** (adote o plano híbrido; revise ESTES casos; peça as colunas que faltam) → **"O QUE ESTA
-#       PLANILHA NÃO DIZ"**.
-#     ── 3. A SEÇÃO QUE QUASE NINGUÉM ESCREVE: "O QUE ESTA PLANILHA NÃO DIZ" ──
-#       Capacidade das escolas · qualidade da infraestrutura · COMO a referência mediu a distância ·
-#       segurança e transporte público local. **Ela é tão importante quanto as outras: impede que o gestor
-#       conclua o que os dados não sustentam.** Um relatório que só diz o que sabe, e nunca o que ignora,
-#       está convidando ao erro.
-#     ── 4. BUG QUE O MEU PRÓPRIO TESTE PEGOU ──
-#       Eu usava `.replace(",", ".")` para formatar números — e isso estava **destruindo as vírgulas da
-#       PROSA**: "balsa significa fila. horário fixo e risco" (deveria ser vírgula). Trocado por _fmt_num.
-#       O teste que eu escrevi para verificar os NÚMEROS acabou revelando um erro de TEXTO.
-#     Export: 22 → **23 abas**, todas com guia. Suíte: 140 → **147 testes**.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (169ª geração) → 🛟 MEU CONSERTO DA 168ª NÃO COBRIA O BUG [RESGATE]
-#     Antes de declarar a 168ª resolvida, fui verificar se o conserto alcançava o lugar onde o bug
-#     ACONTECEU. **Não alcançava.**
-#     ── O QUE EU TINHA ERRADO ──
-#       Liguei a rede de resgate no `executar_pipeline_unificado`. Mas **a aba Locais de Aplicação NÃO USA
-#       aquele pipeline** — ela usa `geocodificar_endpoints_paralelo`. Foi DAQUI que saíram os seus 958
-#       zeros (39,8% do estudo). Eu tinha consertado o lugar errado.
-#       E lá havia DOIS caminhos gerando zero, NENHUM consultando a base que a app tem em RAM:
-#         (a) obter_coordenadas_e_endereco_oficial devolve (0,0) EM SILÊNCIO (nuvem falhou, sem exceção);
-#         (b) o future levanta exceção → o handler gravava `(0.0, 0.0, "Falha", ...)`.
-#     ── A CURA ARQUITETURAL (e ela é o ponto desta geração) ──
-#       Eu poderia ter remendado a função da Alocação e ir embora. Fiz isso — **e depois refiz certo.**
-#       Resgatar em CADA CHAMADOR exige que eu LEMBRE de fazê-lo em todo chamador NOVO. É exatamente esse
-#       tipo de disciplina que falha — e falhou.
-#       `obter_coordenadas_e_endereco_oficial` é o **PONTO ÚNICO** por onde TODA geocodificação de
-#       localidade passa (pipeline, alocação, lote, proximidade). O resgate agora vive **NA FONTE**.
-#       Todo chamador — **inclusive os que eu não auditei e os que ainda não existem** — fica protegido
-#       automaticamente.
-#       **É a diferença entre "consertei os lugares que encontrei" e "o bug deixou de ser POSSÍVEL".**
-#     ── A LIÇÃO (e ela é sobre mim) ──
-#       Eu entreguei a 168ª dizendo "o caso Ariquemes deixou de ser possível". **Não tinha deixado.** Só
-#       descobri porque fui verificar o meu próprio conserto contra o caminho real do bug, em vez de confiar
-#       que ele tinha funcionado. **Um conserto que não foi verificado no lugar onde o bug ocorreu não é um
-#       conserto: é uma esperança.**
-#     Suíte: 137 → **140 testes** (3 travam o invariante arquitetural: a fonte E a alocação resgatam).
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (168ª geração) → 🛟 40% DOS REGISTROS PERDIDOS — a app tinha o dado e DESISTIA [RESGATE]
-#     BUG REPORTADO COM DADOS: **958 de 2.410 municípios (39,8%) perdidos.** Caso: Ariquemes/RO, IBGE
-#     1100023 — "o estudo devolveu distância ZERO — nem a rota nem a geodésica puderam ser calculadas
-#     (coordenadas ausentes)".
-#     ── A CAUSA RAIZ (L12171, e é constrangedora) ──
-#       Quando a geocodificação de NUVEM falhava, o pipeline fazia exatamente isto:
-#           else:
-#               dist_linha_reta = 0.0
-#               status = "Falha de Geocodificação (Coordenadas Nulas)"
-#       **DESISTIA. Sem tentar mais nada.** Gravava zero e seguia. E o zero virava "não comparável" no
-#       Comparador (a barreira da 161ª, que estava CERTA em barrar) — e o usuário perdia 40% do estudo.
-#     ── POR QUE ISSO É ABSURDO ──
-#       A app disse "coordenadas ausentes" para Ariquemes. Mas a coordenada oficial dela —
-#       **(−9.9057, −63.0325)** — estava **NA MEMÓRIA DA PRÓPRIA APLICAÇÃO**, a UMA CONSULTA DE DICIONÁRIO
-#       de distância. A base embarcada tem os **5.571 municípios do Brasil**, resolve em **O(1)** e **não
-#       precisa de rede**.
-#       **A coordenada NUNCA esteve ausente. A app tinha o dado e não olhou.**
-#     ── E A NUVEM VAI FALHAR — ISSO É ESPERADO ──
-#       2.410 municípios × múltiplos polos = **dezenas de milhares de chamadas**, com o Nominatim limitado a
-#       **1 req/s**. Timeout, rate-limit e exaustão de API sob carga são INEVITÁVEIS em escala nacional.
-#       **O bug não é a nuvem falhar. É a app não ter um plano B que ela já possuía.**
-#       (E a 144ª já provava isso: 98,6% dos municípios resolvem OFFLINE. A rede nunca foi necessária.)
-#     ── A CURA: A REDE DE RESGATE (_resgatar_coordenadas_oficiais) ──
-#       Ligada EXATAMENTE no ponto onde a app desistia, ANTES de declarar falha. Cadeia, do mais forte ao
-#       mais fraco: **Código IBGE** (O(1), inquestionável) → **Município + UF** → **nome ÚNICO no país** →
-#       **homônimo + UF vinda de outra coluna** → só então falha real, COM MOTIVO.
-#       **NUNCA CHUTA:** 'São Domingos' sem UF (5 estados) continua NÃO resgatado — resgatar errado seria
-#       pior que falhar. Testado nos dois sentidos.
-#     ── ZERO DEIXA DE SER SENTINELA DE ERRO ──
-#       Zero é um valor VÁLIDO de distância (o candidato faz prova no próprio município). Usá-lo para
-#       sinalizar ERRO confunde "não há deslocamento" com "não sei calcular" — e foi ESSA confusão que
-#       obrigou o Comparador a descartar 40% dos registros. Agora a falha vira INFORMAÇÃO:
-#       _diagnostico_falha_rota diz **o que faltou, em que etapa, e o que foi tentado**.
-#       E o status carrega: "✅ COORDENADAS RECUPERADAS pela base oficial do IBGE".
-#     ── INDICADOR DE QUALIDADE ──
-#       O Comparador mostra: "🛟 N município(s) foram RECUPERADOS pela base oficial. A geocodificação de
-#       nuvem falhou neles — o que é ESPERADO num estudo com dezenas de milhares de chamadas. **Eles entram
-#       na comparação normalmente**, com dado exato."
-#     ⚠️ **REPROCESSE O ESTUDO** — a planilha antiga já nasceu com os zeros. A partir desta versão, o caso
-#     Ariquemes (dizer "coordenadas ausentes" tendo a coordenada oficial em RAM) **deixou de ser possível**.
-#     Suíte: 131 → **137 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (167ª geração) → O 2º COLOCADO PRESERVADO + O COMPARADOR DEIXA DE SER SÓ KM [XAI-RANKING]
-#     ── 1. 🗑️ O DESPERDÍCIO QUE VOCÊ APONTOU ──
-#       O motor multicritério JÁ ROTEIA os top-K polos de cada município — **chamadas de API JÁ PAGAS** — e
-#       calcula, para cada um: distância viária, linha reta, tempo, BALSA, custo efetivo, IGQ e posição.
-#       E aí a plataforma **descartava quase tudo**, exportando só o NOME e o CUSTO do 2º.
-#       A BALSA do 2º? Jogada fora. A SINUOSIDADE? Jogada fora. O 3º colocado INTEIRO? Jogado fora.
-#       **Dado que custou dinheiro e latência para obter, destruído na saída.**
-#       AGORA: 1º, 2º e 3º saem COMPLETOS — distância viária, linha reta, tempo, balsa, sinuosidade,
-#       velocidade média, custo efetivo, IGQ — e cada perdedor declara **POR QUE perdeu**.
-#     ── 2. ⚠️ A COLUNA MAIS IMPORTANTE: "em quantos critérios o 2º era MELHOR" ──
-#       Mostrar só os critérios em que o vencedor ganhou seria **PROPAGANDA, NÃO EXPLICAÇÃO**.
-#       Testado: o vencedor ganha por 5 km-eq (2,9%) — **mas o 2º colocado chega 40 MIN ANTES**, tem traçado
-#       menos sinuoso (1,06× contra 1,25×) e estrada de **81 km/h contra 53**. A app **DIZ ISSO**, e avisa:
-#       *"disputa APERTADA — se algum desses critérios pesa mais na sua operação do que o modelo assume,
-#       **a decisão pode ser outra, e você tem razão**."*
-#       **Um sistema de apoio à decisão que esconde os contra-argumentos não está apoiando: está
-#       MANIPULANDO.** É exatamente ali que o gestor pode discordar da máquina — e estar certo.
-#     ── 3. 🔄 O COMPARADOR DEIXA DE SER RÉGUA DE QUILÔMETRO ──
-#       A plataforma sabe desde a 129ª que **a menor distância NÃO é necessariamente a melhor solução**. O
-#       motor de alocação decide por CUSTO EFETIVO (distância + lentidão + balsa). Mas o COMPARADOR ainda
-#       declarava vencedor **só por quilômetro**. Duas partes da mesma app com critérios DIFERENTES.
-#       Agora falam a mesma língua. E quando o critério **INVERTE** o resultado, a app avisa em garrafais:
-#       *"🔄 Pela distância pura o vencedor seria o outro (15 km) — mas a rota mais curta é mais LENTA. **A
-#       menor distância NÃO era a melhor solução.**"* (testado: ref 180 km/4h30 × app 195 km/2h50 → a app
-#       vence no esforço real por 75 km-eq).
-#     ── 4. 🔒 O LIMITE, DITO NA CARA ──
-#       Se a planilha de referência **não traz tempo**, não dá para ir além do quilômetro — e a app **NÃO
-#       FINGE que comparou tempo**. Ela declara o critério usado ("distância (só)") e diz: *"não dá para
-#       saber se a rota mais curta é de fato a melhor. Adicione a coluna de tempo e a comparação vira
-#       multicritério automaticamente."*
-#     Suíte: 123 → **131 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (166ª geração) → OS DOIS ESTUDOS, COM O MESMO RIGOR (diagnóstico imparcial) [PERFIL]
-#     A 165ª analisou onde o concorrente VENCEU. Mas ele ainda só existia EM RELAÇÃO A NÓS — nunca ganhava
-#     um **perfil PRÓPRIO**. E sem perfil, perguntas centrais ficavam SEM RESPOSTA: "qual estudo evita mais
-#     balsas?", "qual usa menos locais de prova?", "qual tem menor sinuosidade?". Não dá para responder isso
-#     comparando linha a linha — só olhando cada estudo **como um TODO**.
-#     ── 1. PERFIL AUTÔNOMO DE CADA ESTUDO (_perfil_estudo) ──
-#       Municípios · candidatos · locais de prova usados · distância média/mediana/mín/máx/desvio ·
-#       deslocamento total em km-candidato · tempo médio/máx · % com balsa · % só rodoviário · sinuosidade
-#       média · distribuição por faixa e por UF. **Lado a lado, os dois.**
-#     ── 2. 🔒 A HONESTIDADE QUE ISTO EXIGIU (e é o coração desta geração) ──
-#       Do NOSSO estudo eu sei tudo. Do CONCORRENTE eu só sei **o que a planilha dele trouxe**. Se ela não
-#       tem coluna de balsa, **eu NÃO POSSO inventar uma taxa de balsa para ele** — e não invento.
-#       Os campos ausentes saem como **"❓ não informado"**, NUNCA como zero.
-#       **Zero e "não sei" são coisas DIFERENTES. Confundi-las seria MENTIR COM NÚMEROS** — e num
-#       comparador, mentir com números é o pecado capital. A app responde "❓ NÃO DÁ PARA RESPONDER — a
-#       planilha do concorrente não informa uso de balsa" em vez de dar a ele 0% e fingir que ganhou.
-#     ── 3. 🔬 A PERGUNTA MAIS AFIADA: PONTUAL ou SISTEMÁTICA? ──
-#       "O concorrente é melhor de forma consistente, ou só em casos específicos?" Isso NÃO é opinião — é
-#       **medível**. Se as vitórias dele estão CONCENTRADAS, a vantagem é PONTUAL ("revise esses poucos
-#       casos e o problema some"). Se estão ESPALHADAS, é SISTEMÁTICA ("**há algo no MÉTODO dele que
-#       funciona melhor**, e ignorar isso é teimosia").
-#       CRITÉRIO CORRIGIDO NO TESTE: o percentual sozinho falhava com n pequeno (1 vitória de 3 = 33% →
-#       classificava como "sistemática" um caso em que UM município explicava 99,95% do ganho). O sinal
-#       decisivo é **se UM caso DOMINA** (≥50% do ganho dele). Testado nos dois sentidos: o mesmo motor dá
-#       respostas OPOSTAS, e ambas MEDIDAS.
-#     ── 4. 🌎 PADRÃO GEOGRÁFICO ──
-#       As vitórias dele se concentram numa região muito além do peso dela no estudo? Se sim, **não é
-#       acaso**: naquela região o método dele lida melhor com alguma coisa (malha viária, balsa, relevo).
-#       A app diz isso — ou diz que NÃO há padrão, quando não há.
-#     ── 5. O PLACAR, SEM MAQUIAGEM ──
-#       "Nossa aplicação venceu em X% · O concorrente em Y% · Empates Z%" — no topo do painel, os três
-#       juntos. E quando o concorrente reduz mais o deslocamento, **a app DIZ que ele reduz mais**.
-#     Export: 18 → **21 abas**. Suíte: 116 → **123 testes**.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (165ª geração) → O CONCORRENTE ANALISADO EM SI + O PLANO HÍBRIDO [CONCORRENTE]
-#     ── O VIÉS QUE VOCÊ APONTOU (e era ESTRUTURAL, não um esquecimento) ──
-#       Toda a minha análise era ASSIMÉTRICA: perguntava só **"NÓS ganhamos?"**. As vitórias do concorrente
-#       apareciam apenas como DERROTAS nossas — nunca eram analisadas EM SI. Ninguém respondia: "e nos casos
-#       em que ele ganhou, quantos ALUNOS se beneficiariam se adotássemos a escolha dele?"
-#       Isso não é só incompleto — é **ENVIESADO A NOSSO FAVOR**. Um comparador que só sabe contar as
-#       próprias vitórias não é ferramenta de decisão: é **peça de marketing**. Num estudo que fundamenta
-#       decisão pública, isso é grave. E o viés estava na arquitetura, não num detalhe.
-#     ── 1. O CONCORRENTE, COM O MESMO RIGOR (_analise_concorrente) ──
-#       Onde ele venceu · quantos CANDIDATOS ele beneficiaria · quantos km a menos CADA UM andaria ·
-#       em quais ESTADOS · POR QUE ele venceu (caso a caso, em português) · e o **Pareto dele**: quais
-#       poucos municípios explicam 80% da vantagem dele ("se for revisar só alguns, revise esses").
-#       Ordenado por IMPACTO SOBRE CANDIDATOS, não por km: 4.000 candidatos a 160 km a mais doem muito
-#       mais que 50 a 300 km.
-#     ── 2. 🏆 O PLANO HÍBRIDO — a pergunta que NINGUÉM estava fazendo ──
-#       O comparador respondia "qual estudo é melhor NO CONJUNTO?". Essa é a pergunta **ERRADA** para quem
-#       vai DECIDIR. A pergunta certa é:
-#           **"E se eu pegar, de cada município, a MELHOR das duas escolhas?"**
-#       **Ninguém é obrigado a adotar um estudo INTEIRO.** O gestor pode tomar o nosso polo onde nós
-#       vencemos e o do concorrente onde ELE vence. O resultado **DOMINA OS DOIS — por construção**.
-#       Testado: nosso puro = 2.020.000 km-cand · dele puro = 1.560.000 · **HÍBRIDO = 1.380.000**.
-#       E a recomendação sai OPERACIONAL: "mantenha o nosso polo em N municípios e migre M
-#       (X candidatos) para o polo do concorrente".
-#       Isto transforma o comparador de um **PLACAR** ("quem ganhou?") numa **DECISÃO** ("o que eu faço?").
-#     ── ONDE ISSO APARECE ──
-#       No VEREDITO (topo da tela, no diagnóstico final) · em painel próprio ("⚔️ Onde o CONCORRENTE
-#       venceu") · no RELATÓRIO EXECUTIVO (duas seções novas: §7 "Onde a Base de Referência venceu" e §8
-#       "A Recomendação que Domina as Duas") · e no export (3 abas novas: Vitórias do Concorrente,
-#       Concorrente por UF, Plano Híbrido).
-#     Export: 15 → **18 abas**. Suíte: 111 → **116 testes**.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (164ª geração) → NADA MAIS SE PERDE + DICIONÁRIO DE DADOS + RANKINGS [LADO-A-LADO]
-#     Auditei o pedido contra o que a aba JÁ tinha, para não reimplementar o que existe (estatística,
-#     Pareto, relatório executivo, metodologia, veredito, legendas — tudo da 149ª/160ª). Achei DOIS buracos
-#     reais, e um deles é PERDA DE DADO.
-#     ── 1. 🔴 EU DESCARTAVA A PLANILHA DO CONCORRENTE (item 6 do pedido) ──
-#       _conciliar_comparativo guardava **apenas as colunas MAPEADAS**. Modo de acesso, uso de balsa, score,
-#       justificativa, observações — TODA coluna extra da planilha de referência era **jogada fora EM
-#       SILÊNCIO**. Perda de dado DO USUÁRIO, sem aviso nenhum.
-#       CORRIGIDO: **toda** coluna da referência é preservada com o prefixo **"REF · "**, e o nosso estudo
-#       entra com **"APP · "** (cód. IBGE do polo, linha reta, score, integridade, risco de homônimo,
-#       justificativa da escolha, custo efetivo, coordenadas). O usuário vê os **DOIS estudos LADO A LADO,
-#       campo a campo**. Testado: nem a coluna "observacao_interna" se perde.
-#     ── 2. 📗 DICIONÁRIO DE DADOS (item 1 do pedido) ──
-#       A planilha tem ~40 colunas e **ninguém sabia o que a maioria significava**. Uma coluna que ninguém
-#       sabe ler é **PIOR que coluna nenhuma**: ela gera dúvida e às vezes é interpretada ERRADO — o pior
-#       desfecho possível num estudo que fundamenta decisão pública.
-#       Cada coluna declara: **O QUE É · DE ONDE VEM** (calculado × informado × qual API) **· QUANDO FICA
-#       VAZIA · COMO LER**. Com os avisos que mais importam: "'Empate' NÃO é derrota — abaixo de 1 km é
-#       ruído de geocodificação"; "'📐 Geodésica' significa que o município NÃO TEM ESTRADA — comparar com
-#       viária é maçã com laranja"; "Abaixo de 100, a Integridade REPROVA a rota".
-#       Mais um **EXEMPLO REALISTA** da planilha (3 linhas cobrindo os 3 casos: vitória clara, empate com
-#       geodésica, derrota com conciliação por similaridade) — **mostrado ANTES do upload**. Mostrar é
-#       melhor que descrever.
-#     ── 3. 🏅 RANKINGS QUE FALTAVAM ──
-#       O Pareto (149ª) já rankeava municípios. Faltava: **estados** (quem mais ganha e quem mais perde,
-#       ponderado por candidato), **locais de prova** (quantos candidatos cada um recebe e com que
-#       deslocamento médio) e as **MAIORES DIVERGÊNCIAS** — onde os dois estudos escolheram polos diferentes
-#       E o impacto é maior. "Comece a revisão por aqui."
-#     ── O QUE EU CONTINUO RECUSANDO (3ª vez, mesmo motivo) ──
-#       Violin plot, densidade, treemap, sunburst, radar, heatmap de pesos. Já recusei na 138ª e na 149ª:
-#       seriam **mais tinta, não mais informação**. Os gráficos atuais + distribuição + Pareto + rankings
-#       respondem às perguntas que movem a decisão. Adicionar 8 gráficos que ninguém olha é bloat com nome
-#       de ciência de dados — e contraria a sua própria regra ("apenas se agregarem valor real").
-#     Export: 11 → **15 abas** (+ Dicionário de Dados, Ranking Estados, Ranking Locais, Maiores Divergências).
-#     Suíte: 105 → **111 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (163ª geração) → EU TINHA MATADO O VISUAL. Restaurei a vida da 126ª — e fui além. [UX-VIVO]
-#     "O visual está feio. A 126ª era bem mais atraente." Fui comparar, sem me defender.
-#     ── O DIAGNÓSTICO (e a culpa é minha) ──
-#       Não deletei NADA da 126ª. Empilhei **13.500 caracteres de CSS por cima**, com **71 `!important`**
-#       (contra 7 da 126ª). E na 159ª cometi o erro central: medi "138 caixas coloridas = parede" e
-#       **SOBRECORRIGI**. Pus `background: transparent !important` nas caixas e fundos a **7% de opacidade**.
-#       Achatei tudo.
-#       **O resultado não ficou elegante — ficou LAVADO, SEM VIDA.**
-#       **Profissional NÃO é sem cor.** Stripe, Linear e Vercel têm cor RICA — só a usam com hierarquia.
-#       Eu confundi "calmo" com "apagado", e você sentiu na hora.
-#     ── O QUE A 126ª TINHA E EU MATEI ──
-#       • Métricas com **barra azul de 4px** + hover que **LEVANTA 3px** com a sombra crescendo → eu troquei
-#         por uma borda cinza de 1px. Matei o cartão.
-#       • Botão primário **azul sólido com GLOW azul** no hover → eu deixei um translateY(-1px) tímido.
-#       • Abas ativas com **fundo azul cheio** → minha navegação lateral tinha só uma barrinha.
-#     ── O QUE VOLTOU (e melhor) ──
-#       • ALERTAS com CORPO: gradiente de 20-26% (não 7%), acento de **5px**, sombra, e hover que desliza.
-#         Vermelho ganha glow próprio — ele PARA o olho, que é a função dele.
-#       • MÉTRICAS: barra de acento + gradiente na superfície + **levantar com sombra em DUAS camadas**
-#         (profundidade real, não sombra chapada). Uma delas é azul: o cartão "acende" ao toque.
-#       • BOTÃO PRIMÁRIO: gradiente azul + **glow que cresce** + levantar. Confiante, como o da 126ª.
-#       • NAVEGAÇÃO LATERAL: o item ativo ganha o **gradiente azul** que as abas da 126ª tinham.
-#       • TABELAS: cabeçalho com gradiente e **borda azul de 2px**; hover de linha em azul translúcido.
-#       • h5: em vez do rótulo cinza CLÍNICO que eu tinha feito, ganha **acento azul à esquerda**.
-#     ── DISCIPLINA MANTIDA (a cor voltou, o rigor ficou) ──
-#       **0 cores hardcoded** (122 usos de token — os rgba são derivados da paleta semântica).
-#       **WCAG AA continua passando.** **Zero componente adicionado** (77 elementos / 6,2 pesados —
-#       IDÊNTICO à 162ª): a renderização preguiçosa da 142ª, que me custou três gerações, está intacta.
-#       Mais gradiente (8 × 2), mais sombra (13 × 5) e mais resposta ao toque que a própria 126ª.
-#     Suíte: 105 testes. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (162ª geração) → GEODÉSICA GARANTIDA: os 5 municípios SAEM no comparativo [GEO-GARANTIDO]
-#     PEDIDO: "as informações deles PRECISAM SAIR no comparativo, de forma confiável, precisa e exata".
-#     A 161ª os EXCLUÍA (barrando a mentira dos 250 km fantasma). Mas excluir não resolve — ESCONDE.
-#     ── A VERDADE FÍSICA QUE NÃO DÁ PARA VIOLAR ──
-#       **Não existe estrada até uma ilha do Marajó.** A distância VIÁRIA desses municípios NÃO EXISTE.
-#       Inventar uma seria pior que o zero: seria um dado falso com cara de verdadeiro.
-#     ── A SAÍDA CORRETA ──
-#       Eles têm **coordenadas OFICIAIS do IBGE** (a base resolve os 5 em O(1)). Com elas, a **GEODÉSICA DE
-#       KARNEY (WGS-84)** é EXATAMENTE calculável — erro < 1 mm. E ela tem uma propriedade decisiva: é o
-#       **PISO FÍSICO** de qualquer deslocamento. Ninguém percorre MENOS que a linha geodésica — nem de
-#       barco, nem de avião. É a única grandeza que é, ao mesmo tempo: exata, oficial, sempre disponível e
-#       fisicamente honesta.
-#     ── A CAUSA RAIZ (o handler que jogava fora tudo) ──
-#       Quando o pipeline lançava exceção, `embrulhar_task_paralela` gravava:
-#           Distancia = 0.0 · Municipio Origem = "Erro" · Municipio Destino = "Erro"
-#       **Destruía TUDO que a app já sabia.** O Código IBGE 1504505 tinha resolvido perfeitamente para
-#       MELGAÇO/PA, com as coordenadas oficiais em mãos — e o resultado gravado era "Erro" e zero.
-#       _fallback_geodesico_garantido: resolve a identidade OFFLINE e calcula a geodésica. NUNCA MAIS "Erro".
-#     ── OS SEUS 5 CÓDIGOS, AGORA (→ Belém/PA, medido) ──
-#       1300904 Canutama/AM ......... **1.852,60 km** (74 h)
-#       1500701 Anajás/PA ...........   **168,69 km** (6 h 45)
-#       1504505 Melgaço/PA ..........   **250,57 km** (10 h)
-#       1505700 Ponta de Pedras/PA ..    **42,39 km** (1 h 42)
-#       1507706 S. Seb. Boa Vista/PA .   **118,73 km** (4 h 45)
-#     ── DESCOBERTA QUE MUDA A LEITURA ──
-#       **A sua referência dizia 250 km para Melgaço. A geodésica dá 250,57 km. Desvio: 0,2%.**
-#       ⇒ A base de referência TAMBÉM usou linha reta nesses municípios — pelo mesmo motivo que nós: ela
-#       também não conseguiu rotear. **A comparação é MAÇÃ COM MAÇÃ.** Isso não era possível saber antes.
-#     ── HONESTIDADE OBRIGATÓRIA ──
-#       A geodésica sai **ROTULADA** — nova coluna **"Tipo de Distância"** (📐 Geodésica / 🛣️ Viária /
-#       🚢 Fluvial), visível na planilha E nos painéis. **Jamais disfarçada de viária.** O painel avisa:
-#       "N municípios comparados por distância GEODÉSICA. Se a sua referência usou distância VIÁRIA para
-#       eles, a comparação ali é maçã com laranja — confira a coluna."
-#     Suíte: 98 → **105 testes**. Os 5 códigos viraram INVARIANTE: se algum voltar a dar "Erro" ou zero, o
-#     deploy não passa. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (161ª geração) → 🔴 O BUG QUE MENTIA A MEU FAVOR (camada anti-falha) [ANTI-FALHA]
-#     BUG REPORTADO COM IMAGEM. Ampliei a captura (8000×42 px, uma linha de planilha) e li:
-#       Origem="Erro" · UF=PA · Cod IBGE=1504505 · Método=Código IBGE · Score=100 · Destino Aplicação="Erro"
-#       · Distância Referência=250 · **Distância Aplicação=0**
-#     São os MESMOS 5 municípios do bug da 156ª — Marajó e calha do Purus, **sem acesso rodoviário**.
-#     ── A CADEIA COMPLETA (RCA) ──
-#       1. A Alocação tentou rotear até uma ILHA do Marajó. Não existe estrada. A rota falhou.
-#       2. A app gravou o FALLBACK (L11520): Distancia=0.0, Municipio="Erro", Status da Rota="Erro".
-#       3. O usuário rodou o Comparador. O Código IBGE conciliou PERFEITAMENTE (score 100) — a correção da
-#          156ª funcionou.
-#       4. **E aí meu código da 138ª fez a besteira.** A linha era:
-#             if _dr is not None and _da is not None and _dr > 0:
-#          Testava `_dr > 0` (a REFERÊNCIA) e **NUNCA `_da > 0` (a APLICAÇÃO)**.
-#       5. Aritmética: diferença = 250 (referência) − **0** (falha) = **250 km de "economia"**.
-#          ⇒ Vencedor: APLICAÇÃO. ⇒ Economia: 250 × inscritos.
-#     ── POR QUE ESTE É O PIOR TIPO DE BUG ──
-#       **Uma FALHA de roteamento virava a MAIOR VITÓRIA possível.** Ele não quebra nada, não gera exceção,
-#       não aparece em log. Ele **MENTE, EM SILÊNCIO, A FAVOR DE QUEM O ESCREVEU** — e o Relatório Executivo
-#       leva a mentira à gestão. Medido no cenário do teste: **inflava o desempenho da aplicação em 208%**
-#       (555.000 km-candidato "economizados" contra 180.000 reais).
-#     ── A CURA, EM CAMADAS ──
-#       (1) _linha_app_valida — o estudo da PRÓPRIA aplicação produziu resultado válido nesta linha?
-#           Rejeita Status="Erro", Municipio="Erro"/"N/A", e **distância ≤ 0**. A app SEMPRE SOUBE quais
-#           linhas falharam (grava 'Status da Rota'); o Comparador é que ignorava o sinal.
-#       (2) _diagnostico_estudo_app — auditoria do estudo ANTES de comparar. O usuário vê, em vermelho:
-#           "N de M municípios do SEU ESTUDO falharam. Eles NÃO entram na comparação — compará-los contra
-#           zero faria a sua aplicação vencer por uma rota QUE NEM EXISTE."
-#       (3) BARREIRA ARITMÉTICA — `_dr > 0 and _da > 0`. Cinto E suspensório: a conciliação já barra, mas a
-#           função é pública e se protege sozinha.
-#       (4) CONCILIADO ≠ COMPARÁVEL — confundir os dois FOI a origem do bug. Uma linha pode conciliar por
-#           Código IBGE com score 100 e ainda assim ser INCOMPARÁVEL. Painel próprio na auditoria.
-#     ── DIAGNÓSTICO HONESTO NA TELA ──
-#       "A causa mais comum: municípios SEM ACESSO RODOVIÁRIO — ilhas do Marajó, calha do Solimões. O Código
-#       IBGE deles é reconhecido perfeitamente; o que NÃO EXISTE é a ESTRADA. Nenhum roteador rodoviário vai
-#       encontrar caminho até uma ilha."
-#     ── A SUÍTE ME PEGOU DE NOVO, NO MEIO DO CONSERTO ──
-#       Criei um expander com RÓTULO DINÂMICO (f"...({n})") — a mesma classe de bug do removeChild que me
-#       custou três gerações. A suíte falhou o build e me obrigou a corrigir ANTES de entregar.
-#     Suíte: 92 → **98 testes** (6 novos travam este bug para sempre).
-#   v3.8 (160ª geração) → COMPARADOR: o VEREDITO vem antes dos números [CMP-DIDATICO]
-#     "Os painéis ainda são confusos." Fui contar: a aba mostrava **23 KPIs e 8 painéis**.
-#     ── O DIAGNÓSTICO ──
-#       Era uma **PILHA DE FATOS, não uma resposta**. O usuário abria, via 23 números, e tinha que MONTAR a
-#       conclusão sozinho. Pior: **"km-candidato" é a unidade central de TODA a análise — e a tela NUNCA a
-#       explicava.** O sujeito lia "economia ponderada: 2.600.000 km-candidato" e não fazia ideia se isso era
-#       muito, pouco, bom ou ruim.
-#     ── A CURA: INVERTER A ORDEM (como num parecer técnico de verdade) ──
-#       (1) **POSSO CONFIAR NISTO?** — vem PRIMEIRO. Se a conciliação foi ruim, nada mais importa. Com 57%
-#           conciliado a app diz, ANTES de mostrar qualquer percentual: "os percentuais abaixo NÃO
-#           representam o universo completo".
-#       (2) **QUAL É A RESPOSTA?** — uma frase, em português: "🏆 A SUA APLICAÇÃO produziu a melhor
-#           distribuição. Ela levou o candidato mais perto em 62% dos municípios."
-#       (3) **QUAL O TAMANHO?** — traduzido para **ESCALA HUMANA**. E é aqui que mora o pulo do gato:
-#           "2.600.000 km-candidato" **não significa nada para ninguém**.
-#           "**Cada candidato anda 12,4 km A MENOS**" significa tudo.
-#           É o MESMO número, dividido pelo total de candidatos — mas é a diferença entre um DADO e um
-#           ENTENDIMENTO.
-#     ── "📖 COMO LER ESTA ANÁLISE" (leia uma vez, entenda para sempre) ──
-#       Explica o que é km-candidato (com o PORQUÊ: poupar 10 km para 5.000 candidatos importa mais que 200
-#       km para 10); por que empate técnico não é vitória; o que é conciliar (tabela dos 4 métodos com o
-#       nível de confiança de cada um); **em que ORDEM ler os 7 painéis**; e o que significa um número
-#       NEGATIVO (a sua aplicação levou o candidato mais longe).
-#     ── LEGENDA EM TODOS OS GRÁFICOS E PAINÉIS ──
-#       Cada um agora tem "📖 Como ler" (o que é o eixo, o que é a altura, o que significa negativo) E "🔎 O
-#       que este gráfico diz" (a leitura do SEU dado). Exemplos: o gráfico "quem venceu" conta MUNICÍPIOS, não
-#       candidatos — por isso responde "onde", enquanto o KPI de economia responde "quanto". O CV ganhou
-#       explicação própria: é o número que separa "melhoria estrutural" de "melhoria pontual", e duas
-#       comparações com a MESMA MÉDIA podem contar histórias OPOSTAS.
-#     ── DETALHE QUE IMPORTA ──
-#       Os números saíam em formato AMERICANO ("12.4 km", "57.4%") num app brasileiro. Corrigido: 8 pontos.
-#     Suíte: 89 → **92 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (159ª geração) → HIERARQUIA VISUAL: a app era uma PAREDE DE CAIXAS COLORIDAS [UX-HIERARQUIA]
-#     Pergunta: "o visual está moderno, elegante e didático?" Respondi com MEDIÇÃO, não com opinião.
-#     ── O DIAGNÓSTICO (medido) ──
-#       **138 caixas coloridas** (st.info/success/warning/error) + **193 legendas**. A seção "Deslocamento
-#       do Candidato" sozinha tem **94 elementos** (8 info + 12 success + 13 warning + 3 error + 58 captions).
-#       Isso é a parede de caixas clássica do Streamlit. E o problema não é estético — é COGNITIVO:
-#       **quando TUDO está destacado, NADA está.** Cada insight que escrevi virou um st.info() saturado; o
-#       olho não sabe onde pousar. Não era hierarquia: era ruído.
-#     ── A CURA: ONDE HÁ ALAVANCAGEM ──
-#       Uma injeção de CSS conserta as 138 caixas DE UMA VEZ, sem tocar em uma linha de lógica:
-#       (1) CAIXAS ACHATADAS — fundo saturado → **barra de acento à esquerda** (o padrão de Stripe, Linear,
-#           GitHub, Power BI). A cor continua comunicando severidade, mas PARA DE GRITAR (fundo a 7-9% de
-#           opacidade em vez de fill sólido).
-#       (2) LEGENDAS RECUAM — 193 captions competiam com o conteúdo. Uma legenda que grita não é legenda.
-#           Agora é apoio silencioso: menor, mais discreta, disponível para quem procura.
-#       (3) ESCALA TIPOGRÁFICA REAL — os títulos eram quase todos h5. Sem escala não há hierarquia: o olho
-#           não distingue "seção" de "subseção". O h5 (o mais usado) virou um RÓTULO DE PAINEL (uppercase,
-#           letter-spacing, linha divisória) — para de fingir que é título e passa a ser o que é.
-#       (4) MÉTRICAS VIRAM CARTÕES — eram números FLUTUANDO NO VAZIO. Agora têm borda, fundo e respiro, e o
-#           olho lê a linha de KPIs como um BLOCO, escaneando de uma vez em vez de item a item.
-#       (5) TABELAS — cabeçalho ancorado (a âncora do olho ao rolar) e hover de linha (é assim que se
-#           rastreia uma linha numa tabela larga sem se perder).
-#     ── DISCIPLINA MANTIDA ──
-#       **Zero componente adicionado.** Medido: 75 elementos / 6,1 pesados por rerun — IDÊNTICO à 158ª. A
-#       renderização preguiçosa da 142ª (que me custou TRÊS gerações) segue intacta. Zero cor hardcoded
-#       (117 usos de token). WCAG AA continua passando.
-#     ── O QUE **NÃO** SE RESOLVE COM CSS (e eu não vou fingir que resolvi) ──
-#       A CONTAGEM de elementos. 94 numa única seção é muito, e nenhum estilo conserta isso — é problema de
-#       CONTEÚDO, não de aparência. Resolver exige decidir O QUE CORTAR, e isso depende de saber o que você
-#       de fato usa e o que apenas ignora. Me diga qual seção te cansa e eu corto com bisturi, em vez de
-#       adivinhar.
-#     Suíte: 89 testes. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (158ª geração) → AUDITEI O MEU PRÓPRIO CÓDIGO NOVO (e minhas 3 suspeitas erraram) [PERF]
-#     SÉTIMA vez do mesmo prompt. Não fingi novidade. Apliquei o que disse na 153ª: o que rende é auditar
-#     CÓDIGO NOVO — e eu escrevi ~530 linhas desde então (154ª a 157ª). Meu histórico é ruim: plantei bug de
-#     caminho quente na 138ª E na 152ª. Suspeitei de mim primeiro.
-#     ── SUSPEITA 1: "as funções novas devem estar detonando o caminho quente" ── ERRADA.
-#       Medi as 7 funções que adicionei, em escala nacional (5.571 linhas): **119 ms no TOTAL**. Não é a
-#       catástrofe da 152ª (44.500 ms). Reporto porque auditoria honesta registra quando a suspeita NÃO se
-#       confirma — se eu tivesse "otimizado" tudo, teria adicionado risco por quase zero ganho.
-#     ── SUSPEITA 2: "o Styler de cor deve ser caro" ── ERRADA (e a medição me ensinou algo).
-#       Os 43 ms que medi de início eram WARMUP DO IMPORT: o pandas Styler é PREGUIÇOSO — só computa no
-#       render. Custo real: ~28 µs/linha. E as tabelas coloridas na prática são PEQUENAS (contingência: 15
-#       linhas; ocupação: ~300 polos) ⇒ ~10 ms. Não é problema. O teto de 3.000 linhas é rede de segurança
-#       bem colocada.
-#     ── SUSPEITA 3: "falta resiliência de API" ── ERRADA.
-#       Auditado: timeout em **100% das chamadas de rede** (0 sem), retry, circuit breaker, fallback entre
-#       provedores, telemetria por API, e rate limiting (executor dedicado de 1 worker para o Nominatim,
-#       que exige 1 req/s). Já estava sólido.
-#     ── O QUE ERA REAL: 62,7 ms de DESPERDÍCIO PURO ──
-#       _validar_planilha_comparativa (pré-voo do Comparador) roda FORA de qualquer botão — a CADA RERUN da
-#       seção. Em escala nacional: **62,7 ms recalculando A MESMA validação, sobre O MESMO DataFrame, com O
-#       MESMO mapeamento.** Não é lento por ser mal escrito: é lento por ser INÚTIL. Memoizado pela
-#       assinatura da entrada → recalcula só quando a planilha ou o mapeamento mudam de verdade.
-#     ── E A SUÍTE TINHA O PONTO CEGO DE NOVO ──
-#       6 das 7 funções novas NÃO estavam na lista de vigilância de caminho quente. A regra que criei na
-#       153ª não se atualiza sozinha quando eu escrevo código novo. _validar_planilha_comparativa entrou —
-#       e VERIFIQUEI NOS DOIS SENTIDOS: a suíte **FALHA na V157** (sem a memoização) e **PASSA na V158**.
-#       Um teste que nunca falhou nunca provou nada.
-#     Suíte: 89 testes. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (157ª geração) → BUG DO ALTAIR + CALIBRAÇÃO EXPLICADA + DECOMPOSIÇÃO EXATA [ALTAIR-FIX]
-#     ── 1. O BUG QUE DERRUBAVA A APP (causa raiz, não paliativo) ──
-#       StreamlitAPIException em col_p5.altair_chart(chart_muns, on_select="rerun").
-#       CAUSA: chart_muns = **alt.layer(bar_mun, text_bar)** → LayerChart = gráfico MULTI-VIEW. O Streamlit
-#       PROÍBE seleção em gráfico composto (_disallow_multi_view_charts). Não é bug do Altair nem de versão:
-#       é limitação DOCUMENTADA — um gráfico multi-view não tem uma "view" única onde ancorar a seleção.
-#       Auditei os 6 gráficos com on_select: **só o chart_muns era composto**; os outros 5 são simples.
-#       A camada `text_bar` existia SÓ para colar o número em cima da barra — e esse número **JÁ ESTAVA no
-#       tooltip** do bar_mun. Ou seja: a camada custava a INTERATIVIDADE INTEIRA do painel (o clique que
-#       filtra o dashboard) para exibir informação DUPLICADA. Removida. Zero perda, filtro de volta.
-#       PROTEGIDO NA SUÍTE: teste estático impede que qualquer gráfico com on_select volte a ser multi-view.
-#     ── 2. A RESPOSTA À SUA PERGUNTA 6 (e é desconfortável) ──
-#       "Calibração e multicritério funcionam juntos?" Fui ao código: os parâmetros de calibração **só são
-#       LIDOS dentro do bloco do multicritério**. Logo: **calibrar SEM ligar o multicritério não faz
-#       absolutamente NADA.** O usuário mexia em 4 sliders, processava, e o resultado era IDÊNTICO. Era uma
-#       armadilha silenciosa. Agora, com o multicritério desligado, o painel diz isso EM VERMELHO.
-#     ── 3. A CALIBRAÇÃO ERA CONFUSA — agora ela ENSINA ──
-#       Tutorial didático dentro do painel: o que é (uma frase), por que a distância não basta (com O SEU
-#       exemplo da balsa, em tabela), o que cada controle faz e quando aumentá-lo. Mais **4 PERFIS PRONTOS**
-#       para quem não quer calibrar à mão: ⚖️ Equilibrado · 🚫 Evitar balsa a todo custo (balsa = 250 km-eq)
-#       · ⏱️ Priorizar tempo (vel. ref. 90 km/h) · 📏 Só distância (zera tudo — serve para COMPARAR).
-#     ── 4. DECOMPOSIÇÃO EXATA: "por que este polo venceu?" ──
-#       _decompor_custo_hub. E aqui há algo que quase nenhum sistema multicritério pode afirmar: **a
-#       contribuição de cada critério é EXATA, não estimada.** O modelo é ADITIVO (custo = viária + lentidão
-#       + balsa + sinuosidade), logo "Distância 54,5% · Lentidão 27,3% · Balsa 18,2%" é ARITMÉTICA, não
-#       palpite de importância. A maioria dos sistemas usa soma ponderada com normalização min-max, onde a
-#       "importância" depende do conjunto de candidatos e não significa nada em absoluto. Aqui, como o custo
-#       é medido em km-equivalentes (unidade real e absoluta), a decomposição é literal.
-#       Painel novo mostra, por município: cada parcela em km, o critério DETERMINANTE, e quanto o pior
-#       candidato custaria a mais.
-#     ── 5. O SEU CASO DA BALSA JÁ FUNCIONAVA ──
-#       Testei o exemplo EXATO do seu prompt (Polo A: 180 km + balsa + 4h30 · Polo B: 195 km sem balsa +
-#       2h50): a app **já elegia o B**, correto. Custo A = 330 km-eq (180 viária + 90 lentidão + 60 balsa);
-#       custo B = 195. **O que faltava não era capacidade — era EXPLICAÇÃO.** Agora a app mostra a conta.
-#     Suíte: 84 → **89 testes**. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (156ª geração) → CÓDIGO IBGE: PRIORIDADE ABSOLUTA (a causa raiz do bug real) [IBGE-ABSOLUTO]
-#     BUG REPORTADO com dados concretos: 1300904, 1500701, 1504505, 1505700, 1507706 "não reconhecidos".
-#     ── O QUE A INVESTIGAÇÃO DESCARTOU (com prova, não com opinião) ──
-#       • A base tem os 5 códigos? SIM: Canutama/AM, Anajás/PA, Melgaço/PA, Ponta de Pedras/PA e São
-#         Sebastião da Boa Vista/PA. Todos presentes.
-#       • A base está íntegra? SIM, e provei por CHECAGEM INTERNA (que vale mais que lista decorada): o
-#         PREFIXO do código bate com a UF em 100% dos 5.571 · zero duplicata · zero coordenada fora do
-#         Brasil · 5.570 municípios + Fernando de Noronha (distrito estadual com código IBGE) = 5.571.
-#       • A cadeia de resolução funciona? SIM: detector, índice reverso O(1), validador e resolvedor
-#         resolvem os 5 corretamente.
-#     ── A CAUSA RAIZ (uma só) ──
-#       Existem DOIS caminhos de geocodificação. `obter_coordenadas_e_endereco_oficial` intercepta o código
-#       IBGE (98ª geração). Mas o modo ESTRITO — `forcar_geocodificacao_hierarquica_estrita`, que dispara na
-#       barreira anti-colisão — NÃO. Ele chamava _resolver_municipio_offline, que busca por NOME: o código
-#       "1300904" normalizado vira a chave "1300904", que NÃO EXISTE num índice indexado por NOME → devolve
-#       None → o código cai na NUVEM, e ArcGIS/Nominatim/Photon recebem a string "1300904" **como se fosse
-#       um endereço**. É óbvio que falha.
-#       CORRIGIDO com a regra que você exigiu: se a entrada é um Código IBGE VÁLIDO, nenhuma API adivinha,
-#       nenhuma heurística substitui, nenhuma desambiguação ocorre. **A base oficial é a AUTORIDADE MÁXIMA.**
-#       Auditei TODOS os caminhos que consultam nuvem: os 5 agora interceptam ou estão protegidos pelo
-#       invólucro que intercepta.
-#     ── ⚠️ EU QUASE CORROMPI DADO OFICIAL — e uma asserção me salvou ──
-#       Notei que os 5 municípios são de acesso fluvial (Marajó + rio Purus) e fui "completar" a lista
-#       _MUNICIPIOS_ACESSO_FLUVIAL. Escrevi os códigos DE MEMÓRIA. Minha própria verificação contra a base
-#       pegou: **6 dos 11 estavam ERRADOS** (eu "lembrava" 1500503=Afuá, mas é ALMEIRIM; 1501709=Breves,
-#       mas é BRAGANÇA; 1506005=Portel, mas é PRAINHA). Eu teria marcado municípios COM estrada como
-#       isolados.
-#       E aí li o comentário original: aquela lista **NÃO é curada à mão** — vem do **IBGE REGIC 2018**
-#       (REGIC2018_Rotas_Brasil.xlsx), com critério preciso ("não aparece em NENHUMA ligação 'Rodoviário'
-#       nem 'Hidro-Rodoviário'"). Os 5 não estão lá porque o REGIC os classifica como hidro-rodoviários.
-#       **REVERTI. A lista oficial segue INTACTA (18).** Sobrescrever dado oficial com palpite seria pior
-#       que o bug original — e agora há um TESTE que impede isso de acontecer.
-#     ── ROTINA DE INTEGRIDADE PERMANENTE (pedido explícito) ──
-#       A suíte agora percorre os **5.571 códigos a CADA DEPLOY** pela cadeia REAL: detecção, resolução,
-#       prefixo×UF, coordenada, duplicata. Mais um teste de REGRESSÃO com os 5 códigos que VOCÊ reportou —
-#       se algum voltar a falhar, o deploy não passa. Suíte: 76 → **84 testes**.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (155ª geração) → UX: o Design System era DECORATIVO e eu vazava nomes de variável [UX-TABELA]
-#     Segunda rodada de UX. Na 148ª fiz os tokens, a navegação lateral e o onboarding — e declarei o que NÃO
-#     fiz. Fui buscar o que sobrou, e achei dois problemas REAIS. Um deles é meu.
-#     ── 0. WCAG: MEDI ANTES DE MEXER ──
-#       A WCAG está no seu pedido, e ninguém mede contraste — só acha bonito. Medi os 30 tokens da 148ª:
-#       **toda a paleta PASSA na AA** (títulos 18:1, corpo 15:1, legendas 7,4:1, semânticas 4,9-9:1).
-#       Reporto porque auditoria honesta também registra o que está certo. E medi o USO REAL, não o token
-#       isolado: --brand-3 dá 3,66:1 como TEXTO (reprovaria), mas ele é FUNDO de botão — o par real é texto
-#       branco sobre ele = **5,17:1 ✅**. Medir o token fora de contexto teria dado falso alarme.
-#     ── 1. O DESIGN SYSTEM ERA DECORATIVO ──
-#       Criei 30 tokens na 148ª... e deixei **48 cores HARDCODED** nos componentes. Ou seja: trocar a paleta
-#       no :root NÃO MUDARIA QUASE NADA. Um Design System que os componentes não usam é enfeite, não sistema.
-#       CORRIGIDO: **48 → 0 cores hardcoded · 85 usos de var(--token) · 34 tokens.** Agora trocar uma linha
-#       no :root muda a aplicação inteira — que é o ponto de existir um Design System.
-#     ── 2. EU VAZAVA NOME DE VARIÁVEL NA CARA DO USUÁRIO ──
-#       O gestor abria a tabela de contingência e lia `viavel_sem_ele`, `km_candidato_a_mais`,
-#       `impacto_km_candidato`. **17 chaves snake_case** vazando em tabelas que fundamentam decisão pública.
-#       Eu construí essas tabelas (140ª-154ª) e deixei as chaves internas escaparem.
-#       CORRIGIDO: _rotular_colunas traduz na FRONTEIRA DE APRESENTAÇÃO (mesma arquitetura da 134ª) — o df
-#       INTERNO segue com as chaves originais, porque o código depende delas. 8 tabelas corrigidas.
-#     ── 3. O PERIGO PRECISA CHEGAR AO OLHO ANTES DA LEITURA ──
-#       _colorir_risco: um gestor escaneando 5.571 linhas NÃO CONSEGUE VER "Risco Alto" escrito em texto
-#       simples no meio de milhares de "Risco Baixo". A informação está lá e é INVISÍVEL. Cor aqui não é
-#       decoração — é o canal pelo qual o perigo chega ao olho. Polo 100% lotado → 🔴 vermelho; 85-99% →
-#       🟠 âmbar; economia negativa (a aplicação levou o candidato mais longe) → 🔴. Acima de 3.000 linhas
-#       devolve o df cru: o Styler ficaria caro e o valor cai.
-#     ── O QUE CONTINUO NÃO FAZENDO (e por quê) ──
-#       Sem animações, sem JS, sem novos gráficos. Eles ressuscitariam o removeChild que me custou TRÊS
-#       gerações. Verificado: **70 elementos / 5,6 pesados por rerun — IDÊNTICO à 154ª.** O redesign não
-#       custou um único componente.
-#     Suíte: 70 → **76 testes** (Design System, WCAG e vazamento de chave interna agora são INVARIANTES
-#     verificados a cada deploy). 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (154ª geração) → 🚨 CONTINGÊNCIA + ⚖️ EQUIDADE: as duas perguntas que faltavam [CONTINGENCIA]
-#     ── 1. "E SE UM POLO CAIR?" ──
-#       Escola alagada, greve, interdição, problema estrutural — isso ACONTECE, e às vezes a DUAS SEMANAS da
-#       prova. A plataforma não sabia responder: quais municípios ficam órfãos? para onde vão? a capacidade
-#       restante absorve? quanto custa aos candidatos?
-#       _contingencia_polos: para CADA polo, remove-o, REALOCA tudo com Vogel respeitando a capacidade dos
-#       sobreviventes, e mede o estrago. Mas o entregável não é "o que acontece se X cair" — é o RANKING DE
-#       CRITICIDADE: **QUAL polo você NÃO PODE PERDER.**
-#       Isso muda a operação. Sem o ranking, o gestor espalha reserva técnica e vistoria por igual sobre 300
-#       polos — sendo que a queda da maioria custaria QUASE NADA, e a de um punhado seria CATASTRÓFICA.
-#       Testado: "🔴 BRASILIA é insubstituível. 16.000 candidatos dependem dele. Se cair, 10.000 ficam SEM
-#       VAGA — a prova simplesmente NÃO ACONTECE para eles." Um candidato sem lugar não é "mais
-#       deslocamento": é a prova não existir. Por isso a criticidade penaliza isso com peso brutal.
-#       💡 A OTIMIZAÇÃO DE ONTEM HABILITOU ESTA FEATURE: 300 simulações de queda em escala nacional levam
-#       **18,8 s**. Com o algoritmo O(n²·k) da 152ª levariam **222 MINUTOS** — seria inviável. A 153ª não
-#       foi só "mais rápido": ela tornou POSSÍVEL o que veio depois.
-#     ── 2. EFICIÊNCIA × EQUIDADE: agora é uma ESCOLHA, não um efeito colateral ──
-#       Na 140ª eu NOMEEI esta tensão e escrevi "a decisão é sua" — mas **não te dei a ferramenta para
-#       decidir**. O simulador só sabia maximizar o ganho TOTAL, que privilegia clusters densos e deixa os
-#       isolados para trás. Isso é uma escolha de política pública sendo feita por omissão do software.
-#       Agora o simulador tem OBJETIVO:
-#         ⚡ EFICIÊNCIA (padrão) — maximiza a economia TOTAL. Abre onde há MUITA gente.
-#         ⚖️ EQUIDADE — só conta o ganho de quem está ACIMA do limiar crítico. Um polo que economiza
-#            1 milhão de km-candidato entre gente que já estava a 40 km vale **ZERO** neste modo.
-#       PROVADO POR TESTE que os dois divergem: num cenário com um cluster rico (27.000 candidatos a 60 km)
-#       e um isolado pobre (650 candidatos a 450 km), EFICIÊNCIA abre no cluster (ganho 1.447.225 km-cand);
-#       EQUIDADE abre no isolado (450 km → 0,6 km para os únicos que sofriam). **As duas respostas são
-#       legítimas — elas respondem perguntas DIFERENTES.** O software agora deixa o gestor escolher qual,
-#       em vez de decidir por ele em silêncio.
-#     Suíte: 64 → **70 testes** (os dois motores nasceram protegidos; a regra de caminho quente já cobriu o
-#     código novo e me obrigou a declarar _contingencia_polos como pesada).
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (153ª geração) → EU REINCIDI PELA TERCEIRA VEZ — e a suíte tinha um PONTO CEGO [PERF]
-#     SEXTA vez que o MESMO prompt de auditoria chega. Não fingi novidade. Mas havia uma auditoria LEGÍTIMA
-#     a fazer: eu escrevi ~250 linhas NOVAS na 152ª. Código novo = superfície nova. Auditei o MEU código de
-#     ontem — e o que achei é o achado mais importante desta série.
-#     ── O BUG (meu, de uma geração atrás) ──
-#       Chamei _alocar_com_capacidade DIRETO no painel — ou seja, A CADA RERUN da seção Locais de Aplicação.
-#       Medido em escala nacional (5.571 municípios × 300 polos): **44,5 SEGUNDOS de CPU bloqueante por
-#       clique**. Mexer num slider, trocar de seção, clicar em qualquer widget → 45 s de travamento.
-#       É a **TERCEIRA vez** que cometo essa mesma classe de bug: 138ª (Comparador), 152ª (Capacidade) —
-#       DEPOIS de diagnosticá-la na 139ª e escrever um changelog inteiro sobre ela.
-#     ── O ACHADO MAIS GRAVE: A SUÍTE TINHA UM PONTO CEGO ──
-#       A suíte de regressão da 150ª **passou verde** com esse bug. Porque ela só vigiava `ExcelWriter` no
-#       caminho quente — a forma como o bug se manifestou da PRIMEIRA vez. **Um teste que só olha onde você
-#       já sabe olhar não é um teste: é um ritual.**
-#       CORRIGIDO: a regra virou GERAL. Toda função conhecidamente cara (9 delas) precisa estar protegida
-#       por (a) memoização em session_state na própria linha, (b) st.button, (c) @st.cache_data ou (d) a
-#       fase de FINALIZAÇÃO. Calibrada contra falsos positivos e **verificada nos dois sentidos**: a suíte
-#       FALHA na V152 (que tem o bug) e PASSA na V153 (corrigida). É assim que um teste prova que serve.
-#     ── AS DUAS CORREÇÕES ──
-#       (1) ALGORITMO: a versão da 152ª recalculava o arrependimento de TODOS os municípios pendentes a cada
-#           iteração — O(n²·k). Trocado por HEAP COM INVALIDAÇÃO PREGUIÇOSA: como só UMA capacidade muda por
-#           iteração, o arrependimento de quase todo mundo continua válido; só recalculamos quem foi
-#           realmente afetado. **44,5 s → 0,06 s. 726× mais rápido**, com resultado **IDÊNTICO** (mesma
-#           ordem de Vogel, calculada de forma esperta — verificado pelo teste).
-#       (2) CAMINHO QUENTE: o resultado passa a ser memoizado pela ASSINATURA da entrada — recalcula só
-#           quando os dados mudam de verdade.
-#     ── SOBRE ESTE PROMPT (6ª vez) ──
-#       Reenviar o mesmo texto não vai gerar ouro novo. O que gerou valor AQUI foi ter CÓDIGO NOVO para
-#       auditar. Enquanto eu escrever features, haverá o que auditar nelas. Mas a varredura do código ANTIGO
-#       está esgotada — e o próximo ganho real continua exigindo DADOS DE USO.
-#     Suíte: 64 testes (regra de caminho quente agora GERAL). 13 seções, RotaPipeline 41, balões 1×,
-#     score imutável, 0 except nus.
-#   v3.8 (152ª geração) → 🏫 CAPACIDADE DOS POLOS: o plano deixa de ser ficção [CAPACIDADE]
-#     Mandato aberto de criatividade. Fui atrás do maior buraco FUNCIONAL — e ele estava no roadmap que EU
-#     MESMO escrevi na 147ª e nunca fechei.
-#     ── O BURACO ──
-#       Desde a 141ª a plataforma REPORTA a carga de cada polo ("Rio Verde receberia 47.000 candidatos") mas
-#       NÃO A RESTRINGE. Se Rio Verde só cabe 5.000, o plano é **FICÇÃO**: não há sala, não há carteira, não
-#       há fiscal. Uma alocação que não sobrevive ao contato com a realidade não é um plano — é um desenho.
-#       E é AQUI que os inscritos finalmente MUDAM A DECISÃO. Na 141ª eu expliquei (e mantenho) por que eles
-#       NÃO mudavam: a escolha era feita município a município, e o nº de inscritos era uma CONSTANTE que se
-#       cancelava. Com CAPACIDADE, os municípios COMPETEM por vaga — quem tem mais candidatos consome mais
-#       vaga. A decisão passa a depender deles. O ciclo que abri na 141ª fecha aqui.
-#     ── O ALGORITMO: VOGEL (arrependimento), não guloso ingênuo ──
-#       O guloso atende primeiro o par (município, polo) de MENOR CUSTO. É uma armadilha: ele enche o melhor
-#       polo com quem TINHA alternativa, e encalha quem NÃO tinha. Vogel usa o ARREPENDIMENTO — quanto um
-#       município PERDE se não conseguir seu polo ideal (custo do 2º melhor − custo do melhor), ponderado
-#       pelos inscritos — e atende primeiro **quem tem mais a perder**.
-#       PROVADO POR TESTE, num cenário construído: guloso = **2.040.000** km-candidato; Vogel = **140.000**.
-#       **14,6× melhor** — 1,9 milhão de km-candidato de deslocamento evitado.
-#     ── O QUE O GESTOR PASSA A VER ──
-#       • **PREÇO DA RESTRIÇÃO**: custo ideal (sem limite) × custo real (com capacidade). Quanto a falta de
-#         estrutura está custando AOS CANDIDATOS, em km-candidato. É o número que justifica orçamento.
-#       • **Municípios deslocados**: quem saiu do polo ideal, para onde, quantos km a mais, e por quê
-#         ("o polo ideal estava LOTADO").
-#       • **Ocupação por polo** e alerta dos 100% lotados — "são eles que estão empurrando candidatos para
-#         longe; ampliá-los é a intervenção de maior retorno".
-#       • **PLANO INVIÁVEL** dito alto e claro quando a capacidade total < candidatos: "não adianta otimizar
-#         quilômetros — NÃO HÁ ONDE APLICAR A PROVA". A plataforma se recusa a fingir que alocou.
-#     ── LIMITE HONESTO ──
-#       Um município vai INTEIRO para um polo (não é dividido). Um município maior que a capacidade de
-#       QUALQUER polo é reportado explicitamente como "sem vaga em polo nenhum — precisa de polo próprio ou
-#       divisão de turmas". Opcional: sem a coluna de capacidade, tudo funciona como antes (vagas ilimitadas).
-#     Suíte de regressão ampliada: 60 → **64 testes** (o novo motor já está protegido).
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (151ª geração) → DOCUMENTAÇÃO SINCRONIZADA COM A APLICAÇÃO REAL [DOC-SYNC]
-#     O handbook estava sincronizado até a 136ª — **14 gerações de defasagem**. E a defasagem não era
-#     cosmética: a documentação **não conhecia o Comparador de Estudos (a 13ª seção!)**, o Planejamento de
-#     Polos, a barreira física, a poda por limite inferior, a carga por local de prova — e ainda descrevia a
-#     navegação por ABAS, que deixou de existir na 142ª. Um manual que descreve outra aplicação é pior que
-#     nenhum manual: ele ensina o usuário a procurar o que não existe.
-#     ── HANDBOOK EMBARCADO (blob gzip+base64: 107.697 → 120.342 chars, 30 → 32 seções) ──
-#       §31 NOVA — **Comparador de Estudos**: hierarquia de conciliação (IBGE → mun+UF → mun → similaridade,
-#         com o limiar CALIBRADO: aceita "Novo Progreso"→97%, rejeita "Água Boa do Sul" vs "Água Boa"→76%);
-#         "empate técnico não é vitória — um comparador que anuncia vitória por 300 metros vende ilusão";
-#         ponderação por candidato; PRÉ-VOO (o Excel comeu o zero à esquerda; homônimo sem UF; município
-#         repetido PERDE inscritos); "origem == destino NÃO é erro aqui — é o melhor cenário possível";
-#         a média engana × mediana/CV; Pareto; relatório executivo que DECLARA as limitações.
-#       §32 NOVA — **Planejamento de Polos**: curva de cobertura (a média dava 157 km; a mediana ponderada
-#         é 30 km — a média escondia a cauda); acessibilidade crítica por IMPACTO (3.000 candidatos a 210 km
-#         doem mais que 20 a 400 km); carga por polo (47.000 candidatos podem não caber numa escola) COM a
-#         nota metodológica honesta de que os inscritos NÃO alteram a escolha do polo (constante que se
-#         cancela); simulador de abertura; e as duas ressalvas ditas na cara: é TRIAGEM (linha reta) e
-#         EFICIÊNCIA ≠ EQUIDADE.
-#       §30 ampliada — o **teorema da poda** (custo(B) ≥ geodésica(B) ⟹ poda sã, −66% de rede, vencedor
-#         provadamente idêntico) e como a regra SE AUTO-REGULA (polo bom ⇒ poda 85%; polo com balsa ⇒ 42%,
-#         explora alternativas).
-#       §13 corrigida — "As 12 Abas" → "As 13 Seções", explicando POR QUE a navegação mudou: com abas, o
-#         navegador montava as 13 seções a cada interação (~900 elementos, 73 componentes pesados) — causa
-#         do removeChild. Hoje só a seção ativa renderiza (~70 elementos, 13× mais leve).
-#       §27 changelog — sincronizado da 136ª à 150ª.
-#     ── GUIAS DAS SEÇÕES ──
-#       "Polos Alternativos" era a ÚNICA seção sem guia. Escrito e ligado (12 guias, 12 chamadas, 0 órfãos).
-#       O guia conecta as três perguntas: Acessibilidade Crítica mostra QUEM está mal atendido; Polos
-#       Alternativos mostra QUAIS alternativas existem; o Simulador diz QUAL vale a pena abrir.
-#     ── ENCICLOPÉDIA CORE ──
-#       Bloco de abertura com as camadas que definem a plataforma HOJE (126-150): identidade territorial
-#       (241 grupos de homônimos; "errar em silêncio é pior que não decidir"), integridade geográfica ("a
-#       inconsistência não é detectada — é impossível"), custo em km-equivalentes, Comparador e Planejamento
-#       de Polos.
-#     Provado por teste: HTML íntegro, 32 seções balanceadas, navegação consistente, changelog até a 150ª,
-#     zero jargão logístico. A SUÍTE DE REGRESSÃO da 150ª rodou e passou (60/60) — ela já está me protegendo.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (150ª geração) → SUÍTE DE REGRESSÃO: a guarda permanente dos invariantes [TESTES]
-#     QUINTA vez que o MESMO prompt de auditoria chega. Não fingi novidade. Já o auditei 4× (143ª, 144ª,
-#     145ª, 147ª) e entreguei o relatório consolidado. Mantenho o que disse: o próximo ganho não sai de
-#     reler código.
-#     ── MAS O MAIOR BURACO DE ENGENHARIA ESTAVA NA PRÓPRIA LISTA DO PEDIDO ──
-#       "Confiabilidade · Robustez · Manutenibilidade · melhores práticas de engenharia".
-#       **149 gerações. 103 funções puras. ZERO testes permanentes.**
-#       Em toda geração eu escrevia um teste, rodava UMA vez e JOGAVA FORA. Ou seja: a hierarquia de
-#       desambiguação, o teorema da poda, a barreira física, o modelo de custo — coisas que custaram
-#       gerações inteiras para acertar — podiam ser quebradas EM SILÊNCIO por qualquer mudança futura.
-#       Ninguém saberia até um estudo nacional sair errado.
-#     ── ENTREGUE: teste_regressao.py ──
-#       60 testes que extraem as FUNÇÕES REAIS do arquivo por AST (não cópias — se o código mudar, o teste
-#       roda contra o código novo). Cobre 7 frentes: invariantes estruturais · identidade territorial ·
-#       leis físicas · decisão do local de prova · comparador · planejamento de polos · modelo×apresentação.
-#       Uso: `python3 teste_regressao.py V150.py` — rode ANTES de todo deploy. Se falhar, NÃO suba.
-#     ── A SUÍTE JÁ SE PAGOU NA PRIMEIRA EXECUÇÃO ──
-#       Ela pegou uma REGRESSÃO REAL que EU tinha acabado de introduzir na 149ª: no pré-voo do Comparador,
-#       criei EXPANDERS DENTRO DE UM LAÇO com RÓTULO DINÂMICO — violando as DUAS regras da 132ª de uma só
-#       vez (o rótulo muda ⇒ nova identidade no React; e o NÚMERO de expanders varia com os dados ⇒ muda a
-#       forma da árvore). É EXATAMENTE a classe de bug que causou o removeChild e que me custou TRÊS
-#       gerações para diagnosticar (132ª, 137ª, 142ª). Eu a reintroduzi uma geração atrás, sem perceber.
-#       Corrigido: um container FIXO, rótulo ESTÁTICO, achados numa TABELA — que cresce e encolhe sem mexer
-#       na árvore. **Nenhuma auditoria manual teria pego isso. A suíte pegou em 3 segundos.**
-#     ── O QUE A SUÍTE PROTEGE (os invariantes que custaram 149 gerações) ──
-#       · a app NUNCA chuta um município homônimo (São Domingos sem UF → indeterminado, não palpite)
-#       · 'Barra, BA' é o MUNICÍPIO (−11,08), não o bairro de Salvador (−13,00) — a RFC-001
-#       · uma rota fisicamente impossível NÃO pode ser adotada (viária ≥ geodésica, na fonte)
-#       · o teorema da poda: 2.000 cenários, 68% podados, ZERO divergência de vencedor
-#       · o empate técnico (<1 km) NÃO é declarado vitória — não se ganha no ruído
-#       · a chave interna ('Origem') NUNCA é reescrita — reescrevê-la quebraria a Alocação inteira
-#       · zero except nu · zero rótulo dinâmico · zero chave duplicada · zero XLSX no caminho quente
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus. Suíte: 60/60.
-#   v3.8 (149ª geração) → COMPARADOR: pré-voo, estatística honesta, Pareto e metodologia [CMP-VALID]
-#     Auditoria da aba que EU construí (138ª/141ª). Achei 6 buracos; construí 5 e RECUSEI 2 pedidos, com motivo.
-#     ── 1. PRÉ-VOO (o mais valioso) ──
-#       _validar_planilha_comparativa: audita a planilha ANTES de processar. Barrar lixo na entrada é mais
-#       barato que descobrir depois — e MUITO mais barato que produzir um RELATÓRIO EXECUTIVO CONFIANTE em
-#       cima de dado podre, que é o pior desfecho possível num estudo que vai fundamentar decisão pública.
-#       Detecta (testado contra planilha deliberadamente podre — 12/12 achados): colunas faltando/duplicadas,
-#       distância não-numérica/negativa/implausível, linhas vazias, municípios repetidos (que PERDEM inscritos
-#       na conciliação), código IBGE de 6 dígitos ("o Excel comeu o zero à esquerda" — causa nº 1 no Brasil),
-#       código inexistente, município fora da base, HOMÔNIMO SEM UF, inscritos inválidos, espaços, e
-#       caracteres estranhos (encoding Latin-1 lido como UTF-8: "JataÃ­"). Cada achado traz SEVERIDADE, nº de
-#       linhas, EXEMPLO REAL e COMO CORRIGIR. Bloqueante trava o botão. Planilha limpa → 100/100, sem falso
-#       positivo.
-#       INSIGHT DE DOMÍNIO que um validador genérico erraria: **origem == destino NÃO é erro aqui.** Em
-#       logística comercial seria bug; no planejamento de exames é o MELHOR cenário — o candidato faz a prova
-#       no próprio município, deslocamento ZERO. Classificado como INFO e CONTADO, porque é indicador de
-#       qualidade da distribuição.
-#     ── 2. DOCUMENTAÇÃO ANTES DO UPLOAD ──
-#       Tabelas de colunas obrigatórias × opcionais, tipos, exemplo preenchido, e os 6 erros que mais
-#       acontecem com a correção de cada um. Fecha com: "a coluna que mais aumenta a confiabilidade é a UF".
-#     ── 3. ESTATÍSTICA HONESTA (a média engana) ──
-#       _estatisticas_distribuicao: mediana, quartis, P5/P95, desvio-padrão, amplitude e COEFICIENTE DE
-#       VARIAÇÃO. TESTE QUE PROVA a necessidade: duas distribuições com médias quase IGUAIS (12,5 e 14,0)
-#       contam histórias OPOSTAS — mediana 0,5 vs 14,0; CV 4,24 vs 0,1. Na primeira, o município TÍPICO não
-#       ganha NADA (uns poucos puxam a média); na segunda, todos ganham. **A média sozinha mentiria.** A tela
-#       lê isso em português: "ganho HOMOGÊNEO (melhoria estrutural)" vs "ganho CONCENTRADO (pontual)".
-#     ── 4. PARETO (a pergunta mais acionável) ──
-#       _pareto_economia: quantos municípios concentram 80% do ganho? Se são poucos, o gestor sabe ONDE
-#       focar e que os outros 5.000 são ruído. Se está espalhado, a conclusão é OPOSTA. Testado.
-#     ── 5. METODOLOGIA EXPLÍCITA (anti-caixa-preta) ──
-#       _metodologia_indicadores: 7 indicadores com FÓRMULA, colunas usadas, registros que participam e como
-#       interpretar. Requisito de auditoria governamental: um número que ninguém sabe explicar não pode
-#       fundamentar decisão pública. Vai na tela E no export (agora 11 abas).
-#     ── O QUE EU RECUSEI (com motivo, não por preguiça) ──
-#       (a) Os ~18 tipos de gráfico (radar, sankey, treemap, waterfall, rosca, coroplético...): já recusei na
-#           138ª e mantenho — seria MAIS TINTA, NÃO MAIS INFORMAÇÃO. Os 3 gráficos atuais + distribuição +
-#           Pareto respondem às perguntas que movem a decisão.
-#       (b) A classificação "Excelente/Muito Bom/Bom/Regular/Ruim/Muito Ruim": é REDUNDANTE com a Faixa de
-#           Diferença (141ª), que já classifica COM SINAL ("Referência melhor: 50 a 100 km"). Duas
-#           classificações sobrepostas sobre o mesmo eixo CONFUNDEM em vez de esclarecer.
-#     Renderização preguiçosa da 142ª PRESERVADA (medido antes/depois). 13 seções, RotaPipeline 41,
-#     balões 1×, score imutável, 0 except nus.
-#   v3.8 (148ª geração) → DESIGN SYSTEM + NAVEGAÇÃO LATERAL + ASSISTENTE INICIAL [UX]
-#     Redesign de UX. Três restrições que a própria história deste código impõe, e que eu NÃO violei:
-#       (a) a 142ª cortou a árvore de 907 → 70 elementos por rerun para matar o removeChild. Qualquer
-#           redesign que empilhe componentes pesados de volta RESSUSCITA o bug. Medi antes/depois:
-#           **70 elementos / 5,6 pesados — IDÊNTICO.** O redesign não custou um único componente.
-#       (b) padrão de UI estável (132ª): container sempre existe, rótulo estático.
-#       (c) Streamlit não é React: dá para injetar CSS e reorganizar — não dá para inventar componentes.
-#     ── 1. DESIGN SYSTEM DE VERDADE (tokens) ──
-#       O CSS anterior tinha **17 cores hardcoded e 8 tamanhos de fonte sem escala** — não era um Design
-#       System, era CSS acumulado: trocar a paleta exigia caçar hexadecimais em 6.601 caracteres. Agora há
-#       **30 tokens** (:root): superfícies em 4 níveis, texto em 3 níveis de hierarquia (não 8), escala
-#       tipográfica de razão 1.25, grade de espaçamento de 4px, raios e sombras. Paleta INSTITUCIONAL —
-#       isto é planejamento de exame nacional, não app de delivery.
-#     ── 2. NAVEGAÇÃO LATERAL (corrige uma regressão que EU criei) ──
-#       Na 142ª, para matar o removeChild, troquei st.tabs por um st.radio HORIZONTAL de 13 itens. A decisão
-#       técnica estava certa; o CUSTO VISUAL eu não paguei: 13 rótulos longos quebram em 3-4 linhas no topo
-#       — feio, difícil de escanear, e é a PRIMEIRA coisa que o usuário vê. Agora: navegação VERTICAL na
-#       barra lateral, agrupada por INTENÇÃO ("o que eu quero fazer"), não pela organização do código:
-#       ESTUDAR O DESLOCAMENTO · DECIDIR O LOCAL DE PROVA · ANALISAR · APRENDER · SISTEMA.
-#       Padrão de Linear/Notion/Azure Portal/Stripe. ENGENHARIA: UM ÚNICO st.radio (cinco radios separados
-#       brigariam por estado), com a ORDEM DE EXIBIÇÃO trocada e os cabeçalhos de grupo injetados por CSS
-#       (::before em nth-of-type). Reordenar a EXIBIÇÃO é seguro porque os 13 blocos comparam
-#       `_secao == _SECOES[n]` **por valor de string**, não por índice — _SECOES fica intacta. Verificado.
-#     ── 3. ASSISTENTE INICIAL ──
-#       Um recém-chegado abria a app e via 13 seções sem saber por onde começar. Agora, ENQUANTO não houver
-#       estudo processado, a app diz o próximo passo em 3 caminhos (testar um caso → estudar em lote →
-#       decidir onde aplicar) — e SOME sozinha quando deixa de ser útil, para não virar ruído.
-#       Fecha com a dica que mais evita erro real: "informe a UF — o Brasil tem 241 grupos de homônimos;
-#       'São Domingos' existe em 5 estados; sem a UF o estudo sai errado sem nenhum aviso".
-#     HTML auditado por AST + parser de tags: **balanceado** (a lição da 137ª).
-#     LIMITE HONESTO: NÃO redesenhei as 13 telas uma a uma, não adicionei animações/JS (ressuscitariam o
-#     removeChild) e não empilhei gráficos. Fiz as 3 mudanças de MAIOR ALAVANCAGEM. O resto é polimento com
-#     risco alto e ganho baixo — e contraria a sua própria regra de "não adicionar por adicionar".
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (147ª geração) → CONCORRÊNCIA: vazamento de estado ENTRE SESSÕES (bug meu) + teto de cache [CONCORRENCIA]
-#     QUARTA vez que o MESMO prompt de auditoria chega. Cumpri o que prometi no changelog da 145ª: em vez de
-#     inventar refatoração cosmética, fui à última área não auditada — ROBUSTEZ E CONCORRÊNCIA — e achei um
-#     bug REAL. Meu.
-#     ── O BUG (que EU introduzi na 144ª) ──
-#       No Streamlit, globais de MÓDULO são COMPARTILHADAS ENTRE TODAS AS SESSÕES de usuário. E eu escrevi:
-#           _off_on = st.checkbox("Identidade oficial IBGE (offline)", ...)
-#           _MODO_OFICIAL_OFFLINE["ativo"] = bool(_off_on)      # ← global de módulo!
-#       Ou seja: gravei uma PREFERÊNCIA DE USUÁRIO numa global compartilhada. Dois usuários simultâneos, um
-#       desmarcando a caixa, MUDAVA O COMPORTAMENTO DO OUTRO — em outro navegador, sem ele saber. Vazamento
-#       de estado entre sessões, clássico. O prompt pedia "múltiplos usuários simultâneos"; a app falhava.
-#     ── POR QUE EU USEI UMA GLOBAL (e por que era tentador) ──
-#       O pipeline roda em WORKERS do ThreadPoolExecutor (EXECUTOR_GLOBAL.submit(embrulhar_task_paralela)),
-#       e st.session_state NÃO é acessível de dentro de uma thread sem contexto de script. A global "resolvia".
-#     ── A CURA CERTA ──
-#       A preferência volta para st.session_state (POR SESSÃO, via key= do checkbox) e é CAPTURADA NA THREAD
-#       PRINCIPAL (_pref_modo_oficial()) e PASSADA EXPLICITAMENTE aos workers como argumento:
-#           EXECUTOR_GLOBAL.submit(embrulhar_task_paralela, t, _pref_of)
-#           embrulhar_task_paralela(item, modo_oficial) → executar_pipeline_unificado(..., modo_oficial)
-#           → forcar_geocodificacao_hierarquica_estrita(texto, modo_oficial)
-#       A global permanece só como PADRÃO DE PROCESSO (nunca mais escrita pela UI).
-#     ── AUDITORIA DAS OUTRAS GLOBAIS MUTÁVEIS ──
-#       Varri as 29 globais mutáveis por AST. As outras 5 com escrita (_BASE_AMBIGUIDADE_CACHE,
-#       _DERIV_AMBIGUIDADE_CACHE, _CENTROIDE_MUN_CACHE, IBGE_MUNICIPIOS_POR_UF, _MITIGA_SNAP_CACHE) são
-#       CACHES DETERMINÍSTICOS — mesmo conteúdo para todos, compartilhar é correto e desejável. Só a
-#       preferência estava no lugar errado.
-#     ── VAZAMENTO LENTO DE MEMÓRIA ──
-#       _CENTROIDE_MUN_CACHE é limitado por natureza (5.571 municípios). Mas _MITIGA_SNAP_CACHE é chaveado
-#       por COORDENADA — cresce indefinidamente. Numa instância do Streamlit Cloud viva por dias, estudo
-#       após estudo, é leak. Teto de 50k entradas com poda FIFO.
-#     ── ENTREGÁVEL QUE FALTAVA ──
-#       Você pediu 7 entregáveis (Relatório Executivo, Diagnóstico, Antes×Depois, Checklist, Roadmap) em
-#       TODAS as 4 vezes. Eu nunca os produzi — dava código e resumo no chat. Talvez seja por isso que o
-#       prompt voltava. Agora vai junto: RELATORIO_AUDITORIA.md, consolidando as gerações 139-147.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (146ª geração) → CÓDIGO IBGE NUNCA MAIS PELADO: rótulo, validação e retroalimentação [IBGE-ROTULO]
-#     ── O QUE JÁ EXISTIA (não reimplementei) ──
-#       A resolução do código já estava pronta desde a 103ª/104ª: índice reverso O(1) (_indice_ibge_por_
-#       codigo, 5.571 códigos), detector _e_codigo_ibge (7 dígitos puros), resolvedor _resolver_por_codigo_
-#       ibge, enriquecimento _enriquecer_por_codigo_ibge. Testei antes de tocar: 5300108 → Brasilia/DF em
-#       O(1); 9999999 → inexistente. O núcleo estava certo.
-#     ── O BURACO REAL: APRESENTAÇÃO ──
-#       O TEXTO CRU do usuário ia para as colunas 'Origem'/'Destino' e para as telas. Quem digitava um código
-#       via "5300108" pelado — na planilha, no painel, na auditoria — e tinha que DECORAR códigos para
-#       interpretar o próprio estudo. Exatamente a queixa.
-#     ── A DECISÃO DE ARQUITETURA (a armadilha do pedido) ──
-#       NÃO reescrevi 'Origem'/'Destino': são CHAVES INTERNAS. Os mapas dest_to_hub, topk_map e alo_mcda da
-#       Alocação, e a conciliação do Comparador, são INDEXADOS por elas. Trocar "5300108" por "5300108 —
-#       Brasilia/DF" quebraria a Alocação inteira. Mesma separação modelo-interno × apresentação da 134ª:
-#       ENRIQUECER, não substituir.
-#     ── ENTREGUE ──
-#       (1) _rotular_ibge — "5300108" → "5300108 — Brasilia/DF". Endereço/coordenada/nome passam INTACTOS.
-#       (2) _titulo_municipio — capitalização BRASILEIRA: o .title() do Python produz "Sao Miguel Do
-#           Araguaia" (errado); o correto é "Sao Miguel do Araguaia". Preposições em minúscula; apóstrofo
-#           tratado ("Alta Floresta d'Oeste").
-#       (3) _validar_codigo_ibge — quando inválido, EXPLICA a causa e SUGERE a correção, cobrindo os erros
-#           que de fato acontecem: 6 dígitos → "o Excel comeu o zero à esquerda; tente 0530010 e formate a
-#           coluna como TEXTO" (causa nº 1 de código quebrado no Brasil); 8 dígitos → "isso é CEP, não código
-#           IBGE"; 7 dígitos inexistentes → "dígito trocado, ou município extinto/incorporado".
-#       (4) _enriquecer_rotulos_ibge (pós-passo no Lote e na Alocação) — ANEXA 'Origem (Identificada)' /
-#           'Destino (Identificado)' e RETROALIMENTA Municipio/UF/Cod IBGE quando vieram vazios do código.
-#           Nunca sobrescreve o que já estava preenchido. Colunas no mapa de exportação (contexto de exames).
-#       (5) ECO IMEDIATO no Validador: digitou 5300108, vê "Brasilia/DF · fonte: IBGE Oficial · validação:
-#           Confirmada · confiança 100/100" NA HORA, antes de processar.
-#     ── LIMITE HONESTO (não escondo) ──
-#       A base embarcada NÃO tem acentos — o dado-fonte já vem assim (BRASILIA, SAO MIGUEL). Sai "Brasilia",
-#       não "Brasília". Restaurar acento de forma confiável é impossível por adivinhação (Brasilia→Brasília,
-#       mas Cacoal→Cacoal). Se você me passar a lista oficial ACENTUADA do IBGE, eu a embarco e o problema
-#       acaba. Enquanto isso, corrigi o que dava: a capitalização.
-#     Provado por teste sobre a BASE REAL. 13 seções, RotaPipeline 41, balões 1×, score imutável, 0 nus.
-#   v3.8 (145ª geração) → BARREIRA FÍSICA NA FONTE: a inconsistência deixa de ser POSSÍVEL [FISICA]
-#     Terceira vez que o MESMO prompt de auditoria chega. Não fingi novidade: fui à última sobra que me
-#     incomodava, e ela estava no próprio texto do pedido — "Garanta que nunca existam inconsistências
-#     físicas". Até aqui a app DETECTAVA (133ª) e reprovava a rota DEPOIS. Detectar não é garantir.
-#     ── O BURACO (L9457) ──
-#       A escolha entre provedores era: `osrm_vence = (km_o < km_g * 0.98)`. Ou seja, **adota a MENOR
-#       distância — sem nenhuma validação física**. Essa regra é ENVIESADA A FAVOR DO ERRO: se um provedor
-#       devolvesse uma distância curta e bogus, ela VENCIA SEMPRE, justamente por ser a menor. Era possível
-#       a app ADOTAR um valor fisicamente impossível e exibi-lo como vencedor — foi exatamente o sintoma do
-#       caso "Barra" (viária 210 km < geodésica 406 km, exibido como "✅ sucesso · Score 96,5/100").
-#       E a geodésica de Karney JÁ ESTAVA CALCULADA na L9290 — 167 linhas antes da decisão. A informação
-#       para barrar o absurdo estava ali, sem uso.
-#     ── A CURA: REJEIÇÃO NA FONTE ──
-#       _viaria_fisicamente_possivel (PURO): a estrada NUNCA pode ser mais curta que a geodésica. Antes de
-#       comparar, qualquer provedor que VIOLE a lei é DESCARTADO — e o outro assume. Se ambos violarem, a
-#       geocodificação é que está errada, e o veredito da 133ª reprova a rota. A inconsistência deixa de ser
-#       POSSÍVEL, em vez de ser apenas SINALIZADA — que é o que o requisito de fato pedia.
-#       Tolerância de 0,1% absorve o ruído numérico legítimo entre Haversine e Karney.
-#     ── PROVA (cenário real do caso Barra) ──
-#       geodésica 406,06 km · Google 521,31 km (possível) · OSRM 210,00 km (IMPOSSÍVEL).
-#       ANTES : osrm_vence = (210 < 521×0,98) = True → ADOTAVA 210 km. ❌
-#       DEPOIS: OSRM descartado na fonte → Google assume 521,31 km. ✅ E o valor bogus nem chega à disputa.
-#     ── NOTA HONESTA SOBRE ESTE PROMPT ──
-#       Este é o 3º envio do mesmo texto. A 143ª achou a poda de rede (−66%); a 144ª, o curto-circuito de
-#       geocodificação (−99%); esta, a barreira física. Cada rodada rende menos, porque as anteriores
-#       fizeram o trabalho. Se vier uma 4ª, o honesto é dizer: acabou o ouro fácil — e o próximo ganho real
-#       exige DADOS DE USO (qual estudo demorou, onde travou), não mais leitura de código.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (144ª geração) → IDENTIDADE OFICIAL OFFLINE: 99% da geocodificação eliminada [OFFLINE]
-#     Mesmo prompt de auditoria da 143ª. Em vez de fingir novidade, fui às áreas que eu MESMO declarei não
-#     ter auditado: o pipeline de geocodificação. E achei o maior desperdício da aplicação.
-#     ── O ACHADO ──
-#       forcar_geocodificacao_hierarquica_estrita disparava 3 APIs (ArcGIS, Nominatim, Photon) para TODA
-#       entrada — inclusive para um MUNICÍPIO PURO que já está na base IBGE embutida com lat/lon. Num estudo
-#       nacional: **16.713 chamadas de rede** (3 × 5.571) para resolver municípios que a app já conhecia.
-#       Pior: como o ArcGIS EMPATA em 230 com a âncora IBGE (128ª) e é inserido antes, a NUVEM vencia o
-#       desempate. Ou seja: 3 chamadas de rede para chegar a um ponto ~1-2 km ao lado da sede oficial que já
-#       estava em memória.
-#     ── A VERIFICAÇÃO QUE DESTRAVOU A DECISÃO ──
-#       A base embutida guarda a SEDE do município, não o centróide do polígono. Provado contra as sedes
-#       oficiais: **Altamira/PA (159.000 km²!) Δ=0,4 km**; Barra/BA Δ=0,0; Manaus Δ=0,1; Rio Verde Δ=1,0.
-#       Se fosse centróide, Altamira estaria dezenas de km fora. A sede é EXATAMENTE o ponto certo para
-#       deslocamento de candidato — é onde as pessoas estão e onde a prova é aplicada.
-#     ── A CURA: CURTO-CIRCUITO OFICIAL (_resolver_municipio_offline, PURO) ──
-#       Se a entrada é INEQUIVOCAMENTE um município — nome único no país, OU homônimo COM a UF informada —
-#       resolve pela base IBGE com ZERO rede. Regra CONSERVADORA: "São Domingos" sem UF (5 estados!) NÃO
-#       curto-circuita; vai ao pipeline completo. Endereços e POIs idem. Não chuta nunca.
-#       **MEDIDO em estudo nacional (5.571 municípios): 98,6% resolvidos offline; 16.713 → 228 chamadas
-#       (−99%); 0,03 s no total (5 µs por município). ~4 minutos economizados na fase 1.**
-#     ── NÃO É SÓ VELOCIDADE — É MAIS CORRETO ──
-#       (a) DETERMINÍSTICO e AUDITÁVEL: a mesma entrada dá a mesma coordenada oficial, sempre. Um estudo
-#           para exame nacional precisa ser defensável numa auditoria; coordenada de nuvem varia.
-#       (b) IMUNE ao caso "Barra": 'Barra, BA' agora devolve o MUNICÍPIO (−11,08) e não o BAIRRO de Salvador
-#           (−13,00). A classe de erro que originou a RFC-001 deixa de ser possível nesses casos.
-#       (c) Retorna o Código IBGE oficial junto, já validado.
-#     ── O QUE MUDA (dito na cara, não escondido) ──
-#       A coordenada de entradas-município passa a ser a SEDE OFICIAL do IBGE, e não o ponto do ArcGIS
-#       (~1-2 km de diferença). Em rotas de 50-400 km isso é <1% — e a oficial é a defensável. Quem quiser o
-#       comportamento antigo: DESMARQUE "🇧🇷 Identidade oficial IBGE (offline)" na barra lateral e o consenso
-#       multi-fonte volta a valer para tudo.
-#     BUG MEU PEGO NO TESTE: meu curto-circuito devolvia um dict, mas a função retorna uma TUPLA de 9
-#     campos — teria quebrado tudo a jusante. Corrigido antes de qualquer integração.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (143ª geração) → AUDITORIA MEDIDA + PODA POR LIMITE INFERIOR (−66% de rede) [PODA]
-#     Mandato aberto de auditoria global. Apliquei a regra do próprio pedido ("cada melhoria deve ter
-#     benefício MENSURÁVEL") e a lição da 139ª: MEDIR antes de mexer. Comecei suspeitando de MIM.
-#     ── O QUE MEDI E ESTAVA BOM (nenhuma otimização entrou sem número) ──
-#       • Pós-passos de homônimos (126ª) + integridade (133ª): 0,35 s em 5.571 linhas; 1,45 s em 20.000.
-#         Rodam UMA vez ao final. NÃO são gargalo. Meu palpite estava errado; a medição me absolveu.
-#       • Matriz competitiva (N×M): 13 MB no cenário real (5.571 municípios × 300 polos). Só estouraria
-#         em 100k×1000 — impossível: o Brasil TEM 5.571 municípios. NÃO é gargalo.
-#       Reporto os dois porque auditoria honesta também registra o que NÃO precisa mudar.
-#     ── O GARGALO REAL: REDE ──
-#       O modo multicritério roteava os TOP-5 polos de cada município: **27.855 chamadas de API** num
-#       estudo nacional. Era o único custo verdadeiramente multiplicativo da aplicação.
-#     ── A CURA: PODA POR LIMITE INFERIOR (branch-and-bound) ──
-#       É um TEOREMA, não uma heurística:
-#           custo(B) = viária(B) + penalidades(B),  penalidades ≥ 0
-#           viária(B) ≥ geodésica(B)                (a estrada nunca é mais curta que a reta)
-#           ⟹ custo(B) ≥ geodésica(B)
-#       Logo, se geodésica(B) > custo(A) — o custo JÁ CONHECIDO do polo mais próximo — B NÃO PODE vencer,
-#       e rotear B é chamada de API jogada fora. Implementado como 2 rodadas: (1) roteia só o polo mais
-#       próximo de cada município; (2) com o custo real do incumbente em mãos, PODA e roteia apenas os
-#       sobreviventes. Defensivo: falha na poda ⇒ segue sem ela.
-#       **27.855 → 9.589 chamadas (−66% de rede), medido em estudo nacional simulado.**
-#     ── PROPRIEDADE NOTÁVEL (a regra se auto-regula, sem parâmetro mágico) ──
-#       Polo mais próximo BOM (rápido, sem balsa) ⇒ custo(A) baixo ⇒ limite aperta ⇒ poda ~85%.
-#       Polo mais próximo RUIM (balsa +60 km-eq, estrada lenta) ⇒ custo(A) alto ⇒ limite AFROUXA ⇒ poda
-#       ~42% ⇒ o motor EXPLORA alternativas. Ela economiza onde não há o que ganhar e investiga onde há.
-#     ── PROVA DE ZERO REGRESSÃO ──
-#       Força bruta, 3.000 cenários aleatórios (5 a 6 polos, sinuosidade 1,05–1,9, 15% com balsa):
-#       68% dos candidatos podados e **ZERO divergências** — o vencedor é IDÊNTICO com e sem poda.
-#       A poda é otimização de custo ZERO em precisão. A economia de rede aparece na tela, explicada.
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (142ª geração) → removeChild: A CAUSA RAIZ ESTRUTURAL (RCA definitiva) [UI-LAZY]
-#     TERCEIRA TENTATIVA. As duas anteriores falharam, e o motivo dessa falha É a evidência principal:
-#     eu estava consertando ELEMENTOS INDIVIDUAIS dentro de uma árvore que era RECONSTRUÍDA INTEIRA a cada
-#     rerun. Sintoma, não causa.
-#     ── HIPÓTESES DESCARTADAS (com evidência, não com opinião) ──
-#       • st.empty() → 1 uso no app inteiro.                                          ❌
-#       • Chaves duplicadas → 69 keys, 0 duplicadas (auditoria por regex).            ❌
-#       • Nº de abas variável → todas as st.tabs com lista literal fixa.              ❌
-#       • HTML malformado → auditoria AST + parser de tags: TUDO balanceado.          ❌
-#       • Componentes de terceiros (folium/aggrid) → não são usados.                  ❌
-#       • Churn de bytes do download_button → TESTE PROVOU bytes IDÊNTICOS. Eu mesmo
-#         refutei minha hipótese da 137ª. Não era o mecanismo.                        ❌
-#       • Expanders condicionais (132ª) e trabalho pesado por rerun (137ª) → REAIS e
-#         corrigidos, mas NÃO curaram → a causa está ACIMA do nível do elemento.      ⚠️
-#     ── CAUSA RAIZ (MEDIDA) ──
-#       st.tabs() executa o corpo de TODAS as abas em TODO rerun. Medido neste app:
-#       **907 elementos e 73 COMPONENTES PESADOS** (Plotly, st.map/deck.gl, dataframes, iframes)
-#       destruídos e recriados a cada tecla, upload, slider ou troca de aba. Esses componentes
-#       manipulam o PRÓPRIO DOM de forma ASSÍNCRONA. Quando o React reconcilia a árvore no meio dessa
-#       operação, ele tenta remover um nó cujo pai já mudou → "The node to be removed is not a child of
-#       this node". Isso explica TODOS os gatilhos relatados (anexar planilha, trocar arquivo, mudar
-#       parâmetro, navegar entre abas, preencher origem/destino): todos disparam rerun.
-#     ── A CURA (estrutural) ──
-#       NAVEGAÇÃO PREGUIÇOSA: st.tabs → seletor de seção; renderiza APENAS a seção ativa.
-#       **907 → 70 elementos (13× menor) · 73 → 5,6 componentes pesados (13× menos)**, medido.
-#       Cada Plotly/st.map/iframe a menos é um ciclo de vida de DOM assíncrono a menos para o React
-#       reconciliar — que é exatamente onde o removeChild nasce. De quebra, cada rerun fica ~13× mais leve.
-#     ── EFEITO COLATERAL TRATADO ──
-#       Com st.tabs, o corpo executava sempre, então o processamento em chunks (auto-continuado por
-#       st.rerun()) prosseguia mesmo com o usuário em outra aba. Com renderização preguiçosa, trocar de
-#       seção no meio PARARIA o laço. Solução: navegação TRAVADA durante o processamento
-#       (lote_em_andamento / alo_em_andamento), com aviso na tela. Comportamento preservado.
-#     ── SEGURANÇA DA TRANSFORMAÇÃO ──
-#       Provado por análise AST antes de mexer: NENHUMA aba lê variável definida em outra (comunicam-se
-#       via session_state) ⇒ a renderização preguiçosa é MECANICAMENTE SEGURA. `with tab_X:` → `if _secao
-#       == _SECOES[n]:` mantém a indentação do corpo — troca de linha pura, zero re-indentação.
-#       Testes: AST parseia as 17k linhas; 13 seções com índices 0..12 sem duplicata; 3 sub-abas
-#       preservadas (preguiçosas por herança); 0 rótulos dinâmicos e 0 chaves duplicadas (padrões da 132ª).
-#     ── CUSTO HONESTO ──
-#       As abas viram um seletor de seção (radio horizontal). É uma mudança de UX REAL, feita por um motivo
-#       real, e REVERSÍVEL em uma linha. E continuo sem poder reproduzir um erro de DOM do navegador num
-#       container headless: eu eliminei a causa medida e o mecanismo documentado — não "vi o erro sumir".
-#       SE PERSISTIR, preciso de: (a) a versão do Streamlit no requirements.txt (removeChild com st.tabs é
-#       bug CONHECIDO de certas versões do frontend — nesse caso a cura é atualizar); (b) se ocorre em aba
-#       anônima sem extensões (o tradutor automático do Chrome é causa notória, e está FORA do código).
-#     13 seções, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (141ª geração) → INSCRITOS: carga por local de prova, faixas de diferença e documentação [INSCRITOS]
-#     ⚠️ CORREÇÃO DE PREMISSA (o pedido tinha uma armadilha matemática): "os inscritos devem participar da
-#     DECISÃO do polo". Eles NÃO podem — e fingir que sim seria charlatanismo. A escolha é feita MUNICÍPIO A
-#     MUNICÍPIO, e o nº de inscritos é uma CONSTANTE que multiplica todos os polos candidatos daquele
-#     município igualmente: ela SE CANCELA. Formosa com 10 ou 10.000 candidatos escolhe o mesmo polo mais
-#     próximo. Onde os inscritos MUDAM uma decisão de verdade: (a) CARGA de cada polo; (b) QUAIS polos abrir
-#     (140ª); (c) priorização de quem sofre mais. Implementei (a) — que faltava — em vez de uma ponderação
-#     decorativa que não faria nada.
-#     ENTREGUE:
-#       (1) INSCRITOS na Alocação — 3ª coluna OPCIONAL (auto-detectada). Sem ela, tudo funciona como antes
-#           (peso 1/município). Com ela, cobertura, acessibilidade crítica, carga e simulador passam a
-#           ponderar por CANDIDATO. A coluna já era preservada no df (rede da 114ª); faltava a app USÁ-LA.
-#       (2) _carga_por_polo — CARGA POR LOCAL DE PROVA: quantos candidatos cada polo recebe, de quantos
-#           municípios, distância média/máxima. Alerta de CONCENTRAÇÃO (>40% num só polo): "um polo com
-#           47.000 candidatos pode não caber numa escola — distribuir a carga pode importar mais que
-#           economizar quilômetros". É a decisão real que os inscritos habilitam.
-#       (3) _faixa_diferenca + _estatisticas_por_faixa (Comparador) — faixas COM SINAL, de propósito: 60 km
-#           a favor e 60 km contra NÃO são a mesma coisa, e uma faixa sem sinal esconderia exatamente o que
-#           interessa. Nova coluna 'Faixa de Diferenca', painel com municípios/candidatos/% /economia por
-#           faixa, e 8ª aba no export. A leitura vira acionável: "priorize revisar 'Referência melhor: acima
-#           de 50 km' — ali a aplicação leva o candidato bem mais longe; pode ser município mal identificado".
-#       (4) DOCUMENTAÇÃO da aba Comparador (era a ÚNICA sem): guia "❓ Como usar esta aba" no _GUIA_ABAS
-#           (11 guias agora) + seção "🚀 Como obter o MÁXIMO desempenho e precisão" com 7 recomendações
-#           práticas (IBGE, UF, inscritos, método da distância da referência, modo multicritério, ler os
-#           não-conciliados, priorizar as faixas adversas).
-#     Provado por teste sobre CÓDIGO REAL: carga (Rio Verde = 47.000 candidatos, 96,9%), faixas com sinal
-#     (+70 e −70 caem em faixas distintas), estatísticas por faixa (ordenação e totais), coluna na saída.
-#     PERFORMANCE: nada pesado no caminho quente — a carga é O(n) sobre o df já em memória; nenhum XLSX novo
-#     por rerun (lição da 139ª). 13 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (140ª geração) → 🎯 PLANEJAMENTO DE POLOS: cobertura + onde abrir o próximo [COBERTURA]
-#     Com a base limpa (139ª), fui atrás do que FALTA. O app respondia "onde está" e "quanto custa", mas não
-#     as DUAS perguntas que o gestor de exames de fato faz: **quantos candidatos estão longe demais?** e
-#     **onde abrir o próximo local de prova?**. Agora responde. Motores PUROS/testados, 100% offline:
-#       (1) _curva_cobertura — % de CANDIDATOS (ponderado por inscritos, não por linha!) dentro de cada
-#           faixa de km, + mediana e P90 PONDERADOS. Por que importa: num caso com 9.200 candidatos, a média
-#           simples de distância dava 157 km e MENTIA — a mediana ponderada é 30 km e 54% dos candidatos
-#           estão a ≤50 km. A média esconde a cauda; a curva não.
-#       (2) _acessibilidade_critica — municípios acima do limiar, ordenados por IMPACTO (inscritos × km) e
-#           não por distância pura: 3.000 candidatos a 210 km doem mais que 20 candidatos a 400 km.
-#       (3) _simular_abertura_polos — SIMULADOR DE ABERTURA (facility location guloso, aproximação clássica
-#           do p-median/cobertura máxima): para cada município, calcula o GANHO MARGINAL de abrir um polo ali
-#           (só migram os que ficariam mais perto), elege o melhor, atualiza as distâncias e repete. Testado
-#           com resposta conhecida: acha o centro do cluster (6.100 candidatos, 300 km → 11,6 km) e depois
-#           vai para o município isolado — ganho marginal decrescente, como manda o guloso.
-#     DUAS DESCOBERTAS DO TESTE, ambas incorporadas:
-#       • Sem restrição, o guloso sugeria **polos a 12 km um do outro** — ótimo na conta, absurdo na prática.
-#         Adicionei distância mínima entre polos e consciência dos polos JÁ existentes (lê Lat/Lon Destino).
-#       • O guloso maximiza km-candidato TOTAIS ⇒ privilegia CLUSTERS DENSOS. Municípios isolados com poucos
-#         candidatos seguem mal atendidos. A matemática está certa; a política pública pode não estar. Isso
-#         está DITO na tela: **eficiência ≠ equidade**, e a lista de Acessibilidade Crítica é o contrapeso.
-#     MEMÓRIA: uma matriz M×M nacional (5.571²) seriam 248 MB e estouraria o alvo de 1 GB. Candidatos a polo
-#     limitados aos de pior acessibilidade ⇒ matriz M×K de **13 MB**; escala nacional roda em **0,48 s**.
-#     LIMITE HONESTO NA TELA: a simulação usa distância GEODÉSICA, não viária — é ferramenta de TRIAGEM (diz
-#     quais municípios investigar); os finalistas devem ser roteados de verdade pelo motor multicritério.
-#     UI no padrão estável da 132ª (container fixo, rótulo estático), dentro de Locais de Aplicação — onde o
-#     gestor já está decidindo. 13 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (139ª geração) → AUDITORIA DE PERFORMANCE COM MEDIÇÃO (e a bomba que EU plantei) [PERF]
-#     Mandato aberto ("veja o que for benéfico"). Em vez de inventar features, MEDI. E a auditoria pegou,
-#     antes de tudo, uma REINCIDÊNCIA MINHA: na 138ª eu remontava o XLSX de 7 abas + o relatório executivo
-#     do Comparador DENTRO do bloco de exibição — ou seja, A CADA RERUN. Medido em escala nacional (5.571
-#     municípios): **1.377 ms de CPU bloqueante por interação**, pagos até ao trocar de aba ou digitar num
-#     campo (st.tabs executa o corpo de TODAS as abas). É exatamente o bug que eu diagnostiquei e corrigi na
-#     137ª — e reintroduzi na geração seguinte. Registro isso porque a disciplina só vale se eu aplicá-la a
-#     mim mesmo.
-#     CORRIGIDO (tudo com medição antes/depois):
-#       (1) COMPARADOR: _montar_xlsx_comparacao + relatório passam a ser calculados UMA VEZ, no clique, e
-#           servidos do session_state. **1.377 ms → ~0 ms por rerun.**
-#       (2) CALCULADORA: a exportação multi-abas RENDERIZAVA O GRÁFICO EM PNG (fig.to_image → Kaleido) a
-#           cada rerun — a operação mais cara da app inteira — mesmo que ninguém baixasse nada. Agora é
-#           SOB DEMANDA (botão "Preparar relatório"). Elimina renderização de imagem do caminho quente.
-#       (3) CLASSIFICAÇÃO e MUNICÍPIOS PRÓXIMOS: XLSX remontados por rerun → bytes memoizados
-#           (_xlsx_bytes / novo _xlsx_bytes_2 para planilhas de duas abas).
-#       (4) FUZZY DA CONCILIAÇÃO: meu laço Python O(n×m) da 138ª (2,8 milhões de chamadas em escala
-#           nacional) trocado por process.extractOne do rapidfuzz (laço em C) — a MESMA primitiva que o app
-#           já usava na geocodificação. Medido: **3,04 s → 1,73 s (1,8×)**. Honesto: eu previa um ganho
-#           muito maior; a medição mostrou 1,8×, e é isso que reporto.
-#     ZERO REGRESSÃO provada por teste sobre CÓDIGO REAL: a conciliação vetorizada devolve resultado
-#     IDÊNTICO (hierarquia IBGE>mun+UF>mun>fuzzy, o não-conciliado auditado, os 90.000 km-candidato da
-#     ponderação exata). MÉTODO: nenhuma otimização entrou sem número antes/depois — palpite não é
-#     engenharia de performance. 13 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (138ª geração) → ⚖️ COMPARADOR DE ESTUDOS: nova aba de auditoria contra base externa [COMPARADOR]
-#     ⚠️ INVARIANTE ALTERADO DE PROPÓSITO: 12 abas → **13 abas** (nova `tab_comparador`). O invariante existe
-#     para pegar regressão ACIDENTAL (uma aba sumir num refactor), não para bloquear funcionalidade pedida.
-#     A partir daqui, o invariante é 13 abas com os mesmos nomes de variável.
-#     O QUE FAZ: compara a distribuição de candidatos produzida pela aba Locais de Aplicação contra uma BASE
-#     DE REFERÊNCIA EXTERNA, e demonstra município a município onde cada solução leva o candidato mais perto
-#     do local de prova. Núcleo 100% PURO/testável:
-#       • _conciliar_comparativo — HIERARQUIA de vínculo: (1) Código IBGE, (2) município+UF, (3) município,
-#         (4) fuzzy controlado (rapidfuzz, limiar 90). NENHUM registro é descartado em silêncio: o que não
-#         concilia vai para a auditoria COM O MOTIVO. Limiar CALIBRADO contra dados reais: aceita erro de
-#         digitação ("Novo Progreso"→97) e REJEITA município genuinamente diferente ("Água Boa do Sul" vs
-#         "Água Boa"→76) — conservador na direção certa.
-#       • _comparar_alocacoes — colunas de decisão por município: mesmo destino?, Δ absoluta e %, economia de
-#         km, economia PONDERADA POR INSCRITOS, Δ de tempo, vencedor e justificativa técnica. EMPATE TÉCNICO
-#         (<1 km) é regra explícita: não se declara vitória dentro do ruído de geocodificação.
-#       • _estatisticas_comparacao — Brasil / Região / UF. TODO indicador de impacto é ponderado por
-#         inscritos (1 município com 5.000 candidatos pesa mais que 50 com 10), faixas de economia (≥5/10/
-#         20/50/100 km), beneficiados × prejudicados.
-#       • _relatorio_executivo_comparacao — RELATÓRIO EXECUTIVO automático (8 seções: resumo, metodologia,
-#         resultados, divergências, análise territorial, análise dos candidatos, conclusões/recomendações,
-#         qualidade). Declara as LIMITAÇÕES em vez de escondê-las: alerta sobre vínculos por fuzzy, sobre
-#         registros não conciliados que ficaram fora das estatísticas, e sobre o risco metodológico (se a
-#         referência mediu por outro método, parte da diferença é metodológica, não logística).
-#       • _fmt_num — formatação BR. Existe porque um `.replace(",", ".")` na FRASE inteira corrompia a
-#         pontuação do relatório ("correspondência). somando") — o TESTE pegou o bug.
-#     UI (padrão estável da 132ª: containers fixos, rótulos estáticos): upload + mapeamento automático das
-#     colunas, painel executivo (8 KPIs), gráficos COM interpretação automática, tabela município a município,
-#     auditoria da conciliação, o relatório na tela, e export .xlsx com 7 abas (Comparação, Resumo Brasil,
-#     Por UF, Por Região, Não Conciliados, Relatório Executivo, Glossário).
-#     ESCOPO HONESTO: o pedido listava ~20 tipos de gráfico (radar, sankey, sunburst, violino, waterfall,
-#     treemap, coroplético, matriz de confusão...). Implementei os 3 que SUSTENTAM A DECISÃO (quem venceu;
-#     economia ponderada por UF; distribuição da diferença) — cada um com interpretação automática. Os demais
-#     seriam ornamento: mais tinta, não mais informação. Mapa de fluxos origem×destino e export de PDF ficam
-#     para uma geração própria, se o uso mostrar que fazem falta. Provado por teste sobre CÓDIGO REAL
-#     (hierarquia de conciliação, empate técnico, ponderação exata = 90.000 km-candidato, recortes UF/Região,
-#     relatório íntegro). RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (137ª geração) → removeChild: CAUSA RAIZ REAL (rerun lento + iframe) ELIMINADA [UI-ESTAVEL]
-#     CORREÇÃO DE DIAGNÓSTICO. Na 132ª eu tratei a instabilidade da árvore no RESULTADO DO LOTE — real, mas
-#     NÃO era o que mordia o usuário. O dado novo mudou tudo: o erro ocorre ao apenas PREENCHER os campos do
-#     Validador, ANTES de clicar. Logo, a causa está no que roda em TODO RERUN — e no Streamlit `st.tabs`
-#     executa o corpo de TODAS as abas a cada rerun (um blur de text_input já dispara um).
-#     INVESTIGAÇÃO (hipóteses testadas e DESCARTADAS): `if orig_ind and dest_ind` está DENTRO do st.button
-#     (só roda ao clicar); HTML de todos os unsafe_allow_html está BALANCEADO (auditoria por AST + parser de
-#     tags); não há componentes customizados de terceiros; keys únicas; nº de abas fixo. HIPÓTESE PRÓPRIA
-#     REFUTADA PELO TESTE: eu supus que o XLSX regerado teria timestamp interno e mudaria os bytes a cada
-#     rerun (churn do download_button) — o teste provou que os bytes são IDÊNTICOS. Não era esse o mecanismo.
-#     CAUSA RAIZ MEDIDA: (a) o painel de ambiguidade da 127ª (MEU) recalculava, A CADA RERUN,
-#     _estatisticas_ambiguidade sobre 5.571 municípios + 2 DataFrames + 2 XLSX (521 e 1.690 linhas) =
-#     ~280 ms de CPU BLOQUEANTE por rerun, medidos; (b) o handbook (~107 KB) era montado como IFRAME
-#     (components.html) em TODO rerun, mesmo colapsado e mesmo com o usuário em outra aba. Reruns lentos +
-#     digitação rápida ⇒ deltas se sobrepõem enquanto um IFRAME (nó pesado, montagem assíncrona) é destruído
-#     e recriado ⇒ o React tenta remover um nó cujo pai já mudou ⇒ NotFoundError/removeChild. Iframe recriado
-#     durante reconciliação é o vetor mais documentado dessa família de erro.
-#     CURA: (1) _obter_derivados_ambiguidade — singleton dos derivados (estatísticas + 2 DataFrames):
-#     280 ms → 0,8 µs por rerun (medido); (2) _xlsx_bytes com @st.cache_data — bytes gerados UMA vez
-#     (aplicado à Rota Dourada, às 2 bases de ambiguidade e ao ranking); (3) IFRAME DO HANDBOOK SOB DEMANDA
-#     (checkbox 'hb_inline', default OFF) — deixa de existir em todo rerun; (4) árvore da ROTA DOURADA
-#     estabilizada: ela renderiza ACIMA dos campos e do BOTÃO, e o `if _golden_regs:` fazia divider+tabela+
-#     download aparecerem/sumirem, deslocando os inputs e o botão — agora container fixo (padrão da 132ª);
-#     (5) consulta da base de ambiguidade em UM ÚNICO elemento fixo (antes st.success/st.write/st.info
-#     apareciam e sumiam ao digitar); (6) removido `value=False` junto de `key=` no checkbox (anti-padrão
-#     do Streamlit: o default colide com o session_state da chave).
-#     LIMITE HONESTO: não é possível reproduzir um erro de DOM do navegador num container headless. Eu
-#     ELIMINEI as causas com evidência medida (280 ms/rerun) e o vetor mais provável (iframe por rerun), e
-#     REFUTEI publicamente minha própria hipótese anterior quando o teste a contrariou. Se persistir, preciso
-#     saber: acontece com a caderneta de Rotas Douradas VAZIA? Em aba anônima (sem tradutor do navegador)?
-#     12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (136ª geração) → HANDBOOK COMPLETO E SINCRONIZADO COM A APLICAÇÃO REAL [DOC-EMBED]
-#     Fecha a documentação. DIAGNÓSTICO: o handbook embarcado estava sincronizado até a 115ª e seu CHANGELOG
-#     parava na 113ª — ou seja, ~23 gerações de funcionalidade NÃO estavam documentadas (todas as camadas de
-#     homônimos, ambiguidade, anti-colisão, decisão multicritério de polo e integridade geográfica). Os
-#     exemplos práticos ainda eram de bairros/RAs genéricos (Ceilândia→Samambaia). ENTREGUE (blob decodificado
-#     → reescrito → re-embarcado; 90.200 → 107.697 chars de HTML):
-#     (1) DUAS SEÇÕES NOVAS, no padrão visual do documento e no índice de navegação:
-#         §29 "Identificação Territorial, Homônimos e Integridade" — o tamanho real do problema (241 grupos
-#         de homônimos, 521 municípios, 1.323 pares semelhantes); a Base de Ambiguidade offline e o Índice
-#         0-100; a HIERARQUIA de desambiguação (código IBGE → UF → nome único → contexto → indeterminado, com
-#         a regra de NÃO chutar); a anti-colisão município↔bairro contada pelo caso Barra real; e o Índice de
-#         Integridade Geográfica, explicando por que o veredito mudou ("detectar e aprovar na mesma tela é
-#         pior que não detectar").
-#         §30 "Decisão do Local de Aplicação (multicritério)" — por que linha reta não serve; o Custo
-#         Logístico Efetivo em km-equivalentes (viária + lentidão + balsa + sinuosidade) e por que é ABSOLUTO
-#         (contra a instabilidade do min-max); o IGQ derivado; a calibração pelo usuário; o modo opt-in; e a
-#         XAI sob a ótica do candidato.
-#     (2) §19 EXEMPLOS PRÁTICOS reescrita: 6 casos REAIS do domínio (deslocamento longo no interior; "São
-#         Domingos" sem UF em 5 estados; o truncamento "São Miguel" × "São Miguel do Araguaia"; o caso Barra
-#         com a viária 210 km < reta 406 km; a escolha de polo com balsa no caminho; o Código IBGE como
-#         entrada mais segura). Os exemplos de bairro/RA foram eliminados.
-#     (3) §12 CAMPOS & INDICADORES: 12 indicadores novos documentados (Homônimo Detectado, Índice de
-#         Ambiguidade, Método de Desambiguação, Confiança, Validação Espacial, Risco de Confusão, Integridade
-#         Geográfica, Alerta de Integridade, IGQ, Esforço de Deslocamento, Segundo Melhor Local, Dor Logística).
-#     (4) §27 CHANGELOG sincronizado da 113ª à 136ª (23 gerações).
-#     (5) §13 As 12 Abas: nomes sincronizados com a 134ª (Deslocamento do Candidato, Estudo em Lote, Painel
-#         Estratégico, Polos Alternativos, Auditoria da Aplicação).
-#     Provado por teste sobre CÓDIGO REAL: HTML íntegro (DOCTYPE→</html>), 30 seções com tags balanceadas,
-#     navegação consistente (todo item do nav aponta p/ seção existente), gerações 126-133 documentadas,
-#     6 exemplos no contexto de exames, changelog até a 136ª, 25 campos, abas sincronizadas, ZERO jargão
-#     logístico (hub/cliente/motorista/frete). 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 nus.
-#   v3.8 (135ª geração) → DOCUMENTAÇÃO E IDENTIDADE DO PRODUTO NO CONTEXTO DE EXAMES [DOC-EXAMES]
-#     Completa a 134ª: agora a DOCUMENTAÇÃO e o NOME do produto também assumem a identidade de plataforma de
-#     inteligência logística para aplicação de exames nacionais. (1) NOME: "Motor Nacional de Roteirização
-#     Inteligente" → "Motor Nacional de Inteligência Logística para Exames" (mantém a marca "Motor Nacional";
-#     PROPOSTO — trocar é 1 constante). Aplicado em page_title, menu About, <h1> da home, apresentação da
-#     home, abertura da Enciclopédia, cabeçalho do arquivo e metadados de export GPX/KML (o arquivo que o
-#     usuário abre no QGIS também é a cara do produto). (2) HANDBOOK EMBARCADO (_HANDBOOK_HTML_B64, blob
-#     gzip+base64): decodificado (88.918 chars), recontextualizado e RE-EMBARCADO (90.200 chars). Método
-#     honesto: reescrita integral das SEÇÕES DE IDENTIDADE (título, h1, Visão Geral, "O problema que
-#     resolve", Público-alvo) + PASSE DE TERMINOLOGIA cirúrgico (42 ocorrências: hub→polo de aplicação,
-#     cliente→município de candidatos, motorista→candidato, roteirização→análise de deslocamento, Alocação de
-#     Hubs→Definição de Locais de Aplicação, B2B→institucional). NÃO reescrevi as 28 seções técnicas do zero
-#     — elas contêm conteúdo correto construído em 130+ gerações; destruí-las para trocar vocabulário seria
-#     vandalismo. (3) _GUIA_ABAS: os 3 guias-núcleo (Deslocamento do Candidato, Estudo em Lote, Locais de
-#     Aplicação) REESCRITOS de fato — não traduzidos: o guia agora ensina o usuário a evitar o erro que
-#     realmente importa ("o Brasil tem 241 grupos de municípios homônimos — São Domingos existe em 5 UFs;
-#     sem a UF, todo o estudo de deslocamento fica errado") e a ler a Integridade Geográfica. (4) Demais
-#     enquadramentos de aba (Enciclopédia, Monitor, Classificação, Calculadora) recontextualizados.
-#     Provado por teste sobre CÓDIGO REAL: handbook decodifica, HTML íntegro (DOCTYPE→</html>), 28 seções
-#     preservadas, nova identidade presente, ZERO ocorrências de hub/cliente/motorista, nome antigo
-#     eliminado; os 10 guias parseiam e os 3 núcleos estão no contexto de exames.
-#     LIMITE HONESTO: as seções TÉCNICAS profundas do handbook (Pipeline, Algoritmos, Scores, Consenso,
-#     Guia do Desenvolvedor) tiveram o vocabulário trocado, mas seus EXEMPLOS internos ainda citam casos
-#     logísticos genéricos. Reescrevê-los caso a caso é uma geração própria, se você quiser.
-#     12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (134ª geração) → RECONTEXTUALIZAÇÃO PARA PLANEJAMENTO DE EXAMES NACIONAIS [EXAMES]
-#     Mudança de IDENTIDADE DO PRODUTO: a app não calcula rotas de motorista/entregador — ela apoia o
-#     PLANEJAMENTO E A AUDITORIA DO DESLOCAMENTO DE CANDIDATOS até seus LOCAIS DE PROVA (ENADE, ENEM, CNU,
-#     concursos). DECISÃO DE ARQUITETURA (a armadilha do pedido): os nomes de coluna NÃO são rótulos — são
-#     CHAVES INTERNAS ('Origem' 45×, 'Distancia' 49×, 'Municipio Origem' 38× no código: builder, pós-passos,
-#     painéis, mapas de session_state, Rotas Douradas). Renomeá-las no DataFrame QUEBRARIA a aplicação
-#     inteira. Solução profissional: SEPARAR MODELO INTERNO DE APRESENTAÇÃO — as chaves ficam, a tradução
-#     acontece nas FRONTEIRAS. ENTREGUE: (1) os 12 rótulos de aba recontextualizados (Geocodificação →
-#     "Deslocamento do Candidato"; Alocação de Hubs → "Locais de Aplicação"; Municípios Próximos → "Polos
-#     Alternativos"; Enterprise Analytics → "Painel Estratégico"; Auditoria → "Auditoria da Aplicação") —
-#     nomes de VARIÁVEL e contagem preservados (invariante das 12 abas intacto); (2) o enquadramento de cada
-#     aba ("Objetivo desta aba") reescrito sob a ótica do candidato; (3) rótulos de entrada: Origem →
-#     "Município de origem do candidato", Destino → "Local de aplicação da prova"; botões: "Calcular Rota
-#     Individual" → "Analisar Deslocamento do Candidato", "Processar Cruzamento Espacial" → "Definir
-#     Melhores Locais de Aplicação"; uploaders da Alocação → municípios dos candidatos / polos de aplicação;
-#     (4) _MAPA_COLUNAS_EXAME (30 colunas) + _renomear_colunas_exame(df) PURO, aplicado APENAS na FRONTEIRA
-#     DE EXPORTAÇÃO sobre CÓPIA: a planilha sai com "Município de Origem do Candidato", "Local de Aplicação
-#     da Prova", "Distância do Candidato ao Local de Prova (km)", "Tempo Estimado de Deslocamento",
-#     "Travessia por Balsa no Deslocamento", "Polo de Aplicação", "Segundo Melhor Local de Aplicação" etc.,
-#     enquanto o df interno segue com as chaves originais; (5) XAI da escolha do polo reescrita sob a ótica
-#     do candidato ("proporciona o menor esforço de deslocamento aos candidatos… o deslocamento não exige
-#     travessia por balsa"); painel "Auditoria da Escolha do Local de Prova (recomendado × alternativa)".
-#     Provado por teste sobre CÓDIGO REAL: cabeçalhos traduzidos na exportação; df interno NÃO mutado;
-#     colunas do usuário/não-mapeadas preservadas; valores intactos; vazio/sem-match robusto. GUARDA DE
-#     NÃO-REGRESSÃO: verificado que todas as chaves internas seguem referenciadas no código.
-#     LIMITE HONESTO: recontextualizei a SUPERFÍCIE de alto impacto (abas, enquadramentos, entradas, botões,
-#     decisão/XAI, planilhas). Enciclopédia Core, Manual do Usuário e textos internos de painéis secundários
-#     ainda usam vocabulário logístico — são centenas de strings e merecem uma geração própria, para não
-#     inflar o risco desta. Termos técnicos consagrados mantidos (geocodificação, Código IBGE,
-#     georreferenciamento, roteamento). 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 nus.
-#   v3.8 (133ª geração) → VEREDITO DE INTEGRIDADE GEOGRÁFICA (RFC-001 §15/§16/§17/§20) [INTEGRIDADE]
-#     O buraco que sobrava da RFC-001 estava na TELA: no caso Barra o app afirmava "✅ Rota estabelecida com
-#     sucesso · Score 96.5/100" AO MESMO TEMPO em que reportava "Consistência Física: ❌ INCONSISTENTE —
-#     fisicamente impossível". Detectar e aprovar na mesma tela é PIOR que não detectar: o usuário confia.
-#     ENTREGUE: (1) o veredito do Validador passa a ser CONDICIONADO à integridade — impossibilidade física
-#     (viária < reta) ou colisão de entidade REPROVAM a rota, com o Índice de Integridade Geográfica (0-100)
-#     e os problemas nomeados, em vez do banner de sucesso; (2) pós-passo _enriquecer_integridade_geografica
-#     anexa ao Lote e à Alocação as colunas 'Integridade Geográfica' e 'Alerta de Integridade' — dá forma
-#     MEDÍVEL e AUDITÁVEL ao critério de aceitação §20 em TODOS os módulos; (3) painel "🛡️ Integridade
-#     Geográfica do Lote" (integridade média, reprovadas, tabela das violações), no padrão de UI estável da
-#     132ª (container sempre existe, rótulo estático). Helper PURO _integridade_de_rota: descobre o município
-#     PEDIDO no texto do usuário (só quando o texto É um município da base IBGE — endereços/POIs/códigos NÃO
-#     disparam a regra, zero falso positivo) e o compara com o RESOLVIDO. BUG CORRIGIDO na 128ª: o _colisao
-#     exigia nivel != município, o que SUPRIMIA o alerta quando o nível vinha vazio — agora pedido != resolvido
-#     basta. BUG CORRIGIDO no próprio helper (achado pelo teste): "barra, ba" → "BARRA," (vírgula colada)
-#     nunca batia na base; sanitização de pontuação resolveu. Provado por teste sobre CÓDIGO REAL: caso Barra
-#     → 0/100 com AMBOS os problemas (física + troca Barra→Salvador); rota correta → 100/100; endereço/POI/
-#     código IBGE → 100/100 (sem falso positivo); lote auditável; df vazio/sem colunas robusto.
-#     ESCOPO HONESTO (3ª vez, mesmos motivos): §9/§10/§18 consenso ao vivo com Pelias/GeoNames/HERE/Mapbox/
-#     Bing = APIs pagas, inviável em $0/1GB; §13 reverse geocoding OBRIGATÓRIO em toda coordenada dobraria as
-#     chamadas de rede num lote de milhares — a validação por polígono/bbox OFFLINE já dá o mesmo sinal sem
-#     rede. §14 (anti-colisão) já foi entregue na 128ª, que é a CAUSA RAIZ; esta geração é o cinto de
-#     segurança para qualquer caso que escape. 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 nus.
-#   v3.8 (132ª geração) → CAUSA RAIZ DO "removeChild" ELIMINADA + PADRÃO DE UI ESTÁVEL [UI-ESTAVEL]
-#     BUG (P0, desde a 126ª): NotFoundError "Failed to execute 'removeChild' on 'Node'". INVESTIGAÇÃO
-#     (auditoria scriptada do arquivo inteiro): DESCARTADAS as hipóteses de st.empty() (só 1 uso), chaves
-#     duplicadas (51 keys, 0 duplicadas), nº de abas variável (4 st.tabs, todas com lista literal fixa) e
-#     HTML perigoso (11 unsafe_allow_html, 0 com <script>/document./window.). CAUSA RAIZ: instabilidade da
-#     FORMA DA ÁRVORE de componentes. O resultado do Lote é uma cadeia de expanders IRMÃOS (suspeitas →
-#     hídrica → homônimos → dor → milk-run → GIS), quase todos com EXISTÊNCIA CONDICIONAL e/ou RÓTULO
-#     DINÂMICO (contagem no título). A 126ª inseriu o expander de Homônimos NO MEIO dessa cadeia com AMBOS
-#     os defeitos (if _n_hom > 0 + f"...{_n_hom}..."): quando um container do meio some/aparece, todos os
-#     irmãos seguintes DESLOCAM DE ÍNDICE; e um rótulo que muda dá NOVA IDENTIDADE ao container no React
-#     (unmount/remount). Com os 20 st.rerun() do app (processamento em chunks + time.sleep(0.05) → rerun),
-#     o React acabava tentando remover um nó já destacado → removeChild. Casos agudos adicionais: o
-#     expander de calibração da 131ª ficava ENTRE o checkbox e o BOTÃO primário (marcar o checkbox deslocava
-#     o botão) e o painel MCDA da 130ª aparecia/sumia ao trocar o cliente no selectbox.
-#     CURA (arquitetura de renderização estável — "hierarquia fixa de componentes"):
-#       (1) TODO container SEMPRE EXISTE, na mesma posição — a condição vai para DENTRO do corpo;
-#       (2) TODO rótulo é ESTÁTICO — contagens/notas vão para o CORPO (st.caption), nunca para o título;
-#       (3) blocos que apareciam/sumiam viram st.container() fixo com o if dentro.
-#     Aplicado a 9 containers (6 da cadeia do Lote + Pré-voo + Validação IBGE + Rotas Douradas + painel
-#     MCDA + calibração). Bônus: os sliders da 131ª agora sempre existem → fim da coleta de estado de widget.
-#     PADRÃO OBRIGATÓRIO PARA AS PRÓXIMAS GERAÇÕES (impede a reintrodução do bug):
-#       ❌ NUNCA:  if cond: with st.expander(f"Título — {n}"): ...
-#       ✅ SEMPRE: with st.expander("Título"):        # existe sempre, rótulo estático
-#                      if cond: st.caption(f"{n} ..."); <corpo>
-#                      else:    st.caption("Nada a exibir.")
-#     Verificado por auditoria estrutural (AST): 68 expanders → 100% rótulo estático; 4 st.tabs → contagem
-#     fixa; 51 keys → 0 duplicadas; cadeia do Lote → 6 containers incondicionais. LIMITE HONESTO: não é
-#     possível reproduzir um erro de DOM do navegador num container headless — eu ELIMINEI as causas
-#     estruturais (a cura documentada), não "vi o erro sumir". Restam guardas de ESQUEMA (if colunas
-#     existem) que são estáveis dentro da sessão (o mesmo df em todos os reruns) e não piscam.
-#     12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus.
-#   v3.8 (131ª geração) → PARÂMETROS DO CUSTO LOGÍSTICO EXPOSTOS NA INTERFACE (calibração) [HUB-PARAMS]
-#     Fecha a 130ª: o preço de uma balsa, a velocidade "normal" e o quanto uma rota indireta incomoda são
-#     decisões OPERACIONAIS do usuário — não constantes do código. A Alocação (sob o modo multicritério)
-#     ganhou o expander "⚙️ Calibrar o custo logístico (km-equivalentes)" com 4 sliders: velocidade de
-#     referência (20-120 km/h), penalidade da balsa (0-300 km-eq), limiar de sinuosidade (1.0-2.5×) e peso
-#     da sinuosidade (0-1.5), MAIS uma PRÉVIA AO VIVO que mostra, com a calibração atual, quanto custa uma
-#     rota com balsa vs. uma terrestre e qual venceria — o usuário vê o efeito antes de rodar. Helper PURO
-#     _montar_params_custo: valida e GRAMPEIA cada valor à faixa sã (lixo/NaN/ausente → padrão; fora da
-#     faixa → teto/piso), de modo que nenhuma calibração produza um modelo de custo absurdo. Os parâmetros
-#     são CONGELADOS no clique (session_state['alo_params_custo']) — a decisão usa exatamente o que o
-#     usuário viu na tela, imune a GC de widget durante o run; fallback reconstrói dos widgets e, em último
-#     caso, usa os padrões. Fluem para _reatribuir_hubs_multicriterio → _selecionar_hub_multicriterio →
-#     _custo_logistico_efetivo, e aparecem no painel de decisão (que já lê 'params' do resultado). Limpeza
-#     de 'alo_mcda'/'alo_params_custo' no cancelar (chaves NÃO-widget; nunca as dos widgets). Provado por
-#     teste sobre CÓDIGO REAL: validação (lixo→padrão, fora da faixa→grampeado) e, sobretudo, que a
-#     CALIBRAÇÃO GOVERNA a decisão — o MESMO lote elege hubs diferentes com balsa=0 vs 60 vs 300 km-eq.
-#     Aditivo/defensivo; modo default (linha reta) intacto. 12 abas, RotaPipeline 41, balões 1×, score
-#     imutável, 0 except nus novos.
-#   v3.8 (130ª geração) → SELETOR DE HUB MULTICRITÉRIO LIGADO (custo logístico efetivo) + modo opt-in [HUB-MCDA]
-#     Resposta à pergunta "os pesos foram os mais inteligentes?": NÃO — soma ponderada + min-max é instável
-#     (o IGQ de um hub dependia de QUAIS outros candidatos estavam no conjunto) e os pesos são abstratos.
-#     SUBSTITUÍ o núcleo pelo MODELO DE CUSTO GENERALIZADO da engenharia de transportes: _custo_logistico_
-#     efetivo → CUSTO em KM-EQUIVALENTES (viária + penalidade por LENTIDÃO [déficit vs velocidade de ref.]
-#     + BALSA fixa + SINUOSIDADE), ABSOLUTO e estável (imune ao conjunto), interpretável ("Hub A = 340
-#     km-efetivos"). _selecionar_hub_multicriterio agora elege o MENOR custo efetivo e deriva o IGQ 0-100 =
-#     100×menor_custo/custo (estável). Ganho colateral: captura QUALIDADE DE ESTRADA — uma rota curta+lenta
-#     (asfalto ruim) perde p/ uma longa+rápida (rodovia), decisão que distância pura erra. Params
-#     auditáveis/injetáveis (vel_ref 60 km/h, balsa 60 km-eq, limiar sinuosidade 1.3×). LIGADO de fato
-#     (antes só existia o núcleo): modo OPT-IN "🛣️ rota viária multicritério" na Alocação — roteia os top-K
-#     hubs de cada cliente (topk_map) e _reatribuir_hubs_multicriterio reelege o Destino por custo efetivo
-#     ANTES da montagem; default (toggle off) BYTE-A-BYTE intacto (seleção por linha reta). Painel "🧭
-#     Decisão multicritério" na Auditoria da Disputa (ranking por custo/IGQ/viária/tempo/balsa/sinuosidade +
-#     XAI) e colunas no export (IGQ Hub, Custo Efetivo Hub/2º, Diferença Custo %, Justificativa XAI).
-#     Provado por teste sobre CÓDIGO REAL (cenário do usuário: hub + próximo em reta com balsa PERDE p/
-#     terrestre; estabilidade do custo absoluto; qualidade de estrada; reatribuição + fallback). Aditivo/
-#     defensivo (try/except → mantém linha reta em erro). 12 abas, RotaPipeline 41, balões 1×, score
-#     imutável, 0 except nus novos.
-#   v3.8 (129ª geração) → MOTOR DE DECISÃO MULTICRITÉRIO DE HUB (IGQ + XAI) — núcleo puro/testado [HUB-MCDA]
-#     Atende o pedido de reprojetar a escolha do melhor hub. DIAGNÓSTICO (código real): a alocação hoje
-#     atribui o hub por dest_to_hub = VIZINHO MAIS PRÓXIMO EM LINHA RETA (calcular_matriz_competitiva_
-#     vetorizada); _selecionar_hub_por_viaria (69ª) foi escrita mas NUNCA ligada (0 chamadas). Balsa/tempo/
-#     sinuosidade são exibidos, mas NÃO decidem qual hub vence — premissa do usuário confirmada.
-#     ENTREGUE agora (núcleo intelectual, 100% testável): _selecionar_hub_multicriterio — MCDA (soma
-#     ponderada normalizada, estilo TOPSIS simplificado) que elege o hub de menor CUSTO LOGÍSTICO GLOBAL
-#     via Índice Global de Qualidade do Hub (IGQ 0-100), combinando distância viária, tempo, uso de balsa
-#     (FORTE penalização) e sinuosidade (viária/reta), com PESOS AUDITÁVEIS (padrão viária .35/tempo .25/
-#     balsa .30/sinuosidade .10) e desempate que PRIORIZA rota terrestre. Helpers puros: _normalizar_
-#     criterio + _justificar_escolha_hub (XAI em linguagem natural — “rota X% mais curta, tempo Y% menor,
-#     não usa balsa; ponto de atenção: linha reta maior compensada; critério decisivo: …”). METODOLOGIA:
-#     cada critério é min-max normalizado entre os candidatos (1=melhor); IGQ = 100·Σ(peso·componente)/
-#     Σpesos; vence o maior IGQ; empate → sem balsa → menor viária. Provado por teste sobre CÓDIGO REAL
-#     no cenário do usuário (hub mais próximo em linha reta mas com balsa PERDE p/ concorrente terrestre;
-#     pesos governam; robustez p/ rota inválida/vazio). LIMITE HONESTO / PRÓXIMA RODADA DEDICADA: ligar o
-#     motor como SELETOR ao vivo exige rotear os top-K candidatos (topk_map já os tem por linha reta)
-#     capturando balsa/tempo de cada um — o runner-up atual não traz balsa; será um modo OPT-IN “rota
-#     viária multicritério” (default intacto = zero regressão), testado no ambiente real. Aditivo; 12 abas,
-#     RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
-#   v3.8 (128ª geração) → ANTI-COLISÃO MUNICÍPIO↔BAIRRO NA GEOCODIFICAÇÃO ESTRITA + INTEGRIDADE [INTEGRIDADE]
-#     CORREÇÃO DE BUG REAL (RFC-001): 'barra, ba' (município Barra/BA, IBGE 2902708, -11.086,-43.146) era
-#     resolvido para o BAIRRO da Barra em SALVADOR (-13.006,-38.528), gerando rota fisicamente impossível
-#     (viária 210 km < linha reta 406 km). CAUSA RAIZ (rastreada em forcar_geocodificacao_hierarquica_
-#     estrita): a ordenação do modo estrito somava +40 por bairro e +50 por logradouro — perfeito p/
-#     endereços, mas p/ um NOME DE MUNICÍPIO puro elegia o bairro homônimo na cidade maior. FIX cirúrgico:
-#     quando a ENTRADA é um município oficial (base IBGE), (1) injeta a ÂNCORA IBGE do município como
-#     candidato (garante o município correto mesmo que a nuvem só devolva o bairro) e (2) pontua preferindo
-#     o município — bairro/logradouro de mesmo nome em OUTRA cidade não recebe o bônus de especificidade.
-#     Endereços reais (nome não-município) mantêm o bônus → SEM regressão. Helpers PUROS/testáveis:
-#     _pontuar_candidato_estrito + _candidato_ibge_municipio + _integridade_geografica (índice 0-100:
-#     penaliza impossibilidade física viária<reta e colisão de entidade município→sub-municipal). Como o
-#     resolvedor estrito alimenta origem E destino em executar_pipeline_unificado, o fix vale p/ TODOS os
-#     módulos (Validador, Lote, Alocação, Próximos). Escopo honesto: RFC pedia reengenharia multi-fonte
-#     (Pelias/GeoNames/reverse em toda chamada/polígono por ponto) — inviável $0/1GB e desnecessária dado o
-#     fix de raiz. Provado por teste sobre CÓDIGO REAL (reproduz o bug + guardas de não-regressão p/
-#     endereço e município). Aditivo/defensivo. 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 nus.
-#   v3.8 (127ª geração) → BASE DE AMBIGUIDADE MUNICIPAL + ÍNDICE DE AMBIGUIDADE (offline) [AMBIGUIDADE]
-#     Estende a 126ª: além dos homônimos EXATOS, mapeia NOMES SEMELHANTES (o outro modo de erro: “São
-#     Miguel” vs “São Miguel do Araguaia”, “Machadinho” vs “Machadinho d'Oeste”, “Rio Verde” vs “Rio Verde
-#     de Mato Grosso”). Estudo prévio validou o ganho contra a base real embutida: 241 grupos de homônimos,
-#     521 municípios homônimos (~9% do país), 1.323 pares de nome semelhante; construção em ~0,3s. Decisão
-#     de escopo (pedido do Lucas: só se houver ganho real, sem inflar complexidade): REJEITADO o ensemble
-#     de 18 algoritmos (rapidfuzz — já dependência — cobre Levenshtein/Damerau/token_set/token_sort/partial
-#     por baixo; somar Soundex/Metaphone/Jaro/Dice/TF-IDF só adiciona ruído) e REJEITADO ensemble de
-#     geocoders pagos (inviável $0/1GB). Implementado 100% OFFLINE. Motor PURO/testável: _e_prefixo_tokens
-#     (padrão dominante BR: prefixo de token) + _indice_ambiguidade (0-100: homônimos + semelhantes em
-#     OUTRA UF; bandas Exclusivo/Baixo/Médio/Alto/Muito Alto) + _risco_ambiguidade + _construir_base_
-#     ambiguidade (homônimos exatos + semelhantes por prefixo/complemento/truncamento + near-duplicate
-#     rapidfuzz ≥90, BLOQUEADO por 1º token p/ performance) + _estatisticas_ambiguidade + singleton lazy
-#     _obter_base_ambiguidade. Nova coluna 'Índice de Ambiguidade' no Lote/Alocação (via 126ª, sortável).
-#     Nova sub-aba "🧭 Base de Ambiguidade Municipal" na Auditoria: estatísticas, distribuição de risco,
-#     ranking dos 50 mais ambíguos, consulta por município, e DOWNLOAD das 2 bases de referência
-#     (Municipios_Homonimos.xlsx e Municipios_Nomes_Semelhantes.xlsx) via _df_homonimos_ambiguidade /
-#     _df_semelhantes_ambiguidade. Provado por teste sobre CÓDIGO REAL (motor + exports + integração).
-#     Aditivo/defensivo. 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
-#   v3.8 (126ª geração) → CAMADA DE DESAMBIGUAÇÃO DE MUNICÍPIOS HOMÔNIMOS (offline, com auditoria) [HOMONIMO]
-#     Resolve o problema crítico de homônimos (Santana AP×BA, São Domingos GO×SC, São Miguel do Araguaia
-#     GO, etc.) que causava rotas com o município errado no lote. A app JÁ desambiguava por UF explícita e
-#     por código IBGE (retornando None com segurança quando faltava) — o buraco real era o CONTEXTO DA
-#     PLANILHA. Implementado 100% OFFLINE sobre a base IBGE embutida (sem adicionar APIs pagas — inviável
-#     no alvo $0/Streamlit Cloud/1GB; e determinístico é mais explicável). Motor PURO/testável:
-#     _perfil_uf_planilha (perfil de UF do lote a partir de UFs confiáveis) + _validar_ponto_uf (validação
-#     espacial via bounding box oficial) + _desambiguar_municipio_homonimo (HIERARQUIA de evidências:
-#     código IBGE → UF explícita → nome único → contexto da planilha ≥ limiar, com validação espacial;
-#     senão indeterminado — NÃO força). Pós-passo _enriquecer_desambiguacao_homonimos ANEXA (sem refatorar
-#     _montar_dataframe_final) 8 colunas de auditoria ao Lote e à Alocação: Homônimo Detectado, UF
-#     Desambiguada Origem/Destino, Método Desambiguação, Validação Espacial, Risco de Confusão, Confiança
-#     Identificação, Justificativa Homônimos. UI: painel "🧭 Auditoria de Homônimos" no Lote (contadores de
-#     risco, UF dominante do contexto, tabela priorizada por risco). Honesto: contexto = confiança Média
-#     (não oficial); código/UF = Alta. Validação espacial PEGA a geocodificação do homônimo errado
-#     (coordenada fora da UF → Risco Alto). Provado por teste sobre o CÓDIGO REAL (motor + pós-passo em
-#     DataFrame sintético). Aditivo e defensivo (try/except → df intacto em erro). 12 abas, RotaPipeline
-#     41, balões 1×, score imutável, 0 except nus novos.
-#   v3.8 (125ª geração) → SEQUENCIAMENTO MULTI-PARADA / MILK-RUN (TSP) [TSP]
-#     Dada N paradas distintas (≤25), a melhor ORDEM de visita numa única rota. Núcleo PURO _tsp_ordem
-#     (vizinho-mais-próximo + melhoria 2-opt), reusando _haversine_matriz da 121ª. UI na aba de Lote,
-#     gated pelo nº de paradas distintas (dedup por município/coord), com opção de rota fechada/aberta,
-#     tabela ordenada com pernas e mapa. Honesto: ordena por linha reta (bom ponto de partida). Isolado.
-#   v3.8 (124ª geração) → NARRATIVA EXECUTIVA DO LOTE [NARRATIVA]
-#     Estende a leitura do analista (118ª) para o lote inteiro: um parágrafo em linguagem natural com
-#     total de rotas, % totalmente rodoviário, dependência de balsa/fluvial (REGIC), distância média/máx,
-#     confiança média e o município de maior dor logística. Helper PURO _narrativa_executiva_lote (recebe
-#     só AGREGADOS — não toca DataFrame). UI: expander na aba de Lote. Isolado em try/except.
-#   v3.8 (123ª geração) → MAPA DE CALOR DE DOR LOGÍSTICA POR MUNICÍPIO [DOR-LOG]
-#     Índice 0-100 de dificuldade/custo de atendimento por município de destino, combinando sinais JÁ
-#     medidos: distância, sinuosidade (viária/reta), dependência de balsa e acesso fluvial/isolado (IBGE
-#     REGIC). Helpers PUROS _indice_dor_logistica + _agregar_dor_logistica + _cor_dor_logistica. UI na aba
-#     de Lote: mapa colorido (verde→vermelho) por dor + ranking dos municípios mais difíceis. Painel
-#     estratégico ('onde entregar é mais difícil'). Índice relativo/comparativo. Isolado em try/except.
-#   v3.8 (122ª geração) → ROTAS DOURADAS: PRIORIDADE NO VALIDADOR (override) + RECONCILIAÇÃO/DRIFT [GOLDEN-OVERRIDE][GOLDEN-RECON]
-#     Fecha o loop do flywheel da 120ª de forma SEGURA. (A) OVERRIDE opt-in: checkbox "Priorizar rotas
-#     verificadas" (padrão DESLIGADO ⇒ zero regressão). Ligado, se a rota já está na caderneta, o valor
-#     VERIFICADO é servido na hora e o pipeline é PULADO (res_ind=None → o bloco de exibição, guardado por
-#     `if res_ind`, é ignorado com segurança; verificado que NÃO há `else` de falha nesse if). Envolto em
-#     try/except: qualquer erro cai no cálculo normal pelos motores. NÃO reconstrói o RotaPipeline (mostra
-#     um painel verificado enxuto) nem toca no hot-path do lote. (B) RECONCILIAÇÃO/DRIFT (padrão, com override
-#     desligado): ao recalcular uma rota já verificada, a Caderneta compara recém-calculado × verificado
-#     usando _metricas_divergencia; se ≤10% → ✅ confere; se >10% → ⚠️ divergência (via mudou ou verificação
-#     obsoleta) + re-verificação em 1 clique. Helper puro _reconciliar_rota_dourada. Escolha honesta: o
-#     override cego (pular cálculo) pode servir dado obsoleto — por isso o padrão recalcula e reconcilia,
-#     detectando drift; a prioridade pura fica como opção. Provado por teste sobre o CÓDIGO REAL
-#     (teste_golden_recon_122: confirmado/divergente/sem_registro/limiar; simétrico à métrica do app).
-#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
-#   v3.8 (121ª geração) → OTIMIZADOR DE LOCALIZAÇÃO DE HUB (‘onde abrir o próximo?’) [HUBOPT]
-#     Salto descritivo→prescritivo: o INVERSO da alocação. Dada a distribuição de clientes (coordenadas
-#     Lat/Lon Origem JÁ calculadas — custo ZERO, sem rede), sugere ONDE posicionar p hub(s) para minimizar
-#     a distância. Núcleo PURO/testável: _haversine_matriz (matriz de distâncias vetorizada, mesmo critério
-#     de linha reta do ranking do app) + _otimizar_hubs (heurística GULOSA p-mediana [objetivo=total] ou
-#     p-centro [objetivo=max] — adiciona um hub por vez, o que mais reduz o custo). UI dentro da aba de
-#     Alocação (mantém 12 abas), gated por Lat/Lon Origem presentes: escolhe nº de hubs e objetivo, mostra
-#     hub(s) recomendado(s), distância média/pior-caso/soma, ganho vs. a média em linha reta ATUAL, tabela
-#     de clientes por hub e mapa (clientes × hubs). Candidatos = cidades dos clientes (v1); honesto quanto a
-#     ser linha reta (a viária real se confirma roteando). Isolado em try/except. Provado por teste sobre o
-#     CÓDIGO REAL (teste_hubopt_121: haversine SP–RJ ≈ 360 km; p=2 cobre 2 clusters melhor que p=1; guloso
-#     determinístico; atribuição por cliente coerente). Sem regressão; 12 abas, RotaPipeline 41, balões 1×,
-#     score imutável, 0 except nus novos.
-#   v3.8 (120ª geração) → ROTAS DOURADAS (dataset verificado) + PRÉ-VOO SEM FALSO POSITIVO [GOLDEN][PREVOO-FP]
-#     (A) ZERO FALSO POSITIVO no pré-voo (119ª): REMOVIDOS os dois detectores heurísticos que podiam errar —
-#     'sem UF' (nome de estado por extenso, CEP ou cidade inequívoca gerava alarme falso) e 'grafias
-#     divergentes' (fuzzy). O detector de mojibake ficou PRECISO: só sinaliza quando a correção segura
-#     (round-trip latin-1↔utf-8) REALMENTE muda o texto — logo acentos maiúsculos legítimos ('SÃO PAULO',
-#     'MARANHÃO') deixam de ser falso positivo. O que resta é 100% determinístico (linha em branco,
-#     origem=destino, duplicata exata, coordenada fora/trocada, mojibake real, espaços). (B) ROTAS DOURADAS —
-#     flywheel de dado proprietário: no Validador o usuário marca uma rota conferida como VERIFICADA; ela
-#     persiste em cache_rotas_douradas (propositalmente FORA da limpeza de caches — é ativo, não cache) com
-#     proveniência e data; o painel avisa quando a rota já foi verificada; e o dataset é EXPORTÁVEL (.xlsx).
-#     Captura via session_state (sobrevive ao rerun do botão de salvar). Funções puras/testáveis
-#     (_chave_rota_dourada, _registrar/_buscar/_listar_rotas_douradas). NÃO altera o roteamento (só captura,
-#     superfície e exporta; o override no pipeline fica para um próximo passo deliberado). Provado por teste
-#     sobre o CÓDIGO REAL (teste_golden_prevoo_120: pré-voo não emite mais sem_uf/grafias e não marca 'SÃO
-#     PAULO' como mojibake; golden grava/busca direcional/lista, reverso = None). Sem regressão; 12 abas,
-#     RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
-#   v3.8 (119ª geração) → PRÉ-VOO: RAIO-X DE SAÚDE DA PLANILHA + HIGIENIZAÇÃO EM 1 CLIQUE [PREVOO]
-#     Maior ROI/menor risco da lista de ideias. ADITIVO (não toca no score, no builder nem no pipeline;
-#     roda no preview do Lote sobre o df já carregado; custo ZERO de rede). Antes de processar, um raio-x
-#     detecta os problemas que mais degradam o resultado (lixo na entrada é a causa nº1 de rota ruim):
-#     linhas com Origem/Destino em branco (crítico), origem = destino (0 km), rotas repetidas (informativo,
-#     dedup cuida), coordenadas fora do Brasil ou com lat/lon trocadas (crítico), acentuação corrompida /
-#     mojibake, endereços sem UF, mesmo local grafado de formas diferentes e espaços supérfluos. Emite um
-#     SCORE de saúde 0-100 (Excelente/Boa/Atenção/Crítica) + achados com exemplos e recomendação, e oferece
-#     HIGIENIZAÇÃO em 1 clique — correções NÃO destrutivas (mojibake via round-trip seguro latin-1↔utf-8 +
-#     colapso de espaços), gerando uma planilha limpa para download SEM remover linhas nem alterar o sentido
-#     do endereço. Funções puras/testáveis (_raio_x_planilha, _prevoo_parse_coord/_status_coord/_corrigir_
-#     mojibake/_higienizar_texto/_strip_acentos); reusa _RE_UF_SIGLA e a bbox de validar_coordenada_brasil;
-#     render isolado em try/except. Provado por teste sobre o CÓDIGO REAL (teste_prevoo_119: detecta cada
-#     classe, ignora IBGE de 7 dígitos, não penaliza duplicatas, higieniza mojibake/espaços sem corromper
-#     texto correto). Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
-#   v3.8 (118ª geração) → HUB: ÍNDICES COMPOSTOS + LEITURA DO ANALISTA + SIMULAÇÃO ‘E SE?’; ETA COM FAIXA [HUB-XAI][ETA-FAIXA]
-#     Incremento ADITIVO (não toca no score 0.35/0.35/0.30 nem no builder _montar_dataframe_final; reusa dado
-#     já calculado; custo ZERO de rede). (A) PAINEL DE HUBS — três helpers PUROS/testáveis somados ao painel
-#     ‘Auditoria da Disputa de Hubs’ (não duplicam os índices já existentes _indice_robustez/_competitividade):
-#     _indices_compostos_hub (Acessibilidade / Eficiência Logística / Robustez do Resultado, 0-100, com
-#     COMPONENTES exibidos + Classificação Excelente..Crítico, derivados de razão V/R, balsa, Modo/Acesso,
-#     score geográfico, divergência Google×OSRM e folga p/ o 2º); _explicacao_analista_hub (parágrafo em
-#     linguagem natural tecendo os sinais medidos); _simulacao_hub_indisponivel (‘e se o vencedor cair?’ →
-#     2º melhor roteado + impacto km/%). Render isolado em try/except (falha não afeta a auditoria). (B) ETA —
-#     estimar_faixa_tempo_processamento reusa o estimador ponderado como ESPERADO e adiciona faixa
-#     mínimo/pessimista a partir da DISPERSÃO real do histórico (±1σ, ≥3 amostras) ou heurística documentada
-#     (×0.7 / ×1.6) quando há <3 execuções; helpers puros _amostras_tempo_por_rota + _faixa_tempo. Preview do
-#     Lote agora mostra Mínimo/Esperado/Pessimista + decomposição (linhas → rotas únicas × s/rota).
-#     Provado por teste isolado sobre o CÓDIGO REAL (teste_hub_xai_eta_118: índices monotônicos e clipados,
-#     parágrafo coerente, simulação com/sem concorrente, faixa ordenada min≤esp≤pess). Sem regressão; 12 abas,
-#     RotaPipeline 41, balões 1×, score imutável, 0 except nus novos.
-#   v3.8 (117ª geração) → CORREÇÃO DEFINITIVA DAS COLUNAS FANTASMA _4.._38 NA PLANILHA EXPORTADA [FIX-COLUNAS-FANTASMA]
-#     SINTOMA: planilhas do Lote/Alocação saíam com colunas '_4','_5',...'_38', em grande parte vazias.
-#     CAUSA RAIZ (confirmada): _montar_dataframe_final iterava com df.itertuples(index=False) + row._asdict();
-#     o itertuples RENOMEIA para nomes POSICIONAIS (_4.._38) toda coluna que não é identificador Python
-#     válido — inclusive as 'Unnamed: N' que o openpyxl cria para células vazias à direita no Excel. Esses
-#     _N vazavam para o dict e a rede de segurança do reindex (114ª) os PRESERVAVA na exportação. NÃO havia
-#     nenhum higienizador no arquivo. CORREÇÃO em 3 camadas (cirúrgica, sem tocar no núcleo do builder):
-#     (1) no topo do builder, DESCARTA colunas-artefato da ENTRADA ('Unnamed:*' e rótulo em branco) — nunca
-#     são dado do usuário; (2) o laço passou a df.itertuples(index=False, name=None) + dict(zip(_cols_orig,
-#     row)) — mantém o baixo pico de RAM do [M17] e PRESERVA os rótulos reais (com espaço/acento), eliminando
-#     o mangling _N; (3) rede final nos DOIS reindex (Lote e Hubs) nunca readmite '_\d+' nem 'Unnamed:'.
-#     Provado por teste isolado (teste_colunas_fantasma_117: entrada com 'Unnamed: 4'.. e rótulos com espaço
-#     → saída sem nenhuma coluna _N e com nomes preservados). Sem regressão; 12 abas, RotaPipeline 41, balões
-#     1×, score imutável 0.35/0.35/0.30, 0 except nus.
-#   v3.8 (116ª geração) → VIABILIDADE DO ROTEAMENTO AQUAVIÁRIO (veredito) + PROVIDER DE MATRIZ (gated) [AQUAVIARIA]
-#     Estudo de viabilidade da camada própria de roteamento aquaviário (pgRouting/OSRM custom/matriz).
-#     VEREDITO: NÃO embarcar roteador — pgRouting exige PostgreSQL/PostGIS e OSRM custom exige container;
-#     ambos são SERVIÇOS EXTERNOS que quebram o modelo single-file da aplicação, para ganho estreito
-#     (aquavia importa em ~18 municípios isolados + portos) e com dados grosseiros (1:250k–1:1M) e sazonais.
-#     A dimensão água já está coberta (balsa + sinuosidade + acesso fluvial REGIC). O caminho PROPORCIONAL
-#     e AUDITÁVEL é uma MATRIZ pré-calculada (gerada 1× no QGIS a partir dos shapes ANTAQ/BIT) consumida por
-#     um provider — sem roteador frágil embarcado. IMPLEMENTADO o mecanismo consumidor (gated, testado):
-#     flag AQUAVIARIA_ATIVA + _distancia_aquaviaria (puro/injetável, simétrico) + _aquaviaria_conectar/
-#     _aquaviaria_provider_sqlite (SQLite bundleado rotas_aqua) + exibição gated no Validador ("🚢 Distância
-#     aquaviária"). Inerte até o usuário fornecer a matriz. Receita QGIS em ESTUDO_ROTEAMENTO_AQUAVIARIO.md.
-#     Provado por teste (teste_aquaviaria_116). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (115ª geração) → LINK OSRM STANDALONE NO LOTE/HUBS + NAVEGAÇÃO DO HANDBOOK EMBARCADO [VIS]
-#     (1) LINK OSRM na planilha: o Lote e a Alocação de Hubs agora trazem a coluna 'Link Mapa OSRM' com um
-#     link STANDALONE do visualizador público do OSRM (map.project-osrm.org), ao lado do 'Link da Rota'
-#     (Google) — abre a rota do OSRM a partir da própria planilha, como no Validador. Antes a coluna
-#     existia mas usava o link_osrm_viewer (res[36]), que é RELATIVO ao app e não funciona fora dele; agora
-#     usa _link_osrm_publico, derivado das coordenadas já calculadas (custo ZERO, sem rede). Também
-#     adicionada a NOVAS_COLUNAS_PADRAO para sair em posição lógica. (2) HANDBOOK NAVEGÁVEL: no manual
-#     embarcado (components.html/iframe), clicar num item do índice REDIRECIONAVA para o app em vez de rolar
-#     até a seção (o href="#s.." navegava o iframe). Corrigido com script que intercepta os cliques do
-#     índice e do botão "topo" e usa scrollIntoView/scrollTo DENTRO do próprio documento — agora a
-#     navegação do handbook funciona. Blob regenerado e verificado idêntico. Provado por teste
-#     (teste_link_osrm_115). Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (114ª geração) → CORREÇÃO: COLUNAS Cód IBGE E UF (Origem/Destino) SUMIAM DA PLANILHA FINAL [FIX]
-#     BUG relatado: no Lote e na Alocação de Hubs, as colunas 'Cod IBGE Origem/Destino' e 'UF Origem/
-#     Destino' (e 'Modo/Acesso') eram PREENCHIDAS no processamento mas NÃO apareciam na planilha exportada.
-#     CAUSA: a reordenação final (df.reindex(columns=ordem)) montava a ordem a partir das colunas da
-#     planilha original + NOVAS_COLUNAS_PADRAO/ALOCACAO — listas que NÃO continham essas colunas — então o
-#     reindex as DESCARTAVA. CORREÇÃO em 3 camadas: (1) NOVAS_COLUNAS_PADRAO passou a incluir Cod IBGE
-#     Origem/Destino, UF Origem/Destino e Modo/Acesso (em posição lógica, junto a Município); (2)
-#     NOVAS_COLUNAS_ALOCACAO passou a incluir os aliases Cód IBGE/Município/UF Cliente e Hub; (3) REDE DE
-#     SEGURANÇA nos dois reindex (Lote e Hubs): qualquer coluna já presente no resultado que não esteja na
-#     ordem é anexada — nada mais é descartado, agora ou no futuro. Provado por teste (colunas + valores
-#     preservados no Lote e Hubs; teste_colunas_ibge_uf_114). Sem regressão; 12 abas, RotaPipeline 41,
-#     balões 1×, score imutável.
-#   v3.8 (113ª geração) → CORREÇÃO CRÍTICA: ROTA POR CÓDIGO IBGE NÃO TRAÇAVA (bug de sombreamento) [IBGE-INPUT]
-#     BUG relatado: informar Códigos IBGE (ex.: 2702702 Feliz Deserto/AL, 2704203 Limoeiro de Anadia/AL)
-#     no Validador NÃO traçava rota (vinha "Município Não Mapeado", coords 0,0), embora os códigos existam
-#     na base com coordenadas. CAUSA RAIZ: a base VIVA (GitHub/pickle) traz entradas com o mesmo nome/UF
-#     porém SEM codigo_ibge; o merge antigo (_mesclar_base_embutida) só adicionava UF ausente e NÃO
-#     sobrescrevia — então a entrada embarcada (com código) ficava de fora, e o índice reverso perdia esses
-#     códigos (agravado pelo cache @st.cache_data). CORREÇÃO em DUAS camadas (fallback robusto): (1)
-#     _mesclar_base_embutida agora ENRIQUECE entradas existentes sem código/coordenada com os dados da base
-#     embarcada (conserta _info_municipio_ibge → Cód IBGE no Lote/Hubs e todos os consumidores); (2)
-#     _indice_ibge_por_codigo passou a ser construído a partir da BASE EMBUTIDA diretamente (fundação
-#     garantida: 5571 códigos com coords), com a base viva só como overlay — o Código IBGE NUNCA deixa de
-#     resolver por estado da base viva/cache. Também: banner "🔒 Rota travada" só aparece quando o ponto
-#     REALMENTE resolveu (fonte IBGE_CODIGO_OFICIAL), evitando mensagem contraditória. Colunas 'UF Origem'/
-#     'UF Destino' confirmadas no Lote/Hubs (ao lado de Cod IBGE Origem/Destino). Provado por teste no
-#     cenário exato do bug (teste_ibge_input_fix_113). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#     ADICIONALMENTE: ANÁLISE HÍDRICA POR ESTADO (UF) nos resultados do Lote/Hubs — helper puro
-#     _analise_hidrica_por_uf agrega, por UF de origem, rotas com balsa/ferry e municípios de acesso
-#     fluvial/isolado (tabela + métricas + gráfico de barras), só aparecendo quando há esses casos.
-#     Testado (teste_analise_hidrica_uf_113). Atende ao pedido de discriminar por estado o uso de balsa/
-#     corpos hídricos.
-#   v3.8 (112ª geração) → LISTA OFICIAL IBGE REGIC DE ACESSO FLUVIAL/ISOLADO (populada + ativada) [INTEL-TERRITORIAL]
-#     A partir da base oficial IBGE REGIC 2018 (REGIC2018_Rotas_Brasil.xlsx — 71.081 ligações, coluna
-#     'modal'), extraí os municípios que NÃO têm nenhuma ligação rodoviária (só 'Hidroviário' e/ou 'Aéreo',
-#     excluindo 'Hidro-Rodoviário' que é rodovia+balsa): 18 municípios (15 AM, 2 PA/Marajó, 1 PE/Fernando
-#     de Noronha). Populado _MUNICIPIOS_ACESSO_FLUVIAL e LIGADO FLUVIAL_LISTA_ATIVA=True. Agora os DOIS
-#     mecanismos operam juntos: (a) DINÂMICO (111ª) — coluna Modo/Acesso no Lote/Hubs + aviso no Validador
-#     quando nenhum motor viário retorna rota; (b) ESTÁTICO/OFICIAL (112ª) — sobrepõe com "🛶 Acesso
-#     fluvial/isolado (lista oficial)" no Lote/Hubs e novo AVISO de auditoria/XAI no Validador
-#     ("não representa viagem viável por estrada; considere hidroviário/aéreo", citando a fonte REGIC).
-#     Aditivo e seguro (só afeta os 18 códigos). Testado (teste_fluvial_lista_112 + teste_modo_acesso_111).
-#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (111ª geração) → ESTUDO HIDROGRÁFICO (veredito) + DETECÇÃO DINÂMICA DE ACESSO FLUVIAL/ISOLADO [INTEL-TERRITORIAL]
-#     Estudo profundo de viabilidade da camada hidrográfica (ANTAQ/BIT/DNIT) + comparação de motores
-#     (Google/OSRM/GraphHopper/Valhalla/ORS/ArcGIS/pgRouting). VEREDITO: NÃO construir a camada pesada —
-#     roteamento fluvial não tem API precisa; dados oficiais são grosseiros (1:250k–1:1M) e sazonais;
-#     detector de barreira por rio duplicaria, com menos precisão, o que a app já faz (balsa do motor +
-#     sinuosidade); nenhuma troca de motor compensa. ÚNICO ganho real: sinalizar municípios de ACESSO
-#     FLUVIAL/ISOLADO (~60–70 no país; 43/62 no AM). Implementado da forma mais inteligente e SEM dados
-#     externos: DETECÇÃO DINÂMICA — quando a geocodificação tem sucesso mas NENHUM motor rodoviário
-#     retorna rota (fallback geodésico), o Validador sinaliza "🛶 possível acesso fluvial/isolado".
-#     Aditivo ao aviso geodésico existente (só display; não toca a lógica do pipeline). Estudo completo em
-#     ESTUDO_INTELIGENCIA_HIDROGRAFICA.md. Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#     EXTENSÃO (mesma geração): coluna 'Modo/Acesso' no LOTE e HUBS (helper puro _classificar_modo_acesso:
-#     Rodoviário / Rodoviário + Balsa / 🛶 Possível fluvial/isolado / Estimado geodésico) — derivada de
-#     'Fonte da Rota' + 'Balsas' + coordenadas já calculadas (custo ZERO). E MECANISMO ESTÁTICO gated para
-#     lista oficial: _municipio_acesso_fluvial + flag FLUVIAL_LISTA_ATIVA + conjunto _MUNICIPIOS_ACESSO_
-#     FLUVIAL (VAZIO por padrão — a fonte autoritativa é o IBGE REGIC "Ligações Rodoviárias e Hidroviárias";
-#     não cravei lista não verificada). Quando populada e ligada, sobrepõe o rótulo com "Acesso fluvial/
-#     isolado (lista oficial)". Ambos os helpers testados (teste_modo_acesso_111).
-#   v3.8 (110ª geração) → REMOÇÃO DO DISTBRASIL + ROTA TRAVADA POR CÓDIGO IBGE + ANÁLISE HIDROVIÁRIA + DOC
-#     Decisão de engenharia do usuário (fluxo majoritariamente de ENDEREÇOS, não pares municipais):
-#     (1) DISTBRASIL REMOVIDO POR COMPLETO — todas as funções (_distbrasil_*, _indicadores_distbrasil,
-#     _classificar_compatibilidade_distbrasil), a flag DISTBRASIL_ATIVO, a seção Auditoria DistBrasil do
-#     Validador e o bloco de Municípios Próximos rodoviário foram excluídos (−258 linhas). A camada
-#     IBGE-malhas (validação por polígono) foi PRESERVADA. App mais enxuta, sem redundância/complexidade
-#     inerte. (2) ROTA TRAVADA POR CÓDIGO IBGE: reforçado que digitar um Código IBGE em Validador/Lote/
-#     Hubs resgata a identidade oficial (município/UF/coordenada da sede) e a ADOTA como definitiva —
-#     XAI explícito ("🔒 Rota TRAVADA...") + banner no Validador quando origem/destino são códigos.
-#     (3) HIDROVIA: pesquisada — NÃO implementada. Não há API pública de roteamento fluvial BRASILEIRO
-#     com precisão (as APIs existentes são marítimas/EUA/Europa; os dados ANTAQ/DNIT são shapefiles que
-#     exigiriam um roteador caseiro impreciso). Condição do usuário (precisão via API) não atendida. A app
-#     já detecta balsa/ferry e infere barreira hídrica. (4) Handbook sincronizado. Sem regressão; 12 abas,
-#     RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (109ª geração) → AUDITORIA TÉCNICA GLOBAL + MICRO-OTIMIZAÇÃO SEGURA [AUDITORIA]
-#     Revisão investigativa pedida. Varreduras estáticas confirmaram SAÚDE do código: ZERO funções
-#     duplicadas; 0 except nus (os 49 'except: pass' são defensivos por design); os 6 usos de iterrows
-#     estão em CAMINHOS FRIOS (exportação GIS GeoJSON/KML/GPX e um contador), não no laço quente do lote;
-#     sem código morto de risco; 44 suítes de regressão verdes. Conclusão honesta: app madura — as 3
-#     funções longas (calcular_pipeline_logistico 432 linhas, processar_consenso_dinamico, 
-#     _montar_dataframe_final) são orquestradores centrais cujo fatiamento traria risco desproporcional
-#     num hot path coberto por testes; NÃO refatoradas (evolução incremental > big-bang). ÚNICA mudança de
-#     código: _contar_rotas_geo_validas VETORIZADO (remove um iterrows) — provado EQUIVALENTE ao original
-#     (mesma regra: ≥1 das 4 coordenadas ≠ 0) em vários casos + 5.000 linhas. Relatório completo em
-#     RELATORIO_AUDITORIA_109.md. Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (108ª geração) → CÓDIGO IBGE NA ENTRADA (confirmado + descoberto) + VALIDAÇÃO POR POLÍGONO IBGE [IBGE-MALHAS]
-#     (a) Partes 1–3 do pedido JÁ estavam implementadas (98ª: código IBGE como entrada no Validador/Lote/
-#     Hubs — a normalização do pipeline só faz strip(), não quebra código; 54ª/96ª: colunas Cod IBGE
-#     Origem/Destino e Hub/Cliente na saída). Tornadas DESCOBRÍVEIS: dicas nos 3 uploaders (Lote e Hubs)
-#     informando que Origem/Destino aceitam Código IBGE e que a saída traz os códigos.
-#     (b) NOVA camada opcional/gated de QA — validação por POLÍGONO OFICIAL (API v3 de malhas do IBGE):
-#     _ponto_em_poligono (ray casting em Python PURO, sem dependências), _extrair_aneis_geojson (Polygon/
-#     MultiPolygon), _ibge_malha_aneis (download GeoJSON leve, cacheado 24h, gated) e
-#     _validar_ponto_no_municipio. No Validador (gated por IBGE_MALHAS_ATIVO=False), sinaliza se a
-#     coordenada roteada cai DENTRO do polígono oficial do município — pega erro de geocodificação (ponto
-#     no município vizinho). Núcleo puro testado (ponto dentro/fora, buraco, MultiPolygon). Desligado por
-#     padrão (sem rede) → impacto zero. Análise das APIs IBGE + hidrovia entregue à parte
-#     (ANALISE_IBGE-APIS_e_HIDROVIA.md). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (107ª geração) → DISTBRASIL: AUDITORIA + MUNICÍPIOS PRÓXIMOS RODOVIÁRIO + CACHE/HUB (passos 2–5) [DISTBRASIL]
-#     Ligações da camada DistBrasil, todas GATED por DISTBRASIL_ATIVO (inertes até a base ser plugada):
-#     (passo 2) Seção "🛰️ Auditoria DistBrasil" no Validador — compara Google/OSRM com a base nacional
-#       (sede-a-sede) por par de Códigos IBGE: distância/tempo DistBrasil, Δ abs/%, motor mais próximo,
-#       compatibilidade, score de consistência, ranking e interpretação (usa _indicadores_distbrasil).
-#     (passo 3) Municípios Próximos ganha tabela "🛰️ Distância Rodoviária (DistBrasil)" — ranking por
-#       estrada entre sedes (consome _distbrasil_vizinhos), instantâneo e sem consumir APIs.
-#     (passos 4/5) Helpers PUROS entregues (a base do cache/aceleração), respeitando a semântica sede-a-
-#       sede: _distbrasil_estimativa_par (cache pré-API SÓ para pares de nível MUNICIPAL — preserva a
-#       precisão de rotas de endereço) e _distbrasil_matriz_hub (distância cliente→hubs por Código IBGE,
-#       ordenada). RESSALVA honesta: NÃO troquei o roteamento/alocação no caminho quente às cegas —
-#       substituir rota de endereço por estimativa municipal tem custo de precisão; a ativação desse
-#       curto-circuito deve ser validada com dados reais no deploy. Providos e testados os blocos
-#       reutilizáveis. Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (106ª geração) → DISTBRASIL: SCRIPT DE PREPARAÇÃO + PROVIDER/LOADER SQLite [DISTBRASIL] (Passo 1)
-#     1º passo da integração (caminho C→A/B), executável e testado. Como a base (~15,5M pares) não é
-#     embarcável nem baixável neste ambiente, entregue: (1) script preparar_distbrasil.py (o usuário roda
-#     no ambiente dele) — baixa/lê a base do DistBrasil e gera um SQLite indexado, no modo 'subconjunto'
-#     (leve: só tabela 'vizinhos' com os K municípios mais próximos por estrada, ~10–15 MB) ou 'completo'
-#     (cache nacional: 'rotas' + 'vizinhos'); (2) no app, loader _distbrasil_conectar (abre o SQLite
-#     bundleado se existir — via DISTBRASIL_DB_PATH em secrets/env ou ao lado do app; None se ausente) +
-#     providers concretos _distbrasil_provider_sqlite (par → dist/dur da tabela 'rotas') e
-#     _distbrasil_vizinhos (K vizinhos rodoviários da tabela 'vizinhos'); _distbrasil_dist agora usa o
-#     provider SQLite quando DISTBRASIL_ATIVO. Tudo DESLIGADO por padrão (flag off / arquivo ausente →
-#     None) — impacto zero até o usuário plugar o arquivo e ligar a flag. Provado por teste de ponta a
-#     ponta (script gera SQLite sintético; providers do app consultam-no; simetria, m→km, vizinhos).
-#     PRÓXIMO: seção Auditoria DistBrasil no Validador; Municípios Próximos rodoviário; cache pré-API;
-#     Hubs. Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (105ª geração) → DISTBRASIL: ANÁLISE + FUNDAÇÃO (Fase 1, desligada) [DISTBRASIL]
-#     Você pediu para AVALIAR antes de implementar. Entregue: (1) análise técnica profunda + proposta
-#     faseada (ANALISE_DISTBRASIL_e_PROPOSTA.md) — o DistBrasil é distância/duração rodoviária SEDE-a-SEDE
-#     por par de Códigos IBGE (~15,5M pares), ótimo como CACHE/benchmark/outlier MUNICIPAL, mas NÃO é
-#     endereço-a-endereço e é grande demais para embarcar no .py (nem baixável aqui). (2) FUNDAÇÃO segura,
-#     100% testável e DESLIGADA por padrão: flag DISTBRASIL_ATIVO=False; provider abstrato _distbrasil_dist
-#     (retorna None sem base; simétrico; provider injetável ativa no deploy); indicadores PUROS
-#     _indicadores_distbrasil (+ _classificar_compatibilidade_distbrasil) — a lógica da "Auditoria
-#     DistBrasil" (diferenças abs/%, motor mais próximo da base, compatibilidade, score de consistência,
-#     ranking, interpretação). Nada altera rota/geocodificação enquanto desligado. Provado por teste.
-#     PRÓXIMO (após sua decisão de hospedagem dos dados): Fase 2 (script de preparação — subconjunto leve
-#     de vizinhos OU SQLite/DuckDB nacional) e Fase 3 (ligações: cache pré-API, seção Auditoria DistBrasil,
-#     Municípios Próximos rodoviário, Hubs). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (104ª geração) → SINCRONIZAÇÃO DA DOCUMENTAÇÃO (handbook ↔ 98ª–103ª) [DOC-EMBED] (conteúdo estático)
-#     Documentação viva (Seção 28): handbook embarcado regenerado para o Código IBGE como ENTRADA — Seção
-#     4 ganhou "Entrada híbrida — inclusive por Código IBGE"; Seção 13 atualizou Validador (entrada por
-#     código + auditoria "Validação Oficial pelo Código IBGE"), Lote (detecção de coluna + consistência) e
-#     Municípios Próximos (seleção por código); Seção 20 ganhou o tema de FAQ "Código IBGE (entrada e
-#     validação)"; Seção 27 inclui 98ª e 99ª–103ª. Blob gzip+base64 regenerado e verificado IDÊNTICO ao
-#     HTML. Só conteúdo estático — não toca lógica. Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (99ª–103ª gerações) → CÓDIGO IBGE COMO ENTRADA: CICLO COMPLETO [IBGE-INPUT]
-#     Sequência dos 5 incrementos da especificação, sobre a fundação da 98ª:
-#     (99ª) AUDITORIA "Validação Oficial pelo Código IBGE" no Validador — _auditoria_validacao_ibge
-#       compara código INFORMADO × IDENTIFICADO (confirmado/divergência/correção/revisão manual).
-#     (100ª) DETECÇÃO DE COLUNA IBGE nas planilhas — _valores_sao_codigo_ibge (puro) + _detectar_coluna_ibge
-#       identificam colunas de código; o Lote sinaliza e usa como identificador prioritário (offline O(1)).
-#     (101ª) VALIDAÇÃO DE CONSISTÊNCIA Código × Município × UF — _validar_consistencia_ibge aponta o campo
-#       em conflito e sugere correção; o Lote valida uma amostra e lista divergências na auditoria.
-#     (102ª) MUNICÍPIOS PRÓXIMOS por código — campo de Código IBGE que resolve o município oficial e
-#       sobrepõe a seleção por nome (localiza a opção exata; análise a jusante inalterada).
-#     (103ª) ENRIQUECIMENTO POR CÓDIGO — _enriquecer_por_codigo_ibge associa município/UF/coordenadas +
-#       hierarquia (região/meso/micro/imediata/intermediária); a tela já exibia a hierarquia p/ entradas
-#       por código (o código alimenta _hierarquia_territorial). Todos os helpers são puros e testados
-#       (índice/hierarquia injetáveis). Aditivos e conservadores. Sem regressão; 12 abas, RotaPipeline 41,
-#       balões 1×, score imutável.
-#   v3.8 (98ª geração) → CÓDIGO IBGE COMO ENTRADA OFICIAL (fundação) [IBGE-INPUT]
-#     Nova diretriz: aceitar o Código IBGE como ENTRADA (não só produzi-lo na saída). FUNDAÇÃO entregue:
-#     índice reverso {codigo(7díg): municipio/UF/lat/lon} O(1) e cacheado (_indice_ibge_por_codigo);
-#     detector conservador _e_codigo_ibge (7 dígitos puros, sem letras — não confunde com CEP=8, endereço
-#     ou coordenada); resolvedor O(1) _resolver_por_codigo_ibge. Ligado por early-return em
-#     obter_coordenadas_e_endereco_oficial: digitou o código → resolve município/UF/coordenada pela base
-#     oficial embarcada (offline, sem geocoders, score 100 MUNICIPAL, fonte IBGE_CODIGO_OFICIAL) e segue o
-#     pipeline. Como esse geocoder é compartilhado, JÁ funciona no Validador, no Lote E na Alocação de Hubs.
-#     Aditivo e conservador: só dispara para entrada puramente numérica de 7 dígitos presente na base —
-#     impacto zero em qualquer outra entrada. Provado por teste (detecta código; ignora CEP/endereço/
-#     coordenada; resolve pela base; None fora da base). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#     PRÓXIMO (incrementos seguros): dica na UI; auditoria 'Validação Oficial pelo Código IBGE'; detecção
-#     de coluna IBGE + validação de consistência nas planilhas; seleção por código em Municípios Próximos.
-#   v3.8 (97ª geração) → SINCRONIZAÇÃO DA DOCUMENTAÇÃO (handbook ↔ 96ª) [DOC-EMBED] (conteúdo estático)
-#     Cumprindo a política de "documentação viva" (Seção 28 do handbook): o handbook embarcado foi
-#     regenerado para refletir a 96ª — Seção 13 (Alocação de Hubs) agora descreve as colunas oficiais
-#     explícitas Cliente/Hub (Cód IBGE/Município/UF); Seção 12 ganhou o box "Código IBGE como identificador
-#     oficial" (onipresença + diagnóstico de ausência); e o changelog (Seção 27) inclui 95ª e 96ª. Blob
-#     gzip+base64 regenerado e verificado IDÊNTICO ao HTML. Só conteúdo estático — não toca lógica. Sem
-#     regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (96ª geração) → CÓDIGO IBGE EM TODA PARTE: RÓTULO DO HUB + DIAGNÓSTICO DE AUSÊNCIA [IBGE-EVERYWHERE]
-#     Diretriz: Cód IBGE como identificador oficial onipresente. Auditoria confirmou cobertura JÁ ampla
-#     (Validador tela; planilha de lote com Cód IBGE+Município+UF de Origem/Destino/Concorrente; Municípios
-#     Próximos tabelas reta+viária; logs de auditoria de Hubs) — fruto das rodadas 54ª/60ª/61ª/78ª. Fechadas
-#     as 2 lacunas concretas: (1) resultado de Alocação de Hubs ganhou colunas com RÓTULO EXPLÍCITO — 'Cód
-#     IBGE Hub'/'Município Hub'/'UF Hub' e 'Cód IBGE Cliente'/'Município Cliente'/'UF Cliente' — espelhando
-#     a identidade oficial já computada (aditivo, sem remover as colunas Origem/Destino); (2) helper puro
-#     _diagnostico_ibge: quando o código NÃO resolve, o Validador passa a EXPLICAR a causa provável
-#     (município não identificado / UF ausente / fora da base) em vez de deixar só '—'. Provado por teste
-#     (diagnóstico por caso; vazio quando o código existe). Sem regressão; 12 abas, RotaPipeline 41, balões
-#     1×, score imutável.
-#   v3.8 (95ª geração) → DOCUMENTAÇÃO OFICIAL (HANDBOOK) EMBARCADA NO APP [DOC-EMBED] (conteúdo estático)
-#     Você pediu para aprofundar a documentação e integrá-la ao app. Entregue: (1) handbook técnico
-#     completo em HTML — 28 seções, agora com as 12 abas detalhadas CAMPO A CAMPO e FAQ expandido para 31
-#     perguntas, além de arquitetura/pipeline/geocodificação/consenso/scores/auditorias/glossário; (2)
-#     INTEGRAÇÃO inteligente no arquivo único: o HTML (≈76 KB) é embarcado como gzip+base64
-#     (_HANDBOOK_HTML_B64, ~31 KB, mesma técnica da base IBGE) e decodificado por _carregar_handbook_html
-#     (cacheado, defensivo); renderizado na aba 📖 Manual do Usuário via components.html (visualização
-#     embutida) + botão de download do HTML (para abrir no navegador com índice lateral fixo). Ponteiro na
-#     sidebar (Documentação Corporativa) para descoberta. Sem hospedagem externa; viaja no arquivo único.
-#     NÃO afeta rota/geocodificação/coordenadas — é conteúdo estático. Verificado: o blob decodifica
-#     IDÊNTICO ao HTML original; compila; 12 abas, RotaPipeline 41, balões 1×, 0 except nus. Sem regressão.
-#   v3.8 (94ª geração) → CONSENSO LIGADO NO PIPELINE PARA RESGATE DE FALHAS (coords 0,0) [CONSENSO-RESGATE]
-#     Seus 5 casos com o painel corrigido (91ª) foram a calibração real e VALIDARAM o portão: assume
-#     quando o pipeline é fraco/falha (Ceilândia 18→84.6, Samambaia Sul 7→86.3, Vicente Pires 13→86.3) e
-#     DEFERE quando o pipeline é forte (Pirenópolis/Corumbá 100; Lapa/Copacabana 85 → mantém atual).
-#     Achado decisivo: Vila Mariana/Moema-SP, que FALHAVAM (coords 0,0, "Falha Geográfica Absoluta"), o
-#     consenso resgata com coordenadas válidas (≈ Vila Mariana/Moema, 2 fontes). 1ª fiação REAL, mínima e
-#     segura: _resgatar_coordenada_consenso liga o consenso no pipeline SOMENTE quando o ponto falhou
-#     totalmente (0,0) e a flag está ON. Pontos válidos (coord != 0,0) NÃO são tocados → zero regressão
-#     nos casos que já funcionam; e 0,0 é rota impossível, logo qualquer coordenada válida é estritamente
-#     melhor. Ainda gated pela flag. Provado por teste (resgata 0,0 quando o consenso assume; não toca
-#     pontos válidos; não resgata sem assume/sem coord; limpa 'Município Não Mapeado'). Sem regressão; 12
-#     abas, RotaPipeline 41, balões 1×. Próximo (com sua validação): expandir a adoção além do 0,0.
-#   v3.8 (93ª geração) → FONTE OFFLINE DE RAs DO DF NO CONSENSO [CONSENSO-MULTIFONTE] (módulo isolado)
-#     Atende à ênfase recorrente do documento (reconhecer Vicente Pires/Taguatinga Sul/Samambaia Sul/Asa
-#     Norte como RA) com um incremento que EU consigo testar sem rede: nova FONTE OFFLINE de Regiões
-#     Administrativas do DF no módulo de consenso — _fonte_consenso_ra_df + dicionário _DF_RA_COORDENADAS
-#     (centróides administrativos APROXIMADOS de ~47 RAs/variantes Sul-Norte). Quando o texto casa com uma
-#     RA, o consenso ganha um VOTO offline em nível 'Região Administrativa (DF)' com coordenada de
-#     referência — mesmo sem os geocoders de rede. Somada à fonte IBGE (município) e às de rede (quando a
-#     flag está ON), aumenta a concordância e o score composto para casos do DF. Continua ISOLADO/atrás da
-#     flag para adoção; a fonte em si é offline e pura. RESSALVA: as coordenadas de RA são pontos de
-#     referência (não precisão de logradouro) — as coordenadas finas seguem vindo dos geocoders. Provado
-#     por teste (casa Vicente Pires/Ceilândia/Asa Norte; sufixo Sul/Norte; ignora fora do DF; injetável).
-#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (92ª geração) → CONSISTÊNCIA DA LINHA RETA: BASE FÍSICA CORRETA + VALIDAÇÃO CRUZADA [DIST-RETA-FIX]
-#     Você reportou linha reta "impossível" (ex.: Vicente Pires→Taguatinga Norte: viária 4.9 km < reta
-#     6.961 km, sinuosidade 0.704× INCONSISTENTE). CAUSA RAIZ (confirmada): a GEODÉSICA está CORRETA —
-#     Haversine 6.952 km bate com Karney 6.961 km. O falso "impossível" vinha de comparar a distância
-#     ADOTADA (Google, que roteia entre os NOMES re-geocodificados → 4.9 km) com a geodésica (que usa as
-#     COORDENADAS do ArcGIS). O OSRM, que usa as MESMAS coordenadas, dá 8.51 km → 8.51/6.961 = 1.223
-#     (consistente!). FIX: _montar_indicadores_territoriais ganhou dist_osrm; a sinuosidade/consistência
-#     passam a usar a rota por COORDENADA (OSRM), fisicamente comparável à geodésica; a distância ADOTADA
-#     (Google) é sinalizada à parte com nota explicativa. + Validação cruzada Karney×Haversine no painel
-#     (confirma a linha reta; se divergir >1%, alerta de coordenada/datum). Só toca EXIBIÇÃO/auditoria —
-#     não altera rota, coordenadas nem a geodésica. Provado por teste (base OSRM corrige o falso
-#     impossível; Google-only mantém cautela; impossível genuíno quando até o OSRM < reta). Sem
-#     regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (91ª geração) → FIX DO DIAGNÓSTICO DE CONSENSO (painel vazio) [CONSENSO-MULTIFONTE]
-#     Ao avaliar no ambiente real, o painel "🔬 Consenso Multi-Fonte" aparecia VAZIO (só o cabeçalho).
-#     CAUSA: o painel (Validador) usava _num(res_ind[...]) para o score atual, mas _num só é definido
-#     ~1300 linhas depois (painel do concorrente) — NameError na construção da lista do loop, engolido
-#     pelo try/except do painel geográfico. FIX: conversor local _sc_num (seguro) no lugar de _num; e
-#     resolver_consenso_geografico agora é 100% defensivo (o score composto ficou dentro do try) — nunca
-#     lança, o painel sempre mostra as linhas (ou "sem consenso"). Sem impacto em rota/coordenadas.
-#     Validação cruzada com as SUAS telas confirmou 88ª/87ª/83ª funcionando (rótulos das RAs corretos,
-#     nível espacial certo, IBGE offline resolvendo Pirenópolis/Corumbá com score 100). Sem regressão; 12
-#     abas, RotaPipeline 41, balões 1×. NOTA: Vila Mariana/Moema-SP falharam a geocodificação no pipeline
-#     (coords 0,0) — é exatamente o caso que o consenso (com Nominatim/Photon) deve socorrer; agora dá p/
-#     ver no diagnóstico.
-#   v3.8 (90ª geração) → SCORE COMPOSTO E AUDITÁVEL DO CONSENSO [CONSENSO-MULTIFONTE] (módulo isolado)
-#     Evolui o módulo isolado da 89ª atacando o ponto central do novo pedido ("score muito baixo p/ local
-#     correto" e "não usar resultado fraco quando há melhor"): o consenso passou a ter SCORE COMPOSTO e
-#     AUDITÁVEL — componentes explícitos textual (0.35, similaridade query×nome via difflib), consenso
-#     (0.30, nº de fontes concordantes), UF (0.15) e nível (0.20, retornado não mais específico que o
-#     solicitado). Helpers puros _score_composto_consenso, _nivel_compativel_consenso + rank de níveis. O
-#     resolvedor calcula o composto e guarda o detalhamento; o diagnóstico opt-in exibe os componentes
-#     (auditoria do "porquê" do score). Continua ISOLADO e atrás da flag — sem tocar no pipeline. Provado
-#     por teste (composto sobe com concordância/casamento; penaliza UF divergente e over-specification;
-#     nível desconhecido não penaliza). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#     NOTA HONESTA: a reengenharia total (PostGIS/R-tree/ML/embeddings/20 fontes) é projeto de grande
-#     porte à parte; sigo por incrementos seguros no módulo isolado e aguardo seus números do diagnóstico
-#     (rede real) p/ calibrar limiar/portão/pesos antes de qualquer fiação no pipeline.
-#   v3.8 (89ª geração) → MÓDULO ISOLADO DE CONSENSO GEOGRÁFICO MULTI-FONTE (OPT-IN) [CONSENSO-MULTIFONTE]
-#     A pedido: ganhar a inteligência de consenso multi-fonte SEM arriscar o pipeline estável. Módulo
-#     NOVO e ISOLADO, atrás da flag CONSENSO_MULTIFONTE_ATIVO (OFF por padrão): reúne candidatos da base
-#     IBGE embutida (offline, autoritativa p/ município) e — só com a flag ON — dos geocoders JÁ
-#     existentes (Nominatim/Photon/ArcGIS, reutilizados, não reimplementados); vota por PROXIMIDADE
-#     espacial (cluster com mais fontes distintas vence) e só ASSUME via gate conservador
-#     (_consenso_melhor_que_atual: >= 2 fontes concordantes E score > atual + margem). Funções puras
-#     (_votar_consenso, _consenso_melhor_que_atual, _nivel_candidato_consenso, _fonte_consenso_ibge)
-#     testadas isoladamente. Diagnóstico opt-in no Validador Rápido (gated pela flag) para AVALIAR o
-#     resolvedor lado a lado — sem alterar rota/coordenadas. Enquanto a flag está OFF, o bloco é INERTE:
-#     nenhum caminho de produção o invoca. Provado por teste (fonte IBGE offline; votação por proximidade
-#     com contagem de fontes; gate conservador; defensivos). Sem regressão; 12 abas, RotaPipeline 41,
-#     balões 1×. PRÓXIMO: mais fontes offline (dicionário de RAs do DF c/ coordenadas) e, quando você
-#     validar, fiação atrás do gate no pipeline.
-#   v3.8 (88ª geração) → ANTI-ENDEREÇO-INDEVIDO: TETO DE GRANULARIDADE NO RÓTULO [GRANULARIDADE]
-#     Bug preciso: pedir uma localidade retorna endereço MAIS específico dentro dela — 'Ceilândia' →
-#     'Ceilândia QNN 3 Conjunto I'; 'Samambaia Sul' → 'Samambaia'; 'Vicente Pires' → 'Setor Habitacional
-#     Vicente Pires'. Verificação decisiva: as COORDENADAS já ficam dentro da RA (Samambaia 0.9 km,
-#     Taguatinga 2.3 km do centro) — o defeito é o RÓTULO. FIX (regra: o nível retornado nunca mais
-#     específico que o pedido): _rotulo_por_nivel_espacial reconstrói o rótulo na PRÓPRIA localidade para
-#     pedidos sub-municipais (RA/Bairro/Distrito), sem descer a QNN/Conjunto/Quadra/rua/número;
-#     orquestrado por _rotulo_granular_seguro (detecta nível → aplica teto → preserva localidade da 86ª),
-#     aplicado no pipeline logo após a geocodificação. NÃO altera coordenadas (rota intacta) nem a
-#     resolução IBGE (município vem à parte). Substitui a fiação da 86ª (que só preenchia) por uma que
-#     TAMBÉM limita a granularidade. Provado por teste (Ceilândia→'CEILÂNDIA, BRASÍLIA, DF, BRASIL';
-#     Samambaia Sul preservado; Lapa/Vicente Pires; Rua/POI/Município/GPS intactos; defensivos). Sem
-#     regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável. RESSALVA: reengenharia de consenso
-#     multi-fonte (Pelias/embeddings/R-tree/20 fontes) é projeto grande à parte — feito incrementalmente.
-#   v3.8 (87ª geração) → NÍVEL ESPACIAL NA AUDITORIA [GRANULARIDADE] (informativo, risco zero)
-#     Adiciona a classificação do NÍVEL ESPACIAL de cada ponto ao painel "Identidade Geográfica" do
-#     Validador Rápido: Coordenadas → Rua/Logradouro → POI → Região Administrativa (DF) → Distrito →
-#     Bairro/Localidade → Município. Helper puro _nivel_espacial (dependências injetáveis) + conjunto
-#     _DF_REGIOES_ADMINISTRATIVAS (reconhece Samambaia/Taguatinga/Ceilândia/… mesmo com município oficial
-#     Brasília, incl. variantes Sul/Norte). Puramente informativo — NÃO altera geocodificação, rota nem
-#     coordenadas. Provado por teste (código real: 'Samambaia Sul, DF'→RA; 'Rua 15, SP'→logradouro;
-#     'Shopping…'→POI; 'São Paulo'→município; coord GPS→Coordenadas; bairro genérico→Bairro/Localidade;
-#     defensivos). Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (86ª geração) → PRESERVAÇÃO DA LOCALIDADE NO RÓTULO [GRANULARIDADE] (o problema REAL, não o suposto)
-#     O painel da 85ª PROVOU que a rota NÃO era municipalizada: origem (-15.8673,-48.0845) fica a 0.9 km
-#     da Samambaia real e 23 km do centro de Brasília; destino a 2.3 km da Taguatinga real e 18.7 km do
-#     centro — coordenadas CORRETAS, rota de 7.55 km coerente. O problema real é o RÓTULO: o geocoder
-#     rotulava 'BRASÍLIA, DF' / 'SANDU, BRASÍLIA, DF' em vez de 'Samambaia Sul' / 'Taguatinga Sul',
-#     degradando a exibição E a consulta TEXTUAL ao Google (que recebia 'BRASÍLIA' → 13.2 km, enquanto o
-#     OSRM com as coordenadas certas dava 7.55 km). FIX: helper puro _preservar_localidade preserva a
-#     localidade específica pedida à frente do endereço administrativo quando o geocoder o reduz ao
-#     município (ou usa logradouro que não contém o termo do usuário), aplicado no pipeline logo após a
-#     geocodificação — SEM tocar coordenadas (a rota já usava as corretas). Conservador: só age com termo
-#     limpo (sem número/via), que não é o município e ainda não está no endereço. Provado por teste
-#     (Samambaia Sul/Taguatinga Sul/Lapa/Santa Teresa/Boa Viagem preservados; Copacabana com rua já
-#     específica e 'São Paulo'=município intactos). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (85ª geração) → IDENTIDADE GEOGRÁFICA + INDICADOR DE GRANULARIDADE [GRANULARIDADE] (visibilidade)
-#     Você reportou que "ainda municipaliza", mas a tela só mostrava o MUNICÍPIO (identidade
-#     administrativa = Brasília, CORRETA p/ RAs do DF) — sem revelar as COORDENADAS efetivamente
-#     roteadas. Diagnóstico: a confiança exibida é REVISAO_MANUAL, não VALIDACAO_ANTI_ALUCINACAO → a
-#     blindagem NÃO disparou (o fix da 84ª segurou); o município 'Brasília' é o rótulo administrativo, e
-#     não dá p/ saber pela tela se a rota usa o ponto específico ou o centróide. FIX de visibilidade:
-#     painel "🌐 Identidade Geográfica" no Validador Rápido (SEPARADO do administrativo) mostrando
-#     endereço + coordenadas ROTEADAS (res_ind[19..22]) para origem/destino, com INDICADOR de
-#     granularidade automático — distância do ponto ao centróide do município (≈ 0 km ⇒ municipalizado;
-#     acima ⇒ ponto específico), via _identidade_por_coordenada (78ª, offline) + helper puro
-#     _rotulo_granularidade. Implementa a separação administrativa × geográfica que você pediu E revela
-#     objetivamente se a granularidade foi preservada. Provado por teste (_rotulo_granularidade: ≤2 km →
-#     municipal; >2 km → específico; defensivos). Sem regressão; 12 abas, RotaPipeline 41, balões 1×.
-#   v3.8 (84ª geração) → PRESERVAÇÃO DE GRANULARIDADE (RAs do DF) [GRANULARIDADE] (efeito colateral do IBGE)
-#     Bug reportado: locais específicos (Samambaia Sul-DF, Taguatinga Sul-DF) passaram a ser
-#     "municipalizados" → rota calculada como se fosse Brasília (centróide), perdendo a granularidade.
-#     CAUSA RAIZ (rastreada): a blindagem anti-alucinação (_blindar_municipio) substitui o ponto
-#     geocodificado pelo CENTRÓIDE municipal quando _intencao_municipio() é True E o resultado é
-#     hiperespecífico. _intencao_municipio devolvia True DE IMEDIATO para tipo_entrada MUNICIPIO/DISTRITO
-#     — e RAs do DF (município oficial = Brasília) caíam nisso. Além disso, a blindagem só "morde" quando
-#     _centroide_municipio devolve lat/lon ≠ 0 — o que a BASE EMBUTIDA da 83ª passou a fornecer,
-#     ATIVANDO a substituição que antes era inerte. FIX: _intencao_municipio só afirma intenção municipal
-#     se o TERMO do usuário corresponde ao NOME do município (igual/prefixo/subconjunto de tokens); uma
-#     localidade sub-municipal com nome distinto (RA/bairro/distrito, ex.: 'Samambaia Sul' ≠ 'Brasília')
-#     NÃO é municipalizada → coordenadas/rota específicas preservadas. Município/Cód IBGE seguem no
-#     enriquecimento/auditoria (identidade administrativa), sem degradar a geografia. Provado por teste
-#     (Samambaia Sul/Taguatinga Sul preservados; município real 'Brasília' e forma curta ainda disparam;
-#     via/número/POI seguem preservados). Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imut.
-#   v3.8 (83ª geração) → BASE NACIONAL EMBUTIDA (OFFLINE, ZERO REDE) [IBGE-EMBUTIDA] (itens #1/#6/#8 — DEFINITIVO)
-#     Você continuava vendo '—' MESMO no 82ª (com fallback GitHub) → prova de que a base fica incompleta
-#     no deploy e o fallback é curto-circuitado pelo PICKLE (base cacheada >1000 mas incompleta retorna
-#     antes do fallback) ou o GitHub não é alcançável. Diagnóstico decisivo: testei a normalização — ela
-#     casa (semantica.normalizar('Ribeirão Cascalheira') == chave da base); logo a única explicação é a
-#     base NÃO CONTER o município. Solução DEFINITIVA e offline: BASE NACIONAL EMBUTIDA no próprio código
-#     (~5.570 municípios: código IBGE oficial + nome + UF + lat/lon, comprimida gzip+base64, ~120 KB),
-#     MESCLADA no import DEPOIS de carregar_dados_ibge — imune ao pickle, à API do IBGE e ao GitHub.
-#     Preenche qualquer município ausente sem sobrescrever a base viva; corrige de vez 'Cód IBGE: —',
-#     'não identificado na base IBGE', a hierarquia por código E a cobertura nacional de Municípios
-#     Próximos (os itens trazem lat/lon → centróides). Provado por teste (merge real: Ribeirão
-#     Cascalheira→5107180/MT e São Miguel do Araguaia→5220207/GO resolvem sobre base vazia; base viva tem
-#     prioridade; cobertura >5500). RESSALVA: hierarquia FINA (meso/micro/imediata/intermediária) ainda
-#     vem da API do IBGE — se ela falhar, é a próxima (embutir a hierarquia). Sem regressão; 12 abas,
-#     RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (82ª geração) → FALLBACK NACIONAL IBGE (INDEP. DA API) [IBGE-ROBUSTO] (itens #1/#8 — causa raiz²)
-#     'Veio vazio ainda' após a 81ª → investigação mais funda descartou UF e normalização (as regras de
-#     abreviação/sinônimo NÃO tocam 'São Miguel do Araguaia'/'Ribeirão Cascalheira'). Causa raiz real mais
-#     provável: a BASE não carrega quando a API do IBGE (servicodados) falha/timeouta no deploy — e aí
-#     TUDO (Cód IBGE, Região, Municípios Próximos) vira '—'. FIX estrutural: fonte de FALLBACK nacional
-#     confiável no GitHub (código IBGE oficial + nome + UF + lat/lon dos ~5.570 municípios), montada no
-#     MESMO formato/chave da base; usada automaticamente quando a API do IBGE volta incompleta; cacheada
-#     em DiskCache + pickle. Como os itens já trazem lat/lon, cascateia p/ centróides e cobertura nacional
-#     de Municípios Próximos. Helpers: _parse_municipios_github (PURO) + _carregar_municipios_fallback_
-#     github. Provado por teste (parsing do dataset REAL do GitHub: São Miguel do Araguaia→5220207,
-#     Ribeirão Cascalheira→5107180; >5500 municípios; defensivos). RESSALVA: a hierarquia FINA (meso/
-#     micro/imediata/intermediária) ainda vem da API do IBGE — se ela também falhar, é a próxima rodada.
-#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (81ª geração) → CAUSA RAIZ 'CÓD IBGE: —' PARA NOMES ÚNICOS [IBGE-ROBUSTO] (item #1)
-#     Correção estrutural do bug reportado: campos IBGE/hierarquia vazios (—) para municípios conhecidos
-#     (ex.: Ribeirão Cascalheira-MT, São Miguel do Araguaia-GO). CAUSA RAIZ: _info_municipio_ibge exigia
-#     correspondência de UF SEMPRE; quando extrair_uf_precisa não achava a UF no endereço geocodificado
-#     (comum em municípios remotos), o Cód IBGE vinha vazio mesmo para nomes INEQUÍVOCOS — e como a
-#     hierarquia (meso/micro/imediata/intermediária) é resolvida POR CÓDIGO, tudo cascateava para —.
-#     FIX: (1) match por UF continua desambiguando homônimos; (2) se a UF não casar mas o nome for ÚNICO
-#     na base (1 município só), resolve por nome — independe da UF; (3) _resolver_identidade_ibge herda a
-#     UF OFICIAL do item quando a extração falha. Homônimos com UF ausente seguem retornando None (sem
-#     desambiguação insegura). Corrige Cód IBGE, UF E a hierarquia inteira de uma vez para nomes únicos.
-#     Provado por teste (código real: Ribeirão Cascalheira/São Miguel do Araguaia únicos resolvem sem UF;
-#     homônimo sem UF → None; homônimo com UF → resolve; UF errada em nome único → resolve pelo único).
-#     Sem regressão; 12 abas, RotaPipeline 41, balões 1×, score imutável.
-#   v3.8 (80ª geração) → GEOCODIFICAÇÃO+SNAP DO CONCORRENTE: AUDIT COMPLETO [CONC-QUALIDADE] (fecha A)
-#     Fecha a auditoria completa do concorrente. SNAP (distância do ponto ao eixo viário) vem de GRAÇA do
-#     snap_info da rota OSRM da 79ª (dest = hub concorrente). FONTE/SCORE/CONFIANÇA da geocodificação vêm
-#     do hub_qual_map — reaproveitando hub_geo (0 chamadas extras): geocodificar_endpoints_paralelo passou
-#     a preservar também 'conf' (índice 7, aditivo); a Alocação monta o mapa {hub: fonte/score/conf} e o
-#     passa ao builder (_montar_dataframe_final ganhou param hub_qual_map=None — Lote passa None). Builder
-#     lê a qualidade por NOME do concorrente → 'Fonte/Score/Confianca Geo Concorrente' e 'Snap Concorrente
-#     (m)'. Provado por teste (montagem do hub_qual_map a partir do formato real de geocodificar; leitura
-#     por nome + defaults; extração de snap do snap_info; conf preservada). Sem regressão de índices
-#     (geocodificar consumido por índice ≤6; res idem); 12 abas, RotaPipeline 41, balões 1×, score imut.
-#   v3.8 (79ª geração) → OSRM + DIVERGÊNCIA GOOGLE×OSRM DO CONCORRENTE [CONC-OSRM] (opção A, parte 3)
-#     Estende a auditoria do concorrente sem novo núcleo: roteia o runner-up TAMBÉM no OSRM
-#     (API_OSRM_Routing — 1 chamada, latência aceita) e calcula a divergência Google×OSRM com a MESMA
-#     métrica única do vencedor (_metricas_divergencia, sempre 0-100%). Grava no dict auditoria_concorrente:
-#     osrm_km, divergencia_km/pct/classe, motor de menor distância. Isolado em try/except (falha do OSRM →
-#     sem divergência, batch segue). Planilha ganhou 'OSRM km Concorrente', 'Divergencia Motores
-#     Concorrente (km)/(%)', 'Motor Vencedor Concorrente'; painel exibe a divergência. RESSALVA: a chamada
-#     OSRM depende de rede — NÃO executável aqui; validei a lógica de divergência (métrica única) e a
-#     leitura do dict; o end-to-end você confirma reprocessando no ambiente real. Sem regressão de índices;
-#     12 abas, RotaPipeline 41 (inalterado), balões 1×, score imutável.
-#   v3.8 (78ª geração) → IDENTIDADE IBGE DO CONCORRENTE [CONC-IBGE] (opção A, parte 2 — sem novo núcleo)
-#     Estende a auditoria do concorrente com a IDENTIDADE MUNICIPAL OFICIAL — SEM nova mudança de núcleo
-#     (reaproveita as coordenadas capturadas na 77ª). Resolve o município do hub concorrente pelo
-#     CENTRÓIDE MAIS PRÓXIMO à sua coordenada (Haversine/IUGG vetorizado sobre a base nacional em
-#     memória) — IN-MEMORY, sem rede. Novos: _arrays_centroides_municipais (cacheado) +
-#     _identidade_por_coordenada (defensivo → None). No builder (thread principal, não no worker),
-#     grava 'Cod IBGE Concorrente', 'UF Concorrente', 'Municipio Concorrente'; painel exibe a identidade.
-#     Colunas registradas no export. Obs.: identificação por centróide é aproximação (não point-in-
-#     polygon); dist ao centróide fica disponível internamente. Provado por teste (código real com base
-#     stub: escolhe o município correto por proximidade; (0,0)/base vazia/coord None → None sem quebrar).
-#     Sem regressão; 12 abas, RotaPipeline 41 (inalterado nesta rodada), balões 1×, índices intactos.
-#   v3.8 (77ª geração) → AUDITORIA DO CONCORRENTE NO NÚCLEO: TEMPO+VELOCIDADE [CONC-AUDIT] (opção A)
-#     A pedido (opção A, "sempre", latência aceita), inicia a auditoria completa do concorrente no BATCH
-#     alterando o núcleo — da forma MAIS segura possível. RotaPipeline ganhou 1 campo aditivo NO FIM,
-#     'auditoria_concorrente' (dict extensível), lido SEMPRE por NOME (getattr) — não altera nenhum
-#     índice 0-39 (verificado: construção por keyword, nenhum res[40+], tuplas de falha padded ≥35). O
-#     ramo do runner-up passou a capturar o TEMPO do concorrente (res_g_runner[1], mesmo índice do
-#     vencedor — já computado, antes descartado) e derivar VELOCIDADE MÉDIA implícita (helpers puros
-#     _parse_tempo_min/_velocidade_media_kmh) + coordenadas, gravando tudo no dict via _replace. Planilha
-#     ganhou 'Tempo Concorrente' e 'Velocidade Media Concorrente'; painel exibe ambos. INVARIANTE: 40 →
-#     41 campos (mudança INTENCIONAL e aditiva). PRÓXIMO (mesma mecânica, o dict é extensível): OSRM +
-#     divergência, Cód IBGE/fonte/score, snap — cada um some 1 chamada e será rodada dedicada. RESSALVA:
-#     o fluxo (roteamento do runner-up) NÃO é executável aqui — helpers e leitura do dict testados; o
-#     end-to-end você valida no ambiente real. Sem regressão de índices; 12 abas, balões 1×, score imut.
-#   v3.8 (76ª geração) → COORDENADAS DO CONCORRENTE + LIMITE HONESTO DO AUDIT [CONC-COORD] (disputa)
-#     Passo seguro rumo à "auditoria completa do concorrente sempre": grava as COORDENADAS próprias do
-#     concorrente ('Lat Concorrente'/'Lon Concorrente'), já presentes em runner_up_map ([2]/[3]) — custo
-#     ZERO, sem rede, sem tocar o núcleo. Colunas na planilha + coordenadas exibidas no painel da disputa.
-#     LIMITE HONESTO (documentado): os demais dados do concorrente (Cód IBGE, fonte/score/confiança, tipo
-#     do ponto, snap, divergência Google×OSRM, tempo, velocidade média) exigem rotear/geocodificar o
-#     runner-up pelo PIPELINE INTEIRO + ADICIONAR CAMPOS ao RotaPipeline (NamedTuple de 40 campos, núcleo
-#     acessado por índice em todo o app). Isso NÃO é validável sem executar o Streamlit; mesmo com a
-#     latência aceita ("sempre"), fazê-lo às cegas violaria o zero-regressão. Fica como mudança dedicada,
-#     a validar no ambiente real. Provado por teste (leitura das coordenadas de runner_up_map: [2]=lat/
-#     [3]=lon; defensivo p/ tupla curta). Sem regressão; 12 abas, 40 campos, balões 1×, score 0.35/.35/.30.
-#   v3.8 (75ª geração) → RADAR + ÍNDICES DE DISPUTA NA PLANILHA [DISPUTA-INDICES] (expansão sem latência)
-#     Continua a expansão da Auditoria da Disputa SEM latência (derivado dos dados já gravados). PLANILHA
-#     da Alocação ganhou 3 colunas: 'Indice Competitividade' (0-100, quão acirrada — 100−dif%),
-#     'Indice Robustez' (0-100, quão folgada a escolha — satura em 200 km) e 'Motivo Resumido Perda'
-#     (texto). Helpers puros _indice_competitividade/_indice_robustez/_motivo_resumido_perda; colunas
-#     registradas nas listas de export (numéricas onde cabe). PAINEL ganhou RADAR comparativo vencedor ×
-#     concorrente (plotly go.Scatterpolar — já é dependência do app; eixos normalizados 0-100:
-#     proximidade viária, proximidade linha reta, diretividade V/R) + os dois índices como métricas.
-#     Radar isolado em try/except. Provado por teste (índices: competitividade=100−dif%, robustez
-#     saturada/clamp, motivo pelo fator dominante, defensivos; e construção real da figura de radar com
-#     plotly instalado no teste). Sem regressão; 12 abas, 40 campos, balões 1×, score 0.35/0.35/0.30.
-#   v3.8 (74ª geração) → AUDITORIA DA DISPUTA: "POR QUE NÃO VENCEU?" + GRÁFICO [DISPUTA-XAI] (expansão)
-#     Expande a Auditoria da Disputa de Hubs com o que é DERIVÁVEL dos dados atuais (sem rerodar o
-#     pipeline do concorrente — evita latência). Novo helper puro _explicar_derrota_concorrente: monta
-#     os motivos estruturados de "🧠 Por que o concorrente não venceu?" a partir das diferenças já
-#     calculadas (viária, linha reta corrigida da 72ª, Razão V/R), só citando o que é desfavorável ao
-#     concorrente; se nada for, explica o desempate por menor viária. O painel ganhou essa seção + um
-#     gráfico de barras comparativo vencedor × concorrente (viária e linha reta), isolado em try/except.
-#     RESSALVA/PRÓXIMO: a auditoria COMPLETA do concorrente (Cód IBGE, coordenadas, fonte/score/
-#     confiança, snap, divergência Google×OSRM, tempo, velocidade média) exige rotear o runner-up no
-#     pipeline inteiro (dobra trabalho por cliente) — DOCUMENTADO como rodada dedicada opt-in. Provado
-#     por teste isolado (motivos corretos por combinação de diferenças; vazio quando concorrente não é
-#     pior em nada). Sem regressão; 12 abas (Pesquisa incl.), 40 campos, balões 1×, score 0.35/0.35/0.30.
-#   v3.8 (73ª geração) → ABA PESQUISA DE SATISFAÇÃO [PESQUISA] (item #5 do novo prompt)
-#     Nova aba "⭐ Pesquisa de Satisfação" (abas 11 → 12, mudança INTENCIONAL a pedido). Formulário
-#     (st.form) com gostou/resolveu/indicaria/erro (radios), quanto ajudou + nota geral (sliders) e
-#     campos livres (mais/menos gostou, melhorias, erro, comentários). Ao enviar: monta assunto+corpo
-#     (helper puro _montar_corpo_pesquisa), gera link mailto URL-encoded (_mailto_pesquisa) — entrega SEM
-#     backend/credenciais, robusta em qualquer ambiente — e salva backup local em DiskCache. E-mail do
-#     produtor via Secrets (EMAIL_PRODUTOR, acesso defensivo) ou campo editável. Expander documenta
-#     opções de envio automático em produção (FormSubmit/SMTP/Apps Script/Webhook). NOTA: Cód IBGE nas
-#     planilhas (item #1 do prompt) JÁ estava implementado (54ª/71ª: Cod IBGE + UF + Região origem/
-#     destino) — verificado, não reimplementado. Provado por teste isolado (helpers puros: corpo formata
-#     todas as respostas + assunto com nota; mailto URL-encoded correto e reversível). Sem regressão nas
-#     11 abas originais; 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (72ª geração) → CORREÇÃO CAUSA RAIZ: LINHA RETA DO CONCORRENTE [DISPUTA-FIX] (bug crítico)
-#     CAUSA RAIZ do bug reportado na "🏆 Auditoria da Disputa de Hubs": a distância em LINHA RETA do
-#     concorrente aparecia IGUAL à do vencedor. Motivo: o runner_up_map já trazia a linha reta própria do
-#     2º colocado (dists[i2]), mas ela NUNCA era armazenada — embrulhar_task_paralela recebia
-#     runner_up_info[0] e o descartava, e o painel então reusava _venc_reta (a reta do VENCEDOR) tanto na
-#     linha do concorrente quanto na Razão V/R do concorrente. CORREÇÃO: _montar_dataframe_final passou a
-#     gravar 'Linha Reta Concorrente' = runner_up_map[origem][0] (a reta PRÓPRIA do concorrente); o painel
-#     passou a usar essa coluna para a linha reta E para a Razão V/R do concorrente, e ganhou coluna Δ
-#     (Concorrente − Vencedor) em viária, linha reta e Razão V/R. Coluna também registrada nas listas de
-#     export da Alocação (sai na planilha, numérica). Verificado que nenhum outro campo do concorrente
-#     herdava valor do vencedor. Provado por teste (matriz real: reta do 2º ≠ reta do 1º; réplica da
-#     gravação + razão do painel usando a reta correta). Sem regressão; 11 abas, 40 campos, balões 1×.
-#   v3.8 (71ª geração) → REGIÃO E HOMÔNIMOS NA PLANILHA [TERRITORIO-PLANILHA] (item #3 no export)
-#     Estende o item #3 ao FLUXO PRINCIPAL: Região e grau de ambiguidade (homônimos) passam a sair na
-#     PLANILHA (Lote e Alocação), não só na tela do Validador Rápido. Colunas novas: "Regiao Origem",
-#     "Regiao Destino" (via UF → _UF_PARA_REGIAO) e "Homonimos Origem (UFs)"/"Homonimos Destino (UFs)"
-#     (nº de UFs distintas do nome na base IBGE, via _grau_ambiguidade_homonimos da 63ª). PURO e em
-#     memória — SEM rede, SEM dependência nova; aditivo no builder compartilhado _montar_dataframe_final;
-#     defensivo (Região "Indefinido" quando UF ausente). Provado por teste isolado (construção real das
-#     colunas: Região por UF; homônimos = contagem; UF "N/A"/vazia → "Indefinido"; sem quebrar). Sem
-#     regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (70ª geração) → RÓTULO DE MÉTODO UNIFICADO TELA×PLANILHA [METODO-UNIFICADO] (item #8 — fecha)
-#     Unifica o rótulo do "método" entre TELA e PLANILHA sob o helper único _rotulo_metodo_rota (57ª). A
-#     planilha (coluna "Metodo Utilizado", Lote e Alocação) deixa de ter lógica inline própria e passa a
-#     usar o MESMO helper da tela — eliminando a divergência e, sobretudo, CORRIGINDO o rótulo do caso
-#     geodésico: antes "Viária (Geodésico Adaptativo)" (impreciso — geodésico não é viário), agora
-#     "Linha reta (GeographicLib)". Google/OSRM viária idênticos à tela. MUDANÇA DE STRINGS na coluna
-#     "Metodo Utilizado": "Viária (Google Maps)"→"Distância viária (Google Maps)"; "Viária (OSRM -
-#     fallback)"→"Distância viária (OSRM - fallback)"; "Viária (Geodésico...)"→"Linha reta
-#     (GeographicLib)". Verificado que NENHUM código lê/filtra/agrupa por esse valor (só o usuário a
-#     jusante) — impacto interno zero; sinalizado para você ajustar consumidores externos se houver.
-#     Provado por teste (helper real: rótulos canônicos p/ Google/OSRM/geodésico/outros/vazio; planilha
-#     agora chama o helper; mislabel antigo ausente). Sem regressão; 11 abas, 40 campos, balões 1×,
-#     score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (69ª geração) → NÚCLEO DE SELEÇÃO POR ROTA VIÁRIA [SELECAO-VIARIA] (itens #7/#9 — núcleo testado)
-#     Entrega o CORE da 2ª opção de seleção de hubs ("por rota viária") como função PURA e testada,
-#     pronta para integração — SEM ligar o fluxo às cegas (a máquina de estados em chunks não é
-#     executável aqui; ativá-la sem teste no ambiente real violaria o zero-regressão). Novo
-#     _selecionar_hub_por_viaria(candidatos): dado os hubs candidatos de um cliente já roteados, elege o
-#     de MENOR distância viária e devolve ranking (ordenado por asfalto), runner-up, margem km/%,
-#     empate técnico (<5 km) e nº de candidatos válidos; descarta rotas inválidas (None/≤0). Complementa
-#     o topk_map da 58ª (candidatos por linha reta → roteados → vencedor por asfalto). Docstring traz o
-#     GUIA DE INTEGRAÇÃO em 5 passos (2 botões, modo opt-in, rotear top-K, eleger vencedor, painel #9),
-#     com o caminho de linha reta permanecendo byte-a-byte. Função ainda NÃO conectada à UI (aguarda
-#     rodada de integração com seu teste real). Provado por teste isolado (vencedor = menor viária;
-#     ranking/margem/empate; descarte de inválidos; 0/1/N candidatos). Sem regressão; 11 abas,
-#     40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (68ª geração) → ENCICLOPÉDIA/MANUAL ATUALIZADOS (57ª→67ª) [DOCS-UPDATE] (item #12)
-#     Item #12: documentação alinhada às entregas recentes, SEM tocar lógica (puro texto). Enciclopédia
-#     ganhou 4 seções novas (17–20): Método de cálculo explícito + Ranking de hubs; Identificação IBGE
-#     em toda a plataforma; Hierarquia territorial + Ambiguidade de homônimos; Explorador Global +
-#     filtros + gráficos + Parquet. Manual: seção 11 (Exportações) passou a citar Parquet e uma seção 13
-#     nova ("Municípios Próximos e Explorador Global") ensina o passo a passo. Seções 12–16 da
-#     Enciclopédia preservadas (invariante). Sem regressão; 11 abas, 40 campos, balões 1×,
-#     score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (67ª geração) → PARQUET NO FLUXO LOTE/ALOCAÇÃO [PARQUET-LOTE] (item #6 no Lote/Alocação)
-#     Leva o item #6 ao fluxo Lote/Alocação. A LEITURA mostrou que filtros (UF/Região) e gráficos JÁ
-#     existiam na aba Analytics (não re-implementados) — o gap real era o export Parquet dos resultados.
-#     Adiciona download **Parquet** nas telas de resultado do LOTE (aba Processamento) e da ALOCAÇÃO,
-#     via capability-check da 65ª (só aparece com pyarrow/fastparquet; sem a lib, aviso; nunca quebra).
-#     Novo helper _gerar_parquet_bytes com FALLBACK robusto: se a serialização direta falhar (colunas
-#     object de tipos mistos), coage object→string e refaz. Isolado em try/except. RESSALVA: requer
-#     pyarrow no requirements de produção (opt-in; degrada com elegância). Provado por teste com
-#     round-trip real + caminho de fallback (coluna mista → string, relê OK). Sem regressão; 11 abas,
-#     40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (66ª geração) → EXPLORADOR GLOBAL DE MUNICÍPIOS [EXPLORADOR-GLOBAL] (item #5)
-#     Explorador da base INTEIRA (~5.5k municípios) na aba "Municípios Próximos" (expander próprio, sem
-#     nova aba — invariante 11 abas preservado): busca por nome (lupa, ignora acento/caixa) e por código
-#     IBGE (substring), filtros por UF e Região (combináveis), paginação (50/página) e export CSV +
-#     Parquet (capability-check da 65ª) do conjunto FILTRADO inteiro. Núcleo em 3 helpers PUROS e
-#     testáveis (_flatten_base_municipios, _filtrar_base_explorador, _paginar_lista) + base cacheada
-#     (_base_municipios_explorador). Tudo em memória, sem rede; render isolado em try/except (não
-#     interfere na busca por proximidade). Provado por teste isolado (código real: flatten estrutura/
-#     ordena; filtro por nome/código/UF/Região e combinação; paginação com clamp e total_paginas
-#     corretos; vazio → sem erro). Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30.
-#   v3.8 (65ª geração) → EXPORTAÇÃO PARQUET COM CAPABILITY-CHECK [PARQUET-EXPORT] (item #6 — fecha #5/#6)
-#     Fecha os itens #5/#6. Adiciona o download **Parquet** (formato colunar) dos resultados de
-#     "Municípios Próximos" (tabela linha reta, respeitando o filtro territorial da 64ª). Robusto a
-#     ambiente: novo helper _parquet_engine_disponivel() detecta pyarrow/fastparquet e o botão só
-#     aparece quando há engine — sem a lib, exibe aviso para instalar (nunca quebra). Geração isolada em
-#     try/except. Downloads passam de 2 p/ 3 colunas (CSV | Excel | Parquet). RESSALVA: para habilitar em
-#     produção, adicionar `pyarrow` ao requirements — a dependência é opt-in e o app degrada com elegância
-#     sem ela. Provado por teste com round-trip real (pyarrow instalado no teste): to_parquet grava e
-#     read_parquet relê preservando colunas/valores; helper detecta engine presente e retorna None quando
-#     ausente. Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (64ª geração) → FILTROS TERRITORIAIS + GRÁFICOS EM MUNICÍPIOS PRÓXIMOS [BUSCA-FILTROS] (itens #5/#6)
-#     Entrega os pilares SEM dependência nova dos itens #5/#6 na aba "Municípios Próximos": (1) filtros
-#     por UF e por Região sobre os vizinhos já calculados (helper puro _filtrar_vizinhos_por_territorio;
-#     seleção vazia = visão atual IDÊNTICA — identidade, zero regressão); aplicados à tabela geodésica,
-#     ao mapa, à tabela viária, aos gráficos e à exportação. (2) Gráfico de barras da distância em linha
-#     reta por município (Altair, colorido por mesmo/outro Estado) e comparativo Linha Reta × Viária
-#     (st.bar_chart) — ambos isolados em try/except (falha de render não afeta a aba). RESSALVA/PRÓXIMO:
-#     export Parquet do item #6 NÃO foi implementado — pyarrow/fastparquet indisponíveis no ambiente de
-#     teste e a dependência é decisão sua (adicionar ao requirements); DOCUMENTADO. Busca já cobre todos
-#     os municípios pelo seletor nativo. Provado por teste isolado (filtro real: vazio→identidade;
-#     UF/Região/combinado→subconjunto correto; preserva ordem; deduplicação de opções). Sem regressão;
-#     11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (63ª geração) → GRAU DE AMBIGUIDADE DE HOMÔNIMOS [AMBIGUIDADE-HOMONIMOS] (item #3 — fecha)
-#     Fecha o item #3. Novo helper _grau_ambiguidade_homonimos(municipio): conta em quantas UFs
-#     DISTINTAS o mesmo nome de município aparece na base IBGE em memória (ex.: "Bom Jesus" existe em
-#     várias UFs). PURO e OFFLINE (sem rede, sem dependência nova); usa a MESMA normalização da base
-#     (semantica.normalizar) — coerente com _info_municipio_ibge. O painel de identidade do Validador
-#     Rápido ganhou "⚖️ Grau de ambiguidade (homônimos)" para origem e destino: nome exclusivo (1 UF)
-#     vs homônimo em N UFs (lista as siglas), reforçando por que informar a UF desambigua. Provado por
-#     teste isolado (código real com base IBGE stub: nome em várias UFs → contagem/lista corretas e
-#     ordenadas; nome único → 1; desconhecido/vazio/"—"/"N/A" → 0 sem quebrar; UFs deduplicadas).
-#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (62ª geração) → HIERARQUIA TERRITORIAL OFICIAL DO IBGE [HIERARQUIA-IBGE] (item #3)
-#     Enriquece a identidade territorial no Validador Rápido (origem E destino) com a divisão oficial
-#     do IBGE: Região (derivada da UF, instantânea) + Mesorregião + Microrregião + Região Imediata +
-#     Região Intermediária. Três funções novas e ISOLADAS: _parse_hierarquia_payload (puro: payload
-#     /localidades/municipios → {codigo: {regiao,meso,micro,imediata,intermediaria}}, defensivo),
-#     _carregar_hierarquia_ibge (baixa UMA vez a base nacional e persiste em DiskCache 30d; NÃO toca
-#     carregar_dados_ibge nem o pickle — não pode regredir a base; falha graciosa → dict vazio) e
-#     _hierarquia_territorial (resolve por código, defensivo → "—"). RESSALVA/latência: meso/micro/
-#     imediata/intermediária NÃO são deriváveis da UF — exigem a base do IBGE; o download único é a
-#     latência MITIGADA por DiskCache + spinner rotulado; sem rede, os campos ficam "—" e voltam a
-#     preencher quando a base responder. Provado por teste isolado (parser real com payload sintético
-#     completo/parcial; resolver com stub: código conhecido, ausente, "—"/"N/A"/None → "—"). Sem
-#     regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (61ª geração) → IDENTIDADE IBGE NOS LOGS DE AUDITORIA [IBGE-LOGS] (item #2 — fecha logs)
-#     Leva a identificação municipal oficial para os DOIS logs de auditoria (aba 🔍 Auditoria): Lote e
-#     Alocação. Log do LOTE (montado em _montar_dataframe_final) ganha Município + UF + Cód IBGE (já
-#     presentes em linha_dict desde a 54ª; já exibia Fonte/'Vencedor' e Confiança/'Score'). Log da
-#     ALOCAÇÃO (hubs e origens) ganha Município + UF + Cód IBGE + Fonte da Geocodificação: para isso,
-#     geocodificar_endpoints_paralelo passou a PRESERVAR município (v[5]) e fonte (v[6]) — que já
-#     recebia e descartava —, mudança ADITIVA (índices 0–4 intactos; ambos os callers consomem por
-#     índice ≤4). Identidade resolvida pelo helper único _resolver_identidade_ibge (base IBGE em
-#     memória, sem rede). Provado por teste isolado (construção real das entradas de log: campos
-#     preenchidos no caminho feliz; tupla curta/erro → '—'/'N/A' sem quebrar; retorno de 7 elementos).
-#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (60ª geração) → CÓD IBGE NA TABELA VIÁRIA DE MUNICÍPIOS PRÓXIMOS [IBGE-PROXIMIDADE] (item #2)
-#     Fecha o item #2 na aba "Municípios Próximos". A tabela de LINHA RETA já exibia "Cód. IBGE"
-#     (pré-existente); a de MALHA VIÁRIA (Google/OSRM) NÃO — agora exibe também. Duas mudanças
-#     aditivas: (1) cada vizinho roteado passa a levar 'codigo_ibge' (já presente na base de
-#     coordenadas) para o dict viário; (2) coluna "Cód. IBGE" no _df_via, mesma posição/rótulo da
-#     tabela de linha reta. Bônus: como a aba "Viaria" do Excel exporta a lista bruta, o código passa a
-#     sair também na exportação. Custo ZERO, sem rede, sem dependência nova, sem tocar geocodificação/
-#     roteamento. Provado por teste isolado (código real de _municipios_mais_proximos_geodesico com base
-#     stub: todo vizinho carrega codigo_ibge; propagação p/ o dict viário e fallback "—" quando ausente).
-#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (59ª geração) → CÓD IBGE NO VALIDADOR RÁPIDO [IBGE-SINGLESHOT] (item #2, parte 2)
-#     Propaga a identificação municipal oficial para a TELA do Validador Rápido (Single-Shot), origem
-#     E destino: painel "🗺️ Identificação Municipal Oficial (IBGE)" com Município + UF + Cód IBGE +
-#     Fonte da identificação (geocoder vencedor) + Nível de confiança (rótulo + score/100). Reaproveita
-#     a MESMA resolução da planilha (54ª) via novo helper único _resolver_identidade_ibge (UF de
-#     extrair_uf_precisa + código de _info_municipio_ibge sobre a base IBGE em memória) — ADITIVO, sem
-#     rede, sem nova dependência, sem tocar o pipeline de rota. Leitura defensiva por índice (res_ind).
-#     Provado por teste isolado (município+UF conhecidos → código correto; UF Indefinido/vazio → '—';
-#     município fora da base → '—'; entrada None → '—' sem exceção). PRÓXIMOS (item #2, resto): mesmos
-#     campos em KPIs/logs/comparativos onde ainda faltarem. Sem regressão; 11 abas, 40 campos,
-#     balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (58ª geração) → RANKING N-HUBS (TOP-5) NA DISPUTA [RANK-NHUBS] (itens #7/#9 e #9 — fundação)
-#     Fundação segura para a "2ª opção de seleção por rota viária" (itens #7/#9), entregando já o
-#     "ranking completo / quais quase entraram" do item #9. calcular_matriz_competitiva_vetorizada
-#     passa a retornar também topk_map: por cliente, os N hubs mais próximos por LINHA RETA (teto
-#     TOP-5) como lista (dist_reta_km, hub) já ordenada — ADITIVO (dest_to_hub/runner_up_map
-#     inalterados), reaproveitando o MESMO argsort já feito (custo desprezível, ZERO rede). O painel
-#     "🏆 Auditoria da Disputa de Hubs" ganha a tabela "Ranking dos hubs candidatos (linha reta ·
-#     top-5)", marcando o escolhido (rota viária) e o concorrente roteado. Único caller atualizado
-#     (5-tupla); topk_map guardado em session_state (limpo no cancelar). Provado por teste isolado
-#     (top-5 ordenado correto; retornos existentes byte-a-byte iguais; 1 hub; sem hubs). RESSALVA/
-#     PRÓXIMO: a SELEÇÃO por rota viária propriamente dita (rotear os top-K por cliente e escolher o
-#     de MENOR distância viária) NÃO foi implementada — é cirurgia na máquina de estados em chunks e
-#     AUMENTA latência (K× roteamento, opt-in); DOCUMENTADA como próxima rodada por exigir teste no
-#     ambiente real (não executável aqui). Sem regressão; 11 abas, 40 campos, balões 1×,
-#     score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (57ª geração) → MÉTODO UTILIZADO NA TELA [METODO-TELA] (item #8, parte 2 — conclui o item #8)
-#     Torna EXPLÍCITO na interface o método da distância, complementando a coluna já existente na
-#     planilha (55ª). (1) Validador Rápido (Single-Shot): linha "Método utilizado: ✓ Distância viária
-#     (Google Maps)" / "(OSRM - fallback)" / "✓ Linha reta (GeographicLib)" — derivada da 'Fonte da
-#     Rota' (res_ind[5]) já calculada, custo ZERO; o caso geodésico é sinalizado como estimativa.
-#     (2) Alocação de Hubs: rótulo "Método de seleção dos hubs: ✓ Linha reta (GeographicLib · WGS-84)"
-#     nos resultados, com nota honesta (valor via GeographicLib/Karney <1mm; ranking por Haversine/IUGG
-#     de ordem idêntica) e ponteiro para a coluna 'Método Utilizado' da planilha. Novo helper único
-#     _rotulo_metodo_rota reaproveitado pelas duas telas. Puramente aditivo e offline (só exibição de
-#     dados já calculados) — sem nova chamada de API, sem tocar em _montar_dataframe_final. Provado por
-#     teste isolado (Google→viária Google; OSRM→viária fallback; Geodésico→Linha reta GeographicLib;
-#     vazio→N/A). PRÓXIMOS (item #7/#9): 2ª opção de seleção de hubs "por rota viária" na Alocação.
-#     Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (56ª geração) → AZIMUTE/RUMO GEODÉSICO EM MUNICÍPIOS PRÓXIMOS [BEARING-AZIMUTE] (item #3, parte 1)
-#     Nova coluna "Azimute" nas DUAS tabelas da aba Municípios Próximos (Linha Reta e Malha Viária):
-#     o rumo inicial de círculo máximo da origem até cada município (Norte=0°, sentido horário) mais a
-#     abreviação da rosa dos ventos em pt-BR (N, NE, L=Leste, SE, S, SO=Sudoeste, O=Oeste, NO). Cálculo
-#     100% determinístico e VETORIZADO (numpy) sobre as MESMAS coordenadas já usadas na ordenação por
-#     distância — custo O(n) desprezível, SEM rede, SEM nova dependência e SEM chamada de API. Helper
-#     _rumo_cardeal (setores de 45°) + azimutes injetados em _municipios_mais_proximos_geodesico como
-#     campos aditivos ('azimute','rumo') nos dicts de vizinho; leitura defensiva (.get) tolera sessão
-#     antiga. Exportações CSV/Excel herdam a coluna automaticamente. Provado por teste isolado
-#     (cardeais exatos 0/90/180/270°, 18 limites de setor, pares reais BR: Manaus→NO, Recife→NE,
-#     Porto Alegre→S, Salvador→L, e reciprocidade ida/volta ≈180°). PRÓXIMOS (item #3, resto):
-#     dados administrativos (Região/Meso/Microrregião via mapeamento IBGE, cacheável) e grau de
-#     ambiguidade — DOCUMENTADO como próximo passo por exigir download/enriquecimento (risco de rede/
-#     latência a mitigar com DiskCache). Sem regressão; 11 abas, 40 campos, balões 1×, score
-#     0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (55ª geração) → MÉTODO EXPLÍCITO NA PLANILHA [METODO-EXPLICITO] (item #8, parte 1)
-#     Coluna 'Metodo Utilizado' na planilha (Lote e Alocação, mesmo builder): deixa explícito o motor
-#     da distância viária vencedora — "Viária (Google Maps)" (prioritário) ou "Viária (OSRM - fallback)",
-#     derivado de 'Fonte da Rota' já calculada (custo ZERO, sem chamada nova). Fallback "N/A" seguro.
-#     Provado por teste isolado (Google prioritário, OSRM fallback). Complementa o Código IBGE na
-#     planilha (54ª). PRÓXIMOS: método na TELA do Validador/Alocação; "Linha reta (GeographicLib)" na
-#     seleção de hubs por linha reta; e os demais itens do roteiro (Cód IBGE no painel Single-Shot;
-#     ranking N-hubs; meso/microrregião + bearing/azimute; Google prioritário explícito nas rotas
-#     viárias de Municípios Próximos). Sem regressão; 11 abas, 40 campos, balões 1×, score
-#     0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (54ª geração) → CÓDIGO IBGE NA PLANILHA (LOTE E ALOCAÇÃO) [IBGE-EVERYWHERE] (item #2, parte 1)
-#     Início da propagação do Código IBGE como identificador oficial da localidade em toda a app.
-#     Nesta rodada: colunas 'Cod IBGE Origem', 'UF Origem', 'Cod IBGE Destino', 'UF Destino' na planilha
-#     processada — servem Lote E Alocação (mesmo _montar_dataframe_final). Busca defensiva na base
-#     nacional IBGE (_info_municipio_ibge) pelo município já resolvido + UF extraída do endereço oficial;
-#     try/except com fallback "N/A" (nunca quebra). Custo desprezível (lookup em dict em memória).
-#     PRÓXIMOS INCREMENTOS do item #2 (documentados): exibir Cód IBGE + Fonte + Confiança no painel do
-#     Validador Rápido, nos KPIs, logs e comparativos. Demais itens do roteiro (ranking N-hubs;
-#     meso/microrregião + bearing/azimute em Municípios Próximos; Google prioritário explícito; método
-#     na tela/planilha) seguem para rodadas dedicadas. Sem regressão; 11 abas, 40 campos, balões 1×,
-#     score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (53ª geração) → AUDITORIA DA DISPUTA DE HUBS NA INTERFACE [DISPUTA-HUB]
-#     Item central de um roteiro amplo (12 itens): trazer para a TELA a comparação vencedor × melhor
-#     concorrente da Alocação de Hub (antes só na planilha exportada). Novo painel "🏆 Auditoria da
-#     Disputa de Hubs" nos resultados da Alocação: seletor de cliente → hub escolhido × melhor
-#     concorrente (distância viária, linha reta, Razão V/R, tempo, score, motor), tabela comparativa,
-#     Diferença (km e %, pela função centralizada da 50ª), SENSIBILIDADE da escolha (empate técnico →
-#     robusta), ÍNDICE DE COMPETITIVIDADE (★★★★★) e JUSTIFICATIVA automática (por que venceu / por que
-#     o concorrente perdeu). Usa dados JÁ calculados (colunas Concorrente Analisado/Distancia
-#     Concorrente) — custo ZERO, sem novas chamadas de API. Provado por teste isolado (empate→★★★★★;
-#     folgada→★☆☆☆☆). Demais itens do roteiro (código IBGE como identificador em toda a app; dados
-#     administrativos meso/microrregião + bearing/azimute em Municípios Próximos; ranking N-hubs;
-#     Google prioritário nas rotas viárias; revisão de arquitetura) DOCUMENTADOS como próximos passos
-#     no relatório — escopo grande p/ rodadas dedicadas, sem inflar/arriscar numa só leva. Sem
-#     regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (52ª geração) → CORREÇÃO DE COBERTURA DO "MUNICÍPIOS PRÓXIMOS" (NACIONAL) [FIX-COBERTURA]
-#     BUG (aba nova da 51ª): resultados incompletos e incoerentes entre UFs. CAUSA RAIZ: a API de
-#     municípios do IBGE NÃO retorna lat/lon → a base tinha coordenadas só para um SUBCONJUNTO, então
-#     o ranking geodésico cobria poucos municípios (e cruzava UFs de forma incoerente por falta de
-#     candidatos). SOLUÇÃO: enriquecimento com os centróides de TODOS os ~5.570 municípios —
-#     _carregar_centroides_municipais baixa o dataset nacional UMA vez, persiste em DiskCache
-#     (cache_base_local, 30 dias) e _municipios_com_coordenadas passa a mesclar: coordenada offline
-#     da base quando houver, senão enriquece por CÓDIGO IBGE (prioritário/confiável) ou nome+UF.
-#     Degradação graciosa: se o download falhar, mantém o subconjunto (sem crash) e a UI mostra a
-#     COBERTURA (✅ nacional ≥5000 / ⚠️ parcial). Provado por teste isolado (enriquecimento por código
-#     e nome; fallback gracioso; prioridade do código). NOTA: o download roda no runtime de produção
-#     (que alcança a internet); meu ambiente de teste é restrito, então validei a LÓGICA de mesclagem
-#     isoladamente. Sem regressão; 11 abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (51ª geração) → NOVA ABA "🗺️ MUNICÍPIOS PRÓXIMOS" (INTELIGÊNCIA ESPACIAL) [ABA-PROXIMIDADE]
-#     11ª aba (nova, a pedido explícito). Implementa o 'Near' que fora documentado como viável:
-#     estratégia de DUAS FASES (rápida/econômica) — (1) pré-filtro GEODÉSICO em memória (Haversine
-#     vetorizado p/ ordenar; Karney/WGS-84 é o padrão da app) sobre os municípios da base IBGE com
-#     coordenadas, retornando os N mais próximos SEM consumir APIs; (2) rota VIÁRIA sob demanda
-#     (Google/OSRM via calcular_pipeline_logistico) só para os 5 já filtrados, minimizando chamadas.
-#     Busca inteligente (selectbox com filtro nativo, ignora acento/caixa, por município-UF). Sinaliza
-#     🔵 Mesmo Estado / 🟠 Outro Estado com XAI de integração regional; compara reta × viária; mapa
-#     pydeck (origem+vizinhos+linhas, fallback st.map); tabelas ordenáveis; Razão(V/R)+faixa, balsa,
-#     motor vencedor, links de auditoria (Google/OSRM); export CSV/Excel. Helpers novos
-#     _municipios_com_coordenadas, _opcoes_municipios_busca, _municipios_mais_proximos_geodesico
-#     (cacheados). Provado por teste isolado (origem excluída; ordenação; vizinho de outra UF incluído).
-#     NOTA: cobertura do Near depende dos municípios com coordenadas na base. Sem regressão: agora 11
-#     abas (intencional), 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (50ª geração) → CORREÇÃO DA DIFERENÇA (%) + MÉTRICAS CENTRALIZADAS [METRICA-UNICA]
-#     BUG CORRIGIDO: a Diferença (%) do Comparativo Google×OSRM usava denominador = MENOR valor
-#     (min), explodindo o percentual (ex.: 36 vs 552 km → 1433%; daí os 220/347/1342 relatados).
-#     Havia DUAS fórmulas divergentes: o painel de auditoria já usava max (correto, ≤100%), o
-#     comparativo usava min (errado). SOLUÇÃO: função ÚNICA _metricas_divergencia (Diferença % =
-#     |a−b| ÷ MAIOR(a,b) × 100 → sempre [0,100], robusta a valor pequeno espúrio) + Diferença
-#     Absoluta (km) + classificação. Roteados por ela: painel de auditoria, comparativo Google×OSRM
-#     e as colunas da planilha (Lote e Alocação, mesmo builder). NOVAS COLUNAS obrigatórias: Razão
-#     (V/R) + Classificação (faixas do circuity/detour factor: Muito eficiente→Extremamente elevada),
-#     Diferença (%), Diferença Absoluta (km), Classificação da Divergência, Grau de Confiabilidade da
-#     Medição, Observações Automáticas da Auditoria. Nova função _classificar_razao_vr. Provado por
-#     teste isolado (1433%→93,5%; % sempre em [0,100]; faixas corretas). Sem regressão; 10 abas, 40
-#     campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (49ª geração) → ALOCAÇÃO DE HUBS ELEVADA AO PADRÃO ENTERPRISE [ALOC-ENTERPRISE]
-#     Paridade com o Processamento em Lote por REUSO (sem duplicar lógica). Descoberta-chave: a
-#     Alocação JÁ usa o mesmo _montar_dataframe_final → a planilha já vinha enriquecida (links OSRM,
-#     distância Google/OSRM, diferença motores, sinuosidade, barreira física, alertas — rodadas
-#     43ª–47ª). O que faltava e foi somado à Alocação: (1) o mesmo SCORECARD de qualidade; (2) a mesma
-#     AUDITORIA AUTOMÁTICA DE ROTAS SUSPEITAS (razão viária/reta, limiar técnico 1,8× + IQR); (3) a
-#     seção "🚀 Como obter o MÁXIMO desempenho e precisão" adaptada à Alocação (2 planilhas, hubs).
-#     Tudo reaproveitando renderizar_scorecard_qualidade e _auditar_rotas_suspeitas já existentes.
-#     Processamento contínuo/time-boxed e enriquecimento já eram compartilhados. Sem regressão; 10
-#     abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (48ª geração) → INDICADORES TERRITORIAIS NO VALIDADOR RÁPIDO [BARREIRA-SINGLE]
-#     Trouxe a análise territorial (antes só na planilha em lote) para o Validador Rápido (Single-Shot),
-#     com EXPLICAÇÕES: novo painel "🌍 Análise Territorial e Barreiras Físicas" mostrando fator de
-#     sinuosidade (viária÷reta) + interpretação, barreira física provável (inferida) + origem do
-#     cálculo/justificativa/grau de confiança, e consistência física (viária≥reta). Helper central
-#     _montar_indicadores_territoriais (mesma lógica do lote, sem duplicar cálculo). Provado por teste
-#     isolado (inclui o caso impossível 36 vs 1852 → INCONSISTENTE). Itens já entregues em rodadas
-#     anteriores e reconfirmados no relatório: ArcGIS prioritário (43ª), Karney/WGS-84 na linha reta
-#     (40ª/43ª), mitigação de snap do OSRM (41ª), auditoria de rotas suspeitas (45ª), correção do bug
-#     AL→ALAMEDA (46ª). Discrepância residual do OSRM (~44km) e camadas GIS pesadas (hidrografia/DEM/
-#     malha) documentadas: inerentes à malha OSM / incompatíveis com single-file. Sem regressão; 10
-#     abas, 40 campos, balões 1×, score 0.35/0.35/0.30, 0 bare excepts.
-#   v3.8 (47ª geração) → INFERÊNCIA DE BARREIRA FÍSICA + AVALIAÇÃO DE FERRAMENTAS SIG [ANALISE-BARREIRA]
-#     Rumo a SIG profissional. Implementado (zero dependência, alta explicabilidade): coluna "Barreira
-#     Fisica Provavel" na planilha, inferida do fator de sinuosidade (viária÷reta — indicador clássico
-#     de desvio por obstáculo) + detecção de balsa: Sim→travessia; ≥2,2×→muito provável (rio/represa/
-#     serra); ≥1,6×→provável; <0,98→inconsistente. Complementa a defesa física (viária≥reta) da 46ª e a
-#     auditoria de suspeitas da 45ª. AVALIADO e DOCUMENTADO como NÃO viável in-process (custo-benefício
-#     no relatório): Spatial Join, Calculate Travel Cost, camadas de hidrografia/relevo/DEM/malha
-#     rodoviária/IBGE — exigem GeoPandas/GDAL/GEOS + dados offline (dezenas a centenas de MB) que o
-#     runtime restrito de rede e o modelo single-file não comportam. 'Near' (município mais próximo por
-#     geodésica) é viável com os centróides IBGE já em memória — documentado como próximo passo natural.
-#     A identificação por Código IBGE + Nome+UF e a validação espacial (bbox UF + reverse-geo, re-armada
-#     na 46ª) já cobrem o núcleo do item #3/#4. Sem regressão; 10 abas, 40 campos, balões 1×.
-#   v3.8 (46ª geração) → RCA: BUG "AL→ALAMEDA" NA NORMALIZAÇÃO + DEFESAS [FIX-UF-NORMALIZA + DEFESA-FISICA]
-#     CAUSA RAIZ de erro grave (Águas Belas/PE → Santana do Ipanema/AL virou Santana/AP, reta 1852km,
-#     viária 36km): a expansão de abreviações mapeava r'\bAL\b'→'ALAMEDA'; como a normalização troca a
-#     vírgula por espaço ANTES de expandir, "SANTANA DO IPANEMA, AL" (AL=Alagoas) virava "...ALAMEDA",
-#     DESTRUINDO a UF. Sem UF, a geocodificação caiu em "SANTANA, AP" (Amapá) — e a linha reta de
-#     1852km estava correta PARA as coordenadas erradas (o cálculo geodésico Karney está certo; o erro
-#     foi a montante). Ponto exato: MotorEnderecoCanônico._normalizar_impl, dicionário abreviacoes_raw.
-#     CORREÇÃO ESTRUTURAL: (1) removido AL→ALAMEDA (única abreviação que colide com UF); (2) BLINDAGEM
-#     de UF — as 27 siglas viram sentinela (bytes nulos) antes das expansões e são restauradas depois,
-#     rodando após a padronização de rodovia (AL-220 intacto). Isso RE-ARMA as validações espaciais
-#     existentes (bbox UF + reverse-geo), que antes eram burladas pela UF corrompida. DEFESA FÍSICA
-#     nova: viária ≥ linha reta é lei física; se viária < reta (impossível, como 36<1852), alerta
-#     automático de inconsistência. Provado por teste isolado (AL preservado; AP/SP/PA/AC ok; rodovias
-#     e abreviações legítimas intactas; sinuosidade<0.98 sinalizada). Sem regressão; 10 abas, 40 campos.
-#   v3.8 (45ª geração) → LOTE/ALOCAÇÃO: PLANILHA ENRIQUECIDA + ETA DINÂMICA + GUIA DE DESEMPENHO
-#     Foco em Processamento em Lote e Alocação. (#1/#2) Planilha processada ENRIQUECIDA com colunas
-#     de auditoria extraídas do rastro já calculado (custo ZERO): Distância Google/OSRM, Diferença
-#     Motores (km e %), Fator Sinuosidade, Tipo de Ponto origem/destino, Deslocamento Snap
-#     origem/destino + Nível, Coord Usada OSRM (pós-snap), Validação Espacial origem/destino,
-#     Mitigação de Snap, Alertas Automáticos — além do 'Link Mapa OSRM'/'Link Rota Comparativo' da
-#     43ª. Serve Lote E Alocação (mesmo _montar_dataframe_final). (#6) Processamento contínuo já
-#     resolvido (FLUXO-CONTINUO, 38ª/39ª) — verificado intacto. (#7) ETA DINÂMICA: combina taxa média
-#     (estável) com taxa recente (reativa) via EMA, peso migrando p/ a recente conforme progride —
-#     converge ao ritmo real (não mais enviesada pela partida lenta). (#8) Nova seção "🚀 Como obter
-#     o MÁXIMO desempenho e precisão" na aba de Processamento (boas práticas de preenchimento,
-#     padronização, limpeza, formato). Provado por testes isolados (enriquecimento, ETA, sinuosidade,
-#     alertas). Sem regressão; 10 abas, 40 campos, balões 1×, score 0.35/0.35/0.30 intactos.
-#   v3.8 (44ª geração) → AUDITORIA FINAL DE PRODUÇÃO + HARDENING DE CONFIABILIDADE
-#     Rodada de VALIDAÇÃO (não de features): reavaliadas criticamente todas as decisões (arquitetura,
-#     motores, APIs, cálculos, performance, UX). Veredito documentado no relatório: a arquitetura já
-#     reflete o estado da arte após 43 gerações (Karney/WGS-84 na linha reta; consenso Bayesiano +
-#     DBSCAN + validação espacial na geocodificação; ArcGIS prioritário com portões de qualidade;
-#     OSRM com mitigação de snap + validação + guard; fluxo contínuo time-boxed; auditoria total).
-#     ÚNICO ganho seguro aplicado: 4 cláusulas `except:` nuas → `except Exception:` (evita engolir
-#     KeyboardInterrupt/SystemExit; boa prática de resiliência, risco nulo). Estudos comparativos de
-#     motores (Google/OSRM/GraphHopper/Valhalla) e APIs (ArcGIS/Nominatim/Photon/TomTom/Pelias/etc.)
-#     no relatório, justificando as escolhas atuais. Itens NÃO implementados por risco desproporcional
-#     documentados (troca de motor, GeoPandas in-process, Redis/distribuído, circuit breaker formal,
-#     migração de st.tabs). Sem regressão: 10 abas, 40 campos, balões 1×, score 0.35/0.35/0.30 intactos.
-#   v3.8 (43ª geração) → ARCGIS PRIORITÁRIO + AUDITORIA DE SUSPEITAS + LINKS OSRM NO LOTE
-#     [ARCGIS-PRIORITARIO + AUDIT-SUSPEITAS + OSRM-LINK-LOTE]. (#2) ArcGIS vira a FONTE GEODÉSICA
-#     PRIORITÁRIA: no consenso, um candidato ArcGIS com confiança aceitável (score ≥60) é tentado
-#     ANTES dos demais; a validação espacial (reverse-geo + UF/município) segue como filtro
-#     obrigatório, então só caímos para fallback se o ArcGIS estiver ausente, com score baixo ou
-#     reprovado na validação — hierarquia pedida SEM reduzir exatidão. Ordem de fallback pelos pesos
-#     já existentes (ArcGIS>TomTom>Overpass>Nominatim>Photon). (#3) Distância em linha reta AUDITADA:
-#     já usa GeographicLib/Karney WGS-84 (erro <1mm) → Geopy → Haversine IUGG, com guardas anti-zero
-#     e de bounding box — é o algoritmo de máxima precisão (Karney > Vincenty); nada a trocar. (#4)
-#     Links do OSRM agora também no Lote e na Alocação (colunas 'Link Mapa OSRM' e 'Link Rota
-#     Comparativo') — custo ZERO (URLs derivadas das coordenadas já calculadas). (#6) Auditoria
-#     automática pós-lote de ROTAS SUSPEITAS: sinaliza razão viária/reta anômala por limiar técnico
-#     (≥1,8×) e estatístico (Q3+1,5·IQR), com painel dedicado. Provado por testes isolados (ArcGIS
-#     priorizado/fallback; razão+IQR; classificações). (#7) Auto-preenchimento do Validador a partir
-#     da planilha: DOCUMENTADO como pendente — o st.tabs não permite troca programática de aba sem
-#     reestruturar a navegação das 10 abas (risco alto vs. regra inegociável); design proposto no
-#     relatório. Sem regressão; 10 abas, 40 campos, balões 1×, score 0.35/0.35/0.30 intactos.
-#   v3.8 (42ª geração) → AUDITORIA APROFUNDADA: NÍVEL DE SNAP + TIPO DE PONTO [AUDIT-CLASSIF]
-#     Brief idêntico ao da 41ª (mitigação de snap, já implementada e intacta). Revisão crítica
-#     achou 2 itens do próprio brief ainda não atendidos: item #9 "classificar o nível de
-#     deslocamento" e item #8 "tipo de ponto retornado (município/centroide/endereço/POI/bairro)".
-#     Adicionados 2 classificadores de AUDITORIA (não alteram cálculo): _classificar_snap (faixas
-#     Excelente/Ótimo/Bom/Moderado/Alto/Crítico) e _classificar_tipo_ponto (infere o tipo a partir
-#     da fonte + endereço oficial). Exibidos no painel de auditoria (tipo de ponto na identificação
-#     origem/destino; nível do snap ao lado do deslocamento em metros). Provado por teste isolado
-#     (2346m→Alto, 782m→Bom; centróide IBGE, endereço, logradouro, POI, bairro, município). Aditivo,
-#     sem regressão, sem custo (classificação local sobre dados já capturados).
-#   v3.8 (41ª geração) → MITIGAÇÃO ATIVA DO SNAP EXCESSIVO DO OSRM [SNAP-MITIGA]
-#     A 40ª geração MEDIU e validou o snap; esta AGE sobre ele (o usuário pediu mitigação real, não
-#     só medição). Quando o OSRM projeta origem/destino longe da via (> 1,5 km), o sistema reúne
-#     coordenadas candidatas de múltiplos geocoders (ArcGIS/Nominatim/Photon) + o ponto atual, mede
-#     o snap de cada uma via OSRM /nearest (sem rotear) e escolhe a coordenada road-adjacent de
-#     MENOR deslocamento DENTRO da UF, re-roteando o OSRM com ela. A coordenada validada (canônica)
-#     não muda — a road-adjacent é usada só p/ o /route do OSRM. Helpers _osrm_nearest e
-#     _melhor_coordenada_para_osrm; memoizado por município (_MITIGA_SNAP_CACHE → custo amortizado
-#     no lote); só dispara em snap grande (rotas urbanas intactas, sem latência extra). Se nenhum
-#     candidato melhora (malha OSM esparsa), informa e mantém validação+guard. Auditoria ampliada:
-#     candidatos avaliados (fonte, coord, snap), coord road-adjacent escolhida, snap antes→depois e
-#     rota OSRM antes→depois. Provado por teste isolado (menor snap na UF; descarte de candidato
-#     fora da UF; memoização; re-rota só com melhora >300m; disparo só >1500m). Ex. do brief:
-#     origem 2346m→210m. Docs: Enciclopédia seção 16. Sem regressão; latência amortizada e restrita.
-#   v3.8 (40ª geração) → CAUSA RAIZ DA DIVERGÊNCIA OSRM (SNAP) + VALIDAÇÃO ESPACIAL
-#     [OSRM-SNAP + VALID-ESPACIAL]. CAUSA RAIZ COMPROVADA: Google e OSRM já recebem a MESMA
-#     origem/destino validados; a divergência vem do OSRM PROJETAR (snap) a coordenada enviada
-#     no nó viário mais próximo da malha OSM — em área rural esparsa, isso desloca origem/destino
-#     em km. Prova: o OSRM retorna os waypoints "snapados" + a distância do snap (agora capturados
-#     no índice 5 do retorno de API_OSRM_Routing; score_rota fixado em 88 p/ não colidir). O
-#     painel de auditoria passa a exibir coordenada ENVIADA × USADA (pós-snap) × deslocamento (m).
-#     VALIDAÇÃO ESPACIAL: confere se os pontos snapados seguem dentro da bounding box da UF pedida
-#     e se o snap ficou no limiar (3 km); alertas exibidos. GUARD de confiança: se o snap jogar
-#     origem/destino p/ FORA da UF (erro objetivo), o OSRM NÃO vence o Google (a regra "menor
-#     distância" é mantida; só rejeita resultado do OSRM comprovadamente inválido — atende ao
-#     pedido "só aceitar rota com confiança mínima"); sem Google, usa o OSRM com o alerta. Provado
-#     por teste isolado (6 cenários: snap pequeno/grande, cross-UF, sem Google, sem UF, resposta
-#     vazia). Docs: Enciclopédia seção 16. Sem regressão; nenhuma perda de exatidão/desempenho.
-#   v3.8 (39ª geração) → ALOCAÇÃO 100% CONTÍNUA + CAMADA ÚNICA + AUDITORIA DE MOTORES
-#     [FLUXO-CONTINUO + AUDIT-MOTORES]. (1) A Alocação tinha um estol RESTANTE: a geocodificação
-#     dos destinos era síncrona numa única execução (a 38ª geração só havia dado time-box ao
-#     roteamento). Agora ela é uma FASE própria time-boxed ('geo_destinos': mini-lotes ~8s +
-#     rerun → matriz competitiva → roteamento), tornando a Alocação tão contínua quanto o Lote.
-#     (2) Camada única de identificação CONFIRMADA e tornada TRANSPARENTE: origem/destino já
-#     passam por uma só geocodificação validada (com anti-alucinação); o Google recebe o NOME
-#     oficial e o OSRM recebe a COORDENADA validada (mesma do geocode) — ambos partem do mesmo
-#     ponto (o OSRM não reinterpreta o texto). (3) Novo campo RotaPipeline.auditoria_motores
-#     (índice 39, default None → 40 campos; 0-38 preservados) captura o rastro: texto original →
-#     normalizado → validado → coordenada → parâmetros/URLs de cada motor → consenso/divergência.
-#     Novo painel na rota individual: "🔎 Auditoria das Consultas aos Motores de Rota". Provado
-#     por teste isolado (rastro, ordem lon/lat do OSRM, divergência, fallback, coords nulas).
-#     Docs: Enciclopédia seção 15. Sem regressão, sem perda de desempenho/exatidão.
-#   v3.8 (38ª geração) → FLUXO CONTÍNUO: FIM DAS INTERRUPÇÕES NO LOTE [FLUXO-CONTINUO]
-#     CAUSA RAIZ do "para no meio e exige novo clique": execuções longas do Streamlit (um chunk
-#     fixo de 200 rotas esperava a rota mais lenta; e o pré-aquecimento geocodificava TODOS os
-#     endpoints de forma síncrona numa só execução) estouravam o timeout do WebSocket do Streamlit
-#     Cloud ANTES de chegar ao st.rerun() — a tela ficava no último frame renderizado, à espera de
-#     interação. SOLUÇÃO (Processamento E Alocação): (1) pré-aquecimento vira uma FASE time-boxed
-#     (mini-lotes até ~8s, checkpoint, rerun); (2) roteamento vira TIME-BOXED por orçamento de tempo
-#     de parede (~8s/execução) em vez de nº fixo de rotas. Cada execução é sempre curta → o WebSocket
-#     nunca cai antes do rerun e cada rerun troca mensagens (mantém a conexão "quente"). Adapta-se à
-#     rede (rápida = muitas rotas/execução; lenta = menos, mas execução curta). Provado por simulação:
-#     5k/100k rotas concluídas; toda execução ≤ orçamento+1 mini-lote; sem reprocessamento; cauda/bordas
-#     ok. Avaliados e documentados: thread em background / fila (RQ+Redis) e @st.fragment(run_every) —
-#     preteridos por exigirem infraestrutura externa/contexto de thread, incompatíveis com o modelo
-#     single-file/Cloud; o padrão checkpoint+execuções-curtas é o mais robusto e sem dependências.
-#     Malha territorial IBGE + GeoPandas/DuckDB Spatial: avaliados e NÃO adotados (dependências
-#     pesadas GDAL/GEOS, malha não obtível offline, memória do Cloud, modelo single-file) — a
-#     validação município↔coordenada já é coberta por centróide IBGE + UF + reverse-geo. Sem regressão.
-#   v3.8 (37ª geração) → COMPARAÇÃO DUPLA DE ROTAS + RANKING MULTI-INDICADOR + DOCS
-#     [VIS-DUAL + CLASS-MULTI]. (1) A tela individual passa a exibir SEMPRE os dois mapas e os
-#     dois links (vencedor + comparativo), não importa quem vença: Google vence → mapa Google
-#     (principal) + mapa OSRM (comparativo, geometria exata); OSRM vence → mapa OSRM (principal)
-#     + mapa Google (comparativo). Dois campos novos no RotaPipeline (37/38, com default: 39
-#     campos no total; índices 0-36 preservados). Bloco de UI estritamente aditivo — não altera
-#     o bloco do vencedor. (2) Nova seção "Ranking Multi-Indicador por Rota" na aba Classificação:
-#     ordena/filtra rota a rota por indicadores derivados (sinuosidade = viária÷reta, tempo/km,
-#     km/min, velocidade média, diferença viária−reta, scores), com critério de desempate,
-#     filtros (motor/UF/top N) e download CSV+XLSX. Divisões por zero tratadas (sem crash).
-#     (3) Docs atualizadas: guia da aba, Enciclopédia Core (seções 12 e 13, IBGE código/centróide,
-#     mapas duais) e Manual (seção 6). AUDITADO o cálculo da linha reta: já é padrão-ouro
-#     (GeographicLib/Karney WGS-84 <1mm → Geopy → Haversine IUGG 6371.0088) — nada a alterar.
-#     Sem regressão, sem perda de exatidão/desempenho.
-#   v3.8 (36ª geração) → BASE NACIONAL IBGE: CÓDIGO OFICIAL + CENTRÓIDE MUNICIPAL REARMADO
-#     [BASE-IBGE-COD + BASE-IBGE-CENTROIDE]. A base do IBGE já era a fonte nacional integrada
-#     (carregar_dados_ibge: municípios/estados/distritos, pickle 30 dias) e o reconhecimento por
-#     nome (com/sem acento, forma curta, fuzzy) já existia (FIX-MUN-CLASS + anti-alucinação).
-#     DOIS GAPS REAIS CORRIGIDOS: (1) o payload /localidades/municipios traz o código IBGE em
-#     mun["id"] mas ele NÃO era armazenado → agora é (custo de rede zero, pkl v2). (2) esse mesmo
-#     endpoint NÃO traz lat/lon (todos os municípios ficavam lat=0.0), o que mantinha o atalho de
-#     centróide offline e a BLINDAGEM ANTI-ALUCINAÇÃO praticamente DESLIGADOS em produção (exigiam
-#     lat≠0 que nunca existia). Novo resolvedor _centroide_municipio rearma ambos: usa lat/lon
-#     offline se existir, senão o centróide por cidade+UF (ArcGIS/Nominatim — centro da cidade,
-#     nunca POI), memorizado em RAM. Município reconhecido vira a referência oficial ANTES da
-#     cascata (mais rápido) e nunca mais é confundido com rua/hotel. Fall-through preservado:
-#     se nenhum centróide responder, mantém o fluxo antigo. ViaCEP/Correios já no cascata de CEP;
-#     gazetteers externos (GeoNames/Natural Earth/OSM) dispensados (sem ganho p/ municípios BR já
-#     100% cobertos offline pelo IBGE). Cache V65→V66. Sem regressão, sem perda de precisão.
-#   v3.8++ → APRESENTAÇÃO DINÂMICA POR PROVEDOR VENCEDOR [VIS-DINAMICA / VIS-OSRM-LINK - 30ª geração]:
-#     PROBLEMA: "independentemente do vencedor, o mapa embarcado continuava sendo só o do OSRM".
-#     CAUSA RAIZ: no cenário Google-vence, quando a extração da polyline do Google falhava (frequente),
-#       o mapa caía na geometria do OSRM como "traçado de referência" — daí parecer "sempre OSRM".
-#     SOLUÇÃO (arquitetura por vencedor, mapa=link sempre):
-#       • GOOGLE vence → mapa embarcado EXCLUSIVAMENTE do Google (embed http: Embed API se houver a
-#         chave GOOGLE_MAPS_EMBED_API_KEY, senão ?saddr&daddr&output=embed COM NOMES) + 1 ÚNICO link
-#         (Google). NUNCA usa geometria do OSRM. Mapa e link saem dos MESMOS params (nome qualificado).
-#       • OSRM vence → mapa embarcado EXCLUSIVAMENTE do OSRM (Leaflet, geometria exata, nomes) + 2 links:
-#         (1) Google Maps (comparação) e (2) VISUALIZADOR PRÓPRIO via "?rota=osrm&g=<polyline>&o&d&km&t"
-#         — o próprio app entra em modo visualizador e reproduz FIELMENTE o mesmo mapa (mesma geometria,
-#         mesmos nomes), sem depender de serviço externo. Mantém o download HTML (fidelidade offline).
-#         Salvaguarda: se a URL do visualizador ficar longa demais (>7,5k), recai no download.
-#       • Geodésico → ligação direta estimada (Leaflet) + 1 link + aviso (inalterado).
-#     RotaPipeline: +índice 36 (link_osrm_viewer, default ""); CACHE_VERSION V61→V62.
-#   v3.8+ → AVALIAÇÃO CRÍTICA DE 13 MELHORIAS PROPOSTAS (auditoria de impacto):
-#     IMPLEMENTADAS (ganho real, risco ~zero): M2 (executores ThreadPool como SINGLETONS via
-#       @st.cache_resource — elimina recriação do pool a cada rerun) e M14-parcial (TomTom via
-#       st.secrets — SMTP já usava secrets). 11 itens documentados como NÃO IMPLEMENTAR por
-#       premissa inválida (M2-isolamento, M14-SMTP, M5-progresso já nativo), benefício marginal
-#       na escala real dominada por rede (M1, M4, M13), risco de regressão de precisão (M11),
-#       ou reescrita massiva sem ganho real em escala limitada por rate-limit de API (M9, M12),
-#       além de M7/M8/M10 (dependências pesadas / incompatível com arquitetura de arquivo único).
-# DIAGNÓSTICO COMPARATIVO (versão antiga × atual):
-#   A versão ANTIGA desenhava a rota no mapa embarcado porque usava o embed clássico do
-#   Google com TEXTO (nomes): maps?saddr={nome}&daddr={nome}&output=embed — esse endpoint
-#   renderiza direções (a rota) e mostra nomes. PORÉM tinha o bug município→POI (texto cru
-#   ambíguo) e depende de um endpoint hoje instável.
-#   A versão ATUAL (v3.5-3.7) trocou os parâmetros por COORDENADAS (para corrigir o POI) e
-#   passou a extrair a polyline do Google (frágil). Quando a extração falha, recaía no embed
-#   clássico de COORDENADAS → só marcadores + coords. Era exatamente o que o usuário via.
-#
-# SOLUÇÃO SUPERIOR [VIS-ALWAYS-DRAW + VIS-NAMES-LINK]:
-#   1) O mapa embarcado AGORA SEMPRE desenha o traçado (Leaflet autocontido), nunca só
-#      marcadores. Hierarquia de geometria (degradação graciosa, sempre com NOMES):
-#        a) geometria do próprio Google (extraída e validada) → idêntica ao Google;
-#        b) se falhar, a geometria CONFIÁVEL do OSRM (que já roda no híbrido) → traçado
-#           praticamente idêntico, claramente rotulado como referência;
-#        c) sem nenhuma, a ligação direta origem→destino (ainda com nomes).
-#      Isso elimina DE VEZ o "mapa só com 2 marcadores" (a versão antiga dependia de um
-#      endpoint frágil; aqui nós mesmos desenhamos — mais robusto e moderno).
-#   2) O LINK e o mapa passam a usar o NOME OFICIAL totalmente qualificado do município
-#      ("Corumbá de Goiás, Goiás, Brasil") em vez de coordenadas. Resolve o Problema #2
-#      (coordenadas na apresentação) e, por ser o nome OFICIAL e QUALIFICADO (não o texto
-#      cru), mantém a robustez contra o POI. As coordenadas seguem como âncora interna.
-#   3) Até o fallback geodésico desenha um mapa Leaflet (ligação direta) com nomes.
-#
-# Validação: link de município → nome qualificado (testado); mapa sempre desenha traçado
-#   (Google→OSRM→linha direta); decoder vs vetor canônico; RotaPipeline íntegra (0-35);
-#   retorno do scraper de 7 elementos retrocompatível. Sem regressão.
-# ------------------------------------------------------------------------------
-#   [Detalhes das versões anteriores abaixo]
-#
-# PRIORIDADE MÁXIMA Nº 1 RESOLVIDA (mapa do Google só mostrava 2 marcadores):
-#   O endpoint clássico ?saddr&daddr&output=embed tornou-se instável e renderiza só dois
-#   marcadores, sem o traçado. SOLUÇÃO [VIS-GOOGLE-GEO]: o scraper EXTRAI A GEOMETRIA
-#   (polyline) da rota do Google (índice 6, aditivo), VALIDA-A geograficamente (rota deve
-#   começar perto da origem, terminar perto do destino, dentro da caixa plausível) e
-#   desenha o TRAÇADO COMPLETO num mapa Leaflet autocontido (fit bounds + zoom). Se a
-#   extração falhar, cai no embed clássico (degradação graciosa, zero risco de rota errada).
-#   Há download do mapa HTML também para o Google. Unificado em _gerar_mapa_leaflet_rota.
-#
-# NOMES GUIAM A APRESENTAÇÃO [VIS-NAMES]: mapas rotulam origem/destino pelo NOME OFICIAL
-#   (não lat/lon); badge mostra provedor, distância, tempo e nomes. Novo _escapar_js()
-#   blinda os nomes no HTML/JS do mapa.
-#
-# Validação: extração + validação geográfica testadas (aceita rota correta, REJEITA
-#   polyline de outra região, degrada sem geometria); decoder vs vetor canônico; retorno
-#   de 7 elementos retrocompatível (callers usam 0-5); RotaPipeline íntegra. Sem regressão.
-# ------------------------------------------------------------------------------
-#   [Detalhes da v3.6 abaixo]
-#
-# MUDANÇA DE DIREÇÃO (decisão do usuário): restaurar o modelo híbrido (Google + OSRM)
-# com seleção automática de MENOR DISTÂNCIA, porém reestruturado e muito superior ao
-# que existia — mais auditável, mais visual, mais robusto.
-#
-# NOVA ARQUITETURA [ARQ-HIBRIDO]:
-#   - Os DOIS motores (Google Maps + OSRM) são executados em toda rota.
-#   - A aplicação compara as distâncias e adota a MENOR (tolerância de 2% a favor do
-#     Google, que tem link de navegação 100% auditável — evita alternância sem ganho).
-#   - GOOGLE vence → mapa embarcado EXCLUSIVAMENTE do Google (embed http, rota traçada,
-#     nomes) + 1 ÚNICO link (Google). NUNCA usa geometria do OSRM. + OSRM no comparativo.
-#   - OSRM vence → mapa embarcado EXCLUSIVAMENTE do OSRM (Leaflet, GEOMETRIA EXATA, nomes)
-#     + 2 links: (1) Google (comparação) e (2) VISUALIZADOR PRÓPRIO da rota OSRM + DOWNLOAD
-#     do mapa HTML autocontido (rota exata, offline) + comparativo obrigatório.
-#   - Comparativo RICO e VISUAL: cards lado a lado, selo do vencedor (🏆), diferença
-#     absoluta/percentual/tempo, leitura automática de convergência/divergência.
-#
-# LINK DA ROTA OSRM [VIS-OSRM-LINK - 30ª geração] — SOLUÇÃO FINAL (visualizador próprio):
-#   Reconfirmado que NÃO há link COMPARTILHÁVEL público robusto/documentado que abra a
-#   geometria exata do OSRM (geojson.io/map.project-osrm são frágeis/legados). SOLUÇÃO
-#   adotada, robusta e auditável, DENTRO do modelo single-file: a própria aplicação serve um
-#   VISUALIZADOR via query param ("?rota=osrm&g=<polyline>&o&d&km&t") — ao abrir o link, o app
-#   entra num modo visualizador que reproduz FIELMENTE o mesmo mapa embarcado (mesma geometria
-#   decodificada, mesmos nomes), sem hospedagem extra nem dependência externa. Complementos:
-#   (1) mapa Leaflet embarcado desenha a geometria EXATA; (2) DOWNLOAD de HTML autocontido
-#   (fidelidade offline); (3) link Google para comparação. Salvaguarda: URL muito longa
-#   (>7,5k) → recai no download.
-#
-# Validação: 5 cenários testados (OSRM vence; Google vence; empate→Google; só OSRM;
-#   só Google); comparativo correto; mapa OSRM desenha geometria; RotaPipeline íntegra;
-#   priorização de município por coordenadas (FIX-MUN-COORD) preservada. Sem regressão.
-# ------------------------------------------------------------------------------
-# MELHORIAS APLICADAS v2.4 → v2.5:
-#   [PERF-UI1] Contagem de rotas únicas da prévia de estimativa agora é cacheada
-#         (@st.cache_data) pela identidade do arquivo. Antes recalculava set(zip(...))
-#         sobre TODO o DataFrame a cada rerun (cada tecla no campo de operador) —
-#         desperdício real em planilhas de 100k linhas. Args grandes não-hasheados
-#         (prefixo _) para o cache não custar mais que o cálculo. Lógica idêntica
-#         (validada em casos-limite + 50k linhas). Zero regressão.
-#   [UX-POLISH] Corrigidos ícones quebrados/ausentes em botões e colunas de link
-#         ("Limpar Filtros", "Abrir no Maps", "Exportar Relatório", "Baixar Tabela")
-#         que renderizavam como espaço vazio — aparência mais profissional e consistente.
-#   [DOC] Adicionado mapa de arquitetura e fluxo no cabeçalho (Etapa 7: explicabilidade)
-#         para facilitar manutenção corporativa.
-#
-# DECISÃO DOCUMENTADA (regra: zero regressão):
-#   - Hardening de colunas duplicadas pós-normalização (str.title pode colidir "origem"
-#     e "Origem"): adicionaria robustez, mas alterar a normalização de colunas pode
-#     mudar o comportamento de arquivos que hoje funcionam. Documentado, não implementado.
-#   - Polars/DuckDB/asyncio/Numba: avaliados em rodadas anteriores — gargalo é rede,
-#     não tabela/CPU-numérico. Sem ganho no caminho dominante.
-#
-# Todas as correções e otimizações anteriores preservadas (FIX-LOTE, FIX-ALOC,
-# SPEED-1..4, PERF-Q1..3, regra de menor distância, consenso Bayesiano, etc).
+# HISTÓRICO DE VERSÕES completo → CHANGELOG.md
+#   [Melhoria 4 · §14] As ~5.094 linhas iniciais de histórico de changelog foram
+#   REALOCADAS para CHANGELOG.md. Isto é ZERO mudança de comportamento — apenas
+#   comentários saíram do módulo (arquivo ~40% menor, parse/deploy mais leves).
+#   Nenhuma linha de código foi tocada; o corpo abaixo começa exatamente onde
+#   começava antes (primeiro import). Consulte CHANGELOG.md para toda a evolução.
 # ==============================================================================
 
 import streamlit as st
@@ -9529,6 +4532,13 @@ def _gerar_relatorio_html(df, titulo="Relatório do Estudo", data_str=""):
             _geo_loc_h = ""
         if _geo_loc_h:
             _sec.append(("geo_locais", "🗺️ Análise Geográfica Visual", _geo_loc_h))
+        # [V316 · Melhoria 3, fatia 3] Seção "⚠️ Alternativas com balsa não selecionadas" (só aparece quando há).
+        try:
+            _balsa_h = _v316_html_balsa(df)
+        except Exception:
+            _balsa_h = ""
+        if _balsa_h:
+            _sec.append(("balsa_alt", "⚠️ Alternativas com balsa não selecionadas", _balsa_h))
         _sec.append(("diag", "Diagnóstico Executivo", "".join(f"<p>{d}</p>" for d in _dg) or "<p>Sem dados suficientes.</p>"))
         _sec.extend(_secoes_metodologia_referencias_html())  # [ARTIGO - 184ª geração]
         _sec.append(("glossario", "Glossário", _bloco_glossario_html()))  # [GLOSSARIO - 184ª geração]
@@ -21200,6 +16210,12 @@ def _dicionario_colunas_comparacao():
          "Fica vazia quando": "A aplicação venceu ou houve empate.",
          "Como ler": "Leia junto com 'Classe da Divergência' para decidir se vale reprocessar o caso."},
 
+        {"Coluna": "Análise de Balsa", "Grupo": "Proveniência da decisão",
+         "O que é": "Quantifica o trade-off de balsa entre a rota da aplicação e a da referência (quem usou balsa e a diferença em km).",
+         "De onde vem": "Calculado (v316) a partir das distâncias e das colunas 'Balsa Aplicação/Referência'.",
+         "Fica vazia quando": "Nunca — descreve os quatro casos (ambas terrestres, ambas com balsa, ou um lado com balsa).",
+         "Como ler": "A política atual EVITA balsa: o lado que evitou balsa é operacionalmente preferível, mesmo se um pouco mais longo."},
+
         # ─── ESTUDO CONCORRENTE (REF ·) ───
         {"Coluna": "REF · (qualquer coluna)", "Grupo": "Estudo concorrente",
          "O que é": "**TODA** coluna da sua planilha de referência, preservada.",
@@ -22624,6 +17640,15 @@ def _comparar_alocacoes(linhas, parse_tempo=None, limiar_empate_km=1.0):
                 d["Diagnóstico da Divergência"] = ""
         except Exception as _e_v307:
             logger.error(f"[V307-PROVENIENCIA] Falha na camada de proveniência: {_e_v307}")
+        # [V316 · Melhoria 3, fatia 5] Quantificação explícita do trade-off de balsa (app × referência).
+        # Complementa o veredito (que já prioriza o lado sem balsa) com a economia em km, exportável.
+        try:
+            d["Análise de Balsa"] = _v316_comparador_balsa(
+                d.get("Distancia Aplicacao"), d.get("Distancia Referencia"),
+                d.get("Balsa Aplicação", d.get("Balsa Aplicacao", "")),
+                d.get("Balsa Referência", d.get("Balsa Referencia", "")))
+        except Exception as _e_v316b:
+            logger.error(f"[V316-CMP-BALSA] análise de balsa do comparador: {_e_v316b}")
         out.append(d)
     return out
 
@@ -25169,6 +20194,12 @@ _MAX_ADMISSIVEL_ROTEAR = 40        # teto de polos extras roteados por origem no
 # real E viária >= linha reta (lei física). Rota-fantasma (snap para o outro lado do rio, sem travessia real)
 # e fallback geodésico NÃO são coroados. Reversível: False → decisão por custo efetivo (comportamento v308).
 _VIARIA_ESTRITA_ATIVA = True
+# [V316 · Melhoria 3] EVITAR BALSA A TODO CUSTO — regra de negócio prioritária: a rota vencedora deve ser
+# sempre TERRESTRE (sem balsa) quando existir uma válida; uma rota com balsa, mesmo mais curta, NÃO vence —
+# vira ALTERNATIVA sinalizada. Só se não houver rota terrestre válida a balsa é usada, como exceção marcada.
+# Inverte, de propósito, a filosofia "balsa é rede" da v309/2b (a regra de negócio mudou). Reversível:
+# False → volta a decidir só por menor viária genuína (comportamento v309).
+_EVITAR_BALSA_ATIVO = True
 # penalidades operacionais em "km equivalentes" (para o custo efetivo do trade-off):
 _PEN_BALSA_KM = 25.0      # balsa: horário/clima/capacidade/risco
 _PEN_FLUVIAL_KM = 60.0    # acesso fluvial/isolado (sem rota rodoviária plena)
@@ -25332,6 +20363,383 @@ def _v309c_destino_fluvial_sem_balsa(municipio_destino, tem_balsa, conjunto=None
         return all(str(_c) in (conjunto or frozenset()) for _c in _codigos)
     except Exception:
         return False
+
+
+_V316_MOTORES = ("google", "osrm", "graphhopper", "ors", "valhalla", "tomtom")
+_V316_FLUVIAL_MARCAS = ("fluvial", "hidrov", "ferry", "marít", "marit", "sem conexão terrestre",
+                        "sem rota", "sem malha", "balsa-only", "aquavi")
+
+
+def _v316_classificar_rota(tem_balsa, fonte="", status="", vr=None, dist=None, tempo=None, reta=None):
+    """[V316 · Melhoria 3] Classifica a rota em 5 categorias: 🟢 terrestre · 🟡 terrestre com possível
+    travessia · 🔴 balsa · 🔵 fluvial/hidroviária · ⚪ indeterminada. 'terrestre'/'vencivel' dizem se a rota
+    pode ser VENCEDORA na política 'evitar balsa' (balsa/fluvial nunca são). Guarda anti-fantasma: uma
+    'terrestre' com viária < reta vira indeterminada. NUNCA lança exceção."""
+    try:
+        _f = str(fonte or "").lower()
+        _s = str(status or "").lower()
+        _blob = _f + " " + _s
+        _balsa = tem_balsa if isinstance(tem_balsa, bool) else str(tem_balsa).strip().lower() in ("sim", "true", "1", "s", "yes")
+        _motor = any(m in _f for m in _V316_MOTORES)
+        _fluvial = any(m in _blob for m in _V316_FLUVIAL_MARCAS) and not _balsa
+        _vr = _num(vr)
+        if _balsa:
+            _cat, _cor, _rot, _terr = "balsa", "🔴", "Com balsa", False
+        elif _fluvial:
+            _cat, _cor, _rot, _terr = "fluvial", "🔵", "Fluvial/hidroviária", False
+        elif not _motor:
+            _cat, _cor, _rot, _terr = "indeterminada", "⚪", "Não determinada", False
+        elif (_num(dist) is not None and _num(reta) is not None and _num(dist) < _num(reta) - 0.5):
+            _cat, _cor, _rot, _terr = "indeterminada", "⚪", "Não determinada (viária < reta)", False
+        elif _vr is not None and _vr >= 2.2:
+            _cat, _cor, _rot, _terr = "terrestre_travessia", "🟡", "Terrestre com possível travessia", True
+        else:
+            _cat, _cor, _rot, _terr = "terrestre", "🟢", "Terrestre — sem balsa", True
+        return {"categoria": _cat, "cor": _cor, "rotulo": f"{_cor} {_rot}", "terrestre": _terr, "vencivel": _terr}
+    except Exception:
+        return {"categoria": "indeterminada", "cor": "⚪", "rotulo": "⚪ Não determinada",
+                "terrestre": False, "vencivel": False}
+
+
+def _v316_decidir_terrestre_primeiro(atual, alt, margem_km=0.5):
+    """[V316 · Melhoria 3] Decisão sob a política EVITAR BALSA. terrestre SEMPRE vence balsa/fluvial (mesmo
+    mais longa); entre terrestres vence a menor; sem nenhuma terrestre, vence a menor (exceção sinalizada).
+    Quando uma balsa é mais curta que a terrestre mantida, devolve 'alternativa_balsa' (oportunidade), nunca
+    como vitória. Retorna {trocar, motivo, km_salvo, alternativa_balsa|None, excecao_sem_terrestre}."""
+    _res = {"trocar": False, "motivo": "", "km_salvo": None, "alternativa_balsa": None,
+            "excecao_sem_terrestre": False}
+    try:
+        _da = _num(atual.get("dist_km")); _db = _num(alt.get("dist_km"))
+        _ca = _v316_classificar_rota(atual.get("tem_balsa"), atual.get("fonte", ""), atual.get("status", ""),
+                                     vr=atual.get("vr"), dist=_da, tempo=atual.get("tempo"), reta=atual.get("reta_km"))
+        _cb = _v316_classificar_rota(alt.get("tem_balsa"), alt.get("fonte", ""), alt.get("status", ""),
+                                     vr=alt.get("vr"), dist=_db, tempo=alt.get("tempo"), reta=alt.get("reta_km"))
+        _ta, _tb = _ca["terrestre"], _cb["terrestre"]
+
+        def _alt_balsa(dic, _cl):
+            return {"nome": dic.get("nome"), "dist_km": _num(dic.get("dist_km")), "tempo": dic.get("tempo"),
+                    "fonte": dic.get("fonte"), "categoria": _cl["categoria"], "rotulo": _cl["rotulo"]}
+
+        if _ta and not _tb:
+            if _db is not None and _da is not None and _db < _da:
+                _res["alternativa_balsa"] = _alt_balsa(alt, _cb)
+                _res["motivo"] = (f"alternativa {_cb['rotulo']} seria {_da - _db:.1f} km mais curta, mas a "
+                                  f"política prioriza rota terrestre — mantida a terrestre")
+            else:
+                _res["motivo"] = "alternativa não-terrestre e não mais curta — ignorada"
+            return _res
+        if _tb and not _ta:
+            _res["trocar"] = True
+            _res["km_salvo"] = (round(_da - _db, 1) if (_da is not None and _db is not None) else None)
+            if _da is not None and _db is not None and _da < _db:
+                _res["alternativa_balsa"] = _alt_balsa(atual, _ca)
+                _res["motivo"] = (f"adota rota terrestre {_cb['rotulo']} ({_db:.1f} km) no lugar de "
+                                  f"{_ca['rotulo']} ({_da:.1f} km); a balsa era {_db - _da:.1f} km mais curta, "
+                                  f"registrada como alternativa")
+            else:
+                _res["motivo"] = f"adota rota terrestre {_cb['rotulo']} no lugar de {_ca['rotulo']}"
+            return _res
+        if _ta and _tb:
+            if _da is None or (_db is not None and _db < _da - float(margem_km)):
+                _res["trocar"] = True
+                _res["km_salvo"] = (round(_da - _db, 1) if (_da is not None and _db is not None) else None)
+                _res["motivo"] = (f"menor rota terrestre: {_db:.1f} km vs {_da:.1f} km"
+                                  if _da is not None else "rota terrestre")
+            else:
+                _res["motivo"] = "rota terrestre atual já é a menor"
+            return _res
+        _res["excecao_sem_terrestre"] = True
+        if _da is None or (_db is not None and _db < _da - float(margem_km)):
+            _res["trocar"] = True
+            _res["km_salvo"] = (round(_da - _db, 1) if (_da is not None and _db is not None) else None)
+            _res["motivo"] = f"EXCEÇÃO: sem rota terrestre válida; adotada a menor não-terrestre ({_cb['rotulo']})"
+        else:
+            _res["motivo"] = f"EXCEÇÃO: sem rota terrestre; mantida a menor não-terrestre ({_ca['rotulo']})"
+        return _res
+    except Exception:
+        return {"trocar": False, "motivo": "decisão abortada com segurança", "km_salvo": None,
+                "alternativa_balsa": None, "excecao_sem_terrestre": False}
+
+
+def _v317_memoria_geografica(df, vr_alto=1.9, div_alta_pct=25.0):
+    """[Melhoria 4/§8 · forma SEGURA] MEMÓRIA GEOGRÁFICA DIAGNÓSTICA — read-only. Varre o resultado de um
+    estudo e destaca municípios 'problemáticos' pelos sinais JÁ calculados (V/R alto, rota impossível, sem
+    rota, balsa, divergência entre motores). NÃO persiste nada e NÃO afeta decisão — é diagnóstico/auditoria
+    (§8 sem substituir a validação atual). Persistência entre execuções fica como decisão de arquitetura à
+    parte (rotulada 'Avaliar' no parecer). Retorna {n_problematicos,total,municipios,por_motivo}. PURA."""
+    try:
+        if df is None or not len(df):
+            return {"n_problematicos": 0, "total": 0}
+        _cm = {str(c).strip().lower(): c for c in df.columns}
+        _c_org = _cm.get("origem"); _c_uf = _cm.get("uf") or _cm.get("uf origem")
+        _c_dist = _cm.get("distancia"); _c_reta = _cm.get("linha reta")
+        _c_balsa = _cm.get("balsas"); _c_fonte = _cm.get("fonte da rota")
+        _c_status = _cm.get("status da rota")
+        _c_div = _cm.get("divergencia motores (%)") or _cm.get("divergência motores (%)")
+        _por_motivo = {}; _muns = []
+        for _r in df.to_dict("records"):
+            _mot = []
+            _d = _num(_r.get(_c_dist)) if _c_dist else None
+            _rt = _num(_r.get(_c_reta)) if _c_reta else None
+            if _d is not None and _rt is not None and _rt > 0:
+                _vr = _d / _rt
+                if _d < _rt - 0.5:
+                    _mot.append("rota impossível (viária < reta)")
+                elif _vr >= vr_alto:
+                    _mot.append(f"rota muito indireta (V/R {_vr:.1f})")
+            _st = str(_r.get(_c_status, "")).lower() if _c_status else ""
+            _fo = str(_r.get(_c_fonte, "")).lower() if _c_fonte else ""
+            if "sem rota" in _st or "sem rota" in _fo or "linha reta" in _fo:
+                _mot.append("sem rota viária (fallback geodésico)")
+            if _c_balsa and str(_r.get(_c_balsa, "")).strip().lower() == "sim":
+                _mot.append("depende de balsa")
+            _dv = _num(_r.get(_c_div)) if _c_div else None
+            if _dv is not None and _dv >= div_alta_pct:
+                _mot.append(f"divergência alta entre motores ({_dv:.0f}%)")
+            if _mot:
+                for _m in _mot:
+                    _k = _m.split(" (")[0]
+                    _por_motivo[_k] = _por_motivo.get(_k, 0) + 1
+                _muns.append({"origem": str(_r.get(_c_org, "")) if _c_org else "",
+                              "uf": str(_r.get(_c_uf, "")) if _c_uf else "",
+                              "motivos": _mot, "severidade": len(_mot)})
+        _muns.sort(key=lambda x: x["severidade"], reverse=True)
+        return {"n_problematicos": len(_muns), "total": len(df), "municipios": _muns,
+                "por_motivo": dict(sorted(_por_motivo.items(), key=lambda kv: kv[1], reverse=True))}
+    except Exception:
+        return {"n_problematicos": 0, "total": 0}
+
+
+def _v316_comparador_balsa(dist_app, dist_ref, balsa_app, balsa_ref):
+    """[V316 · Melhoria 3, fatia 5] QUANTIFICA o trade-off de balsa no Comparador (app × referência) a partir
+    de dados já presentes. NÃO substitui o veredito (que já dá vantagem operacional ao lado sem balsa —
+    23074/23112) — complementa com uma frase explícita e exportável (a quantificação em km que faltava).
+    PURA/defensiva."""
+    try:
+        _ba = str(balsa_app).strip().lower() in ("sim", "true", "1", "s")
+        _br = str(balsa_ref).strip().lower() in ("sim", "true", "1", "s")
+        _da, _dr = _num(dist_app), _num(dist_ref)
+        if not _ba and not _br:
+            return "Ambas terrestres — sem dependência de balsa dos dois lados"
+        if _ba and _br:
+            return "Ambas dependem de balsa"
+        if _ba and not _br:
+            if _da is not None and _dr is not None and _da < _dr:
+                return (f"App usou balsa e ficou {_dr - _da:.1f} km mais curta; a referência evitou balsa "
+                        f"(rota terrestre). Pela política atual (evitar balsa), a referência é operacionalmente preferível.")
+            return "App usou balsa; a referência evitou balsa (rota terrestre) — preferível pela política atual."
+        if _dr is not None and _da is not None and _dr < _da:
+            return (f"App evitou balsa (rota terrestre, +{_da - _dr:.1f} km); a referência dependeu de uma balsa "
+                    f"mais curta. A app está alinhada à política de evitar balsa.")
+        return "App evitou balsa (rota terrestre); a referência dependeu de balsa. App alinhada à política atual."
+    except Exception:
+        return "Não identificada"
+
+
+def _v316_resolver_coord_alt(nome, uf_hint="", idx_nome=None, idx_cod=None):
+    """[V316 · Melhoria 3, fatia 4] Resolve a coordenada REAL do destino alternativo por balsa (nome → IBGE →
+    lat/lon/uf), reusando os índices já existentes (§19). Homônimo → prefere a UF da origem; se ainda ambíguo
+    ou sem coordenada, marca incerto=True (§15). FAIL-SAFE: sem resolução → lat/lon None."""
+    _r = {"lat": None, "lon": None, "uf": "", "ibge": "", "incerto": False}
+    try:
+        _nm = unidecode(str(nome or "")).upper().strip()
+        if not _nm:
+            return _r
+        _in = idx_nome if idx_nome is not None else _v309c_indice_nome_para_codigos()
+        _ic = idx_cod if idx_cod is not None else _indice_ibge_por_codigo()
+        _cods = (_in or {}).get(_nm)
+        if not _cods:
+            return _r
+        _cods = list(_cods)
+        _uf_hint = str(uf_hint or "").strip().upper()
+        if len(_cods) == 1:
+            _escolhido = _cods[0]
+        else:
+            _match = [c for c in _cods if str((_ic.get(c) or {}).get("uf", "")).upper() == _uf_hint]
+            if len(_match) == 1:
+                _escolhido = _match[0]
+            elif _match:
+                _escolhido = _match[0]; _r["incerto"] = True
+            else:
+                _escolhido = _cods[0]; _r["incerto"] = True
+        _info = _ic.get(_escolhido) or {}
+        _lat = _num(_info.get("lat")); _lon = _num(_info.get("lon"))
+        _r.update({"lat": _lat, "lon": _lon, "uf": str(_info.get("uf", "") or ""), "ibge": str(_escolhido)})
+        if _lat in (None, 0.0) or _lon in (None, 0.0):
+            _r["incerto"] = True
+        return _r
+    except Exception:
+        return _r
+
+
+def _v316_agregar_balsa(df):
+    """[V316 · Melhoria 3, fatia 3] Agrega as métricas da alternativa por balsa a partir das colunas da
+    fatia 2. Retorna {n, total_rotas, pct, economia_total_km, economia_media_km, economia_max_km, kmc_total,
+    por_uf, top}. Sem alternativas → {'n': 0}. PURA/defensiva."""
+    try:
+        if df is None or not len(df):
+            return {"n": 0}
+        _cm = {str(c).strip().lower(): c for c in df.columns}
+        _c_al = _cm.get("alerta balsa")
+        if not _c_al:
+            return {"n": 0}
+        _c_ec = _cm.get("economia potencial balsa (km)")
+        _c_kc = _cm.get("economia potencial balsa (km-candidato)")
+        _c_org = _cm.get("origem"); _c_uf = _cm.get("uf") or _cm.get("uf origem")
+        _c_dst = _cm.get("destino alternativo balsa"); _c_dbk = _cm.get("distância balsa (km)")
+        _c_ter = _cm.get("municipio destino") or _cm.get("destino")
+        _total = len(df); _casos = []
+        for _i in df.index:
+            if not str(df.at[_i, _c_al]).strip().lower().startswith("sim"):
+                continue
+            _casos.append({
+                "origem": str(df.at[_i, _c_org]) if _c_org else "",
+                "uf": str(df.at[_i, _c_uf]) if _c_uf else "",
+                "terrestre": str(df.at[_i, _c_ter]) if _c_ter else "",
+                "balsa": str(df.at[_i, _c_dst]) if _c_dst else "",
+                "dist_balsa": _num(df.at[_i, _c_dbk]) if _c_dbk else None,
+                "economia_km": _num(df.at[_i, _c_ec]) if _c_ec else None,
+                "km_candidato": _num(df.at[_i, _c_kc]) if _c_kc else None})
+        _n = len(_casos)
+        if _n == 0:
+            return {"n": 0, "total_rotas": _total}
+        _ecs = [c["economia_km"] for c in _casos if c["economia_km"] is not None]
+        _kcs = [c["km_candidato"] for c in _casos if c["km_candidato"] is not None]
+        _por_uf = {}
+        for _c in _casos:
+            _u = _c["uf"] or "—"
+            _d = _por_uf.setdefault(_u, {"uf": _u, "n": 0, "economia_km": 0.0, "km_candidato": 0.0})
+            _d["n"] += 1; _d["economia_km"] += (_c["economia_km"] or 0.0)
+            _d["km_candidato"] += (_c["km_candidato"] or 0.0)
+        return {"n": _n, "total_rotas": _total,
+                "pct": round(100.0 * _n / _total, 1) if _total else 0.0,
+                "economia_total_km": round(sum(_ecs), 1) if _ecs else 0.0,
+                "economia_media_km": round(sum(_ecs) / len(_ecs), 1) if _ecs else 0.0,
+                "economia_max_km": round(max(_ecs), 1) if _ecs else 0.0,
+                "kmc_total": round(sum(_kcs), 0) if _kcs else 0.0,
+                "por_uf": sorted(_por_uf.values(), key=lambda x: x["economia_km"], reverse=True),
+                "top": sorted(_casos, key=lambda x: (x["km_candidato"] or x["economia_km"] or 0), reverse=True)}
+    except Exception:
+        return {"n": 0}
+
+
+def _v316_html_balsa(df):
+    """[V316 · Melhoria 3, fatia 3] Corpo HTML da seção '⚠️ Alternativas com balsa não selecionadas' para os
+    relatórios. Vazio se não houver alternativa. Reusa _he (html.escape) e as classes .kpis/.kpi já do CSS."""
+    try:
+        _a = _v316_agregar_balsa(df)
+        if not _a.get("n"):
+            return ""
+        import html as _he
+        def _e(x):
+            return _he.escape(str(x))
+        _kpis = (
+            f'<div class="kpis">'
+            f'<div class="kpi"><b>{_a["n"]}</b><span>municípios com balsa mais curta</span></div>'
+            f'<div class="kpi"><b>{_a["economia_total_km"]:.0f} km</b><span>economia potencial (não usada)</span></div>'
+            f'<div class="kpi"><b>{_a["economia_media_km"]:.1f} km</b><span>economia média</span></div>'
+            f'<div class="kpi"><b>{_a["economia_max_km"]:.0f} km</b><span>maior economia</span></div>'
+            f'<div class="kpi"><b>{_a["kmc_total"]:.0f}</b><span>km-candidato potenciais</span></div>'
+            f'<div class="kpi"><b>{_a["pct"]:.1f}%</b><span>das rotas</span></div></div>')
+        _rows_uf = "".join(
+            f"<tr><td>{_e(u['uf'])}</td><td class='r'>{u['n']}</td>"
+            f"<td class='r'>{u['economia_km']:.1f}</td><td class='r'>{u['km_candidato']:.0f}</td></tr>"
+            for u in _a["por_uf"])
+        _tab_uf = (f"<h3>Por UF</h3><table><thead><tr><th>UF</th><th class='r'>Casos</th>"
+                   f"<th class='r'>Economia (km)</th><th class='r'>km-candidato</th></tr></thead>"
+                   f"<tbody>{_rows_uf}</tbody></table>")
+        _rows_top = "".join(
+            f"<tr><td>{_e(c['origem'])}</td><td>{_e(c['terrestre'])}</td><td>{_e(c['balsa'])}</td>"
+            f"<td class='r'>{(c['dist_balsa'] or 0):.1f}</td><td class='r'>{(c['economia_km'] or 0):.1f}</td>"
+            f"<td class='r'>{(c['km_candidato'] or 0):.0f}</td></tr>"
+            for c in _a["top"][:100])
+        _tab_top = (f"<h3>Maiores diferenças (top 100)</h3><table><thead><tr><th>Origem</th>"
+                    f"<th>🏆 Terrestre (escolhida)</th><th>🛳️ Alternativa balsa</th><th class='r'>km balsa</th>"
+                    f"<th class='r'>Economia (km)</th><th class='r'>km-candidato</th></tr></thead>"
+                    f"<tbody>{_rows_top}</tbody></table>")
+        _nota = ("<p>A metodologia prioriza rotas <b>terrestres sem balsa</b>: em todos os casos abaixo a rota "
+                 "terrestre foi mantida como vencedora. A alternativa por balsa é apresentada apenas como "
+                 "<b>oportunidade/alerta</b> — mostra quanto se economizaria caso a política de balsa fosse "
+                 "permitida. Não é erro nem derrota da aplicação.</p>")
+        return _nota + _kpis + _tab_uf + _tab_top
+    except Exception:
+        return ""
+
+
+def _v316_aplicar_colunas_balsa(df, regs):
+    """[V316 · Melhoria 3, fatia 2] Faz AFLORAR na planilha de Alocação a ALTERNATIVA POR BALSA mais curta
+    que o resgate capturou (sem reprocessar rota — §13/§19). Cria colunas dedicadas, preenche 'Não
+    identificada'/'Não aplicável' onde não há (nunca célula vazia), calcula economia potencial e impacto por
+    candidato. Só marca alerta quando a balsa é REALMENTE mais curta que a terrestre final. Retorna
+    (df, resumo) — resumo alimenta o alerta visual. Defensivo: qualquer erro devolve o df intacto."""
+    _cols = ["Alerta Balsa", "Destino Alternativo Balsa", "UF Destino Alternativo",
+             "Código IBGE Destino Alternativo", "Distância Balsa (km)", "Tempo Balsa",
+             "Motor Balsa", "Tipo de Medição Balsa", "Economia Potencial Balsa (km)",
+             "Economia Potencial Balsa (km-candidato)", "Justificativa Não-Escolha Balsa"]
+    try:
+        if df is None or not len(df):
+            return df, {"n": 0}
+        _mapa = {}
+        for _r in (regs or []):
+            _ab = (_r or {}).get("alternativa_balsa")
+            if _ab and _num(_ab.get("dist_km")) is not None:
+                _o = str(_r.get("origem", "")).strip().lower()
+                if _o and (_o not in _mapa or _num(_ab["dist_km"]) < _num(_mapa[_o].get("dist_km"))):
+                    _mapa[_o] = _ab
+        _colmap = {str(c).strip().lower(): c for c in df.columns}
+        _c_org = _colmap.get("origem"); _c_dist = _colmap.get("distancia")
+        _c_insc = _colmap.get("inscritos")
+        _c_venc = _colmap.get("municipio destino") or _colmap.get("destino")
+        if not _c_org:
+            return df, {"n": 0}
+        for _c in _cols:
+            if _c not in df.columns:
+                df[_c] = pd.Series(["Não identificada"] * len(df), index=df.index, dtype=object)
+        _n = 0; _km_total = 0.0; _kmc_total = 0.0; _linhas = []
+        for _idx in df.index:
+            _o = str(df.at[_idx, _c_org]).strip().lower()
+            _ab = _mapa.get(_o)
+            if not _ab:
+                continue
+            _dbalsa = _num(_ab.get("dist_km"))
+            _dterr = _num(df.at[_idx, _c_dist]) if _c_dist else None
+            _econ = (round(_dterr - _dbalsa, 1) if (_dterr is not None and _dbalsa is not None) else None)
+            if _econ is None or _econ <= 0:
+                continue  # a terrestre final não é mais longa que a balsa → não é 'oportunidade'
+            _insc = _num(df.at[_idx, _c_insc]) if _c_insc else None
+            _kmc = round(_econ * _insc, 0) if _insc else None
+            _fonte = str(_ab.get("fonte", "") or "")
+            _geo = ("geod" in _fonte.lower() or "linha reta" in _fonte.lower() or not _fonte)
+            _dbalsa_nome = str(_ab.get("nome", "") or "Não identificada")
+            _uf_org = ""
+            _c_uf = _colmap.get("uf") or _colmap.get("uf origem")
+            if _c_uf:
+                _uf_org = str(df.at[_idx, _c_uf] or "")
+            _coord = _v316_resolver_coord_alt(_dbalsa_nome, uf_hint=_uf_org)
+            df.at[_idx, "Alerta Balsa"] = "Sim — havia rota por balsa mais curta"
+            df.at[_idx, "Destino Alternativo Balsa"] = _dbalsa_nome
+            df.at[_idx, "UF Destino Alternativo"] = _coord.get("uf") or "Não identificada"
+            df.at[_idx, "Código IBGE Destino Alternativo"] = _coord.get("ibge") or "Não identificada"
+            df.at[_idx, "Distância Balsa (km)"] = round(_dbalsa, 1) if _dbalsa is not None else "Não identificada"
+            df.at[_idx, "Tempo Balsa"] = _ab.get("tempo") or "Não identificada"
+            df.at[_idx, "Motor Balsa"] = _fonte or "Não identificada"
+            df.at[_idx, "Tipo de Medição Balsa"] = "Geodésica/estimada" if _geo else "Viária (motor real)"
+            df.at[_idx, "Economia Potencial Balsa (km)"] = _econ
+            df.at[_idx, "Economia Potencial Balsa (km-candidato)"] = (_kmc if _kmc is not None else "Não aplicável")
+            df.at[_idx, "Justificativa Não-Escolha Balsa"] = (
+                f"Rota por balsa até {_dbalsa_nome} seria {_econ:.1f} km mais curta, mas a metodologia prioriza "
+                f"rota terrestre sem balsa; a terrestre foi mantida como vencedora e a balsa registrada como alternativa.")
+            _n += 1; _km_total += _econ; _kmc_total += (_kmc or 0.0)
+            _linhas.append({"origem": str(df.at[_idx, _c_org]),
+                            "destino_terrestre": (str(df.at[_idx, _c_venc]) if _c_venc else ""),
+                            "destino_balsa": _dbalsa_nome, "dist_terrestre": _dterr, "dist_balsa": _dbalsa,
+                            "economia_km": _econ, "km_candidato": _kmc, "medicao": ("Estimada" if _geo else "Viária"),
+                            "lat_balsa": _coord.get("lat"), "lon_balsa": _coord.get("lon"),
+                            "coord_incerta": _coord.get("incerto", False), "tempo_balsa": _ab.get("tempo")})
+        _linhas.sort(key=lambda x: (x.get("km_candidato") or x.get("economia_km") or 0), reverse=True)
+        return df, {"n": _n, "km_total": round(_km_total, 1), "kmc_total": round(_kmc_total, 0), "linhas": _linhas}
+    except Exception:
+        return df, {"n": 0}
 
 
 def _v308b_decidir_viaria(atual, alt, margem_km=0.5):
@@ -25588,7 +20996,21 @@ def _resgate_por_candidatos(origem, uf, escolhido, cand_names, fn_rota, inscrito
                     "tem_balsa": bool(_r.get("tem_balsa")), "fluvial": bool(_r.get("fluvial")),
                     "tempo_min": _num(_r.get("tempo_min")), "reta_km": _num(_r.get("reta_km")),
                     "fonte": _r.get("fonte", ""), "status": _r.get("status", "")}
-            _av = _v308b_decidir_viaria(_melhor, _alt) if _usar_viaria else _avaliar_troca(_melhor, _alt)
+            if _usar_viaria and _EVITAR_BALSA_ATIVO:
+                _av = _v316_decidir_terrestre_primeiro(_melhor, _alt)
+                # captura da alternativa por balsa mais curta (a menor ao longo do loop) para alerta/colunas.
+                _altb = _av.get("alternativa_balsa") if isinstance(_av, dict) else None
+                if _altb and _num(_altb.get("dist_km")) is not None:
+                    _prev = _reg.get("alternativa_balsa")
+                    if (not _prev) or (_num(_prev.get("dist_km")) is None
+                                       or _num(_altb["dist_km"]) < _num(_prev["dist_km"])):
+                        _reg["alternativa_balsa"] = _altb
+                if _av.get("excecao_sem_terrestre"):
+                    _reg["excecao_sem_terrestre"] = True
+            elif _usar_viaria:
+                _av = _v308b_decidir_viaria(_melhor, _alt)
+            else:
+                _av = _avaliar_troca(_melhor, _alt)
             _reg["alternativas"].append({"nome": _nome, "dist_km": _alt["dist_km"], "tem_balsa": _alt["tem_balsa"],
                                          "trocaria": _av["trocar"], "motivo": _av["motivo"]})
             if _av["trocar"]:
@@ -33959,6 +29381,93 @@ def _vencedor_multicriterio_comparacao(linha, params=None, limiar_empate_km=1.0)
 # [V312] §11 (árvore de decisão por origem) + §15 (validação cruzada na Alocação)
 # Funções PURAS e READ-ONLY. Verificadas offline (test_v312.py).
 # ==============================================================================
+def _v315_leitura_analista(d):
+    """[V315 · Melhoria 2] LEITURA DO ANALISTA (§16) — interpretação automática do caso selecionado, a partir
+    dos DADOS REAIS já calculados (sem inventar nada). d = dict com origem/uf/inscritos/venc_*/conc_*/
+    metodologia/motor/geodesica. Campos ausentes são omitidos. PURA/testável. Retorna str."""
+    try:
+        _p = []
+        _org = str(d.get("origem", "")).strip() or "A origem"
+        _uf = str(d.get("uf", "")).strip()
+        _org_full = f"{_org}/{_uf}" if _uf else _org
+        _insc = _num(d.get("inscritos"))
+        _vn = str(d.get("venc_nome", "")).strip()
+        _vd = _num(d.get("venc_dist")); _vr = _num(d.get("venc_reta")); _vt = d.get("venc_tempo")
+        _cn = str(d.get("conc_nome", "")).strip()
+        _cd = _num(d.get("conc_dist")); _cr = _num(d.get("conc_reta"))
+        _met = str(d.get("metodologia", "")).strip()
+        _motor = str(d.get("motor", "")).strip()
+        _geo = bool(d.get("geodesica"))
+        if _insc is not None:
+            _p.append(f"{_org_full} possui {int(_insc)} candidato(s).")
+        else:
+            _p.append(f"{_org_full}.")
+        if _vn:
+            if _geo:
+                _por = (" — atenção: a distância usada aqui é LINHA RETA (não há rota rodoviária disponível), "
+                        "então não é comparável a uma distância viária")
+            elif "viár" in _met.lower() or "viar" in _met.lower():
+                _por = " por apresentar a menor rota viária real entre os polos avaliados"
+            elif _met:
+                _por = f" pela metodologia de {_met}"
+            else:
+                _por = ""
+            _dv = f" (viária {_vd:.1f} km" if _vd is not None else ""
+            _dv += (f", {_vt}" if (_vt and str(_vt).strip()) else "")
+            _dv += (")" if _dv else "")
+            _p.append(f"{_vn} foi selecionado como 1º colocado{_por}{_dv}.")
+            if _motor:
+                _p.append(f"Rota calculada pelo motor {_motor}.")
+        if _cn and _vd is not None and _cd is not None:
+            _dif = _cd - _vd
+            if abs(_dif) < 0.05:
+                _p.append(f"{_cn} ficou em 2º praticamente empatado em distância viária.")
+            else:
+                _p.append(f"{_cn} ficou em 2º, {abs(_dif):.1f} km "
+                          f"{'mais longe' if _dif > 0 else 'mais perto'} por estrada.")
+            if _vr is not None and _cr is not None and _cr < _vr and _cd > _vd:
+                _p.append(f"Apesar de {_cn} ter menor distância em LINHA RETA, sua rota VIÁRIA é maior — por "
+                          f"isso o 1º colocado permanece a melhor escolha na metodologia de menor rota viária.")
+            if _insc is not None and _dif > 0.05:
+                _p.append(f"Impacto potencial da decisão: {_dif:.1f} km × {int(_insc)} = "
+                          f"{_dif*_insc:.0f} km-candidato.")
+        return " ".join(_p)
+    except Exception:
+        return "Não foi possível montar a leitura analítica deste caso."
+
+
+def _v315_fmt_detalhe(row, c_dist, c_reta, c_tempo, c_balsa, c_fonte, c_acesso):
+    """[V315 · Melhoria 2] Formata em markdown os detalhes de um destino (1º ou 2º), só com os campos que
+    existem — nenhuma linha inventada. `row` é uma linha (Series) do df de alocação."""
+    try:
+        def _g(c):
+            try:
+                return row.get(c) if c else None
+            except Exception:
+                return None
+        _l = []
+        _d = _num(_g(c_dist)); _r = _num(_g(c_reta))
+        if _d is not None:
+            _l.append(f"- 🛣️ Distância viária: **{_d:.1f} km**")
+        if _r is not None:
+            _l.append(f"- 📏 Linha reta: {_r:.1f} km")
+        _t = _g(c_tempo)
+        if _t and str(_t).strip() and str(_t).strip().lower() not in ("nan", "none"):
+            _l.append(f"- ⏱️ Tempo: {_t}")
+        _b = _g(c_balsa)
+        if _b is not None and str(_b).strip() and str(_b).strip().lower() not in ("nan", "none"):
+            _l.append(f"- 🛳️ Balsa: {_b}")
+        _ac = _g(c_acesso)
+        if _ac and str(_ac).strip() and str(_ac).strip().lower() not in ("nan", "none"):
+            _l.append(f"- 🚗 Acesso: {_ac}")
+        _f = _g(c_fonte)
+        if _f and str(_f).strip() and str(_f).strip().lower() not in ("nan", "none"):
+            _l.append(f"- 🛰️ Motor: {_f}")
+        return "\n".join(_l) if _l else "_Sem dados adicionais._"
+    except Exception:
+        return "_Sem dados adicionais._"
+
+
 def _v312_arvore_decisao_origem(candidatos_reta, dist_vencedor, nome_vencedor, nome_2o=None,
                                 margem_km=0.5):
     """[V312 · §11] ÁRVORE DE DECISÃO (busca) de uma origem, a partir dos polos ordenados por LINHA RETA
@@ -38275,7 +33784,7 @@ _SECOES = [
 # versão antiga". **Essa impossibilidade de distinguir é falha de PROJETO minha** — e ela me fez
 # consertar o mesmo bug três vezes. Agora a versão está na tela: quando você reportar um problema,
 # nós dois sabemos exatamente o que está rodando.
-_VERSAO_APP = "314"
+_VERSAO_APP = "317"
 _VERSAO_SELO = f"v{_VERSAO_APP} · portão de exibição ativo"
 # [RESGATE-CIRCUIDADE - 238ª] liga/desliga o refinamento pós-alocação (reversível). False = comportamento 237.
 _RESGATE_CIRCUIDADE_ATIVO = True
@@ -43562,6 +39071,16 @@ if _secao == _SECOES[2]:   # tab_alocacao
                     # alerta na planilha e registra em log. Não troca o vencedor (risco de capacidade/consistência);
                     # o painel de auditoria já sinaliza cada caso e nomeia o hub de menor viária.
                     df_final_alo = _validar_coerencia_viaria(df_final_alo)
+                    # [V316 · Melhoria 3, fatia 2] Faz aflorar a ALTERNATIVA POR BALSA capturada pelo resgate
+                    # (colunas na planilha + resumo p/ o alerta visual). Roda APÓS a correção autoritativa para
+                    # a economia ser calculada contra o vencedor terrestre FINAL. Guardado contra escopo.
+                    try:
+                        df_final_alo, _resumo_balsa = _v316_aplicar_colunas_balsa(df_final_alo, _regs_resgate)
+                        st.session_state['alo_balsa_resumo'] = _resumo_balsa
+                    except NameError:
+                        pass
+                    except Exception as _e_balsa:
+                        logger.error(f"[V316-BALSA] colunas de alternativa por balsa: {_e_balsa}")
                 # [HOMONIMO - 126ª geração] Pós-passo ADITIVO: auditoria de desambiguação de homônimos.
                 df_final_alo = _crono_fin("enriq_homonimos", _enriquecer_desambiguacao_homonimos, df_final_alo)
                 # [INTEGRIDADE - 133ª geração] Pós-passo ADITIVO: Índice de Integridade Geográfica + alerta por rota.
@@ -44086,6 +39605,74 @@ if _secao == _SECOES[2]:   # tab_alocacao
                                    f"{_fmt_num(_v15.get('total', 0))} vencedores têm rota viária genuína.")
             except Exception as _e_v15a:
                 logger.error(f"[V312-VALIDACAO-ALOC] alerta de validação da alocação falhou: {_e_v15a}")
+            # [V316 · Melhoria 3, fatia 2] ALERTA VISUAL "alternativa mais curta com balsa". Sempre que a
+            # política evitou balsa mas havia uma travessia mais curta, mostra de forma clara e não-poluente.
+            try:
+                _rb = st.session_state.get('alo_balsa_resumo') or {}
+                if _rb.get('n'):
+                    st.warning(
+                        f"⚠️ **ALTERNATIVA MAIS CURTA COM BALSA IDENTIFICADA em {_fmt_num(_rb['n'])} município(s).** "
+                        f"A rota **terrestre** foi mantida como vencedora porque a metodologia prioriza trajetos "
+                        f"sem balsa. Economia potencial **não capturada** por essa política: "
+                        f"**{_rb.get('km_total', 0):.0f} km** ({_fmt_num(_rb.get('kmc_total', 0))} km-candidato). "
+                        f"As colunas **Alerta Balsa / Distância Balsa / Economia Potencial Balsa** detalham cada caso "
+                        f"na planilha e nos relatórios.")
+                    _lb = _rb.get('linhas') or []
+                    if _lb:
+                        with st.expander(f"🛳️ Ver os {min(len(_lb), 200)} caso(s) com balsa mais curta", expanded=False):
+                            _dfb = pd.DataFrame([{
+                                "Origem": _x.get("origem"), "🏆 Terrestre (vencedor)": _x.get("destino_terrestre"),
+                                "km terrestre": _x.get("dist_terrestre"), "🛳️ Alternativa balsa": _x.get("destino_balsa"),
+                                "km balsa": _x.get("dist_balsa"), "Economia (km)": _x.get("economia_km"),
+                                "km-candidato": _x.get("km_candidato"), "Medição": _x.get("medicao"),
+                            } for _x in _lb[:200]])
+                            st.dataframe(_dfb, use_container_width=True, hide_index=True)
+                            st.caption("A rota terrestre permanece a escolhida; a balsa é apresentada apenas como "
+                                       "oportunidade, para transparência total da decisão.")
+                    # [V316 · Melhoria 3, fatia 3] ANÁLISES AGREGADAS de balsa (economia potencial, por UF, top).
+                    try:
+                        _agb = _v316_agregar_balsa(df_final_alo)
+                        if _agb.get("n"):
+                            with st.expander("📊 Análise agregada — alternativas por balsa", expanded=False):
+                                _kb = st.columns(4)
+                                _kb[0].metric("Municípios c/ balsa + curta", _fmt_num(_agb["n"]))
+                                _kb[1].metric("Economia potencial", f"{_agb['economia_total_km']:.0f} km")
+                                _kb[2].metric("Economia média", f"{_agb['economia_media_km']:.1f} km")
+                                _kb[3].metric("km-candidato potenciais", _fmt_num(_agb["kmc_total"]))
+                                st.caption(f"Maior economia individual: **{_agb['economia_max_km']:.0f} km** · "
+                                           f"presente em **{_agb['pct']:.1f}%** das rotas. Todas mantiveram a "
+                                           f"rota terrestre; os valores mostram o que a política de balsa "
+                                           f"economizaria (não uma perda da aplicação).")
+                                if _agb.get("por_uf"):
+                                    st.markdown("**Por UF**")
+                                    st.dataframe(pd.DataFrame([{
+                                        "UF": _u["uf"], "Casos": _u["n"],
+                                        "Economia (km)": round(_u["economia_km"], 1),
+                                        "km-candidato": round(_u["km_candidato"], 0)} for _u in _agb["por_uf"]],
+                                        ), use_container_width=True, hide_index=True)
+                    except Exception as _e_agb:
+                        logger.error(f"[V316-BALSA-AGG] análise agregada de balsa falhou: {_e_agb}")
+                    # [Melhoria 4 · §8] MEMÓRIA GEOGRÁFICA DIAGNÓSTICA (read-only): municípios problemáticos por
+                    # sinais já calculados. Não persiste nem altera decisão — auditoria/observabilidade.
+                    try:
+                        _mg = _v317_memoria_geografica(df_final_alo)
+                        if _mg.get("n_problematicos"):
+                            with st.expander(f"🧭 Memória geográfica — {_fmt_num(_mg['n_problematicos'])} "
+                                             f"município(s) a conferir", expanded=False):
+                                st.caption("Diagnóstico read-only: municípios sinalizados por rota indireta, "
+                                           "fallback geodésico, balsa ou divergência entre motores. Não altera "
+                                           "nenhuma decisão — serve para você priorizar a conferência.")
+                                if _mg.get("por_motivo"):
+                                    st.markdown("**Ocorrências por motivo:** " + " · ".join(
+                                        f"{_k} ({_v})" for _k, _v in _mg["por_motivo"].items()))
+                                st.dataframe(pd.DataFrame([{
+                                    "Origem": _x["origem"], "UF": _x["uf"], "Severidade": _x["severidade"],
+                                    "Motivos": "; ".join(_x["motivos"])} for _x in _mg["municipios"][:300]],
+                                    ), use_container_width=True, hide_index=True)
+                    except Exception as _e_mg:
+                        logger.error(f"[V317-MEMGEO] memória geográfica falhou: {_e_mg}")
+            except Exception as _e_balsa_ui:
+                logger.error(f"[V316-BALSA-UI] alerta de balsa falhou: {_e_balsa_ui}")
             # [FASE2-RESUMO-ALOC - 184ª geração] RESUMO EXECUTIVO da alocação: KPIs no topo (municípios de
             # origem, polos utilizados, deslocamento médio/máximo ao polo) antes do detalhamento denso. A
             # resposta em 5 segundos. Defensivo: cada métrica só aparece se a coluna existir; erro →
@@ -44764,6 +40351,163 @@ if _secao == _SECOES[2]:   # tab_alocacao
             # calculados (colunas Concorrente Analisado/Distancia Concorrente) — custo ZERO.
             _dfp_alo = st.session_state['df_processado']
             if 'Concorrente Analisado' in _dfp_alo.columns and 'Origem' in _dfp_alo.columns:
+                with st.expander("🗺️ Análise Geográfica Visual — origem, 1º e 2º colocados", expanded=False):
+                    st.caption("Veja a decisão de cada município no mapa: para onde vai o 1º colocado e a "
+                               "alternativa (2º). As coordenadas são as **reais usadas no roteamento** (§ fidelidade).")
+                    try:
+                        _cm_map = {str(c).strip().lower(): c for c in _dfp_alo.columns}
+                        def _cm(_k):
+                            return _cm_map.get(_k)
+                        _c_org = _cm('origem'); _c_lato = _cm('lat origem'); _c_lono = _cm('lon origem')
+                        _c_venc = _cm('municipio destino') or _cm('destino')
+                        _c_latd = _cm('lat destino'); _c_lond = _cm('lon destino')
+                        _c_conc = _cm('concorrente analisado')
+                        _c_latc = _cm('lat concorrente'); _c_lonc = _cm('lon concorrente')
+                        if not (_c_org and _c_lato and _c_lono and _c_latd and _c_lond):
+                            st.info("Este estudo não possui coordenadas suficientes (origem/destino) para o mapa.")
+                        else:
+                            _orgs_map = _dfp_alo[_c_org].dropna().astype(str).unique().tolist()
+                            _sel_map = st.selectbox("Município de origem", _orgs_map, key="geo_map_sel")
+                            _modo_rota = st.radio("Trajetos a exibir",
+                                                  ["Ambos", "Só 1º colocado", "Só 2º colocado", "Nenhum"],
+                                                  horizontal=True, key="geo_map_rota")
+                            _c_insc = _cm('inscritos')
+                            _dim_insc = st.checkbox("Dimensionar marcadores pela quantidade de candidatos",
+                                                    value=True, key="geo_map_dim") if _c_insc else False
+                            _row = _dfp_alo[_dfp_alo[_c_org].astype(str) == str(_sel_map)]
+                            if not len(_row):
+                                st.info("Selecione uma origem.")
+                            else:
+                                _r = _row.iloc[0]
+                                _lato = _num(_r.get(_c_lato)); _lono = _num(_r.get(_c_lono))
+                                _latd = _num(_r.get(_c_latd)); _lond = _num(_r.get(_c_lond))
+                                _latc = _num(_r.get(_c_latc)) if _c_latc else None
+                                _lonc = _num(_r.get(_c_lonc)) if _c_lonc else None
+                                _venc_nome = str(_r.get(_c_venc, '') or '')
+                                _conc_nome = str(_r.get(_c_conc, '') or '') if _c_conc else ''
+                                _insc_v = _num(_r.get(_c_insc)) if _c_insc else None
+                                _coord_ok = all(v not in (None, 0.0) for v in (_lato, _lono, _latd, _lond))
+                                if not _coord_ok:
+                                    st.warning("⚠️ Coordenada de origem/destino ausente ou (0,0) — o mapa pode "
+                                               "não refletir fielmente a rota real desta linha.")
+                                def _raio(_base):
+                                    if _dim_insc and _insc_v:
+                                        return float(_base) * (1.0 + min(3.0, (_insc_v ** 0.5) / 6.0))
+                                    return float(_base)
+                                _pts = [{"nome": f"📍 {_sel_map} (origem)", "lat": _lato, "lon": _lono,
+                                         "cor": [59, 130, 246], "raio": _raio(9000)}]
+                                _lns = []
+                                if _latd and _lond:
+                                    _pts.append({"nome": f"🏆 {_venc_nome} (1º)", "lat": _latd, "lon": _lond,
+                                                 "cor": [16, 185, 129], "raio": _raio(8000)})
+                                    if _modo_rota in ("Ambos", "Só 1º colocado"):
+                                        _lns.append({"lon_o": _lono, "lat_o": _lato, "lon_d": _lond,
+                                                     "lat_d": _latd, "cor": [16, 185, 129]})
+                                if _latc and _lonc:
+                                    _pts.append({"nome": f"🥈 {_conc_nome} (2º)", "lat": _latc, "lon": _lonc,
+                                                 "cor": [249, 115, 22], "raio": _raio(7000)})
+                                    if _modo_rota in ("Ambos", "Só 2º colocado"):
+                                        _lns.append({"lon_o": _lono, "lat_o": _lato, "lon_d": _lonc,
+                                                     "lat_d": _latc, "cor": [249, 115, 22]})
+                                # [V316 · Melhoria 3, fatia 4] Rota da ALTERNATIVA POR BALSA (🛳️ roxo), quando
+                                # existe e tem coordenada real resolvida. Diferenciada das demais (§ mapas).
+                                _balsa_alt = None
+                                try:
+                                    for _bx in (st.session_state.get('alo_balsa_resumo') or {}).get('linhas') or []:
+                                        if str(_bx.get('origem', '')).strip().lower() == str(_sel_map).strip().lower():
+                                            _balsa_alt = _bx
+                                            break
+                                except Exception:
+                                    _balsa_alt = None
+                                if _balsa_alt and _num(_balsa_alt.get('lat_balsa')) not in (None, 0.0) \
+                                        and _num(_balsa_alt.get('lon_balsa')) not in (None, 0.0):
+                                    _latb = _num(_balsa_alt['lat_balsa']); _lonb = _num(_balsa_alt['lon_balsa'])
+                                    _pts.append({"nome": f"🛳️ {_balsa_alt.get('destino_balsa','?')} (balsa, não escolhida)",
+                                                 "lat": _latb, "lon": _lonb, "cor": [124, 58, 237], "raio": _raio(7000)})
+                                    _lns.append({"lon_o": _lono, "lat_o": _lato, "lon_d": _lonb,
+                                                 "lat_d": _latb, "cor": [124, 58, 237]})
+                                try:
+                                    import pydeck as _pdk2
+                                    _dfp = pd.DataFrame(_pts)
+                                    _dfl = pd.DataFrame(_lns) if _lns else pd.DataFrame(
+                                        columns=["lon_o", "lat_o", "lon_d", "lat_d", "cor"])
+                                    _layers = []
+                                    if len(_dfl):
+                                        _layers.append(_pdk2.Layer(
+                                            "LineLayer", _dfl, get_source_position=["lon_o", "lat_o"],
+                                            get_target_position=["lon_d", "lat_d"], get_color="cor", get_width=4))
+                                    _layers.append(_pdk2.Layer(
+                                        "ScatterplotLayer", _dfp, get_position=["lon", "lat"], get_color="cor",
+                                        get_radius="raio", pickable=True))
+                                    _view2 = _pdk2.ViewState(latitude=_lato, longitude=_lono, zoom=7)
+                                    st.pydeck_chart(_pdk2.Deck(layers=_layers, initial_view_state=_view2,
+                                                               tooltip={"text": "{nome}"}, map_style=None))
+                                except Exception:
+                                    st.map(pd.DataFrame([{"lat": _pp["lat"], "lon": _pp["lon"]}
+                                                         for _pp in _pts if _pp["lat"] and _pp["lon"]]), zoom=6)
+                                st.caption("📍 Azul = origem · 🏆 Verde = 1º colocado · 🥈 Laranja = 2º colocado"
+                                           + ("· 🛳️ Roxo = alternativa por balsa (não escolhida)" if _balsa_alt and _num(_balsa_alt.get('lat_balsa')) not in (None, 0.0) else "")
+                                           + ". Linha verde = trajeto ao vencedor · laranja = à alternativa"
+                                           + (" · roxa = à balsa mais curta" if _balsa_alt and _num(_balsa_alt.get('lat_balsa')) not in (None, 0.0) else "") + ".")
+                                if _balsa_alt:
+                                    _ekm = _balsa_alt.get('economia_km'); _kmc = _balsa_alt.get('km_candidato')
+                                    _inc = " ⚠️ coordenada aproximada (homônimo/base)" if _balsa_alt.get('coord_incerta') else ""
+                                    st.warning(
+                                        f"🛳️ **Alternativa mais curta por balsa:** {_balsa_alt.get('destino_balsa','?')} "
+                                        f"— {(_num(_balsa_alt.get('dist_balsa')) or 0):.1f} km"
+                                        + (f" · {_balsa_alt.get('tempo_balsa')}" if _balsa_alt.get('tempo_balsa') else "")
+                                        + f". Economia potencial de **{(_ekm or 0):.1f} km**"
+                                        + (f" ({(_kmc or 0):.0f} km-candidato)" if _kmc else "")
+                                        + f". A terrestre foi mantida porque a metodologia evita balsa.{_inc}")
+                                _c_dist = _cm('distancia'); _c_reta = _cm('linha reta'); _c_tempo = _cm('tempo')
+                                _c_balsa = _cm('balsas'); _c_fonte = _cm('fonte da rota'); _c_acesso = _cm('modo/acesso')
+                                _c_distc = _cm('distancia concorrente'); _c_retac = _cm('linha reta concorrente')
+                                _c_tempoc = _cm('tempo concorrente'); _c_tipo = _cm('tipo de distancia'); _c_met = _cm('metodologia')
+                                _vd = _num(_r.get(_c_dist)) if _c_dist else None
+                                _cd = _num(_r.get(_c_distc)) if _c_distc else None
+                                _colA, _colB = st.columns(2)
+                                with _colA:
+                                    st.markdown(f"#### 🏆 1º colocado: {_venc_nome or '—'}")
+                                    st.markdown(_v315_fmt_detalhe(_r, _c_dist, _c_reta, _c_tempo, _c_balsa, _c_fonte, _c_acesso))
+                                with _colB:
+                                    st.markdown(f"#### 🥈 2º colocado: {_conc_nome or '—'}")
+                                    if _conc_nome:
+                                        st.markdown(_v315_fmt_detalhe(_r, _c_distc, _c_retac, _c_tempoc, None, None, None))
+                                        if _vd is not None and _cd is not None:
+                                            _dif = _cd - _vd
+                                            _kmc = (f" · impacto: {abs(_dif):.1f} × {int(_insc_v)} = "
+                                                    f"{abs(_dif)*_insc_v:.0f} km-candidato") if _insc_v else ""
+                                            st.caption(f"Fica {abs(_dif):.1f} km "
+                                                       f"{'atrás' if _dif > 0 else 'à frente'} do vencedor.{_kmc}")
+                                    else:
+                                        st.caption("Sem 2º colocado registrado para esta origem.")
+                                _geo_flag = False
+                                if _c_tipo or _c_fonte:
+                                    _geo_flag = ("geod" in str(_r.get(_c_tipo, "")).lower()
+                                                 or "linha reta" in str(_r.get(_c_fonte, "")).lower())
+                                st.markdown("##### 🧠 Leitura do Analista")
+                                st.info(_v315_leitura_analista({
+                                    "origem": _sel_map,
+                                    "uf": str(_r.get(_cm('uf') or _cm('uf origem') or '', '') or ''),
+                                    "inscritos": _insc_v, "venc_nome": _venc_nome, "venc_dist": _vd,
+                                    "venc_reta": _num(_r.get(_c_reta)) if _c_reta else None,
+                                    "venc_tempo": _r.get(_c_tempo) if _c_tempo else None,
+                                    "conc_nome": _conc_nome, "conc_dist": _cd,
+                                    "conc_reta": _num(_r.get(_c_retac)) if _c_retac else None,
+                                    "metodologia": (str(_r.get(_c_met, '') or '') if _c_met else 'Menor rota viária'),
+                                    "motor": str(_r.get(_c_fonte, '') or '') if _c_fonte else '',
+                                    "geodesica": _geo_flag}))
+                                with st.expander("❓ Como interpretar este mapa?"):
+                                    st.markdown(
+                                        "- 📍 **Origem**: onde estão os candidatos.\n"
+                                        "- 🏆 **1º colocado (verde)**: o local de prova escolhido — menor esforço na metodologia ativa.\n"
+                                        "- 🥈 **2º colocado (laranja)**: a melhor alternativa; a linha mostra o trajeto até ela.\n"
+                                        "- **Linhas**: ligam a origem a cada destino (conexão, não o traçado exato do asfalto).\n"
+                                        "- **Tamanho do marcador**: proporcional à quantidade de candidatos, quando ativado.\n"
+                                        "- **Divergência**: se o 2º tem linha reta menor porém viária maior, a escolha do 1º está correta na metodologia viária.")
+                    except Exception as _e_geo:
+                        logger.error(f"[V315-GEOMAP] Falha no mapa de análise geográfica: {_e_geo}")
+                        st.info("Não foi possível montar o mapa de análise geográfica para este estudo.")
                 with st.expander("🏆 Auditoria da Escolha do Local de Prova (recomendado × alternativa)", expanded=True):
                     st.caption("Selecione um **município de candidatos** para ver **por que** o local de aplicação foi recomendado "
                                "e **quanto** a melhor alternativa ficou atrás — auditoria técnica da decisão.")
@@ -46231,7 +41975,7 @@ if _secao == _SECOES[3]:   # tab_comparador
                                           "Diferenca Abs (km)", "Diferenca Pct (%)", "Faixa de Diferenca",
                                           "Vencedor Distancia", "Economia km x Inscritos", "Metodo Conciliacao",
                                           "Validação Regra Viária", "Alerta da Decisão", "Proveniência Aplicação",
-                                          "Classe da Divergência", "Divergência Evitável",
+                                          "Classe da Divergência", "Divergência Evitável", "Análise de Balsa",
                                           "Justificativa"]
                               if c in _df_c.columns]
                 st.dataframe(_df_c[_cols_show].sort_values("Economia km x Inscritos", ascending=False),
